@@ -314,16 +314,26 @@ fn plugin_project_sync_keeps_unrelated_scans_and_account_requests_untouched() {
 #[test]
 fn plugin_dispatch_validates_tool_contracts_and_reaches_bound_operations() {
     let f = Fixture::new();
-    let request = input(&f);
+    let mut request = input(&f);
     let runtime = tokio::runtime::Runtime::new().unwrap();
     assert_eq!(
         runtime
-            .block_on(crate::plugin_mcp::call("get_sync_status", &request))
+            .block_on(operations::command("get_sync_status", &request, None))
             .unwrap()["projectId"],
         f.project["id"]
     );
     let definitions = crate::plugin_mcp::tools();
-    assert_eq!(definitions.as_array().unwrap().len(), 8);
+    assert_eq!(definitions.as_array().unwrap().len(), 9);
+    assert_eq!(
+        runtime
+            .block_on(crate::plugin_mcp::call("get_sync_status", &request))
+            .unwrap_err(),
+        crate::plugin_connection::RECONNECT
+    );
+    assert!(runtime
+        .block_on(crate::plugin_mcp::call("get_connection_status", &json!({})))
+        .is_ok());
+    request["connectionProof"] = json!("fixture-proof");
     assert_eq!(
         definitions
             .as_array()
@@ -404,7 +414,7 @@ fn plugin_retry_and_repair_keep_legacy_governed_queue_bytes_and_ids_for_review()
     let runtime = tokio::runtime::Runtime::new().unwrap();
     for tool in ["retry_sync", "repair_sync"] {
         let result = runtime
-            .block_on(crate::plugin_mcp::call(tool, &input))
+            .block_on(operations::command(tool, &input, None))
             .unwrap();
         assert_eq!(result["status"], "needs_review");
         assert_eq!(result["after"]["blockedCount"], 2);
@@ -671,7 +681,7 @@ fn removed_source_recovery_status_exposes_references_without_private_content_or_
     let runtime = tokio::runtime::Runtime::new().unwrap();
     for tool in ["retry_sync", "repair_sync"] {
         let result = runtime
-            .block_on(crate::plugin_mcp::call(tool, &request))
+            .block_on(operations::command(tool, &request, None))
             .unwrap();
         assert_eq!(result["status"], "needs_review");
         assert_eq!(result["after"]["recoveryCount"], 2);
@@ -733,7 +743,7 @@ fn installation_recovery_keeps_removed_journals_and_files_while_repairing_active
     let runtime = tokio::runtime::Runtime::new().unwrap();
     for tool in ["retry_sync", "repair_sync"] {
         let result = runtime
-            .block_on(crate::plugin_mcp::call(tool, &request))
+            .block_on(operations::command(tool, &request, None))
             .unwrap();
         assert_eq!(result["status"], "needs_review");
         assert_eq!(result["after"]["installationRecoveryCount"], 1);

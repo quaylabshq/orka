@@ -20,6 +20,8 @@ export async function settingsFixture(
     updateDelay?: number;
     updateInstallError?: string;
     updateInstallDelay?: number;
+    pluginDelay?: number;
+    pluginError?: string;
     role?: "owner" | "admin" | "member";
     queued?: boolean;
     pendingRequests?: boolean;
@@ -255,6 +257,9 @@ export async function settingsFixture(
       update: options.update ?? { installedVersion: "0.3.0" },
       updateError: options.updateError ?? "",
       updateDelay: options.updateDelay ?? 0,
+      pluginCallback: "",
+      pluginState: "not_linked",
+      pluginError: options.pluginError ?? "",
     };
     const wait = (ms: number) =>
       new Promise((resolve) => setTimeout(resolve, ms));
@@ -284,6 +289,61 @@ export async function settingsFixture(
           if (command === "sync_progress")
             return { user: state.user, progress: null };
           calls.push({ command, args: structuredClone(args) });
+          if (command === "profile_events") {
+            const callback = controls.pluginCallback;
+            controls.pluginCallback = "";
+            return callback || null;
+          }
+          if (command === "route_plugin_callback") {
+            controls.pluginCallback = args.callback;
+            return true;
+          }
+          if (command === "plugin_authorization") {
+            await wait(options.pluginDelay ?? 0);
+            if (controls.pluginError) throw new Error(controls.pluginError);
+            if (args.operation === "preview")
+              return {
+                requestId: "fixture-request",
+                account: {
+                  id: state.user,
+                  email: profile.email,
+                  displayName: profile.displayName,
+                },
+                serviceOrigin: state.config.apiUrl,
+                client: { id: "fixture-assistant", name: "Fixture Assistant" },
+                scopes: ["orka.read", "orka.write"],
+                permissionDescriptions: [
+                  "Read shared project context and preview local items on this Mac.",
+                  "Share selected local items after your confirmation.",
+                ],
+                expiresAt: new Date(Date.now() + 60000).toISOString(),
+              };
+            if (args.operation === "approve") controls.pluginState = "linked";
+            return {
+              [args.operation === "approve" ? "approved" : "cancelled"]: true,
+            };
+          }
+          if (command === "plugin_connection_status")
+            return {
+              state: controls.pluginState,
+              account: {
+                id: state.user,
+                email: profile.email,
+                displayName: profile.displayName,
+              },
+              serviceOrigin: state.config.apiUrl,
+              client:
+                controls.pluginState === "not_linked"
+                  ? null
+                  : { id: "fixture-assistant", name: "Fixture Assistant" },
+              scopes: ["orka.read", "orka.write"],
+              connectedAt: null,
+              reason:
+                controls.pluginState === "reconnect_required"
+                  ? "Your account or service changed. Reconnect your assistant."
+                  : null,
+              reconnectRequired: controls.pluginState === "reconnect_required",
+            };
           if (command === "update_status") {
             const update = structuredClone(controls.update);
             const error = controls.updateError;

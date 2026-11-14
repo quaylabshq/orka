@@ -74,6 +74,24 @@ files are no longer shipped. Baseline-era backups restore through the normal
 recovery procedure. Historical backups need the matching older server or the
 explicit ledger-adoption step before a baseline-based server can start.
 
+## Plugin and desktop account connections
+
+Desktop-linked plugin consent adds migration `007_plugin_connection.sql` after
+the existing migration 006. It adds nullable OAuth token binding metadata and an
+expiring, hashed connection-proof table; existing tokens remain bound to their
+original account and retain their remote-only behavior. Both editions use the
+same implementation, with no new configuration or provider requirement.
+`/v2/instance` advertises `pluginConnection:1` only while MCP is enabled, allowing
+desktop plugin packaging to require a service with native approval support.
+Updated clients detect `desktopAvailable:true` in consent page models before
+offering native approval. Local tools require a fresh desktop-linked grant and
+the appropriate existing `orka.read`/`orka.write` scopes; older read-only grants
+cannot gain local mutation permissions through refresh. Native sign-out,
+account/service changes and reset invalidate the local generation and require
+explicit reconnect. See [plugin account connections](authentication.md#plugin-and-desktop-account-connections)
+for the handoff and proof endpoints. Deploy the API before its Dashboard/native
+consumers; publishing this source does not deploy those counterparts.
+
 ## Selected sharing
 
 `selectedSharing: 1` in `/v2/projects/capabilities` advertises authenticated `POST /v2/sharing/selected`. The endpoint accepts the existing v2 change schema and returns `published` with its normal mutation receipt, `conflict` with its normal conflict receipt, or `approval_required` with an immutable review request. Exact retries retain their identity. Deletions and secret-file payloads are rejected. Existing membership, source audience, publication, suggestion, and ownership checks apply.

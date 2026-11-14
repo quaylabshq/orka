@@ -41,7 +41,20 @@ await test("portable and desktop plugin ZIPs preserve host metadata and the veri
   let origin = "";
   const server = createServer((request, response) => {
     response.setHeader("Content-Type", "application/json");
-    if (request.url === "/.well-known/oauth-protected-resource/mcp") {
+    if (request.url === "/v2/instance") {
+      response.end(
+        JSON.stringify({
+          version: 1,
+          auth: {},
+          pluginConnection:
+            invalidContract === "desktopConnection"
+              ? undefined
+              : invalidContract === "desktopConnectionBoolean"
+                ? true
+                : 1,
+        }),
+      );
+    } else if (request.url === "/.well-known/oauth-protected-resource/mcp") {
       response.end(
         JSON.stringify({
           resource: origin + "/mcp",
@@ -134,6 +147,8 @@ await test("portable and desktop plugin ZIPs preserve host metadata and the veri
       "annotation",
       "scope",
       "discovery",
+      "desktopConnection",
+      "desktopConnectionBoolean",
     ]) {
       invalidContract = invalid;
       await assert.rejects(
@@ -143,9 +158,24 @@ await test("portable and desktop plugin ZIPs preserve host metadata and the veri
           join(directory, invalid + ".zip"),
         ]),
         (error: unknown) =>
-          error instanceof Error && /contract|OAuth/.test(error.message),
+          error instanceof Error &&
+          /contract|OAuth|pluginConnection/.test(error.message),
       );
     }
+    invalidContract = "";
+    const remoteOutput = join(directory, "remote.zip");
+    invalidContract = "desktopConnection";
+    await run(process.execPath, [
+      resolve("plugins/orka/scripts/package.mjs"),
+      origin + "/mcp",
+      remoteOutput,
+      "--remote-only",
+    ]);
+    const remoteConnection = JSON.parse(
+      (await run("unzip", ["-p", remoteOutput, "orka/.mcp.json"])).stdout,
+    );
+    assert.deepEqual(Object.keys(remoteConnection.mcpServers), ["orka"]);
+    await assert.rejects(readFile(join(directory, "remote-desktop.zip")));
     invalidContract = "";
     const entry = async (path: string) =>
       JSON.parse((await run("unzip", ["-p", output, `orka/${path}`])).stdout);
@@ -230,6 +260,24 @@ await test("portable and desktop plugin ZIPs preserve host metadata and the veri
     assert.deepEqual(desktopConnection.mcpServers.orka_local.args, [
       "--orka-plugin",
     ]);
+    const desktopVerification = JSON.parse(
+      await readFile(desktop + ".verification.json", "utf8"),
+    );
+    assert.equal(desktopVerification.pluginConnection, 1);
+    assert.equal(desktopVerification.localConnectionProofRequired, true);
+    assert.equal(
+      desktopVerification.authenticatedNativeConnectionVerified,
+      false,
+    );
+    for (const name of ["orka-operate", "orka-share-selected"]) {
+      const instructions = (
+        await run("unzip", ["-p", desktop, `orka/skills/${name}/SKILL.md`])
+      ).stdout;
+      assert.match(instructions, /connectionProof/);
+      assert.match(instructions, /desktopLinked/);
+      assert.match(instructions, /get_connection_status/);
+      assert.match(instructions, /Use account in Orka/);
+    }
   } finally {
     await new Promise<void>((done, fail) =>
       server.close((error) => (error ? fail(error) : done())),

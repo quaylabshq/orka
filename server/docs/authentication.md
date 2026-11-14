@@ -93,6 +93,71 @@ advertises the dashboard’s consent URL while keeping the original API issuer,
 resource, and token endpoints. Existing API browser entry URLs continue to
 work. Self-hosted project invites and optional MCP consent continue to use the API.
 
+## Plugin and desktop account connections
+
+MCP OAuth connections retain their original account, service and consent scopes.
+They do not follow desktop sign-in changes. The consent page offers **Connect
+with Orka app** to approve the account currently signed in on a Mac, or the
+existing email/password flow for cloud-only access. Cloud-only and older grants
+remain usable for their existing remote tools without a desktop installation.
+
+Desktop consent starts with the existing browser transaction and its host-only,
+HttpOnly cookie. An Origin-checked `POST /mcp/connect` with `action=desktop`
+creates an opaque, single-use handoff for
+`orka://mcp/authorize?handoff=...&service=...`. The handoff expires with the
+ten-minute browser transaction and contains no account session token. The native
+app must require the configured service to match before sending its credentials,
+show the client, account and requested permissions, and request explicit approval.
+Choosing desktop approval prevents email or password submissions from replacing
+the transaction's identity, including sign-in requests already in flight.
+
+The ordinary native-authenticated API exposes:
+
+- `GET /v2/plugin/connection?handoff=...`: the client `{id,name}`, current
+  authenticated `accountId`, canonical `serviceOrigin`, `scopes`, authoritative
+  `permissionDescriptions`, and RFC3339 `expiresAt`. Reading never approves or
+  consumes the request.
+- `POST /v2/plugin/connection`: `{handoff,deviceId,generation,action}`, where the
+  device and generation are UUIDs and action is `approve` or `cancel`. Approval
+  requires a device owned by the authenticated account and returns
+  `{approved:true}`; cancellation returns `{cancelled:true}`. A handoff can be
+  approved only once. Missing/expired requests return 404, repeated approval 409,
+  and a device belonging to another account 403.
+
+The browser checks `action=desktop-status` using the same cookie and Origin. Its
+JSON `status` is `pending`, `approved` or `expired`; polling never issues an OAuth
+code. A top-level form submits `action=complete` after approval. Completion
+consumes the transaction and redirects the existing client with its original
+PKCE challenge, redirect URI, state, service and scopes, using the approved
+desktop identity. Self-hosted HTML supports manual completion. Cancellation
+returns the normal OAuth `access_denied` redirect.
+
+For a desktop-linked grant, MCP `get_profile` adds `desktopLinked:true`, a
+five-minute opaque `connectionProof`, and RFC3339 `connectionProofExpiresAt`.
+The proof is bound to the active access token and its immutable token family,
+account, service, device and native generation. Refresh keeps that binding but
+invalidates proofs tied to the previous access token. Expiry, revocation and
+refresh replay invalidate affected proofs. Only a hash is stored. Cloud-only and
+older grants return `desktopLinked:false` without a proof.
+
+Before each local operation the native app authenticates
+`POST /v2/plugin/connection/verify` with its own native session and submits
+`{proof,deviceId,generation}`. MCP access tokens cannot authenticate this endpoint.
+Success returns `{connectionId,accountId,serviceOrigin,deviceId,generation,scopes,
+expiresAt}`; `connectionId` identifies the original token family. Unknown,
+expired or revoked proofs return 401, account/device mismatch 403, and generation
+mismatch 409 requiring reconnection. The native app must compare this response
+to its current profile state and require `orka.read` for local reads and
+`orka.read` plus `orka.write` for local publication, installation and sync changes.
+Caller-supplied account IDs are not authorization.
+
+The native generation lives outside the account database and changes immediately
+when signing out, switching account/service or resetting the profile. Returning
+to the same account does not restore an earlier generation. Existing grants are
+never retargeted; an explicit new desktop consent is required. The service and
+native app exchange the short-lived proof without exposing raw desktop session
+credentials to tools.
+
 ## Project email invitations
 
 The desktop prefers email when `/v2/instance` advertises `invites.email`.

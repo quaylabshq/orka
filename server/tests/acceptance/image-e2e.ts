@@ -621,7 +621,7 @@ try {
     data,
   );
   console.log(
-    `Passed ${edition} image: actual GoTrue, ${managed ? "signed Resend hook, scanner-safe desktop PKCE and email code, GitHub redirect" : "admin-provisioned password-only sign-in"}, project invites, session refresh, membership/blob isolation, MCP consent and all seven tools, handoff, token refresh/revocation, coordinated backup/restore.`,
+    `Passed ${edition} image: actual GoTrue, ${managed ? "signed Resend hook, scanner-safe desktop PKCE and email code, GitHub redirect" : "admin-provisioned password-only sign-in"}, project invites, session refresh, membership/blob isolation, MCP consent and remote tools, desktop-linked handoff/proofs, token refresh/revocation, coordinated backup/restore.`,
   );
 } finally {
   try {

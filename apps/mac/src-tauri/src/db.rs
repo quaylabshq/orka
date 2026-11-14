@@ -75,9 +75,15 @@ pub fn profile(id: &str) -> Result<()> {
     Uuid::parse_str(id).map_err(|e| e.to_string())?;
     let r = root()?;
     fs::create_dir_all(&r).map_err(|e| e.to_string())?;
+    if fs::read_to_string(r.join("account")).ok().as_deref() != Some(id) {
+        crate::plugin_connection::invalidate("The Orka account changed. Reconnect the plugin.")?;
+    }
     atomic(&r.join("account"), id.as_bytes())
 }
 pub fn guest() -> Result<()> {
+    crate::plugin_connection::invalidate(
+        "You signed out of Orka. Sign in and reconnect the plugin.",
+    )?;
     let p = root()?.join("account");
     if p.exists() {
         fs::remove_file(p).map_err(|e| e.to_string())?;
@@ -154,6 +160,11 @@ pub fn set(db: &Connection, key: &str, value: &Value) -> Result<()> {
     if key == "config" || key == "background" {
         let r = root()?;
         fs::create_dir_all(&r).map_err(|e| e.to_string())?;
+        if key == "config" && global_setting(key)?["apiUrl"] != value["apiUrl"] {
+            crate::plugin_connection::invalidate(
+                "The Orka service changed. Reconnect the plugin.",
+            )?;
+        }
         return atomic(&r.join(format!("{key}.json")), value.to_string().as_bytes());
     }
     db.execute(

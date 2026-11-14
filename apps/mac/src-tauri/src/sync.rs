@@ -99,6 +99,19 @@ pub(crate) async fn api_at(
     }
     Ok(value)
 }
+
+pub(crate) async fn register_device(owner: &str, origin: &str, device: &str) -> Result<()> {
+    let mut registration =
+        json!({"id":device,"name":std::env::var("HOSTNAME").unwrap_or("Mac".into())});
+    if api_at(owner, origin, "GET", "/v2/projects/capabilities", None)
+        .await
+        .is_ok_and(|caps| caps["deviceHardware"] == 1)
+    {
+        registration["hardwareFamily"] = json!(crate::device_metadata::local_family(&db::open()?)?);
+    }
+    api_at(owner, origin, "POST", "/v2/devices", Some(&registration)).await?;
+    Ok(())
+}
 pub(crate) async fn upload(owner: &str, project: &str, files: &[Value]) -> Result<()> {
     packages::reject_env_files(files).map_err(|e| format!("Local upload: {e}"))?;
     for f in files {
@@ -790,7 +803,7 @@ pub async fn once() -> Result<()> {
 }
 pub(crate) async fn onboarding_once(scope: Option<(&str, &str)>) -> Result<()> {
     // The current onboarding job already owns its retry lock.
-    match workspace_cycle(Ok(()), scope, None).await? {
+    match workspace_cycle(Ok(()), scope, None, None).await? {
         WorkspaceSync::Complete(_) => Ok(()),
         WorkspaceSync::Yielded => Err("A sync or project operation is in progress".into()),
     }
@@ -815,6 +828,7 @@ async fn cycle() -> Result<bool> {
         }),
         None,
         None,
+        None,
     )
     .await
     .map(|outcome| match outcome {
@@ -826,8 +840,12 @@ async fn workspace_cycle(
     preparation: Result<()>,
     scope: Option<(&str, &str)>,
     project_filter: Option<&str>,
+    connection: Option<&crate::plugin_connection::Binding>,
 ) -> Result<WorkspaceSync> {
     let _lock = crate::projects::lock()?;
+    if let Some(connection) = connection {
+        connection.check_current()?;
+    }
     let mut db = db::open()?;
     let user = db::get(&db, "user")?;
     let owner = user.as_str().ok_or("Sign in required")?.to_string();
@@ -875,7 +893,16 @@ async fn workspace_cycle(
 }
 
 pub(crate) async fn plugin_once(owner: &str, origin: &str, project: &str) -> Result<()> {
-    match workspace_cycle(Ok(()), Some((owner, origin)), Some(project)).await? {
+    plugin_once_bound(owner, origin, project, None).await
+}
+
+pub(crate) async fn plugin_once_bound(
+    owner: &str,
+    origin: &str,
+    project: &str,
+    binding: Option<&crate::plugin_connection::Binding>,
+) -> Result<()> {
+    match workspace_cycle(Ok(()), Some((owner, origin)), Some(project), binding).await? {
         WorkspaceSync::Complete(_) => Ok(()),
         WorkspaceSync::Yielded => {
             Err("A foreground project operation is in progress; retry retained".into())
@@ -1039,15 +1066,11 @@ async fn sync_workspace(
         return Ok(WorkspaceSync::Yielded);
     }
     progress(db, "Connecting to sync service", None, 0, None)?;
-    let mut registration =
-        json!({"id":device,"name":std::env::var("HOSTNAME").unwrap_or("Mac".into())});
-    if api_as(owner, "GET", "/v2/projects/capabilities", None)
-        .await
-        .is_ok_and(|caps| caps["deviceHardware"] == 1)
-    {
-        registration["hardwareFamily"] = json!(crate::device_metadata::local_family(db)?);
-    }
-    api_as(owner, "POST", "/v2/devices", Some(&registration)).await?;
+    let origin = db::get(db, "config")?["apiUrl"]
+        .as_str()
+        .ok_or("Configure the service")?
+        .to_string();
+    register_device(owner, &origin, &device).await?;
     let projects = api_as(owner, "GET", "/v2/projects?includeArchived=true", None).await?;
     crate::projects::merge_catalog(db, &projects)?;
     let local = db::rows(

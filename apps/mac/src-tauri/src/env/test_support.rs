@@ -162,6 +162,13 @@ pub fn run() {
                     super::field(&input, "tool")?,
                     &input["input"],
                 )),
+                "plugin-authorization" => {
+                    runtime.block_on(crate::plugin_connection::plugin_authorization(
+                        super::field(&input, "operation")?.into(),
+                        input["input"].clone(),
+                    ))
+                }
+                "plugin-status" => crate::plugin_connection::plugin_connection_status(),
                 "governance" => runtime.block_on(crate::governance::governance_command(
                     input["operation"]
                         .as_str()

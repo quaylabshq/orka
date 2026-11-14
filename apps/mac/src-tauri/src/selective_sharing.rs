@@ -296,7 +296,26 @@ pub fn complete(db: &Connection, queued: &Value, result: &Value) -> Result<()> {
 }
 
 pub async fn command(action: &str, input: &Value) -> Result<Value> {
+    command_bound(action, input, None).await
+}
+
+pub(crate) async fn plugin_command(
+    action: &str,
+    input: &Value,
+    binding: &crate::plugin_connection::Binding,
+) -> Result<Value> {
+    command_bound(action, input, Some(binding)).await
+}
+
+async fn command_bound(
+    action: &str,
+    input: &Value,
+    binding: Option<&crate::plugin_connection::Binding>,
+) -> Result<Value> {
     let _lock = projects::lock()?;
+    if let Some(binding) = binding {
+        binding.check_current()?;
+    }
     let db = db::open()?;
     let project = context(&db, input)?;
     match action {

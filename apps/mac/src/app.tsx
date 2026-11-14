@@ -75,6 +75,7 @@ import {
 import { WorkspaceHeader } from "./components/workspace-header.js";
 import { projectAttention } from "./components/sync-attention.js";
 import { useDeepLinks } from "./components/use-deep-links.js";
+import { PluginAuthorization } from "./components/plugin-authorization.js";
 import { parseProjectInvite } from "./components/project-invite.js";
 import { useIndexFilters } from "./components/use-index-filters.js";
 import { useResourceView } from "./components/use-resource-view.js";
@@ -205,6 +206,10 @@ function WorkspaceApp({
   const [returnFocus, setReturnFocus] = useState("");
   const clearReturnFocus = useCallback(() => setReturnFocus(""), []);
   const [settings, setSettings] = useState<SettingsSection | null>(null);
+  const [pluginRequest, setPluginRequest] = useState<{
+    callback: string;
+    scope: string;
+  } | null>(null);
   const [settingsProject, setSettingsProject] = useState<string | null>(null);
   useEffect(() => {
     if (!settings) setSettingsProject(null);
@@ -426,6 +431,10 @@ function WorkspaceApp({
     }
   }, [comparison, selected?.resourceId, view]);
   useDeepLinks((link) => {
+    if (link.hostname === "mcp") {
+      setPluginRequest({ callback: link.href, scope: workspaceScope });
+      return;
+    }
     if (link.hostname === "auth") {
       void act(() => account.complete(link.href));
       return;
@@ -504,6 +513,14 @@ function WorkspaceApp({
         </div>
       </Overlay>
     ) : null;
+  const pluginDialog = pluginRequest ? (
+    <PluginAuthorization
+      key={pluginRequest.callback}
+      request={pluginRequest}
+      scope={workspaceScope}
+      onClose={() => setPluginRequest(null)}
+    />
+  ) : null;
   if (!state.user)
     return (
       <>
@@ -519,6 +536,7 @@ function WorkspaceApp({
           }
         />
         {updatesDialog}
+        {pluginDialog}
       </>
     );
   if (state.onboarding?.active && setup.dialog !== "join")
@@ -531,6 +549,7 @@ function WorkspaceApp({
           onComplete={setProject}
         />
         {updatesDialog}
+        {pluginDialog}
       </>
     );
   const openResource = (id: string) => {
@@ -1087,6 +1106,7 @@ function WorkspaceApp({
             onRefresh={refresh}
           />
         )}
+        {pluginDialog}
       </div>
     </ResourceMenuProvider>
   );

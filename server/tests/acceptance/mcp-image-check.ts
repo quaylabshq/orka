@@ -11,6 +11,12 @@ export async function checkMcpImage(
   nativeToken: string,
   login: { email: () => Promise<string> } | { password: string },
 ) {
+  const instance = await fetch(base + "/v2/instance");
+  assert.equal(instance.status, 200);
+  assert.equal(
+    ((await instance.json()) as { pluginConnection?: number }).pluginConnection,
+    1,
+  );
   const jsonPost = (path: string, body: unknown) =>
     fetch(base + path, {
       method: "POST",
@@ -169,6 +175,10 @@ export async function checkMcpImage(
     name: "Orka refreshed connection",
     version: "0.1.0",
   });
+  const linkedClient = new Client({
+    name: "Orka desktop connection",
+    version: "0.1.0",
+  });
   try {
     await client.connect(
       new StreamableHTTPClientTransport(new URL(base + "/mcp"), {
@@ -185,7 +195,123 @@ export async function checkMcpImage(
       return result.structuredContent!;
     };
     assert.equal((await client.listTools()).tools.length, 18);
-    await call("get_profile");
+    const cloudProfile = await call("get_profile");
+    assert.equal(cloudProfile.desktopLinked, false);
+    assert.equal(cloudProfile.connectionProof, undefined);
+
+    const desktopConsent = await fetch(authorize, { redirect: "manual" });
+    assert.equal(desktopConsent.status, 200);
+    const desktopHtml = await desktopConsent.text();
+    const desktopTransaction = desktopHtml.match(
+      /name="transaction" value="([A-Za-z0-9_-]+)"/,
+    )?.[1];
+    assert.ok(desktopTransaction);
+    const desktopCookie = desktopConsent.headers
+      .get("set-cookie")!
+      .split(";")[0];
+    const desktopSubmit = (action: string) =>
+      fetch(base + "/mcp/connect", {
+        method: "POST",
+        headers: { Origin: base, Cookie: desktopCookie },
+        body: new URLSearchParams({ transaction: desktopTransaction, action }),
+        redirect: "manual",
+      });
+    const desktopPage = await desktopSubmit("desktop");
+    assert.equal(desktopPage.status, 200);
+    const desktopLink = (await desktopPage.text())
+      .match(/href="(orka:\/\/mcp\/authorize\?[^"]+)"/)?.[1]
+      ?.replaceAll("&amp;", "&");
+    assert.ok(desktopLink);
+    const handoffToken = new URL(desktopLink).searchParams.get("handoff")!;
+    const preview = await fetch(
+      base + "/v2/plugin/connection?handoff=" + handoffToken,
+      { headers: { Authorization: `Bearer ${nativeToken}` } },
+    );
+    assert.equal(preview.status, 200);
+    const previewBody = (await preview.json()) as {
+      accountId: string;
+      scopes: string[];
+    };
+    assert.equal(previewBody.accountId, cloudProfile.id);
+    assert.deepEqual(previewBody.scopes, ["orka.read"]);
+    const generation = randomUUID();
+    const approved = await jsonPost("/v2/plugin/connection", {
+      handoff: handoffToken,
+      deviceId: device,
+      generation,
+      action: "approve",
+    });
+    assert.equal(approved.status, 200, await approved.text());
+    assert.deepEqual(await (await desktopSubmit("desktop-status")).json(), {
+      status: "approved",
+    });
+    const completed = await desktopSubmit("complete");
+    assert.equal(completed.status, 303);
+    const linkedTokensResponse = await formPost("/token", {
+      client_id,
+      grant_type: "authorization_code",
+      code: new URL(completed.headers.get("location")!).searchParams.get(
+        "code",
+      )!,
+      code_verifier: verifier,
+      redirect_uri: "https://client.example/callback",
+      resource: base + "/mcp",
+    });
+    assert.equal(linkedTokensResponse.status, 200);
+    const linkedTokens = (await linkedTokensResponse.json()) as {
+      access_token: string;
+    };
+    await linkedClient.connect(
+      new StreamableHTTPClientTransport(new URL(base + "/mcp"), {
+        requestInit: {
+          headers: { Authorization: `Bearer ${linkedTokens.access_token}` },
+        },
+      }),
+    );
+    const linkedProfileResult = CallToolResultSchema.parse(
+      await linkedClient.callTool({ name: "get_profile", arguments: {} }),
+    );
+    assert.ok(!linkedProfileResult.isError);
+    const linkedProfile = linkedProfileResult.structuredContent!;
+    assert.equal(linkedProfile.desktopLinked, true);
+    assert.equal(linkedProfile.id, cloudProfile.id);
+    const proofInput = {
+      proof: linkedProfile.connectionProof,
+      deviceId: device,
+      generation,
+    };
+    const verified = await jsonPost("/v2/plugin/connection/verify", proofInput);
+    assert.equal(verified.status, 200, await verified.clone().text());
+    const verifiedBody = (await verified.json()) as {
+      accountId: string;
+      serviceOrigin: string;
+      scopes: string[];
+    };
+    assert.equal(verifiedBody.accountId, cloudProfile.id);
+    assert.equal(verifiedBody.serviceOrigin, base);
+    assert.deepEqual(verifiedBody.scopes, ["orka.read"]);
+    assert.equal(
+      (
+        await jsonPost("/v2/plugin/connection/verify", {
+          ...proofInput,
+          generation: randomUUID(),
+        })
+      ).status,
+      409,
+    );
+    assert.equal(
+      (
+        await formPost("/revoke", {
+          client_id,
+          token: linkedTokens.access_token,
+        })
+      ).status,
+      200,
+    );
+    assert.equal(
+      (await jsonPost("/v2/plugin/connection/verify", proofInput)).status,
+      401,
+    );
     assert.ok(JSON.stringify(await call("list_projects")).includes(project));
     assert.ok(
       JSON.stringify(
@@ -259,5 +385,6 @@ export async function checkMcpImage(
   } finally {
     await client.close();
     await refreshedClient.close();
+    await linkedClient.close();
   }
 }

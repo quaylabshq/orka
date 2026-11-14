@@ -1,11 +1,13 @@
-use crate::{db::Result, plugin_operations, selective_sharing};
+use crate::{db::Result, plugin_connection, plugin_operations, selective_sharing};
 use serde_json::{json, Value};
 use std::io::{self, BufRead, Write};
 use std::sync::mpsc::{sync_channel, RecvTimeoutError};
 use std::time::Duration;
 
 pub fn tools() -> Value {
-    let mut result = Vec::new();
+    let mut result = vec![
+        json!({"name":"get_connection_status","description":"Check the nonsecret local Orka account and plugin link state, with reconnect instructions. This reads no project content and requires no connection proof.","inputSchema":{"type":"object","properties":{},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}),
+    ];
     for (name, description, extra, required) in [
         ("list_local_resources", "Find local memories, skills, plans, or sessions, including categories with automatic sharing off. Returns metadata only; do not infer the current session from recency.", json!({"kind":{"type":"string","enum":["memory","skill","plan","session"]},"sourceId":{"type":"string","format":"uuid"},"nativeId":{"type":"string"},"query":{"type":"string","maxLength":200},"offset":{"type":"integer","minimum":0}}), vec!["kind"]),
         ("preview_share", "Freeze one selected local snapshot and inspect its title, files, size, and token before an explicitly requested team share. Future turns are excluded. Requires the same account and service as the remote Orka connection.", json!({"kind":{"type":"string","enum":["memory","skill","plan","session"]},"resourceId":{"type":"string","format":"uuid"}}), vec!["kind","resourceId"]),
@@ -16,9 +18,9 @@ pub fn tools() -> Value {
         ("retry_sync", "Retry this project's eligible pending and failed sync operations with their original request IDs and bytes, then run a project sync cycle. Stale conflicts and permission failures remain blocked for review. Reports pending if the service or worker is unavailable.", json!({}), vec![]),
         ("repair_sync", "Recover this project's guarded local sync bindings and interrupted skill installations, then retry eligible synchronization. Pending changes, conflict candidates and queued request identities are preserved. Does not reset caches, discard changes, or resolve conflicts automatically.", json!({}), vec![]),
     ] {
-        let mut properties = json!({"accountId":{"type":"string","format":"uuid"},"serviceOrigin":{"type":"string"},"projectId":{"type":"string","format":"uuid"}});
+        let mut properties = json!({"accountId":{"type":"string","format":"uuid"},"serviceOrigin":{"type":"string"},"projectId":{"type":"string","format":"uuid"},"connectionProof":{"type":"string","maxLength":8192,"description":"Current connectionProof from the remote Orka get_profile tool, after approving Use account in Orka."}});
         properties.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
-        let mut required_fields = vec!["accountId","serviceOrigin","projectId"];
+        let mut required_fields = vec!["accountId","serviceOrigin","projectId","connectionProof"];
         required_fields.extend(required);
         result.push(json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required_fields,"additionalProperties":false},"annotations":{"readOnlyHint":matches!(name,"list_local_resources"|"preview_share"|"list_skills"|"get_sync_status"),"destructiveHint":false,"idempotentHint":true,"openWorldHint":matches!(name,"share_selected"|"install_skill"|"retry_sync"|"repair_sync")}}));
     }
@@ -29,7 +31,7 @@ fn validate(schema: &Value, input: &Value) -> Result<()> {
     let fields = input
         .as_object()
         .ok_or("Tool arguments must be an object")?;
-    for key in schema["required"].as_array().ok_or("Invalid tool schema")? {
+    for key in schema["required"].as_array().into_iter().flatten() {
         if !fields.contains_key(key.as_str().ok_or("Invalid tool schema")?) {
             return Err("Missing required tool argument".into());
         }
@@ -80,14 +82,32 @@ pub(crate) async fn call(name: &str, arguments: &Value) -> Result<Value> {
         .iter()
         .find(|tool| tool["name"] == name)
         .ok_or("Unknown local Orka tool")?;
+    if name != "get_connection_status"
+        && arguments["connectionProof"]
+            .as_str()
+            .is_none_or(str::is_empty)
+    {
+        return Err(plugin_connection::RECONNECT.into());
+    }
     validate(&tool["inputSchema"], arguments)?;
+    if name == "get_connection_status" {
+        return plugin_connection::plugin_connection_status();
+    }
+    let binding = plugin_connection::verify(
+        arguments,
+        matches!(
+            name,
+            "share_selected" | "install_skill" | "retry_sync" | "repair_sync"
+        ),
+    )
+    .await?;
     if matches!(
         name,
         "list_local_resources" | "preview_share" | "share_selected"
     ) {
-        selective_sharing::command(name, arguments).await
+        selective_sharing::plugin_command(name, arguments, &binding).await
     } else {
-        plugin_operations::command(name, arguments).await
+        plugin_operations::command(name, arguments, Some(&binding)).await
     }
 }
 
@@ -129,7 +149,7 @@ pub fn run() -> Result<()> {
         };
         let response = match request["method"].as_str().unwrap_or("") {
             "initialize" => {
-                json!({"result":{"protocolVersion":request["params"]["protocolVersion"].as_str().unwrap_or("2025-03-26"),"capabilities":{"tools":{}},"serverInfo":{"name":"orka-local","version":"0.3.0"},"instructions":"Local one-off sharing requires an explicit user request. Match the remote Orka account and service, list the correct local item, preview its frozen snapshot, then share its token. Never guess the current session or enable automatic sharing. Respect queued, conflict, and approval_required results. Install skills and retry or repair sync only when requested. Review the selected skill snapshot hash and shared revision before installation; preserve differing local directories. Local tool results describe this machine only."}})
+                json!({"result":{"protocolVersion":request["params"]["protocolVersion"].as_str().unwrap_or("2025-03-26"),"capabilities":{"tools":{}},"serverInfo":{"name":"orka-local","version":"0.3.0"},"instructions":"Local content tools require the current connectionProof from remote get_profile and desktopLinked true. If missing or rejected, call get_connection_status, explain the actual account and service, and ask the user to reconnect through the assistant using Use account in Orka and approve the native account and scopes. Never use caller-supplied account IDs as authority or switch accounts to bypass a refusal. Local reads require orka.read; share_selected, install_skill, retry_sync and repair_sync also require orka.write. Local one-off sharing requires an explicit user request. List the correct local item, preview its frozen snapshot, then share its token. Never guess the current session or enable automatic sharing. Respect queued, conflict, and approval_required results. Install skills and retry or repair sync only when requested. Review the selected skill snapshot hash and shared revision before installation; preserve differing local directories. Local tool results describe this machine only."}})
             }
             "ping" => json!({"result":{}}),
             "tools/list" => json!({"result":{"tools":tools()}}),

@@ -23,8 +23,8 @@ const mcpScope = "orka.read"
 
 var mcpScopes = []string{"orka.read", "orka.write", "orka.manage"}
 var mcpPermissionDescriptions = map[string]string{
-	"orka.read":   "Read accessible shared project resources, revision history, permissions and review requests.",
-	"orka.write":  "Create shared memories, update plans and resolve session conflicts within your current access.",
+	"orka.read":   "Read accessible shared project resources, revision history, permissions and review requests. When connected with the desktop app, also discover local resource and skill metadata, preview selected snapshots and view sync status on the approved Mac.",
+	"orka.write":  "Create shared memories, update plans and resolve session conflicts within your current access. When connected with the desktop app, also share explicitly selected snapshots, install selected skills and retry or repair sync on the approved Mac.",
 	"orka.manage": "Change permissions and approve or reject requests within your current authority.",
 }
 
@@ -121,12 +121,12 @@ func (o *OAuth) register(q *Queries, input Object) Object {
 func (o *OAuth) client(q *Queries, id string) Object {
 	return object(q.One("select metadata from orka.mcp_clients where id::text=$1", id)["metadata"])
 }
-func (o *OAuth) issue(q *Queries, client, user, family, scope string) Object {
+func (o *OAuth) issue(q *Queries, client, user, family, scope string, binding Object) Object {
 	if family == "" {
 		family = newID()
 	}
 	access, refresh := oauthSecret(), oauthSecret()
-	q.Exec("insert into orka.mcp_tokens(access_hash,refresh_hash,family,client_id,user_id,resource,access_expires_at,refresh_expires_at,scopes) values($1,$2,$3,$4,$5,$6,now()+interval '1 hour',now()+interval '30 days',$7)", tokenHash(access), tokenHash(refresh), family, client, user, o.resource(), normalizedScopes(scope))
+	q.Exec("insert into orka.mcp_tokens(access_hash,refresh_hash,family,client_id,user_id,resource,access_expires_at,refresh_expires_at,scopes,desktop_binding) values($1,$2,$3,$4,$5,$6,now()+interval '1 hour',now()+interval '30 days',$7,$8)", tokenHash(access), tokenHash(refresh), family, client, user, o.resource(), normalizedScopes(scope), binding)
 	return Object{"access_token": access, "token_type": "Bearer", "expires_in": 3600, "refresh_token": refresh, "scope": normalizedScopes(scope)}
 }
 func (o *OAuth) lockFamily(q *Queries, client, token string) string {
@@ -148,7 +148,7 @@ func (o *OAuth) refresh(ctx context.Context, client, raw, scope, resource string
 		if o.lockFamily(q, client, raw) == "" {
 			return nil
 		}
-		row := q.One("select family,user_id,revoked,resource,scopes from orka.mcp_tokens where refresh_hash=$1 and client_id=$2 and refresh_expires_at>now() for update", tokenHash(raw), client)
+		row := q.One("select family,user_id,revoked,resource,scopes,desktop_binding from orka.mcp_tokens where refresh_hash=$1 and client_id=$2 and refresh_expires_at>now() for update", tokenHash(raw), client)
 		if row == nil || text(row["resource"]) != o.resource() {
 			return nil
 		}
@@ -165,7 +165,7 @@ func (o *OAuth) refresh(ctx context.Context, client, raw, scope, resource string
 			granted = normalizedScopes(scope)
 		}
 		q.Exec("update orka.mcp_tokens set revoked=true where refresh_hash=$1", tokenHash(raw))
-		return o.issue(q, client, text(row["user_id"]), text(row["family"]), granted)
+		return o.issue(q, client, text(row["user_id"]), text(row["family"]), granted, object(row["desktop_binding"]))
 	})
 	if err == nil && result == nil {
 		err = oauthError("invalid_grant", "Refresh token unavailable; connect Orka again")
@@ -211,7 +211,7 @@ func (o *OAuth) exchange(ctx context.Context, client, raw, verifier, redirect, r
 			return nil
 		}
 		q.Exec("delete from orka.mcp_codes where hash=$1", tokenHash(raw))
-		return o.issue(q, client, text(code["userId"]), "", normalizedScopes(text(code["scope"])))
+		return o.issue(q, client, text(code["userId"]), "", normalizedScopes(text(code["scope"])), object(code["desktopBinding"]))
 	})
 }
 func cookieName(tx string) string { return "orka_mcp_" + tx[:min(16, len(tx))] }
@@ -268,10 +268,10 @@ func (o *OAuth) authorize(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	o.cookie(w, tx, cookie, false)
-	o.page(w, r, tx, text(client["client_name"]), "", "", 200, redirect, strings.Fields(text(params["scope"])))
+	o.page(w, r, tx, text(client["client_name"]), "", "", 200, redirect, strings.Fields(text(params["scope"])), "", false)
 	return nil
 }
-func (o *OAuth) page(w http.ResponseWriter, r *http.Request, tx, client, notice, email string, status int, redirect string, scopes []string) {
+func (o *OAuth) page(w http.ResponseWriter, r *http.Request, tx, client, notice, email string, status int, redirect string, scopes []string, desktopURL string, desktopPending bool) {
 	if client == "" {
 		client = "Connected assistant"
 	}
@@ -281,7 +281,7 @@ func (o *OAuth) page(w http.ResponseWriter, r *http.Request, tx, client, notice,
 	}
 	if fromDashboard(r) {
 		w.WriteHeader(status)
-		_, _ = w.Write(jsonBytes(Object{"transaction": tx, "client": client, "notice": notice, "email": email, "password": o.Settings.Password, "magicLink": o.Settings.MagicLink, "redirect": redirect, "scopes": scopes, "permissionDescriptions": descriptions}))
+		_, _ = w.Write(jsonBytes(Object{"transaction": tx, "client": client, "notice": notice, "email": email, "password": o.Settings.Password, "magicLink": o.Settings.MagicLink, "redirect": redirect, "scopes": scopes, "permissionDescriptions": descriptions, "desktopAvailable": true, "desktopPending": desktopPending, "desktopUrl": desktopURL}))
 		return
 	}
 	formAction := "'self'"
@@ -299,12 +299,21 @@ func (o *OAuth) page(w http.ResponseWriter, r *http.Request, tx, client, notice,
 	if o.Settings.MagicLink {
 		emailCode = `<label for="code">Email code</label><input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6,10}"><button name="action" value="send-code" formnovalidate>Send email code</button>`
 	}
+	authFields := `<label for="email">Email</label><input id="email" name="email" type="email" autocomplete="email" value="` + escapeHTML(email) + `" required>` + emailCode + password + `<button name="action" value="connect">Connect cloud account</button>`
+	desktop := `<button name="action" value="desktop" formnovalidate>Connect with Orka app</button><p>Approve the account signed in on this Mac. Or sign in below for cloud access only.</p>`
+	if desktopPending {
+		authFields = `<button name="action" value="complete">Continue after approving</button>`
+		desktop = `<p>Approve this connection in Orka, then return here to continue.</p>`
+		if desktopURL != "" {
+			desktop += `<p><a href="` + escapeHTML(desktopURL) + `">Open Orka</a></p>`
+		}
+	}
 	notification := ""
 	if notice != "" {
 		notification = `<p class="notice" role="status">` + escapeHTML(notice) + `</p>`
 	}
 	page := oauthTemplate
-	for key, value := range map[string]string{"CLIENT": escapeHTML(client), "NOTICE": notification, "TRANSACTION": escapeHTML(tx), "EMAIL": escapeHTML(email), "EMAIL_CODE": emailCode, "PASSWORD": password, "ORIGIN": escapeHTML(o.Origin), "PERMISSIONS": escapeHTML(strings.Join(descriptions, " "))} {
+	for key, value := range map[string]string{"CLIENT": escapeHTML(client), "NOTICE": notification, "TRANSACTION": escapeHTML(tx), "AUTH_FIELDS": authFields, "DESKTOP": desktop, "ORIGIN": escapeHTML(o.Origin), "PERMISSIONS": escapeHTML(strings.Join(descriptions, " "))} {
 		page = strings.ReplaceAll(page, "{{"+key+"}}", value)
 	}
 	w.WriteHeader(status)
@@ -329,7 +338,7 @@ func (o *OAuth) connect(w http.ResponseWriter, r *http.Request) error {
 		}
 	}
 	tx, action, email := v.Get("transaction"), v.Get("action"), v.Get("email")
-	if !regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`).MatchString(tx) || !includes([]string{"connect", "send-code", "cancel"}, action) || utf8.RuneCountInString(email) > 320 || utf8.RuneCountInString(v.Get("password")) > 1024 || utf8.RuneCountInString(v.Get("code")) > 10 {
+	if !connectionSecretPattern.MatchString(tx) || !includes([]string{"connect", "send-code", "cancel", "desktop", "desktop-status", "complete"}, action) || utf8.RuneCountInString(email) > 320 || utf8.RuneCountInString(v.Get("password")) > 1024 || utf8.RuneCountInString(v.Get("code")) > 10 {
 		return bad("Invalid connection request")
 	}
 	var row Object
@@ -341,11 +350,25 @@ func (o *OAuth) connect(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	cookie, err := r.Cookie(cookieName(tx))
+	if action == "desktop-status" && row == nil && err == nil && connectionSecretPattern.MatchString(cookie.Value) {
+		_, err = w.Write(jsonBytes(Object{"status": "expired"}))
+		return err
+	}
 	if row == nil || err != nil || subtle.ConstantTimeCompare([]byte(tokenHash(cookie.Value)), []byte(text(row["cookie_hash"]))) != 1 {
 		return &HTTPError{Status: 403, Message: "Connection expired. Start again from your assistant."}
 	}
 	pending := object(row["payload"])
 	params, client := object(pending["params"]), object(pending["client"])
+	if action == "desktop-status" {
+		status := "pending"
+		if flag(pending["desktopCancelled"]) {
+			status = "expired"
+		} else if pending["desktopApproval"] != nil {
+			status = "approved"
+		}
+		_, err = w.Write(jsonBytes(Object{"status": status}))
+		return err
+	}
 	redirect, err := url.Parse(text(params["redirectUri"]))
 	if err != nil {
 		return err
@@ -369,6 +392,42 @@ func (o *OAuth) connect(w http.ResponseWriter, r *http.Request) error {
 		finish()
 		return nil
 	}
+	if action == "desktop" {
+		desktopURL, err := o.desktopHandoff(r.Context(), tx)
+		if err != nil {
+			return err
+		}
+		o.page(w, r, tx, text(client["client_name"]), "", "", 200, redirect.String(), strings.Fields(normalizedScopes(text(params["scope"]))), desktopURL, true)
+		return nil
+	}
+	if action == "complete" {
+		if pending["desktopHandoffHash"] == nil {
+			return bad("Choose Connect with Orka app first")
+		}
+		if flag(pending["desktopCancelled"]) {
+			_, err = o.Store.read(r.Context(), func(q *Queries) any { q.Exec("delete from orka.mcp_pending where hash=$1", tokenHash(tx)); return nil })
+			if err != nil {
+				return err
+			}
+			query.Set("error", "access_denied")
+			finish()
+			return nil
+		}
+		if pending["desktopApproval"] == nil {
+			o.page(w, r, tx, text(client["client_name"]), "Approve this connection in Orka before continuing.", "", 200, redirect.String(), strings.Fields(normalizedScopes(text(params["scope"]))), "", true)
+			return nil
+		}
+		code, err := o.completeDesktop(r.Context(), tx)
+		if err != nil {
+			return err
+		}
+		query.Set("code", code)
+		finish()
+		return nil
+	}
+	if pending["desktopHandoffHash"] != nil {
+		return &HTTPError{Status: 409, Message: "Approve this connection in Orka or start a fresh connection from your assistant"}
+	}
 	if !emailPattern.MatchString(email) {
 		return bad("Invalid connection request")
 	}
@@ -380,7 +439,7 @@ func (o *OAuth) connect(w http.ResponseWriter, r *http.Request) error {
 		return bad("This sign-in method is unavailable")
 	}
 	if action == "connect" && !password && !regexp.MustCompile(`^\d{6,10}$`).MatchString(v.Get("code")) {
-		o.page(w, r, tx, text(client["client_name"]), "Enter your email code or password.", email, 400, redirect.String(), strings.Fields(normalizedScopes(text(params["scope"]))))
+		o.page(w, r, tx, text(client["client_name"]), "Enter your email code or password.", email, 400, redirect.String(), strings.Fields(normalizedScopes(text(params["scope"]))), "", false)
 		return nil
 	}
 	path := "/verify"
@@ -403,11 +462,11 @@ func (o *OAuth) connect(w http.ResponseWriter, r *http.Request) error {
 		if ok {
 			notice, status = "Check your email and enter the sign-in code here.", 200
 		}
-		o.page(w, r, tx, text(client["client_name"]), notice, email, status, redirect.String(), strings.Fields(normalizedScopes(text(params["scope"]))))
+		o.page(w, r, tx, text(client["client_name"]), notice, email, status, redirect.String(), strings.Fields(normalizedScopes(text(params["scope"]))), "", false)
 		return nil
 	}
 	if !ok {
-		o.page(w, r, tx, text(client["client_name"]), "Could not sign in. Check your credentials or request a fresh email code.", email, 400, redirect.String(), strings.Fields(normalizedScopes(text(params["scope"]))))
+		o.page(w, r, tx, text(client["client_name"]), "Could not sign in. Check your credentials or request a fresh email code.", email, 400, redirect.String(), strings.Fields(normalizedScopes(text(params["scope"]))), "", false)
 		return nil
 	}
 	raw, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
@@ -431,8 +490,8 @@ func (o *OAuth) connect(w http.ResponseWriter, r *http.Request) error {
 	}
 	code := oauthSecret()
 	_, err = o.Store.transaction(r.Context(), func(q *Queries) any {
-		consumed := q.One("delete from orka.mcp_pending where hash=$1 and expires_at>now() returning hash", tokenHash(tx))
-		if !q.Require(consumed != nil, 409, "This connection was already completed") {
+		consumed := q.One("delete from orka.mcp_pending where hash=$1 and expires_at>now() and not (payload ? 'desktopHandoffHash') returning hash", tokenHash(tx))
+		if !q.Require(consumed != nil, 409, "This connection was completed or switched to desktop approval. Start again from your assistant.") {
 			return nil
 		}
 		q.Exec("insert into orka.mcp_codes values($1,$2,now()+interval '5 minutes')", tokenHash(code), Object{"clientId": client["client_id"], "redirectUri": params["redirectUri"], "codeChallenge": params["codeChallenge"], "userId": user, "resource": o.resource(), "scope": normalizedScopes(text(params["scope"]))})

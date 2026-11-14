@@ -13,7 +13,7 @@
       "interface": {
         "displayName": "Orka",
         "shortDescription": "Project context across agents",
-        "longDescription": "Search accessible project resources, inspect revision history, save memories, update plans, and manage permissions and requests within your Orka authority. Codex and Claude Code can also install complete skills and inspect or recover synchronization through the Orka desktop app. Writes and administration require explicit OAuth consent; existing read-only connections retain their limits. ENV content is excluded.",
+        "longDescription": "Search accessible project resources, inspect revision history, save memories, update plans, and manage permissions and requests within your Orka authority. Use account in Orka and approve the displayed account and scopes to use local discovery, skill installation, and sync recovery. Local tools verify a short-lived connection proof; account or service changes require explicit reconnection. Browser-only connections retain remote access. Writes and administration require explicit OAuth consent; existing read-only connections retain their limits. ENV content is excluded.",
         "developerName": "Orka",
         "category": "Developer Tools",
         "capabilities": [],

@@ -21,6 +21,7 @@ mod native;
 mod onboarding;
 mod packages;
 mod plans;
+mod plugin_connection;
 mod plugin_mcp;
 mod plugin_operations;
 mod profiles;
@@ -277,7 +278,10 @@ fn main() {
                 profiles::profile_list,
                 profiles::open_profile,
                 profiles::route_auth_callback,
+                profiles::route_plugin_callback,
                 profiles::profile_events,
+                plugin_connection::plugin_authorization,
+                plugin_connection::plugin_connection_status,
                 commands::snapshot,
                 local_resources::local_resource_catalog,
                 resource_commands::resource_command,

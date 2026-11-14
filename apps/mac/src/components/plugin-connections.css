@@ -1,0 +1,70 @@
+@layer components {
+  .modal.toast-host-modal.plugin-authorization {
+    display: flex;
+    flex-direction: column;
+    width: min(520px, calc(100vw - 32px));
+    height: min(560px, calc(100dvh - 48px));
+    padding: 24px;
+    gap: 20px;
+  }
+  .plugin-authorization-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+  }
+  .plugin-authorization-heading h2 {
+    margin: 0;
+  }
+  .plugin-authorization-content {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+  }
+  .plugin-authorization-content > :first-child {
+    margin-top: 0;
+  }
+  .plugin-authorization-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+  .plugin-connection-identity {
+    display: grid;
+    gap: 16px;
+    margin: 20px 0;
+  }
+  .plugin-connection-identity > div {
+    display: grid;
+    grid-template-columns: 70px minmax(0, 1fr);
+    gap: 16px;
+  }
+  .plugin-connection-identity dt {
+    color: var(--text-secondary);
+  }
+  .plugin-connection-identity dd {
+    margin: 0;
+    overflow-wrap: anywhere;
+  }
+  .plugin-connection-identity dd span {
+    display: block;
+    color: var(--text-secondary);
+    margin-top: 4px;
+  }
+  .plugin-permissions {
+    padding-left: 20px;
+    display: grid;
+    gap: 8px;
+  }
+  .plugin-connection-card {
+    padding: 24px;
+  }
+  .plugin-connection-card h3 {
+    margin: 0;
+    font-size: 14px;
+  }
+  .plugin-connection-card p {
+    color: var(--text-secondary);
+    line-height: 1.6;
+  }
+}

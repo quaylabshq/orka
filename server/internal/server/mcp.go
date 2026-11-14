@@ -473,6 +473,9 @@ func (m *MCP) dispatch(r *http.Request, user string, scopes []string, challenge 
 				message = "Invalid tool arguments. Check the tool schema."
 			} else {
 				answer, err = (Reader{o.Store, user, o.Origin}).run(r.Context(), name, object(parsed))
+				if err == nil && name == "get_profile" {
+					answer, err = o.connectionProfile(r.Context(), user, strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "), object(answer))
+				}
 				if err != nil {
 					message = "Orka could not read this source. Try again or open it in Orka."
 					if h, ok := err.(*HTTPError); ok {

@@ -13,17 +13,20 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const endpoint = process.argv[2];
-const output = resolve(process.argv[3] ?? "artifacts/orka-plugin-0.3.0.zip");
+const args = process.argv.slice(2);
+const remoteOnly = args.includes("--remote-only");
+const positional = args.filter((arg) => arg !== "--remote-only");
+const endpoint = positional[0];
+const output = resolve(positional[1] ?? "artifacts/orka-plugin-0.3.0.zip");
 const desktopOutput = output.replace(/\.zip$/i, "") + "-desktop.zip";
 const appBinary =
-  process.argv[4] ??
+  positional[2] ??
   "/Applications/Orka.app/Contents/MacOS/portable-workspace-mac";
 if (!appBinary.startsWith("/") || /[\r\n\0]/.test(appBinary))
   throw new Error("Use an absolute path to the installed Orka executable");
 if (!endpoint)
   throw new Error(
-    "Usage: node plugins/orka/scripts/package.mjs <verified-mcp-url> [output.zip] [orka-executable]",
+    "Usage: node plugins/orka/scripts/package.mjs <verified-mcp-url> [output.zip] [orka-executable] [--remote-only]",
   );
 const url = new URL(endpoint);
 if (
@@ -132,6 +135,17 @@ if (
   !scopes.every((scope) => authorization.scopes_supported?.includes(scope))
 )
   throw new Error("PKCE and dynamic client registration are required");
+if (!remoteOnly) {
+  const instanceResponse = await fetch(new URL("/v2/instance", url), {
+    redirect: "error",
+    signal: AbortSignal.timeout(10_000),
+  });
+  const instance = instanceResponse.ok ? await instanceResponse.json() : null;
+  if (instance?.pluginConnection !== 1)
+    throw new Error(
+      "Desktop plugin connections require an updated Orka API with pluginConnection: 1. Upgrade the service and reconnect using Use account in Orka, or pass --remote-only to build the portable ZIP for existing remote clients.",
+    );
+}
 const manifest = JSON.parse(await readFile(join(root, "plugin.json"), "utf8"));
 if (manifest.extensions["com.openai"].interface.shortDescription.length > 30)
   throw new Error("Plugin subtitle exceeds 30 characters");
@@ -229,38 +243,40 @@ try {
   };
   const archive = pack("orka.zip");
   await cp(archive, output);
-  await writeFile(
-    join(staged, ".mcp.json"),
-    JSON.stringify(
-      {
-        mcpServers: {
-          orka: { type: "http", url: url.href },
-          orka_local: { command: appBinary, args: ["--orka-plugin"] },
+  if (!remoteOnly) {
+    await writeFile(
+      join(staged, ".mcp.json"),
+      JSON.stringify(
+        {
+          mcpServers: {
+            orka: { type: "http", url: url.href },
+            orka_local: { command: appBinary, args: ["--orka-plugin"] },
+          },
         },
-      },
-      null,
-      2,
-    ) + "\n",
-  );
-  await mkdir(join(staged, ".codex-plugin"));
-  await writeFile(
-    join(staged, ".codex-plugin", "plugin.json"),
-    JSON.stringify(
-      {
-        ...hostManifest,
-        skills: "./skills/",
-        mcpServers: "./.mcp.json",
-        interface: manifest.extensions["com.openai"].interface,
-      },
-      null,
-      2,
-    ) + "\n",
-  );
-  // Codex CLI 0.159.2 otherwise prefers the portable manifest
-  // but do not load its MCP configuration.
-  await rm(join(staged, "plugin.json"));
-  await rm(join(staged, "mcp.json"));
-  await cp(pack("orka-desktop.zip"), desktopOutput);
+        null,
+        2,
+      ) + "\n",
+    );
+    await mkdir(join(staged, ".codex-plugin"));
+    await writeFile(
+      join(staged, ".codex-plugin", "plugin.json"),
+      JSON.stringify(
+        {
+          ...hostManifest,
+          skills: "./skills/",
+          mcpServers: "./.mcp.json",
+          interface: manifest.extensions["com.openai"].interface,
+        },
+        null,
+        2,
+      ) + "\n",
+    );
+    // Codex CLI 0.159.2 otherwise prefers the portable manifest
+    // but do not load its MCP configuration.
+    await rm(join(staged, "plugin.json"));
+    await rm(join(staged, "mcp.json"));
+    await cp(pack("orka-desktop.zip"), desktopOutput);
+  }
   const verification =
     JSON.stringify(
       {
@@ -276,9 +292,23 @@ try {
       2,
     ) + "\n";
   await writeFile(output + ".verification.json", verification);
-  await writeFile(desktopOutput + ".verification.json", verification);
+  if (!remoteOnly) {
+    await writeFile(
+      desktopOutput + ".verification.json",
+      JSON.stringify(
+        {
+          ...JSON.parse(verification),
+          pluginConnection: 1,
+          localConnectionProofRequired: true,
+          authenticatedNativeConnectionVerified: false,
+        },
+        null,
+        2,
+      ) + "\n",
+    );
+  }
   console.log(
-    `Created ${output} and ${desktopOutput}. Endpoint discovery verified; authenticated host acceptance is a separate check.`,
+    `Created ${output}${remoteOnly ? " (remote only)" : ` and ${desktopOutput}`}. Endpoint discovery verified; authenticated host acceptance is a separate check.`,
   );
 } finally {
   await rm(directory, { recursive: true, force: true });

@@ -1,4 +1,5 @@
 import argparse, hashlib, http.server, json, os, pathlib, queue, sqlite3, subprocess, tempfile, threading, uuid
+from urllib.parse import urlencode, urlparse, parse_qs
 
 parser = argparse.ArgumentParser(
     description="Exercise local Orka plugin operations with disposable native and HTTP fixtures."
@@ -17,6 +18,11 @@ requests = []
 blobs = {}
 installation_mode = "allow"
 skill = None
+proof_grants = {}
+active_proof = None
+consumed_handoffs = set()
+proof_mode = "allow"
+scopes = ["orka.read", "orka.write"]
 
 
 def compact(value):
@@ -44,6 +50,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def handle_call(self):
+        global active_proof
         data = self.rfile.read(int(self.headers.get("Content-Length", 0)))
         body = (
             json.loads(data)
@@ -53,7 +60,54 @@ class Handler(http.server.BaseHTTPRequestHandler):
         )
         requests.append((self.command, self.path, body))
         assert self.headers.get("Authorization") == "Bearer native-fixture-token"
-        if self.path.startswith("/v2/blobs/"):
+        if self.path.startswith("/v2/plugin/connection?"):
+            handoff = parse_qs(urlparse(self.path).query)["handoff"][0]
+            if handoff in consumed_handoffs:
+                self.respond({"error": "Already completed"}, 409)
+                return
+            self.respond({"client":{"id":"fixture-client","name":"Native fixture plugin"},
+                "scopes":scopes,"permissionDescriptions":["Read selected context.","Perform requested local operations."],
+                "serviceOrigin":origin,"accountId":uid,"expiresAt":"2100-01-01T00:00:00Z"})
+        elif self.path == "/v2/plugin/connection":
+            assert body["handoff"] not in consumed_handoffs
+            consumed_handoffs.add(body["handoff"])
+            if body["action"] == "cancel":
+                self.respond({"cancelled":True,"unexpectedServerField":"private-fixture-value"})
+            else:
+                assert body["action"] == "approve"
+                uuid.UUID(body["deviceId"])
+                uuid.UUID(body["generation"])
+                active_proof = "native-proof-" + str(len(proof_grants) + 1)
+                proof_grants[active_proof] = {"connectionId":str(uuid.uuid4()),"accountId":uid,"serviceOrigin":origin,
+                    "deviceId":body["deviceId"],"generation":body["generation"],"scopes":scopes,
+                    "expiresAt":"2100-01-01T00:00:00Z"}
+                self.respond({"approved":True,"unexpectedServerField":"private-fixture-value"})
+        elif self.path == "/v2/plugin/connection/verify":
+            grant = proof_grants.get(body["proof"])
+            if proof_mode == "unavailable":
+                self.respond({"error":"Service unavailable"},503)
+            elif proof_mode == "unsupported":
+                self.respond({"error":"Upgrade service"},404)
+            elif grant is None or proof_mode == "revoked":
+                self.respond({"error":"Reconnect Orka"},401)
+            elif grant["deviceId"] != body["deviceId"] or grant["generation"] != body["generation"]:
+                self.respond({"error":"Reconnect Orka"},409)
+            else:
+                response = dict(grant)
+                if proof_mode == "read_only":
+                    response["scopes"] = ["orka.read"]
+                elif proof_mode == "expired":
+                    response["expiresAt"] = "2000-01-01T00:00:00Z"
+                elif proof_mode == "wrong_account":
+                    response["accountId"] = str(uuid.uuid4())
+                elif proof_mode == "wrong_service":
+                    response["serviceOrigin"] = "https://other.example"
+                elif proof_mode == "wrong_device":
+                    response["deviceId"] = str(uuid.uuid4())
+                elif proof_mode == "wrong_generation":
+                    response["generation"] = str(uuid.uuid4())
+                self.respond(response)
+        elif self.path.startswith("/v2/blobs/"):
             digest = self.path.rsplit("/", 1)[1]
             if self.command == "PUT":
                 assert hashlib.sha256(data).hexdigest() == digest
@@ -156,21 +210,39 @@ with tempfile.TemporaryDirectory(prefix="orka-plugin-native-") as temp:
 
     conn = None
     try:
-        call(
-            {
+        setup = {
                 "action": "setup",
                 "url": origin,
                 "user": uid,
                 "projectId": pid,
                 "path": str(project),
                 "session": {
-                    "user": {"id": uid},
+                    "user": {"id": uid,"email":"native-fixture@example.test"},
                     "access_token": "native-fixture-token",
                     "refresh_token": "unused-native-fixture",
                     "expires_at": 4102444800,
                 },
             }
-        )
+        call(setup)
+
+        def authorize(handoff, operation="approve"):
+            callback = "orka://mcp/authorize?" + urlencode({"handoff":handoff,"service":origin})
+            preview = call({"action":"plugin-authorization","operation":"preview","input":{"callback":callback}})["value"]
+            assert preview["account"]["id"] == uid and preview["account"]["email"] == "native-fixture@example.test"
+            assert preview["client"]["name"] == "Native fixture plugin" and preview["scopes"] == scopes
+            assert "handoff" not in preview and "access_token" not in compact(preview)
+            result = call({"action":"plugin-authorization","operation":operation,"input":{"requestId":preview["requestId"]}})["value"]
+            assert result == ({"approved":True} if operation == "approve" else {"cancelled":True})
+            replay = call({"action":"plugin-authorization","operation":operation,"input":{"requestId":preview["requestId"]}},allow_error=True)
+            assert "error" in replay
+            return preview
+
+        assert call({"action":"plugin-status"})["value"]["state"] == "not_linked"
+        authorize("a" * 43,"cancel")
+        authorize("b" * 43)
+        status = call({"action":"plugin-status"})["value"]
+        assert status["state"] == "linked" and status["reconnectRequired"] is False
+        assert "generation" not in status and "connectionProof" not in status
         account_db = None
         for candidate in home.rglob("sync.sqlite"):
             conn = sqlite3.connect(candidate)
@@ -215,7 +287,24 @@ with tempfile.TemporaryDirectory(prefix="orka-plugin-native-") as temp:
         blob_dir = home / "orka" / "blobs"
         blob_dir.mkdir(exist_ok=True)
         (blob_dir / file["hash"]).write_bytes(blobs[file["hash"]])
-        binding = {"accountId": uid, "serviceOrigin": origin, "projectId": pid}
+        binding = {"accountId": uid, "serviceOrigin": origin, "projectId": pid,"connectionProof":active_proof}
+        before = len(requests)
+        old_client = dict(binding)
+        del old_client["connectionProof"]
+        rejected = call({"action":"plugin","tool":"get_sync_status","input":old_client},allow_error=True)
+        assert "Reconnect" in rejected["error"] and len(requests) == before
+        for mode in ["unsupported","revoked","expired","wrong_account","wrong_service","wrong_device","wrong_generation"]:
+            proof_mode = mode
+            rejected = call({"action":"plugin","tool":"get_sync_status","input":binding},allow_error=True)
+            assert "Reconnect" in rejected["error"],rejected
+        proof_mode = "unavailable"
+        rejected = call({"action":"plugin","tool":"retry_sync","input":binding},allow_error=True)
+        assert "Cannot verify" in rejected["error"] and not any(path == "/v2/sync/push" for _,path,_ in requests)
+        proof_mode = "read_only"
+        assert call({"action":"plugin","tool":"get_sync_status","input":binding})["value"]["projectId"] == pid
+        rejected = call({"action":"plugin","tool":"retry_sync","input":binding},allow_error=True)
+        assert "required read and write" in rejected["error"]
+        proof_mode = "allow"
         response = call({"action": "plugin", "tool": "retry_sync", "input": binding})[
             "value"
         ]
@@ -308,6 +397,34 @@ with tempfile.TemporaryDirectory(prefix="orka-plugin-native-") as temp:
             )
             == 3
         )
+
+        # A -> B -> A invalidates an earlier grant and an open native consent.
+        callback = "orka://mcp/authorize?" + urlencode({"handoff":"c" * 43,"service":origin})
+        pending = call({"action":"plugin-authorization","operation":"preview","input":{"callback":callback}})["value"]
+        other = dict(setup,user=str(uuid.uuid4()))
+        other["session"] = dict(setup["session"],user={"id":other["user"]})
+        call(other)
+        call(setup)
+        assert call({"action":"plugin-status"})["value"]["state"] == "reconnect_required"
+        rejected = call({"action":"plugin-authorization","operation":"approve","input":{"requestId":pending["requestId"]}},allow_error=True)
+        assert "Reconnect" in rejected["error"]
+        rejected = call({"action":"plugin","tool":"get_sync_status","input":binding},allow_error=True)
+        assert "Reconnect" in rejected["error"]
+        # An explicitly approved fresh proof works in the same stdio process.
+        authorize("d" * 43)
+        binding["connectionProof"] = active_proof
+        assert call({"action":"plugin","tool":"get_sync_status","input":binding})["value"]["projectId"] == pid
+        alternate = dict(setup,url=origin + "/other")
+        call(alternate)
+        call(setup)
+        assert call({"action":"plugin-status"})["value"]["state"] == "reconnect_required"
+        rejected = call({"action":"plugin","tool":"get_sync_status","input":binding},allow_error=True)
+        assert "Reconnect" in rejected["error"]
+        authorize("e" * 43)
+        binding["connectionProof"] = active_proof
+        assert call({"action":"plugin","tool":"get_sync_status","input":binding})["value"]["projectId"] == pid
+        state = (home / "orka/plugin-connection.json").read_text()
+        assert "native-fixture-token" not in state and active_proof not in state
         print(
             json.dumps(
                 {
@@ -315,6 +432,7 @@ with tempfile.TemporaryDirectory(prefix="orka-plugin-native-") as temp:
                     "retry": "original request ID and exact payload uploaded once, acknowledged, materialized, queue empty",
                     "install": "fresh authorized complete uncached shared package installed to both project mirrors with executable modes",
                     "freshPermissionChecks": "403 denial and409 stale revision prevented further downloads/writes",
+                    "connection": "explicit native consent, cancel and replay; server proof, scope denial and lifecycle roundtrips; fresh reconnect works in same stdio process",
                     "transport": "real native stdio child and loopback HTTP fixture; in-memory test Keychain and disposable agent homes",
                     "requests": len(requests),
                 },

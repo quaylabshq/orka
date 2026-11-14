@@ -50,6 +50,7 @@ await test("a fresh server installs the baseline and GitHub migration atomically
       "004_mcp_operations.sql",
       "005_source_removal.sql",
       "006_github_authorization_completion.sql",
+      "007_plugin_connection.sql",
     ],
   );
   await database(async (pool) => {
@@ -61,6 +62,7 @@ await test("a fresh server installs the baseline and GitHub migration atomically
       "004_mcp_operations.sql",
       "005_source_removal.sql",
       "006_github_authorization_completion.sql",
+      "007_plugin_connection.sql",
     ]);
     assert.equal(
       (
@@ -68,7 +70,7 @@ await test("a fresh server installs the baseline and GitHub migration atomically
           "select count(*) from pg_tables where schemaname='orka'",
         )
       ).rows[0].count,
-      "45",
+      "46",
     );
     const project = randomUUID(),
       owner = randomUUID();
@@ -92,6 +94,7 @@ await test("a fresh server installs the baseline and GitHub migration atomically
       "004_mcp_operations.sql",
       "005_source_removal.sql",
       "006_github_authorization_completion.sql",
+      "007_plugin_connection.sql",
     ]);
   });
 });
@@ -156,16 +159,18 @@ await test("an existing baseline upgrades GitHub tables without replacing projec
       "004_mcp_operations.sql",
       "005_source_removal.sql",
       "006_github_authorization_completion.sql",
+      "007_plugin_connection.sql",
     ]);
     assert.deepEqual(
       (
         await pool.query(
-          "select scopes,client_id,user_id,resource from orka.mcp_tokens where access_hash='legacy-access-hash'",
+          "select scopes,client_id,user_id,resource,desktop_binding from orka.mcp_tokens where access_hash='legacy-access-hash'",
         )
       ).rows,
       [
         {
           scopes: "orka.read",
+          desktop_binding: null,
           client_id: legacyClient,
           user_id: legacyUser,
           resource: "https://orka.example/mcp",
@@ -223,6 +228,7 @@ await test("baseline failure rolls back its DDL and ledger without touching pre-
       "004_mcp_operations.sql",
       "005_source_removal.sql",
       "006_github_authorization_completion.sql",
+      "007_plugin_connection.sql",
     ]);
   });
 });
@@ -251,6 +257,7 @@ await test("resetting a completed historical ledger is explicit and preserves ap
       "004_mcp_operations.sql",
       "005_source_removal.sql",
       "006_github_authorization_completion.sql",
+      "007_plugin_connection.sql",
     ]);
     assert.equal(
       (
