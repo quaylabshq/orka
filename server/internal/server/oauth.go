@@ -300,7 +300,7 @@ func (o *OAuth) page(w http.ResponseWriter, r *http.Request, tx, client, notice,
 		emailCode = `<label for="code">Email code</label><input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6,10}"><button name="action" value="send-code" formnovalidate>Send email code</button>`
 	}
 	authFields := `<label for="email">Email</label><input id="email" name="email" type="email" autocomplete="email" value="` + escapeHTML(email) + `" required>` + emailCode + password + `<button name="action" value="connect">Connect cloud account</button>`
-	desktop := `<button name="action" value="desktop" formnovalidate>Connect with Orka app</button><p>Approve the account signed in on this Mac. Or sign in below for cloud access only.</p>`
+	desktop := `<button name="action" value="desktop" formnovalidate>Use account in Orka</button><p>Approve the account signed in on this Mac. Or sign in below for cloud access only.</p>`
 	if desktopPending {
 		authFields = `<button name="action" value="complete">Continue after approving</button>`
 		desktop = `<p>Approve this connection in Orka, then return here to continue.</p>`
@@ -402,7 +402,7 @@ func (o *OAuth) connect(w http.ResponseWriter, r *http.Request) error {
 	}
 	if action == "complete" {
 		if pending["desktopHandoffHash"] == nil {
-			return bad("Choose Connect with Orka app first")
+			return bad("Choose Use account in Orka first")
 		}
 		if flag(pending["desktopCancelled"]) {
 			_, err = o.Store.read(r.Context(), func(q *Queries) any { q.Exec("delete from orka.mcp_pending where hash=$1", tokenHash(tx)); return nil })

@@ -128,6 +128,7 @@ await test("desktop consent binds PKCE grants and expiring local proofs without 
       });
       const html = await response.text();
       assert.equal(response.status, 200, html);
+      assert.ok(html.includes(">Use account in Orka</button>"));
       const transaction = html.match(
         /name="transaction" value="([A-Za-z0-9_-]+)"/,
       )?.[1];
