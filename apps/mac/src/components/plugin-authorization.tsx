@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { XIcon } from "@primer/octicons-react";
+import { PlugIcon, XIcon } from "@primer/octicons-react";
 import { Button } from "./button.js";
 import { IconButton } from "./icon-button.js";
 import { Overlay } from "./overlay.js";
@@ -103,12 +103,12 @@ export function PluginAuthorization({
   return (
     <Overlay
       open
-      title="Connect your assistant"
+      title="Connect to Orka"
       onClose={() => void close()}
       className="plugin-authorization"
     >
-      <header className="plugin-authorization-heading">
-        <h2>Connect your assistant</h2>
+      <header className="review-header plugin-authorization-heading">
+        <h2>Connect to Orka</h2>
         <IconButton
           icon={XIcon}
           aria-label="Close connection"
@@ -118,7 +118,22 @@ export function PluginAuthorization({
           onClick={() => void close()}
         />
       </header>
-      <div className="plugin-authorization-content" aria-busy={busy}>
+      {!approved && (changed || expired || error) && (
+        <p role="alert" className="connector-feedback" tabIndex={0}>
+          {changed
+            ? "Your account or service changed. Start a new connection from your assistant."
+            : expired
+              ? "This request expired. Start a new connection from your assistant."
+              : error}
+        </p>
+      )}
+      <div
+        className="plugin-authorization-content"
+        aria-busy={busy}
+        role="region"
+        aria-label="Connection details"
+        tabIndex={0}
+      >
         {approved ? (
           <p role="status">
             Connection approved. Return to your assistant to finish connecting.
@@ -130,11 +145,19 @@ export function PluginAuthorization({
             )}
             {preview && (
               <>
-                <p>
-                  Allow {preview.client.name} to connect using this Orka
-                  account?
-                </p>
-                <dl className="plugin-connection-identity">
+                <div className="connector-identity">
+                  <div className="connector-icon" aria-hidden="true">
+                    <PlugIcon size={24} />
+                  </div>
+                  <div>
+                    <h3>{preview.client.name}</h3>
+                    <p>Requests access to your Orka account.</p>
+                  </div>
+                </div>
+                <dl
+                  className="plugin-connection-identity connector-consent-account"
+                  aria-label="Account on this Mac"
+                >
                   <div>
                     <dt>Account</dt>
                     <dd>
@@ -151,39 +174,31 @@ export function PluginAuthorization({
                     <dd>{preview.serviceOrigin}</dd>
                   </div>
                 </dl>
-                <ul
-                  className="plugin-permissions"
-                  aria-label="Requested permissions"
+                <section
+                  className="connector-consent-access"
+                  aria-labelledby="connector-access-title"
                 >
-                  {preview.permissionDescriptions.map((description, i) => (
-                    <li key={`${preview.scopes[i]}:${description}`}>
-                      {description}
-                    </li>
-                  ))}
-                </ul>
-                <p>
-                  This connection stays with this account. Switching accounts or
-                  services requires reconnecting.
+                  <h3 id="connector-access-title">Requested access</h3>
+                  <ul
+                    className="plugin-permissions"
+                    aria-label="Requested permissions"
+                  >
+                    {preview.permissionDescriptions.map((description, i) => (
+                      <li key={`${preview.scopes[i]}:${description}`}>
+                        {description}
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+                <p className="connector-consent-note">
+                  Switching accounts or services requires reconnecting.
                 </p>
               </>
             )}
-            {changed ? (
-              <p role="alert">
-                Your account or service changed. Start a new connection from
-                your assistant.
-              </p>
-            ) : expired ? (
-              <p role="alert">
-                This request expired. Start a new connection from your
-                assistant.
-              </p>
-            ) : error ? (
-              <p role="alert">{error}</p>
-            ) : null}
           </>
         )}
       </div>
-      <footer className="plugin-authorization-actions">
+      <footer className="review-footer plugin-authorization-actions">
         <Button disabled={busy} onClick={() => void close()}>
           {approved ? "Done" : "Cancel"}
         </Button>

@@ -22,6 +22,8 @@ export async function settingsFixture(
     updateInstallDelay?: number;
     pluginDelay?: number;
     pluginError?: string;
+    pluginClientName?: string;
+    pluginStatusDelay?: number;
     role?: "owner" | "admin" | "member";
     queued?: boolean;
     pendingRequests?: boolean;
@@ -260,6 +262,8 @@ export async function settingsFixture(
       pluginCallback: "",
       pluginState: "not_linked",
       pluginError: options.pluginError ?? "",
+      pluginStatusDelay: options.pluginStatusDelay ?? 0,
+      pluginStatusError: "",
     };
     const wait = (ms: number) =>
       new Promise((resolve) => setTimeout(resolve, ms));
@@ -310,11 +314,14 @@ export async function settingsFixture(
                   displayName: profile.displayName,
                 },
                 serviceOrigin: state.config.apiUrl,
-                client: { id: "fixture-assistant", name: "Fixture Assistant" },
+                client: {
+                  id: "fixture-assistant",
+                  name: options.pluginClientName ?? "Fixture Assistant",
+                },
                 scopes: ["orka.read", "orka.write"],
                 permissionDescriptions: [
-                  "Read shared project context and preview local items on this Mac.",
-                  "Share selected local items after your confirmation.",
+                  "Read accessible shared project resources, revision history, permissions and review requests. When connected with the desktop app, also discover local resource and skill metadata, preview selected snapshots and view sync status on the approved Mac.",
+                  "Create shared memories, update plans and resolve session conflicts within your current access. When connected with the desktop app, also share explicitly selected snapshots, install selected skills and retry or repair sync on the approved Mac.",
                 ],
                 expiresAt: new Date(Date.now() + 60000).toISOString(),
               };
@@ -323,8 +330,8 @@ export async function settingsFixture(
               [args.operation === "approve" ? "approved" : "cancelled"]: true,
             };
           }
-          if (command === "plugin_connection_status")
-            return {
+          if (command === "plugin_connection_status") {
+            const result = {
               state: controls.pluginState,
               account: {
                 id: state.user,
@@ -335,7 +342,10 @@ export async function settingsFixture(
               client:
                 controls.pluginState === "not_linked"
                   ? null
-                  : { id: "fixture-assistant", name: "Fixture Assistant" },
+                  : {
+                      id: "fixture-assistant",
+                      name: options.pluginClientName ?? "Fixture Assistant",
+                    },
               scopes: ["orka.read", "orka.write"],
               connectedAt: null,
               reason:
@@ -344,6 +354,11 @@ export async function settingsFixture(
                   : null,
               reconnectRequired: controls.pluginState === "reconnect_required",
             };
+            await wait(controls.pluginStatusDelay);
+            if (controls.pluginStatusError)
+              throw new Error(controls.pluginStatusError);
+            return result;
+          }
           if (command === "update_status") {
             const update = structuredClone(controls.update);
             const error = controls.updateError;

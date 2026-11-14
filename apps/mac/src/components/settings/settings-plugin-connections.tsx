@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { PlugIcon } from "@primer/octicons-react";
 import type { Snapshot } from "../../types.js";
 import type { PluginAccount } from "../plugin-authorization.js";
 import { Button } from "../button.js";
@@ -18,32 +19,38 @@ interface ConnectionStatus {
 
 export function SettingsPluginConnections({ state }: { state: Snapshot }) {
   const scope = settingsScope(state);
-  const [result, setResult] = useState<ConnectionStatus | null>(null);
+  const [cached, setCached] = useState<{
+    scope: string;
+    status: ConnectionStatus;
+  } | null>(null);
+  const result = cached?.scope === scope ? cached.status : null;
   const [error, setError] = useState("");
+  const [checking, setChecking] = useState(true);
   const [revision, setRevision] = useState(0);
   useEffect(() => {
     let stopped = false;
     let pending = false;
-    setResult(null);
     setError("");
-    const refresh = async () => {
+    const refresh = async (manual = false) => {
       if (pending || document.hidden) return;
       pending = true;
+      if (manual) setChecking(true);
       try {
         const status = await invoke<ConnectionStatus>(
           "plugin_connection_status",
         );
         if (!stopped) {
-          setResult(status);
+          setCached({ scope, status });
           setError("");
         }
       } catch (failure) {
         if (!stopped) setError(String(failure));
       } finally {
         pending = false;
+        if (!stopped) setChecking(false);
       }
     };
-    void refresh();
+    void refresh(true);
     const timer = window.setInterval(() => void refresh(), 5000);
     const focus = () => void refresh();
     window.addEventListener("focus", focus);
@@ -53,79 +60,98 @@ export function SettingsPluginConnections({ state }: { state: Snapshot }) {
       window.removeEventListener("focus", focus);
     };
   }, [scope, revision]);
-  const title =
-    result?.state === "linked"
-      ? "Desktop approval recorded"
-      : result?.state === "reconnect_required"
-        ? "Reconnect your assistant"
-        : result?.state === "signed_out"
-          ? "Sign in to connect"
-          : "Connect using your desktop account";
+  const title = error
+    ? "Couldn’t check connection"
+    : !result
+      ? "Checking connection…"
+      : result.state === "linked"
+        ? "Approved on this Mac"
+        : result?.state === "reconnect_required"
+          ? "Reconnect required"
+          : result?.state === "signed_out"
+            ? "Sign in to connect"
+            : "Not connected";
   return (
     <>
       <SettingsHeading
-        title="Assistant connections"
-        description="Keep your assistant connected to the account you use on this Mac."
+        title="Connectors"
+        description="Connect assistants to the Orka account on this Mac."
       />
       <section
-        className="settings-group plugin-connection-card"
-        aria-label="Assistant connection"
+        className="settings-group connector-card"
+        aria-label="Orka connector"
       >
-        {error ? (
-          <p role="alert">Couldn’t check this connection. {error}</p>
-        ) : !result ? (
-          <p role="status">Checking connection…</p>
-        ) : (
-          <>
-            <div role="status">
-              <h3>{title}</h3>
+        <div className="connector-identity connector-card-section">
+          <div className="connector-icon" aria-hidden="true">
+            <PlugIcon size={24} />
+          </div>
+          <div>
+            <h3>{result?.client?.name || "Orka"}</h3>
+            <p role="status">{title}</p>
+          </div>
+        </div>
+        {result && (
+          <dl
+            className="plugin-connection-identity connector-card-section"
+            aria-label="Account on this Mac"
+          >
+            <div>
+              <dt>Account</dt>
+              <dd>
+                {result.account?.displayName ||
+                  result.account?.email ||
+                  result.account?.id ||
+                  "Signed out"}
+                {result.account?.email && result.account.displayName && (
+                  <span>{result.account.email}</span>
+                )}
+              </dd>
             </div>
-            <dl className="plugin-connection-identity">
-              <div>
-                <dt>Account</dt>
-                <dd>
-                  {result.account?.displayName ||
-                    result.account?.email ||
-                    result.account?.id ||
-                    "Signed out"}
-                  {result.account?.email && result.account.displayName && (
-                    <span>{result.account.email}</span>
-                  )}
-                </dd>
-              </div>
-              <div>
-                <dt>Service</dt>
-                <dd>{result.serviceOrigin || "No service selected"}</dd>
-              </div>
-              {result.client && (
-                <div>
-                  <dt>Assistant</dt>
-                  <dd>{result.client.name}</dd>
-                </div>
-              )}
-            </dl>
-            {result.state === "linked" ? (
+            <div>
+              <dt>Service</dt>
+              <dd>{result.serviceOrigin || "No service selected"}</dd>
+            </div>
+          </dl>
+        )}
+        <div className="connector-card-section connector-card-actions">
+          {error ? (
+            <p role="alert">{error}</p>
+          ) : (
+            result &&
+            (result.state === "linked" ? (
               <p>
-                This Mac approved the connection. Your assistant checks access
-                when it uses local tools. Reconnect if the connection was
-                removed or access changed.
+                This Mac approved this connector. Reconnect if you removed it or
+                changed its access in your assistant.
               </p>
             ) : (
               <p>
                 {result.reason ||
                   "Local tools need a connection approved by this Mac."}
               </p>
-            )}
-          </>
-        )}
-        <p>
-          In your assistant’s connections, reconnect Orka and choose{" "}
-          <strong>Use account in Orka</strong>. Approve the account and service
-          shown here.
-        </p>
-        <Button size="sm" onClick={() => setRevision((value) => value + 1)}>
-          Check connection
-        </Button>
+            ))
+          )}
+          <Button
+            className="connector-check-button"
+            size="sm"
+            disabled={checking}
+            onClick={() => setRevision((value) => value + 1)}
+          >
+            {checking ? "Checking…" : "Check connection"}
+          </Button>
+        </div>
+      </section>
+      <section
+        className="settings-group connector-setup"
+        aria-labelledby="connector-setup-title"
+      >
+        <h3 id="connector-setup-title">Connect or reconnect</h3>
+        <ol>
+          <li>Open connections in your assistant and reconnect Orka.</li>
+          <li>
+            Choose <strong>Use account in Orka</strong>, then approve the
+            account and access shown in Orka.
+          </li>
+        </ol>
       </section>
     </>
   );

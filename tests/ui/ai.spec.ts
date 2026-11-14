@@ -129,7 +129,7 @@ for (const noProject of [false, true]) {
         "Profile",
         "Devices",
         "Sync & startup",
-        "Assistant connections",
+        "Connectors",
         "Updates",
         "General",
         "Members",

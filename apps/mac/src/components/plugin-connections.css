@@ -4,18 +4,9 @@
     flex-direction: column;
     width: min(520px, calc(100vw - 32px));
     height: min(560px, calc(100dvh - 48px));
-    padding: 24px;
-    gap: 20px;
-  }
-  .plugin-authorization-heading {
-    display: flex;
-    flex-direction: row;
-    flex-shrink: 0;
-    align-items: center;
-    justify-content: space-between;
     padding: 0;
-    min-height: 32px;
-    gap: 16px;
+    overflow: hidden;
+    border-radius: var(--radius-overlay);
   }
   .modal.plugin-authorization h2 {
     margin: 0;
@@ -25,22 +16,53 @@
     letter-spacing: var(--heading-xs-letter-spacing);
   }
   .plugin-authorization-content {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
     flex: 1;
     min-height: 0;
     overflow-y: auto;
+    padding: 24px;
   }
-  .plugin-authorization-content > :first-child {
-    margin-top: 0;
+  .plugin-authorization-content:focus-visible,
+  .connector-feedback:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: -2px;
   }
-  .plugin-authorization-actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: 8px;
+  .plugin-authorization .plugin-authorization-content p {
+    margin: 0;
+    font-size: var(--body-sm-font-size);
+    line-height: var(--body-sm-line-height);
+  }
+  .plugin-authorization .plugin-authorization-content h3 {
+    margin: 0;
+    font-size: var(--label-sm-font-size);
+    line-height: var(--label-sm-line-height);
+    font-weight: var(--label-sm-font-weight);
+  }
+  .plugin-authorization .connector-consent-note {
+    color: var(--text-tertiary);
+    font-size: var(--body-xs-font-size);
+    line-height: var(--body-xs-line-height);
+  }
+  .plugin-authorization .connector-feedback {
+    flex-shrink: 0;
+    max-height: 100px;
+    overflow-y: auto;
+    overflow-wrap: anywhere;
+    margin: 0;
+    padding: 12px 24px;
+    border-bottom: 1px solid var(--surface-stroke);
+    color: var(--text-danger);
+    font-size: var(--body-xs-font-size);
+    line-height: var(--body-xs-line-height);
   }
   .plugin-connection-identity {
     display: grid;
     gap: 16px;
-    margin: 20px 0;
+    margin: 0;
+    font-size: var(--body-sm-font-size);
+    line-height: var(--body-sm-line-height);
   }
   .plugin-connection-identity > div {
     display: grid;
@@ -60,19 +82,88 @@
     margin-top: 4px;
   }
   .plugin-permissions {
-    padding-left: 20px;
+    margin: 12px 0 0;
+    padding-left: 16px;
     display: grid;
-    gap: 8px;
-  }
-  .plugin-connection-card {
-    padding: 24px;
-  }
-  .plugin-connection-card h3 {
-    margin: 0;
-    font-size: 14px;
-  }
-  .plugin-connection-card p {
+    gap: 12px;
+    list-style: disc;
     color: var(--text-secondary);
-    line-height: 1.6;
+    font-size: var(--body-xs-font-size);
+    line-height: var(--body-xs-line-height);
+  }
+  .connector-consent-account {
+    padding: 20px 0;
+    border-block: 1px solid var(--surface-stroke);
+  }
+  .connector-identity {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .connector-identity > div:last-child {
+    min-width: 0;
+  }
+  .connector-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 48px;
+    height: 48px;
+    border-radius: var(--radius-surface);
+    background: var(--surface-tertiary);
+    color: var(--text-secondary);
+  }
+  .connector-identity h3 {
+    overflow-wrap: anywhere;
+  }
+  .settings-panel .connector-identity h3 {
+    margin: 0;
+    font-size: var(--label-item-font-size);
+    line-height: var(--label-item-line-height);
+  }
+  .connector-card {
+    overflow: hidden;
+  }
+  .connector-card-section {
+    padding: 20px;
+  }
+  .connector-card-section + .connector-card-section {
+    border-top: 1px solid var(--surface-stroke);
+  }
+  .connector-card-actions {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 16px;
+  }
+  .connector-check-button {
+    background: var(--surface-tertiary);
+    box-shadow: inset 0 0 0 1px var(--surface-stroke);
+  }
+  .connector-check-button:hover:not(:disabled) {
+    background: var(--interaction-hover);
+  }
+  .connector-check-button:active:not(:disabled) {
+    background: var(--interaction-selected);
+  }
+  .connector-setup {
+    padding: 20px;
+  }
+  .settings-panel .connector-setup h3 {
+    margin: 0 0 12px;
+  }
+  .connector-setup ol {
+    display: grid;
+    gap: 12px;
+    margin: 0;
+    padding-left: 18px;
+    list-style: decimal;
+    color: var(--text-secondary);
+    font-size: var(--body-sm-font-size);
+    line-height: var(--body-sm-line-height);
+  }
+  .connector-setup strong {
+    color: var(--text-primary);
+    font-weight: var(--font-weight-medium);
   }
 }

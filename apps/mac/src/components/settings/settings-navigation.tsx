@@ -14,7 +14,7 @@ export const settingsSections = {
   account: { label: "Profile", icon: PersonIcon },
   devices: { label: "Devices", icon: DeviceDesktopIcon },
   updates: { label: "Updates", icon: DownloadIcon },
-  connections: { label: "Assistant connections", icon: PlugIcon },
+  connections: { label: "Connectors", icon: PlugIcon },
   sync: { label: "Sync & startup", icon: SyncIcon },
   general: { label: "General", icon: FileDirectoryIcon },
   members: { label: "Members", icon: PeopleIcon },
