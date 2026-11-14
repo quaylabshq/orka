@@ -90,10 +90,23 @@ test("consent remains fixed while loading and fits a compact window", async ({
     "Checking connection request…",
   );
   const initial = await dialog.boundingBox();
+  const initialActions = await dialog.locator("footer").boundingBox();
   await expect(
     dialog.getByRole("button", { name: "Allow connection", exact: true }),
   ).toBeEnabled();
   expect(await dialog.boundingBox()).toEqual(initial);
+  expect(await dialog.locator("footer").boundingBox()).toEqual(initialActions);
+  const heading = await dialog.locator("header").boundingBox();
+  const close = await dialog
+    .getByRole("button", { name: "Close connection" })
+    .boundingBox();
+  expect(heading!.height).toBe(32);
+  expect(close!.y).toBe(heading!.y);
+  expect(
+    await dialog
+      .locator("h2:not(.sr-only)")
+      .evaluate((element) => getComputedStyle(element).fontSize),
+  ).toBe("20px");
   await expect(
     dialog.getByRole("button", { name: "Allow connection", exact: true }),
   ).toBeInViewport({ ratio: 1 });

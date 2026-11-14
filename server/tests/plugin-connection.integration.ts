@@ -197,6 +197,14 @@ await test("desktop consent binds PKCE grants and expiring local proofs without 
     assert.deepEqual(await (await flow.post("desktop-status")).json(), {
       status: "pending",
     });
+    // A native review lasting more than 40 seconds must not spend the
+    // credential/consent budget used by the final top-level completion.
+    for (let poll = 0; poll < 45; poll++) {
+      const response = await flow.post("desktop-status");
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get("ratelimit-limit"), "120");
+      assert.deepEqual(await response.json(), { status: "pending" });
+    }
     assert.equal((await flow.post("complete")).status, 200);
     assert.equal(
       (
@@ -265,6 +273,7 @@ await test("desktop consent binds PKCE grants and expiring local proofs without 
     });
     const completed = await flow.post("complete");
     assert.equal(completed.status, 303);
+    assert.equal(completed.headers.get("ratelimit-limit"), "30");
     const location = completed.headers.get("location")!;
     assert.equal(
       (await exchange(location, { code_verifier: "b".repeat(43) })).response

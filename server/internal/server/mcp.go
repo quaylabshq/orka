@@ -162,7 +162,18 @@ func (m *MCP) serve(w http.ResponseWriter, r *http.Request) error {
 		return o.authorize(w, r)
 	}
 	if path == "/mcp/connect" && r.Method == "POST" {
-		if !m.limit(w, r, path, 30, 15*time.Minute) {
+		// Polling must not exhaust the separate credential/consent budget while
+		// someone reviews the native request. Parse only the bounded POST body;
+		// connect still validates the form, Origin and transaction cookie.
+		r.Body = http.MaxBytesReader(w, r.Body, 8192)
+		if err := r.ParseForm(); err != nil {
+			return bad("Invalid connection request")
+		}
+		key, count, window := path, 30, 15*time.Minute
+		if r.PostForm.Get("action") == "desktop-status" {
+			key, count, window = path+"/desktop-status", 120, time.Minute
+		}
+		if !m.limit(w, r, key, count, window) {
 			return nil
 		}
 		return o.connect(w, r)

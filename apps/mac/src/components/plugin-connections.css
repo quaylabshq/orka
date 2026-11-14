@@ -9,12 +9,20 @@
   }
   .plugin-authorization-heading {
     display: flex;
+    flex-direction: row;
+    flex-shrink: 0;
     align-items: center;
     justify-content: space-between;
+    padding: 0;
+    min-height: 32px;
     gap: 16px;
   }
-  .plugin-authorization-heading h2 {
+  .modal.plugin-authorization h2 {
     margin: 0;
+    font-size: var(--heading-xs-font-size);
+    line-height: var(--heading-xs-line-height);
+    font-weight: var(--heading-xs-font-weight);
+    letter-spacing: var(--heading-xs-letter-spacing);
   }
   .plugin-authorization-content {
     flex: 1;
