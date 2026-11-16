@@ -220,9 +220,54 @@ fn connector_history_is_bounded_and_expired_pending_requests_require_reconnect()
         &Uuid::new_v4().to_string(),
         &"a".repeat(64),
         "A fresh connector",
+        &crate::plugin_process::Peer {
+            helper: crate::plugin_process::ProcessIdentity::read(std::process::id())
+                .unwrap()
+                .0,
+            assistant: crate::plugin_process::ProcessIdentity::read(std::process::id())
+                .unwrap()
+                .0,
+        },
     )
     .unwrap();
     let bounded: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     assert_eq!(bounded["sessions"].as_object().unwrap().len(), 512);
     assert!(bounded["sessions"][first].is_null());
+}
+
+#[test]
+fn legacy_approvals_are_not_reported_live_until_their_secret_identifies_a_real_helper() {
+    let f = Fixture::new();
+    db::set(&f.db, "config", &json!({"apiUrl":"https://plugin.example"})).unwrap();
+    let binding = Binding::current().unwrap();
+    let id = Uuid::new_v4().to_string();
+    let secret = "b".repeat(64);
+    let path = db::root().unwrap().join("plugin-connection.json");
+    let mut state: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    state["sessions"][&id] = json!({"id":id,"client":{"id":id,"name":"Legacy assistant"},"state":"approved","secretHash":db::digest(secret.as_bytes()),"binding":binding,"scopes":["orka.read"]});
+    db::atomic(&path, state.to_string().as_bytes()).unwrap();
+    assert_eq!(
+        plugin_connection::plugin_connection_status().unwrap()["connections"],
+        json!([])
+    );
+    let identity = crate::plugin_process::ProcessIdentity::read(std::process::id())
+        .unwrap()
+        .0;
+    let peer = crate::plugin_process::Peer {
+        helper: identity.clone(),
+        assistant: identity,
+    };
+    assert!(plugin_connection::identify_session(&id, &"c".repeat(64), &peer).is_err());
+    plugin_connection::identify_session(&id, &secret, &peer).unwrap();
+    let live = plugin_connection::plugin_connection_status().unwrap();
+    assert_eq!(live["connections"][0]["sessionCount"], 1);
+    assert_eq!(live["connections"][0]["scopes"], json!(["orka.read"]));
+    assert_eq!(plugin_connection::generation().unwrap(), binding.generation);
+    let mut state: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    state["sessions"][&id]["members"][&id]["process"]["started"] = json!(0);
+    db::atomic(&path, state.to_string().as_bytes()).unwrap();
+    let inactive = plugin_connection::plugin_connection_status().unwrap();
+    assert_eq!(inactive["connections"][0]["state"], "idle");
+    assert_eq!(inactive["connections"][0]["sessionCount"], 0);
+    assert!(plugin_connection::identify_session(&id, &secret, &peer).is_err());
 }

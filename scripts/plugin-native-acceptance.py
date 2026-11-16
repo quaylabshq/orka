@@ -1,4 +1,4 @@
-import argparse, base64, hashlib, http.server, json, os, pathlib, queue, sqlite3, subprocess, tempfile, threading, uuid, socket, struct, time
+import argparse, base64, hashlib, http.server, json, os, pathlib, queue, sqlite3, subprocess, tempfile, threading, uuid, socket, struct, time, sys, signal
 
 parser = argparse.ArgumentParser(
     description="Exercise local Orka plugin operations with disposable native and HTTP fixtures."
@@ -208,9 +208,16 @@ with tempfile.TemporaryDirectory(prefix="orka-plugin-native-") as temp:
         return response
 
     class Bridge:
-        def __init__(self, name="Native fixture assistant"):
+        def __init__(self, name="Native fixture assistant", separate_parent=False):
+            command = [str(BINARY), "--orka-plugin"]
+            if separate_parent:
+                command = [
+                    sys.executable, "-c",
+                    "import subprocess,sys;sys.exit(subprocess.call(sys.argv[1:]))",
+                    *command,
+                ]
             self.proc = subprocess.Popen(
-                [str(BINARY), "--orka-plugin"],
+                command,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -219,6 +226,7 @@ with tempfile.TemporaryDirectory(prefix="orka-plugin-native-") as temp:
             )
             self.queue = queue.Queue()
             self.counter = 0
+            self.killed = False
             bridges.append(self)
             threading.Thread(
                 target=lambda: [self.queue.put(line) for line in self.proc.stdout],
@@ -271,7 +279,12 @@ with tempfile.TemporaryDirectory(prefix="orka-plugin-native-") as temp:
                     self.proc.kill()
                     self.proc.wait()
                     raise
-            assert self.proc.returncode == 0, self.proc.stderr.read()
+            assert self.proc.returncode == (-9 if self.killed else 0), self.proc.stderr.read()
+
+        def kill(self):
+            self.killed = True
+            self.proc.kill()
+            self.proc.wait(timeout=10)
 
     def approve(bridge, approved=scopes, operation="approve"):
         status = bridge.tool("get_connection_status")
@@ -467,6 +480,85 @@ with tempfile.TemporaryDirectory(prefix="orka-plugin-native-") as temp:
                 "operation": "approve",
             }
         )
+        # One host starts several helpers during discovery, chats and parallel work.
+        # Consent belongs to that kernel-verified assistant, not each child or its label.
+        worker = Bridge("Concurrent assistant")
+        sibling = Bridge("Concurrent assistant")
+        connection = worker.tool("get_connection_status")["connection"]["id"]
+        assert sibling.tool("get_connection_status")["connection"]["id"] == connection, "helpers of one assistant must share one logical connection"
+        pending = native({"action": "plugin-requests"})["value"]
+        assert len(pending) == 1, pending
+        approve(worker, ["orka.read"])
+        assert sibling.tool("get_profile")["accountId"] == uid
+        scope_error = sibling.tool("retry_sync", {"projectId": pid}, error="orka.write")
+        assert "revoke its access" in scope_error, scope_error
+        joined = Bridge("Concurrent assistant")
+        assert joined.tool("get_profile")["accountId"] == uid
+        status = native({"action": "plugin-status"})["value"]
+        assert len(status["connections"]) == 1 and status["connections"][0]["sessionCount"] == 3, status
+        worker.close()
+        assert sibling.tool("get_profile")["accountId"] == uid
+
+        # A matching client name or spoofed transport metadata is not an identity.
+        independent = Bridge("Concurrent assistant", separate_parent=True)
+        assert independent.tool("get_connection_status")["connection"]["id"] != connection
+        independent.tool("get_profile", error="Approve")
+        independent.close()
+        fake_id, fake_secret = str(uuid.uuid4()), "f" * 64
+        fake = {"version": 1, "sessionId": fake_id, "secret": fake_secret, "operation": "initialize", "clientName": "Concurrent assistant", "parentPid": os.getpid()}
+        assert ipc(fake)["value"]["state"] == "pending"
+        assert len(native({"action": "plugin-requests"})["value"]) == 1
+        assert "value" in ipc(dict(fake, operation="close"))
+
+        native({"action": "plugin-authorization", "operation": "revoke", "input": {"connectionId": connection}})
+        sibling.tool("get_profile", error="Reconnect")
+        joined.tool("get_profile", error="Reconnect")
+        replacement = Bridge("Concurrent assistant")
+        replacement.tool("get_profile", error="Approve")
+        approve(replacement, ["orka.read", "orka.write"])
+        replacement.tool("create_memory", {"projectId": pid, "requestId": str(uuid.uuid4()), "title": "Changed connector access", "text": "Synthetic scoped content"})
+        sibling.tool("get_profile", error="Reconnect")
+        replacement.close()
+        mixed = native({"action": "plugin-status"})["value"]
+        assert mixed["state"] == "reconnect_required" and mixed["reconnectRequired"] is True and "Reconnect" in mixed["reason"], mixed
+        sibling.kill()
+        joined.kill()
+        status = native({"action": "plugin-status"})["value"]
+        assert len(status["connections"]) == 1 and status["connections"][0]["state"] == "idle" and status["state"] == "not_linked", status
+        assert status["reconnectRequired"] is False and "No active" in status["reason"], status
+        resumed = Bridge("Concurrent assistant")
+        assert resumed.tool("get_profile")["accountId"] == uid
+        assert native({"action": "plugin-requests"})["value"] == []
+        connection = resumed.tool("get_connection_status")["connection"]["id"]
+        resumed.close()
+        native({"action": "plugin-authorization", "operation": "revoke", "input": {"connectionId": connection}})
+        assert native({"action": "plugin-status"})["value"]["connections"] == []
+
+        orphan = Bridge("Abruptly exited assistant")
+        approve(orphan)
+        connection = orphan.tool("get_connection_status")["connection"]["id"]
+        orphan.kill()
+        status = native({"action": "plugin-status"})["value"]
+        assert status["connections"][0]["state"] == "idle" and status["state"] == "not_linked", status
+        assert native({"action": "plugin-requests"})["value"] == []
+        native({"action": "plugin-authorization", "operation": "revoke", "input": {"connectionId": connection}})
+
+        # Killing the assistant invalidates its approval even if its child survives.
+        parent = Bridge("Exited assistant parent", separate_parent=True)
+        approve(parent)
+        helper_pid = int(subprocess.check_output(["pgrep", "-P", str(parent.proc.pid)], text=True).strip())
+        try:
+            parent.kill()
+            parent.tool("get_profile", error="Reconnect")
+            assert native({"action": "plugin-status"})["value"]["connections"] == []
+        finally:
+            parent.proc.stdin.close()
+            try:
+                os.kill(helper_pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        print("same-assistant concurrent/sequential consent, independent/spoofed parents, least scopes, grouped revoke, helper and parent exit cleanup passed")
+
         bridge = Bridge()
         listed = bridge.rpc("tools/list")
         assert "error" not in listed, listed

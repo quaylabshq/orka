@@ -24,6 +24,7 @@ export async function settingsFixture(
     pluginError?: string;
     pluginClientName?: string;
     pluginStatusDelay?: number;
+    pluginSessionCount?: number;
     role?: "owner" | "admin" | "member";
     queued?: boolean;
     pendingRequests?: boolean;
@@ -264,6 +265,7 @@ export async function settingsFixture(
       pluginState: "not_linked",
       pluginError: options.pluginError ?? "",
       pluginStatusDelay: options.pluginStatusDelay ?? 0,
+      pluginSessionCount: options.pluginSessionCount ?? 1,
       pluginStatusError: "",
     };
     const wait = (ms: number) =>
@@ -329,7 +331,10 @@ export async function settingsFixture(
               };
             if (args.operation === "approve") controls.pluginState = "linked";
             if (args.operation === "revoke")
-              controls.pluginState = "not_linked";
+              controls.pluginState =
+                controls.pluginState === "idle"
+                  ? "not_linked"
+                  : "reconnect_required";
             controls.pluginRequestId = "";
             return {
               [args.operation === "approve" ? "approved" : "cancelled"]: true,
@@ -337,7 +342,10 @@ export async function settingsFixture(
           }
           if (command === "plugin_connection_status") {
             const result = {
-              state: controls.pluginState,
+              state:
+                controls.pluginState === "idle"
+                  ? "not_linked"
+                  : controls.pluginState,
               account: {
                 id: state.user,
                 email: profile.email,
@@ -358,8 +366,14 @@ export async function settingsFixture(
                         state:
                           controls.pluginState === "linked"
                             ? "approved"
-                            : "reconnect_required",
+                            : controls.pluginState === "idle"
+                              ? "idle"
+                              : "reconnect_required",
                         connectedAt: null,
+                        sessionCount:
+                          controls.pluginState === "idle"
+                            ? 0
+                            : controls.pluginSessionCount,
                       },
                     ],
               pendingCount: controls.pluginRequestId ? 1 : 0,

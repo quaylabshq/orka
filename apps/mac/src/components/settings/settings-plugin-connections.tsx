@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { PlugIcon } from "@primer/octicons-react";
 import type { Snapshot } from "../../types.js";
@@ -17,6 +17,7 @@ interface ConnectionStatus {
     scopes: string[];
     state: string;
     connectedAt: string | null;
+    sessionCount?: number;
   }[];
   pendingCount: number;
   reason: string | null;
@@ -32,7 +33,10 @@ export function SettingsPluginConnections({ state }: { state: Snapshot }) {
   const result = cached?.scope === scope ? cached.status : null;
   const [error, setError] = useState("");
   const [checking, setChecking] = useState(true);
+  const [checked, setChecked] = useState(false);
   const [revision, setRevision] = useState(0);
+  const inFlight = useRef<Promise<ConnectionStatus> | null>(null);
+  const check = useRef<() => void>(() => {});
   const [revoking, setRevoking] = useState<string | null>(null);
   const [actionError, setActionError] = useState("");
   const revoke = async (connectionId: string) => {
@@ -53,34 +57,58 @@ export function SettingsPluginConnections({ state }: { state: Snapshot }) {
   useEffect(() => {
     let stopped = false;
     let pending = false;
+    let manualRequested = false;
     setError("");
-    const refresh = async (manual = false) => {
-      if (pending || document.hidden) return;
+    setChecked(false);
+    setChecking(true);
+    const refresh = async (kind: "initial" | "manual" | "background") => {
+      if (stopped || (kind === "background" && document.hidden)) return;
+      if (kind === "manual") {
+        manualRequested = true;
+        setChecked(false);
+        setChecking(true);
+      }
+      if (pending) return;
       pending = true;
-      if (manual) setChecking(true);
+      let request: Promise<ConnectionStatus> | null = null;
       try {
-        const status = await invoke<ConnectionStatus>(
-          "plugin_connection_status",
-        );
+        // A response from an old account/service must finish before starting a
+        // fresh check, but must never be displayed in the new scope.
+        while (inFlight.current) {
+          await inFlight.current.catch(() => {});
+          if (stopped) return;
+        }
+        request = invoke<ConnectionStatus>("plugin_connection_status");
+        inFlight.current = request;
+        const status = await request;
         if (!stopped) {
           setCached({ scope, status });
           setError("");
+          if (manualRequested) setChecked(true);
         }
       } catch (failure) {
-        if (!stopped) setError(String(failure));
+        if (!stopped) {
+          setError(String(failure));
+          setChecked(false);
+        }
       } finally {
+        if (request && inFlight.current === request) inFlight.current = null;
         pending = false;
+        manualRequested = false;
         if (!stopped) setChecking(false);
       }
     };
-    void refresh(true);
-    const timer = window.setInterval(() => void refresh(), 5000);
-    const focus = () => void refresh();
+    check.current = () => void refresh("manual");
+    void refresh("initial");
+    const timer = window.setInterval(() => void refresh("background"), 5000);
+    const focus = () => void refresh("background");
     window.addEventListener("focus", focus);
+    document.addEventListener("visibilitychange", focus);
     return () => {
       stopped = true;
       window.clearInterval(timer);
       window.removeEventListener("focus", focus);
+      document.removeEventListener("visibilitychange", focus);
     };
   }, [scope, revision]);
   const title = error
@@ -112,7 +140,10 @@ export function SettingsPluginConnections({ state }: { state: Snapshot }) {
           </div>
           <div>
             <h3>Orka desktop</h3>
-            <p role="status">{title}</p>
+            <p role="status">
+              {checked && result && !error && "Connection checked. "}
+              {title}
+            </p>
           </div>
         </div>
         {result && (
@@ -159,7 +190,7 @@ export function SettingsPluginConnections({ state }: { state: Snapshot }) {
             className="connector-check-button"
             size="sm"
             disabled={checking}
-            onClick={() => setRevision((value) => value + 1)}
+            onClick={() => check.current()}
           >
             {checking ? "Checking…" : "Check connection"}
           </Button>
@@ -189,14 +220,21 @@ export function SettingsPluginConnections({ state }: { state: Snapshot }) {
                             })[value] ?? value,
                         )
                         .join(" · ")
-                    : connection.state === "pending"
-                      ? "Awaiting approval"
-                      : connection.state === "denied"
-                        ? "Access removed"
-                        : "Reconnect required"}
+                    : connection.state === "idle"
+                      ? "No active sessions"
+                      : connection.state === "pending"
+                        ? "Awaiting approval"
+                        : connection.state === "denied"
+                          ? "Access removed"
+                          : "Reconnect required"}
                 </p>
+                {connection.state === "approved" &&
+                  (connection.sessionCount ?? 0) > 1 && (
+                    <p>{connection.sessionCount} active sessions</p>
+                  )}
               </div>
-              {connection.state === "approved" && (
+              {(connection.state === "approved" ||
+                connection.state === "idle") && (
                 <Button
                   size="sm"
                   disabled={revoking !== null}
@@ -224,8 +262,8 @@ export function SettingsPluginConnections({ state }: { state: Snapshot }) {
             Install the desktop Orka plugin in your assistant and connect.
           </li>
           <li>
-            Approve the account and access shown in Orka. Each new session needs
-            approval.
+            Approve the account and access shown in Orka once for each running
+            assistant.
           </li>
           <li>
             After an account or service change, reconnect from your assistant
