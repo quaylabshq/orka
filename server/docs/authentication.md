@@ -88,75 +88,45 @@ GoTrue remains the OAuth and session authority. Add the dashboard’s
 
 Desktop invite URLs retain the service origin so existing desktop versions can
 paste them directly. Browser visits redirect to the dashboard, which requests a
-read-only preview and links back to the original service. MCP discovery
-advertises the dashboard’s consent URL while keeping the original API issuer,
-resource, and token endpoints. Existing API browser entry URLs continue to
-work. Self-hosted project invites and optional MCP consent continue to use the API.
+read-only preview and links back to the original service. Connector tools use
+the signed-in desktop; existing API browser entry URLs for ordinary authentication
+continue to work. Self-hosted project invite pages continue to use the API.
 
-## Plugin and desktop account connections
+## Desktop connector authentication
 
-MCP OAuth connections retain their original account, service and consent scopes.
-They do not follow desktop sign-in changes. The consent page offers **Connect
-with Orka app** to approve the account currently signed in on a Mac, or the
-existing email/password flow for cloud-only access. Cloud-only and older grants
-remain usable for their existing remote tools without a desktop installation.
+The Orka desktop session is the only plugin account. An installed plugin starts
+a local MCP helper which talks to the running desktop broker. The desktop owns
+connector approval, scopes, native Keychain credentials and session refresh. The
+helper receives tool results, never the native bearer or refresh token. Changing
+account, service, signing out or resetting the desktop invalidates the local
+connector approval; the user reconnects in Orka.
 
-Desktop consent starts with the existing browser transaction and its host-only,
-HttpOnly cookie. An Origin-checked `POST /mcp/connect` with `action=desktop`
-creates an opaque, single-use handoff for
-`orka://mcp/authorize?handoff=...&service=...`. The handoff expires with the
-ten-minute browser transaction and contains no account session token. The native
-app must require the configured service to match before sending its credentials,
-show the client, account and requested permissions, and request explicit approval.
-Choosing desktop approval prevents email or password submissions from replacing
-the transaction's identity, including sign-in requests already in flight.
+The desktop uses its current native bearer for `GET /v2/connector/tools` and
+`POST /v2/connector/tools` with `{name, arguments}`. The inventory lists the 18
+shared tool schemas and their `orka.read`, `orka.write` or `orka.manage` scope.
+The desktop enforces the approved scope before forwarding. The API derives the
+account solely from native authentication and reuses the same shared tool
+handlers, project membership, source restrictions, current permissions, revision
+checks, review workflows and operation receipts. Caller-supplied account IDs
+cannot select another identity. Successful calls return `{content,
+structuredContent}`; arrays are wrapped in `{items}`. Failures retain ordinary
+HTTP status codes and `{error}` messages. Results contain no credentials.
 
-The ordinary native-authenticated API exposes:
+`/v2/instance` advertises `desktopConnector:1`. Both server editions expose the
+same contract with no new provider, migration or configuration requirement.
+`PUBLIC_URL` supplies the canonical service origin for source references. The
+old `MCP_ENABLED` variable is ignored and cannot restore remote access.
 
-- `GET /v2/plugin/connection?handoff=...`: the client `{id,name}`, current
-  authenticated `accountId`, canonical `serviceOrigin`, `scopes`, authoritative
-  `permissionDescriptions`, and RFC3339 `expiresAt`. Reading never approves or
-  consumes the request.
-- `POST /v2/plugin/connection`: `{handoff,deviceId,generation,action}`, where the
-  device and generation are UUIDs and action is `approve` or `cancel`. Approval
-  requires a device owned by the authenticated account and returns
-  `{approved:true}`; cancellation returns `{cancelled:true}`. A handoff can be
-  approved only once. Missing/expired requests return 404, repeated approval 409,
-  and a device belonging to another account 403.
-
-The browser checks `action=desktop-status` using the same cookie and Origin. Its
-JSON `status` is `pending`, `approved` or `expired`; polling never issues an OAuth
-code. A top-level form submits `action=complete` after approval. Completion
-consumes the transaction and redirects the existing client with its original
-PKCE challenge, redirect URI, state, service and scopes, using the approved
-desktop identity. Self-hosted HTML supports manual completion. Cancellation
-returns the normal OAuth `access_denied` redirect.
-
-For a desktop-linked grant, MCP `get_profile` adds `desktopLinked:true`, a
-five-minute opaque `connectionProof`, and RFC3339 `connectionProofExpiresAt`.
-The proof is bound to the active access token and its immutable token family,
-account, service, device and native generation. Refresh keeps that binding but
-invalidates proofs tied to the previous access token. Expiry, revocation and
-refresh replay invalidate affected proofs. Only a hash is stored. Cloud-only and
-older grants return `desktopLinked:false` without a proof.
-
-Before each local operation the native app authenticates
-`POST /v2/plugin/connection/verify` with its own native session and submits
-`{proof,deviceId,generation}`. MCP access tokens cannot authenticate this endpoint.
-Success returns `{connectionId,accountId,serviceOrigin,deviceId,generation,scopes,
-expiresAt}`; `connectionId` identifies the original token family. Unknown,
-expired or revoked proofs return 401, account/device mismatch 403, and generation
-mismatch 409 requiring reconnection. The native app must compare this response
-to its current profile state and require `orka.read` for local reads and
-`orka.read` plus `orka.write` for local publication, installation and sync changes.
-Caller-supplied account IDs are not authorization.
-
-The native generation lives outside the account database and changes immediately
-when signing out, switching account/service or resetting the profile. Returning
-to the same account does not restore an earlier generation. Existing grants are
-never retargeted; an explicit new desktop consent is required. The service and
-native app exchange the short-lived proof without exposing raw desktop session
-credentials to tools.
+Remote MCP and its independent OAuth account are retired. `/mcp`, `/authorize`,
+`/register`, `/token`, `/revoke`, `/mcp/connect`, OAuth discovery metadata and the
+unreleased `/v2/plugin/connection` handoff/proof routes return HTTP 410 with
+`error: desktop_required` and instructions to reconnect through Orka desktop.
+Old remote access and refresh tokens cannot authenticate native tool endpoints.
+Existing OAuth database records remain dormant for upgrade compatibility; the
+unreleased connection-proof migration is not shipped. Ordinary desktop,
+provider and Dashboard login and existing `/v2` data/sync routes are preserved.
+Historical `/mcp/source/<project>/<resource>` links still open a static desktop
+resource landing page without exposing source content or a connector login.
 
 ## Project email invitations
 

@@ -86,6 +86,7 @@ pub fn run() {
         BTreeMap::new(),
     )))));
     let runtime = tokio::runtime::Runtime::new().expect("Test runtime");
+    let mut connector_broker: Option<crate::plugin_broker::Broker> = None;
     for line in std::io::stdin().lock().lines() {
         let result = (|| -> crate::db::Result<Value> {
             let input: Value = serde_json::from_str(&line.map_err(|_| "Test input unavailable")?)
@@ -169,6 +170,17 @@ pub fn run() {
                     ))
                 }
                 "plugin-status" => crate::plugin_connection::plugin_connection_status(),
+                "plugin-requests" => crate::plugin_connection::plugin_connection_requests(),
+                "plugin-start" => {
+                    connector_broker = Some(crate::plugin_broker::start()?);
+                    Ok(json!({"directory":crate::plugin_broker::directory()?}))
+                }
+                "plugin-stop" => {
+                    connector_broker.take();
+                    Ok(json!({}))
+                }
+                "plugin-refresh" => crate::auth::test_session(&input["session"]).map(|_| json!({})),
+                "plugin-sign-out" => crate::commands::sign_out().map(|_| json!({})),
                 "governance" => runtime.block_on(crate::governance::governance_command(
                     input["operation"]
                         .as_str()

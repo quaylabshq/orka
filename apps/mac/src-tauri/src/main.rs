@@ -21,6 +21,7 @@ mod native;
 mod onboarding;
 mod packages;
 mod plans;
+mod plugin_broker;
 mod plugin_connection;
 mod plugin_mcp;
 mod plugin_operations;
@@ -251,6 +252,7 @@ fn main() {
                 )
                 .map_err(std::io::Error::other)?;
             }
+            _app.manage(plugin_broker::start().map_err(std::io::Error::other)?);
             onboarding::resume_sync();
             sync::start_foreground();
             Ok(())
@@ -282,6 +284,7 @@ fn main() {
                 profiles::profile_events,
                 plugin_connection::plugin_authorization,
                 plugin_connection::plugin_connection_status,
+                plugin_connection::plugin_connection_requests,
                 commands::snapshot,
                 local_resources::local_resource_catalog,
                 resource_commands::resource_command,

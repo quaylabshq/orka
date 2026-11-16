@@ -157,12 +157,6 @@ func run(parent context.Context, env map[string]string) error {
 	}
 	api := NewAPI(store, settings, env["AUTH_URL"])
 	api.Repositories = &GitHub{Store: store, Settings: github}
-	if settings.MCPEnabled {
-		api.MCP, err = NewMCP(api)
-		if err != nil {
-			return err
-		}
-	}
 	port, err := strconv.Atoi(envOr(env, "PORT", "8080"))
 	if err != nil || port < 1 || port > 65535 {
 		return fmt.Errorf("PORT must be between 1 and 65535")

@@ -1,28 +1,39 @@
-use crate::{db::Result, plugin_connection, plugin_operations, selective_sharing};
+use crate::{db::Result, plugin_broker, plugin_connection, plugin_operations, selective_sharing};
 use serde_json::{json, Value};
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, Read, Write};
 use std::sync::mpsc::{sync_channel, RecvTimeoutError};
+use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
+static CAPABILITIES: LazyLock<Mutex<std::collections::HashSet<String>>> =
+    LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
 
 pub fn tools() -> Value {
     let mut result = vec![
-        json!({"name":"get_connection_status","description":"Check the nonsecret local Orka account and plugin link state, with reconnect instructions. This reads no project content and requires no connection proof.","inputSchema":{"type":"object","properties":{},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}),
+        json!({"name":"get_connection_status","description":"Check the nonsecret local Orka account and plugin link state, with reconnect instructions. This reads no project content and requires no approval.","inputSchema":{"type":"object","properties":{},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}),
     ];
     for (name, description, extra, required) in [
         ("list_local_resources", "Find local memories, skills, plans, or sessions, including categories with automatic sharing off. Returns metadata only; do not infer the current session from recency.", json!({"kind":{"type":"string","enum":["memory","skill","plan","session"]},"sourceId":{"type":"string","format":"uuid"},"nativeId":{"type":"string"},"query":{"type":"string","maxLength":200},"offset":{"type":"integer","minimum":0}}), vec!["kind"]),
-        ("preview_share", "Freeze one selected local snapshot and inspect its title, files, size, and token before an explicitly requested team share. Future turns are excluded. Requires the same account and service as the remote Orka connection.", json!({"kind":{"type":"string","enum":["memory","skill","plan","session"]},"resourceId":{"type":"string","format":"uuid"}}), vec!["kind","resourceId"]),
+        ("preview_share", "Freeze one selected local snapshot and inspect its title, files, size, and token before an explicitly requested team share. Future turns are excluded.", json!({"kind":{"type":"string","enum":["memory","skill","plan","session"]},"resourceId":{"type":"string","format":"uuid"}}), vec!["kind","resourceId"]),
         ("share_selected", "Publish the exact previewed snapshot only when the user explicitly asks to share or update it. Automatic-sharing settings remain unchanged. May return published, queued, conflict, or approval_required; never describe queued or approval-required content as shared.", json!({"previewToken":{"type":"string","format":"uuid"}}), vec!["previewToken"]),
-        ("list_skills", "Discover complete local, global agent, and cached shared skill packages on this machine. Shared cache may be stale; remote list_skills checks current access. Returns metadata and hashes, never publishes content.", json!({"sourceId":{"type":"string","format":"uuid"},"query":{"type":"string","maxLength":200},"offset":{"type":"integer","minimum":0,"maximum":2147483647}}), vec![]),
+        ("list_local_skills", "Discover complete local, global agent, and cached shared skill packages on this machine. Shared cache may be stale; list_skills checks current shared access. Returns metadata and hashes, never publishes content.", json!({"sourceId":{"type":"string","format":"uuid"},"query":{"type":"string","maxLength":200},"offset":{"type":"integer","minimum":0,"maximum":2147483647}}), vec![]),
         ("install_skill", "Install a complete selected skill package into the selected project (Codex and Claude mirrors) or this machine's Codex or Claude skill home. Requires an explicit user installation request and the reviewed snapshotHash. Shared skills also require expectedRevision and fresh server authorization. Differing existing skill directories are preserved.", json!({"skillId":{"type":"string","maxLength":128},"origin":{"type":"string","enum":["local","global","shared"]},"sourceId":{"type":"string","format":"uuid"},"target":{"type":"string","enum":["project","codex","claude"]},"snapshotHash":{"type":"string","maxLength":64},"expectedRevision":{"type":"integer","minimum":1}}), vec!["skillId","origin","target","snapshotHash"]),
         ("get_sync_status", "View this project's local sync health, queued operation identities, conflicts, errors, and repository folder state. Account-wide connectivity and progress are labeled separately. Returns at most 50 entries per section; follow nextOffset.", json!({"offset":{"type":"integer","minimum":0,"maximum":2147483647}}), vec![]),
         ("retry_sync", "Retry this project's eligible pending and failed sync operations with their original request IDs and bytes, then run a project sync cycle. Stale conflicts and permission failures remain blocked for review. Reports pending if the service or worker is unavailable.", json!({}), vec![]),
         ("repair_sync", "Recover this project's guarded local sync bindings and interrupted skill installations, then retry eligible synchronization. Pending changes, conflict candidates and queued request identities are preserved. Does not reset caches, discard changes, or resolve conflicts automatically.", json!({}), vec![]),
     ] {
-        let mut properties = json!({"accountId":{"type":"string","format":"uuid"},"serviceOrigin":{"type":"string"},"projectId":{"type":"string","format":"uuid"},"connectionProof":{"type":"string","maxLength":8192,"description":"Current connectionProof from the remote Orka get_profile tool, after approving Use account in Orka."}});
+        let mut properties = json!({"projectId":{"type":"string","format":"uuid"}});
         properties.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
-        let mut required_fields = vec!["accountId","serviceOrigin","projectId","connectionProof"];
+        let mut required_fields = vec!["projectId"];
         required_fields.extend(required);
-        result.push(json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required_fields,"additionalProperties":false},"annotations":{"readOnlyHint":matches!(name,"list_local_resources"|"preview_share"|"list_skills"|"get_sync_status"),"destructiveHint":false,"idempotentHint":true,"openWorldHint":matches!(name,"share_selected"|"install_skill"|"retry_sync"|"repair_sync")}}));
+        result.push(json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required_fields,"additionalProperties":false},"annotations":{"readOnlyHint":matches!(name,"list_local_resources"|"preview_share"|"list_local_skills"|"get_sync_status"),"destructiveHint":false,"idempotentHint":true,"openWorldHint":matches!(name,"share_selected"|"install_skill"|"retry_sync"|"repair_sync")}}));
+    }
+    let shared: Vec<Value> = serde_json::from_str(include_str!("connector-tools.json"))
+        .expect("Bundled connector catalog");
+    for mut tool in shared {
+        let read = tool["scope"] == "orka.read";
+        tool["annotations"] = json!({"readOnlyHint":read,"destructiveHint":false,"idempotentHint":true,"openWorldHint":true});
+        tool.as_object_mut().unwrap().remove("scope");
+        result.push(tool);
     }
     json!(result)
 }
@@ -75,104 +86,241 @@ fn validate(schema: &Value, input: &Value) -> Result<()> {
 }
 
 pub(crate) async fn call(name: &str, arguments: &Value) -> Result<Value> {
+    if name == "get_connection_status" {
+        return plugin_connection::plugin_connection_status();
+    }
     let definitions = tools();
     let tool = definitions
         .as_array()
         .unwrap()
         .iter()
-        .find(|tool| tool["name"] == name)
-        .ok_or("Unknown local Orka tool")?;
-    if name != "get_connection_status"
-        && arguments["connectionProof"]
-            .as_str()
-            .is_none_or(str::is_empty)
-    {
-        return Err(plugin_connection::RECONNECT.into());
-    }
+        .find(|t| t["name"] == name)
+        .ok_or("Unknown Orka tool")?;
+    validate(&tool["inputSchema"], arguments)?;
+    Err(plugin_connection::RECONNECT.into())
+}
+
+pub(crate) async fn call_session(
+    id: &str,
+    secret: &str,
+    name: &str,
+    arguments: &Value,
+) -> Result<Value> {
+    let definitions = tools();
+    let tool = definitions
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == name)
+        .ok_or("Unknown Orka tool")?;
     validate(&tool["inputSchema"], arguments)?;
     if name == "get_connection_status" {
-        return plugin_connection::plugin_connection_status();
+        return plugin_connection::session_status(id, secret).map(envelope);
     }
-    let binding = plugin_connection::verify(
-        arguments,
-        matches!(
-            name,
-            "share_selected" | "install_skill" | "retry_sync" | "repair_sync"
-        ),
-    )
-    .await?;
-    if matches!(
+    let shared: Vec<Value> = serde_json::from_str(include_str!("connector-tools.json"))
+        .map_err(|_| "Invalid connector catalog")?;
+    let scope = shared
+        .iter()
+        .find(|t| t["name"] == name)
+        .and_then(|t| t["scope"].as_str())
+        .unwrap_or(
+            if matches!(
+                name,
+                "share_selected" | "install_skill" | "retry_sync" | "repair_sync"
+            ) {
+                "orka.write"
+            } else {
+                "orka.read"
+            },
+        );
+    let binding = plugin_connection::authorize(id, secret, scope)?;
+    if shared.iter().any(|t| t["name"] == name) {
+        let _operation = crate::projects::lock()?;
+        binding.check_current()?;
+        let checked = CAPABILITIES
+            .lock()
+            .map_err(|_| "Connector capability unavailable")?
+            .contains(&binding.generation);
+        if !checked {
+            let instance = crate::sync::api_at(
+                &binding.account_id,
+                &binding.service_origin,
+                "GET",
+                "/v2/instance",
+                None,
+            )
+            .await
+            .map_err(|error| {
+                if error.starts_with("404:") {
+                    "Upgrade your Orka service to use the desktop connector.".to_string()
+                } else {
+                    error
+                }
+            })?;
+            binding.check_current()?;
+            if instance["desktopConnector"] != 1 {
+                return Err("Upgrade your Orka service to use the desktop connector.".into());
+            }
+            CAPABILITIES
+                .lock()
+                .map_err(|_| "Connector capability unavailable")?
+                .insert(binding.generation.clone());
+        }
+        let result = crate::sync::api_at(
+            &binding.account_id,
+            &binding.service_origin,
+            "POST",
+            "/v2/connector/tools",
+            Some(&json!({"name":name,"arguments":arguments})),
+        )
+        .await;
+        binding.check_current()?;
+        return result;
+    }
+    let mut input = arguments.clone();
+    input["accountId"] = json!(binding.account_id);
+    input["serviceOrigin"] = json!(binding.service_origin);
+    let result = if matches!(
         name,
         "list_local_resources" | "preview_share" | "share_selected"
     ) {
-        selective_sharing::plugin_command(name, arguments, &binding).await
+        selective_sharing::plugin_command(name, &input, &binding).await
     } else {
-        plugin_operations::command(name, arguments, Some(&binding)).await
-    }
+        plugin_operations::command(
+            if name == "list_local_skills" {
+                "list_skills"
+            } else {
+                name
+            },
+            &input,
+            Some(&binding),
+        )
+        .await
+    }?;
+    binding.check_current()?;
+    Ok(envelope(result))
+}
+fn envelope(value: Value) -> Value {
+    json!({"content":[{"type":"text","text":value.to_string()}],"structuredContent":value})
 }
 
 pub fn run() -> Result<()> {
-    let runtime = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
     let (requests, incoming) = sync_channel(1);
     std::thread::spawn(move || {
-        for line in io::stdin().lock().lines() {
-            if requests.send(line).is_err() {
-                break;
+        // Bound the input before allocating, including clients that omit a newline.
+        let mut input = io::stdin().lock();
+        loop {
+            let mut bytes = Vec::new();
+            match input.by_ref().take(2_000_002).read_until(b'\n', &mut bytes) {
+                Ok(0) => break,
+                Ok(_) if bytes.len() > 2_000_000 => {
+                    let _ = requests.send(Err("Plugin request exceeds size limit".to_string()));
+                    break;
+                }
+                Ok(_) => {
+                    if requests
+                        .send(
+                            String::from_utf8(bytes)
+                                .map_err(|_| "Invalid plugin request encoding".into()),
+                        )
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    let _ = requests.send(Err(error.to_string()));
+                    break;
+                }
             }
         }
     });
+    let id = uuid::Uuid::new_v4().to_string();
+    let secret = format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    );
+    let mut initialized = false;
+    let mut attempted_initialize = false;
     let mut stdout = io::stdout().lock();
     loop {
-        // Idle MCP connections must release the launcher's runtime lock for an update.
-        // Finish an active request before checking maintenance again.
         if crate::updates::installation_pending() {
-            return Ok(());
+            break;
         }
         let line = match incoming.recv_timeout(Duration::from_millis(200)) {
-            Ok(line) => line,
+            Ok(line) => line?,
             Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) => break,
         };
-        let line = line.map_err(|e| e.to_string())?;
-        if line.len() > 2_000_000 {
-            return Err("Plugin request exceeds size limit".into());
-        }
         let request: Value = match serde_json::from_str(&line) {
-            Ok(value) => value,
+            Ok(v) => v,
             Err(_) => {
                 writeln!(stdout,"{}",json!({"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Invalid JSON"}})).map_err(|e|e.to_string())?;
+                stdout.flush().map_err(|e| e.to_string())?;
                 continue;
             }
         };
-        let Some(id) = request.get("id") else {
+        let Some(rpc_id) = request.get("id") else {
             continue;
         };
-        let response = match request["method"].as_str().unwrap_or("") {
-            "initialize" => {
-                json!({"result":{"protocolVersion":request["params"]["protocolVersion"].as_str().unwrap_or("2025-03-26"),"capabilities":{"tools":{}},"serverInfo":{"name":"orka-local","version":"0.3.0"},"instructions":"Local content tools require the current connectionProof from remote get_profile and desktopLinked true. If missing or rejected, call get_connection_status, explain the actual account and service, and ask the user to reconnect through the assistant using Use account in Orka and approve the native account and scopes. Never use caller-supplied account IDs as authority or switch accounts to bypass a refusal. Local reads require orka.read; share_selected, install_skill, retry_sync and repair_sync also require orka.write. Local one-off sharing requires an explicit user request. List the correct local item, preview its frozen snapshot, then share its token. Never guess the current session or enable automatic sharing. Respect queued, conflict, and approval_required results. Install skills and retry or repair sync only when requested. Review the selected skill snapshot hash and shared revision before installation; preserve differing local directories. Local tool results describe this machine only."}})
-            }
-            "ping" => json!({"result":{}}),
-            "tools/list" => json!({"result":{"tools":tools()}}),
-            "tools/call" => {
-                let name = request["params"]["name"].as_str().unwrap_or("");
-                let arguments = request["params"]["arguments"].clone();
-                let result = runtime.block_on(call(name, &arguments));
-                match result {
-                    Ok(value) => {
-                        json!({"result":{"content":[{"type":"text","text":value.to_string()}],"structuredContent":value}})
+        let mut message = json!({"version":1,"sessionId":id,"secret":secret});
+        let result = match request["method"].as_str().unwrap_or("") {
+            "initialize" if !attempted_initialize => {
+                attempted_initialize = true;
+                message["operation"] = json!("initialize");
+                message["clientName"] = request["params"]["clientInfo"]["name"].clone();
+                let mut response = plugin_broker::exchange(&message);
+                if response.is_err() && plugin_broker::launch_initial().is_ok() {
+                    for _ in 0..100 {
+                        std::thread::sleep(Duration::from_millis(100));
+                        response = plugin_broker::exchange(&message);
+                        if response.is_ok() {
+                            break;
+                        }
                     }
+                }
+                response.map(|_|{initialized=true;json!({"protocolVersion":request["params"]["protocolVersion"].as_str().unwrap_or("2025-03-26"),"capabilities":{"tools":{}},"serverInfo":{"name":"orka","version":env!("CARGO_PKG_VERSION")},"instructions":"Orka uses the account signed in to the desktop application. Approve this connector session in Orka before reading or changing content. If the account or service changes, reconnect the connector in your assistant and approve a new session. Use get_connection_status for actionable state. Share content, install skills, retry or repair sync, or change permissions only when explicitly requested. List the exact local item, preview its frozen snapshot, then share its token. Never infer the current session from recency. Distinguish queued, conflict and approval_required outcomes. list_skills reads current shared skills; list_local_skills discovers this machine's complete packages. Desktop approval grants only listed scopes and never exceeds existing account permissions."})})
+            }
+            "initialize" => Err(
+                "This connector session is already initialized. Reconnect in your assistant."
+                    .into(),
+            ),
+            "ping" => Ok(json!({})),
+            "tools/list" if initialized => {
+                message["operation"] = json!("tools");
+                plugin_broker::exchange(&message).map(|v| json!({"tools":v}))
+            }
+            "tools/call" if initialized => {
+                message["operation"] = json!("call");
+                message["name"] = request["params"]["name"].clone();
+                message["arguments"] = request["params"]
+                    .get("arguments")
+                    .cloned()
+                    .unwrap_or(json!({}));
+                match plugin_broker::exchange(&message) {
+                    Ok(v) => Ok(v),
                     Err(error) => {
-                        json!({"result":{"isError":true,"content":[{"type":"text","text":error}]}})
+                        Ok(json!({"isError":true,"content":[{"type":"text","text":error}]}))
                     }
                 }
             }
-            _ => json!({"error":{"code":-32601,"message":"Method not found"}}),
+            "tools/list" | "tools/call" => Err("Initialize the connector first".into()),
+            _ => Err("Method not found".into()),
         };
-        let mut response = response;
-        response["jsonrpc"] = json!("2.0");
-        response["id"] = id.clone();
+        let response = match result {
+            Ok(value) => json!({"jsonrpc":"2.0","id":rpc_id,"result":value}),
+            Err(error) => {
+                json!({"jsonrpc":"2.0","id":rpc_id,"error":{"code":-32000,"message":error}})
+            }
+        };
         writeln!(stdout, "{response}").map_err(|e| e.to_string())?;
         stdout.flush().map_err(|e| e.to_string())?;
+    }
+    if initialized {
+        let _ = plugin_broker::exchange(
+            &json!({"version":1,"sessionId":id,"secret":secret,"operation":"close"}),
+        );
     }
     Ok(())
 }

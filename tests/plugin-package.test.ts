@@ -93,3 +93,22 @@ await test("plugin ZIP uses one desktop stdio bridge in both hosts with no remot
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+await test("desktop shared-tool catalog matches the bundled service contract", async () => {
+  const native = JSON.parse(
+    await readFile("apps/mac/src-tauri/src/connector-tools.json", "utf8"),
+  ) as { name: string; scope: string }[];
+  const service = JSON.parse(
+    await readFile("server/internal/server/mcp-tools.json", "utf8"),
+  );
+  assert.deepEqual(
+    native.filter((tool) => tool.name !== "get_profile"),
+    service,
+  );
+  assert.equal(native.length, 18);
+  assert.equal(new Set(native.map((tool) => tool.name)).size, 18);
+  assert.equal(
+    native.find((tool) => tool.name === "get_profile")?.scope,
+    "orka.read",
+  );
+});

@@ -115,7 +115,6 @@ for (const mode of ["cloud", "self-hosted"] as const)
       async (token) => token,
       undefined,
       { ...authSettings({}), mode },
-      false,
       github,
     );
     await new Promise<void>((resolve) =>

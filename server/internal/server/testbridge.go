@@ -176,9 +176,6 @@ func RunTestBridge() error {
 					api.Environment[key] = text(value)
 				}
 			}
-			if flag(args["mcpEnabled"]) {
-				api.MCP, err = NewMCP(api)
-			}
 			result = Object{"ok": true}
 		case "reader":
 			result, err = (Reader{store, user, text(args["origin"])}).run(r.Context(), text(args["name"]), object(args["input"]))
@@ -191,21 +188,6 @@ func RunTestBridge() error {
 		case "accountAuthenticate":
 			native := NewAPI(store, AuthSettings{}, text(args["authUrl"]))
 			result, err = native.accountAuthenticate(r.Context(), text(args["token"]))
-		case "oauth":
-			oauth := &OAuth{Store: store, Origin: text(args["origin"])}
-			client := text(field(args["client"], "client_id"))
-			switch text(args["operation"]) {
-			case "refresh":
-				result, err = oauth.refresh(r.Context(), client, text(args["token"]), text(args["scope"]), text(args["resource"]))
-			case "verify":
-				result, err = store.read(r.Context(), func(q *Queries) any { return oauth.verify(q, text(args["token"])) })
-			case "revoke":
-				result, err = oauth.revoke(r.Context(), client, text(args["token"]))
-			case "register":
-				result, err = store.read(r.Context(), func(q *Queries) any { return oauth.register(q, object(args["client"])) })
-			default:
-				err = bad("Unknown OAuth test operation")
-			}
 		case "member":
 			result, err = store.read(ctx, func(q *Queries) any { store.member(q, user, text(args["project"])); return nil })
 		case "device":

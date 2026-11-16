@@ -13,7 +13,6 @@ export function createApi(
   authenticate: (token: string) => Promise<string>,
   authUrl?: string,
   settings: AuthSettings = authSettings({}),
-  mcpEnabled = false,
   repositories?: GitHubRepositories,
 ) {
   store.authenticate = authenticate;
@@ -22,7 +21,6 @@ export function createApi(
     settings,
     authUrl,
     environment: process.env,
-    mcpEnabled,
     github: repositories
       ? {
           ...repositories.settings,

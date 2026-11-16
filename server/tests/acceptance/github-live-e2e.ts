@@ -81,7 +81,6 @@ const server = createApi(
   async (token) => token,
   undefined,
   undefined,
-  false,
   repositories,
 );
 let origin = "";

@@ -18,7 +18,6 @@ type API struct {
 	AuthURL      string
 	Environment  map[string]string
 	Authenticate Authenticate
-	MCP          http.Handler
 	Repositories *GitHub
 }
 
@@ -88,16 +87,17 @@ func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 func (a *API) handle(w http.ResponseWriter, r *http.Request) (any, bool, error) {
 	path, method, s := r.URL.Path, r.Method, a.Store
-	if a.MCP != nil && isMCPPath(path) {
-		a.MCP.ServeHTTP(w, r)
-		return nil, true, nil
+	if strings.HasPrefix(path, "/mcp/source/") && method == http.MethodGet {
+		return nil, true, a.connectorSource(w, r)
+	}
+	if isMCPPath(path) || strings.HasPrefix(path, "/v2/plugin/connection") {
+		w.WriteHeader(http.StatusGone)
+		return Object{"error": "desktop_required", "error_description": "Open Orka desktop and reconnect the Orka plugin. The desktop account is the only connector login."}, false, nil
 	}
 	if path == "/v2/instance" && method == http.MethodGet {
 		auth := Object{"password": a.Settings.Password, "github": a.Settings.GitHub, "magicLink": a.Settings.MagicLink, "profileRedirect": true, "emailCode": a.Settings.MagicLink}
 		instance := Object{"version": 1, "onboarding": 1, "invites": Object{"email": a.invitationEmailAvailable()}, "profile": Object{"version": 2, "jobRole": true, "avatarUpload": true, "conditionalSave": 1}, "mode": a.Settings.Mode, "repositories": Object{"github": choose(a.Repositories.Settings.Enabled, 1, 0)}, "auth": auth}
-		if a.MCP != nil {
-			instance["pluginConnection"] = 1
-		}
+		instance["desktopConnector"] = 1
 		if a.Settings.DashboardURL != "" {
 			auth["browserOrigin"] = a.Settings.DashboardURL
 			if fromDashboard(r) {
@@ -123,12 +123,7 @@ func (a *API) handle(w http.ResponseWriter, r *http.Request) (any, bool, error) 
 	}
 	if path == "/email-template" && method == http.MethodGet {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		desktop := desktopEmailHTML("{{ .ConfirmationURL }}", "{{ .Token }}")
-		body := desktop
-		if a.Settings.MCPEnabled && a.Settings.PublicURL != "" {
-			body = `{{ if eq .RedirectTo "` + a.Settings.PublicURL + `/mcp/connect" }}<p>Enter this code on the Orka connection page:</p><h1>{{ .Token }}</h1><p>This code expires in 10 minutes and can be used once. If you did not request it, ignore this email.</p>{{ else }}` + desktop + `{{ end }}`
-		}
-		_, err := w.Write([]byte("<html><body>" + body + "</body></html>"))
+		_, err := w.Write([]byte("<html><body>" + desktopEmailHTML("{{ .ConfirmationURL }}", "{{ .Token }}") + "</body></html>"))
 		return nil, true, err
 	}
 	if path == "/health" {
@@ -233,40 +228,16 @@ func (a *API) handle(w http.ResponseWriter, r *http.Request) (any, bool, error) 
 		return object(parsed), err
 	}
 	switch {
-	case includes([]string{"/v2/plugin/connection", "/v2/plugin/connection/verify"}, path):
-		mcp, enabled := a.MCP.(*MCP)
-		if !enabled {
-			return nil, false, &HTTPError{Status: 404, Message: "Not found"}
+	case path == "/v2/connector/tools" && method == http.MethodGet:
+		return Object{"tools": connectorTools}, false, nil
+	case path == "/v2/connector/tools" && method == http.MethodPost:
+		input, err := parse(map[string]Field{"name": strField(1, 80), "arguments": {Kind: "any"}})
+		if err != nil {
+			return nil, false, err
 		}
-		if path == "/v2/plugin/connection" && method == http.MethodGet {
-			query := r.URL.Query()
-			if len(query) != 1 || len(query["handoff"]) != 1 {
-				return nil, false, bad("Invalid connection request")
-			}
-			result, err := mcp.OAuth.desktopRequest(r.Context(), user, query.Get("handoff"))
-			return result, false, err
-		}
-		if method != http.MethodPost {
-			return nil, false, &HTTPError{Status: 404, Message: "Not found"}
-		}
-		shape := map[string]Field{"deviceId": uuidField(), "generation": uuidField()}
-		secret := "proof"
-		if path == "/v2/plugin/connection" {
-			secret = "handoff"
-			shape["action"] = enumField("approve", "cancel")
-		}
-		shape[secret] = strField(43, 43)
-		input, err := parse(shape)
-		if err != nil || !connectionSecretPattern.MatchString(text(input[secret])) {
-			return nil, false, bad("Invalid connection request")
-		}
-		var result any
-		if secret == "handoff" {
-			result, err = mcp.OAuth.approveDesktop(r.Context(), user, input)
-		} else {
-			result, err = mcp.OAuth.verifyConnection(r.Context(), user, input)
-		}
+		result, err := a.connectorTool(r.Context(), user, text(input["name"]), input["arguments"])
 		return result, false, err
+
 	case path == "/v2/github/action" && method == http.MethodPost:
 		raw, err := body()
 		if err != nil {

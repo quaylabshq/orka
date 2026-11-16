@@ -19,7 +19,6 @@ assert.deepEqual(
     "004_mcp_operations.sql",
     "005_source_removal.sql",
     "006_github_authorization_completion.sql",
-    "007_plugin_connection.sql",
   ],
 );
 const forbidden = files.filter((path) => {

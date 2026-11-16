@@ -323,23 +323,33 @@ fn plugin_dispatch_validates_tool_contracts_and_reaches_bound_operations() {
         f.project["id"]
     );
     let definitions = crate::plugin_mcp::tools();
-    assert_eq!(definitions.as_array().unwrap().len(), 9);
+    assert_eq!(definitions.as_array().unwrap().len(), 27);
     assert_eq!(
         runtime
-            .block_on(crate::plugin_mcp::call("get_sync_status", &request))
+            .block_on(crate::plugin_mcp::call(
+                "get_sync_status",
+                &json!({"projectId":f.project["id"]})
+            ))
             .unwrap_err(),
         crate::plugin_connection::RECONNECT
     );
     assert!(runtime
         .block_on(crate::plugin_mcp::call("get_connection_status", &json!({})))
         .is_ok());
-    request["connectionProof"] = json!("fixture-proof");
+    request = json!({"projectId":f.project["id"]});
     assert_eq!(
         definitions
             .as_array()
             .unwrap()
             .iter()
-            .filter(|tool| tool["annotations"]["readOnlyHint"] == false)
+            .filter(|tool| [
+                "share_selected",
+                "install_skill",
+                "retry_sync",
+                "repair_sync"
+            ]
+            .iter()
+            .any(|name| tool["name"] == *name))
             .count(),
         4
     );
