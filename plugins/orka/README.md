@@ -23,6 +23,8 @@ Signing out, switching account or service, or revoking a connector permanently i
 
 An assistant may start several plugin helpers for its chats and workers. Helpers belonging to the same running assistant share one connection, approval and selected scopes. Separate assistant processes need separate approval. Revoking that connection removes access from all its helpers; reconnecting cannot restore access to the old helpers. Exited helpers are removed when Orka checks the connection. A still-running assistant with no helpers appears idle and remains revocable; later helpers from that same process retain the selected scopes. **Check connection** reports completion using current running sessions. Saved approvals from older versions appear active only after a live helper authenticates again.
 
+To change approved access, revoke that connection in **Settings → Connectors**, reconnect in the assistant, and approve the desired scopes. Reconnecting alone retains the existing access while the same assistant process is running.
+
 When upgrading from plugin 0.2.0, update the installed plugin as well as Orka desktop. A local plugin marketplace must also contain the new 0.3.0 package; publishing a desktop release does not refresh a local marketplace. The new package has one stdio `orka` connector. A remaining remote `orka` plus local `orka_local` pair indicates the old package and can cause repeated OAuth startup errors against retired endpoints.
 
 Closing the main window keeps Orka available through its menu bar. Explicit Quit stops the broker. A new bridge may open the configured app/profile on initial connection; an existing bridge does not reopen Orka after Quit. Open Orka manually before using that live bridge again.

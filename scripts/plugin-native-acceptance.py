@@ -490,7 +490,8 @@ with tempfile.TemporaryDirectory(prefix="orka-plugin-native-") as temp:
         assert len(pending) == 1, pending
         approve(worker, ["orka.read"])
         assert sibling.tool("get_profile")["accountId"] == uid
-        sibling.tool("retry_sync", {"projectId": pid}, error="orka.write")
+        scope_error = sibling.tool("retry_sync", {"projectId": pid}, error="orka.write")
+        assert "revoke its access" in scope_error, scope_error
         joined = Bridge("Concurrent assistant")
         assert joined.tool("get_profile")["accountId"] == uid
         status = native({"action": "plugin-status"})["value"]
@@ -514,7 +515,8 @@ with tempfile.TemporaryDirectory(prefix="orka-plugin-native-") as temp:
         joined.tool("get_profile", error="Reconnect")
         replacement = Bridge("Concurrent assistant")
         replacement.tool("get_profile", error="Approve")
-        approve(replacement, ["orka.read"])
+        approve(replacement, ["orka.read", "orka.write"])
+        replacement.tool("create_memory", {"projectId": pid, "requestId": str(uuid.uuid4()), "title": "Changed connector access", "text": "Synthetic scoped content"})
         sibling.tool("get_profile", error="Reconnect")
         replacement.close()
         mixed = native({"action": "plugin-status"})["value"]

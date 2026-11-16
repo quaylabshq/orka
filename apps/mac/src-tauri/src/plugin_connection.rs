@@ -387,7 +387,7 @@ pub(crate) fn authorize(id: &str, secret: &str, scope: &str) -> Result<Binding> 
         .as_array()
         .is_some_and(|s| s.contains(&json!(scope)))
     {
-        return Err(format!("This connector session lacks {scope}. Reconnect in your assistant and approve the required access in Orka."));
+        return Err(format!("This connector session lacks {scope}. In Orka Settings → Connectors, revoke its access, then reconnect in your assistant and approve the required access."));
     }
     if account(&db::open()?)?["id"] != binding.account_id {
         return Err(RECONNECT.into());
