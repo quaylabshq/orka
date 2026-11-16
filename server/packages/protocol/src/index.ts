@@ -215,6 +215,7 @@ export const sessionCopy = z
     deviceId: uuid,
     resourceId: uuid,
     expectedRevision: z.number().int().positive(),
+    sourceSnapshot: resourceInput.optional(),
   })
   .strict();
 export type Resolution = z.infer<typeof resolution>;

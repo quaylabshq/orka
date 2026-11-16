@@ -18991,6 +18991,124 @@
         "deleted": false
       },
       "valid": false
+    },
+    {
+      "name": "sessionCopy",
+      "value": {
+        "version": 2,
+        "id": "12345678-1234-4123-8123-123456789012",
+        "projectId": "12345678-1234-4123-8123-123456789012",
+        "deviceId": "12345678-1234-4123-8123-123456789012",
+        "resourceId": "12345678-1234-4123-8123-123456789012",
+        "expectedRevision": 1
+      },
+      "valid": true
+    },
+    {
+      "name": "sessionCopy",
+      "value": {
+        "version": 2,
+        "id": "12345678-1234-4123-8123-123456789012",
+        "projectId": "12345678-1234-4123-8123-123456789012",
+        "deviceId": "12345678-1234-4123-8123-123456789012",
+        "resourceId": "12345678-1234-4123-8123-123456789012",
+        "expectedRevision": 1,
+        "sourceSnapshot": {
+          "resourceId": "12345678-1234-4123-8123-123456789012",
+          "kind": "session",
+          "source": "claude",
+          "logicalPath": "claude/session",
+          "title": "Instructions",
+          "files": [
+            {
+              "path": "session.jsonl",
+              "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "size": 12,
+              "executable": false
+            }
+          ],
+          "deleted": false
+        }
+      },
+      "valid": true
+    },
+    {
+      "name": "sessionCopy",
+      "value": {
+        "version": 2,
+        "id": "12345678-1234-4123-8123-123456789012",
+        "projectId": "12345678-1234-4123-8123-123456789012",
+        "deviceId": "12345678-1234-4123-8123-123456789012",
+        "resourceId": "12345678-1234-4123-8123-123456789012",
+        "expectedRevision": 1,
+        "sourceSnapshot": {
+          "resourceId": "12345678-1234-4123-8123-123456789012",
+          "kind": "session",
+          "source": "claude",
+          "logicalPath": "claude/session",
+          "title": "Instructions",
+          "files": [],
+          "deleted": false
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "sessionCopy",
+      "value": {
+        "version": 2,
+        "id": "12345678-1234-4123-8123-123456789012",
+        "projectId": "12345678-1234-4123-8123-123456789012",
+        "deviceId": "12345678-1234-4123-8123-123456789012",
+        "resourceId": "12345678-1234-4123-8123-123456789012",
+        "expectedRevision": 1,
+        "sourceSnapshot": {
+          "resourceId": "12345678-1234-4123-8123-123456789012",
+          "kind": "session",
+          "source": "claude",
+          "logicalPath": "claude/session",
+          "title": "Instructions",
+          "files": [
+            {
+              "path": "session.jsonl",
+              "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "size": 12,
+              "executable": false
+            }
+          ],
+          "deleted": false,
+          "owner": "12345678-1234-4123-8123-123456789012"
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "sessionCopy",
+      "value": {
+        "version": 2,
+        "id": "12345678-1234-4123-8123-123456789012",
+        "projectId": "12345678-1234-4123-8123-123456789012",
+        "deviceId": "12345678-1234-4123-8123-123456789012",
+        "resourceId": "12345678-1234-4123-8123-123456789012",
+        "expectedRevision": 1,
+        "sourceSnapshot": {
+          "resourceId": "12345678-1234-4123-8123-123456789012",
+          "kind": "session",
+          "source": "claude",
+          "logicalPath": "claude/session",
+          "title": "Instructions",
+          "files": [
+            {
+              "path": "../session.jsonl",
+              "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "size": 12,
+              "executable": false
+            }
+          ],
+          "deleted": false
+        }
+      },
+      "valid": false
     }
   ],
   "origins": [

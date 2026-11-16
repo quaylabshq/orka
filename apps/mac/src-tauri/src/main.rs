@@ -202,6 +202,7 @@ fn main() {
             "cloud-action"=>tokio::runtime::Runtime::new().expect("Test runtime").block_on(commands::cloud_action(input["operation"].as_str().unwrap_or("").into(),input["input"].clone())),
             "connect"=>tokio::runtime::Runtime::new().expect("Test runtime").block_on(sources::connect_project_sources(input["id"].as_str().unwrap_or("").into(),vec![input["path"].as_str().unwrap_or("").into()],input["sourceId"].as_str().map(str::to_owned))).map(|_|json!({"ok":true})),
             "sync-now"=>commands::sync_now().map(|_|json!({"ok":true})),
+            "session-action"=>commands::session_action(input["id"].as_str().unwrap_or("").into(),input["operation"].as_str().unwrap_or("").into(),input["conflictId"].as_str().map(str::to_owned),input["selected"].as_str().map(str::to_owned)).map(|_|json!({"ok":true})),
             "scan"=>db::open().and_then(|db|indexer::scan(&db,&input["project"]).map(|_|json!({"resources":db::rows(&db,"SELECT value FROM resources",&[]).unwrap_or_default(),"outbox":db::rows(&db,"SELECT value FROM outbox",&[]).unwrap_or_default()}))),
             "sync"=>tokio::runtime::Runtime::new().expect("Test runtime").block_on(sync::once()).map(|_|json!({"ok":true})),
             "materialize"=>db::open().and_then(|db|sync::materialize(&db,&input["project"],&input["resource"]).map(|_|json!({"ok":true}))),

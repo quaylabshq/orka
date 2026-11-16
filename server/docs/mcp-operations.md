@@ -40,10 +40,11 @@ Results describe accepted shared snapshots, not live agent activity.
 
 History uses `beforeRevision`/`nextBeforeRevision`. Revision comparisons return
 changed file manifests, changed metadata and bounded before/after text for the
-selected file. Continue with `nextOffset` and the same revision pair. Session
-comparisons use the readable conversation representation and omit setup,
-analysis and tool records. Every history read checks current access and the
-historical resource's source dependencies.
+selected file. Continue with `nextOffset` and the same revision pair. These
+history and comparison tools support memories, plans and skills. Sessions retain
+only their latest complete snapshot and return an explicit latest-only error;
+read the current conversation with `fetch_resource`. Every supported history
+read checks current access and the historical resource's source dependencies.
 
 Skill discovery includes complete file manifests, executable flags, revision and
 `snapshotHash`. Installations use the separate local `install_skill` tool; the desktop must be running to install onto its Mac. The native authenticated

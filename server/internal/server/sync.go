@@ -56,7 +56,7 @@ func (s *Store) saveChange(q *Queries, user string, input Object, revision int64
 	resource = merge(resource, Object{"hash": Hash(Object{"files": resource["files"], "deleted": resource["deleted"]})})
 	project := text(input["projectId"])
 	q.Exec("insert into orka.resources values($1,$2,$3,$4) on conflict(project_id,id) do update set revision=excluded.revision,payload=excluded.payload", project, resource["resourceId"], resource["revision"], resource)
-	q.Exec("insert into orka.snapshots values($1,$2,$3,$4) on conflict do nothing", project, resource["resourceId"], resource["revision"], resource)
+	s.saveSnapshot(q, project, resource)
 	event := Object{"revision": revision, "resource": resource, "conflicts": conflicts, "activity": activity}
 	if len(resolutions) > 0 {
 		event["memoryResolutions"] = resolutions
@@ -112,7 +112,7 @@ func (s *Store) mergeFiles(q *Queries, project string, base, current, incoming O
 			if valid && q.err == nil {
 				data := []byte(MergeText(strings.TrimPrefix(string(buffers[0]), "\ufeff"), strings.TrimPrefix(string(buffers[1]), "\ufeff"), strings.TrimPrefix(string(buffers[2]), "\ufeff")))
 				hash := s.putBlob(q, project, data)
-				q.Exec("insert into orka.blobs values($1,$2,$3) on conflict do nothing", project, hash, len(data))
+				q.Exec("insert into orka.blobs(project_id,hash,size) values($1,$2,$3) on conflict(project_id,hash) do update set created_at=now()", project, hash, len(data))
 				merged = merge(next, Object{"hash": hash, "size": len(data)})
 			}
 		}
@@ -186,6 +186,12 @@ func (s *Store) change(q *Queries, user string, input Object, options ChangeOpti
 	if current != nil {
 		if number(input["baseRevision"]) == number(current["revision"]) {
 			base = current
+		} else if text(current["kind"]) == "session" {
+			// Sessions are append-oriented snapshots. A stale edit is retained as
+			// a conflict below; its previous transcript bytes are never merged.
+			if !q.Require(number(input["baseRevision"]) == 0 || s.sessionRevisionKnown(q, project, id, number(input["baseRevision"])), 409, "Unknown base revision") {
+				return nil
+			}
 		} else {
 			base = object(q.One("select payload from orka.snapshots where project_id=$1 and resource_id=$2 and revision=$3", project, id, input["baseRevision"])["payload"])
 			if !q.Require(base != nil || number(input["baseRevision"]) == 0, 409, "Unknown base revision") {
@@ -235,7 +241,7 @@ func (s *Store) change(q *Queries, user string, input Object, options ChangeOpti
 			return nil
 		}
 		hash := s.putBlob(q, project, data)
-		q.Exec("insert into orka.blobs values($1,$2,$3) on conflict do nothing", project, hash, len(data))
+		q.Exec("insert into orka.blobs(project_id,hash,size) values($1,$2,$3) on conflict(project_id,hash) do update set created_at=now()", project, hash, len(data))
 		first := object(array(resource["files"])[0])
 		executable := first["executable"]
 		currentFiles, baseFiles := array(current["files"]), array(base["files"])
@@ -315,7 +321,7 @@ func (s *Store) resolve(q *Queries, user string, input Object) Object {
 		}
 		updated := merge(current, Object{"revision": revision})
 		q.Exec("update orka.resources set revision=$3,payload=$4 where project_id=$1 and id=$2", project, id, revision, updated)
-		q.Exec("insert into orka.snapshots values($1,$2,$3,$4)", project, id, revision, updated)
+		s.saveSnapshot(q, project, updated)
 		copy["contextSources"] = unique(append(stringsOf(copy["contextSources"]), id))
 		s.sourcePermissions(q, user, project, copy, nil, false)
 		receipt := s.saveChange(q, user, input, revision, copy, []any{}, Object{"id": input["id"], "type": "session_copied", "resourceId": id, "copyId": copyID, "author": user, "notifyOwner": current["owner"]}, nil)
@@ -348,10 +354,19 @@ func (s *Store) copySession(q *Queries, user string, input Object) Object {
 	s.requireAccess(q, user, project, current, "read", false)
 	s.requireAccess(q, user, project, merge(current, Object{"resourceId": input["id"]}), "publish", true)
 	source := current
-	if number(current["revision"]) != number(input["expectedRevision"]) {
-		source = object(q.One("select payload from orka.snapshots where project_id=$1 and resource_id=$2 and revision=$3", project, id, input["expectedRevision"])["payload"])
-	}
-	if !q.Require(source != nil && !flag(source["deleted"]), 409, "Cached session revision unavailable") {
+	if snapshot := object(input["sourceSnapshot"]); snapshot != nil {
+		if !q.Require(snapshot["resourceId"] == current["resourceId"] && snapshot["kind"] == "session" && snapshot["sourceId"] == current["sourceId"] && snapshot["source"] == current["source"] && snapshot["logicalPath"] == current["logicalPath"] && !flag(snapshot["deleted"]), 409, "Cached session identity changed") {
+			return nil
+		}
+		if !q.Require(number(input["expectedRevision"]) == number(current["revision"]) || s.sessionRevisionKnown(q, project, id, number(input["expectedRevision"])), 409, "Cached session revision unavailable") {
+			return nil
+		}
+		s.verifyFiles(q, project, user, array(snapshot["files"]))
+		if q.err != nil {
+			return nil
+		}
+		source = merge(current, snapshot)
+	} else if !q.Require(number(current["revision"]) == number(input["expectedRevision"]), 409, "Cached session revision unavailable") {
 		return nil
 	}
 	copyID := text(input["id"])
@@ -359,4 +374,21 @@ func (s *Store) copySession(q *Queries, user string, input Object) Object {
 	resource["contextSources"] = unique(append(stringsOf(resource["contextSources"]), id))
 	s.sourcePermissions(q, user, project, resource, nil, false)
 	return s.saveChange(q, user, input, revision, resource, []any{}, Object{"id": input["id"], "type": "session_copied", "resourceId": id, "copyId": copyID, "author": user, "notifyOwner": current["owner"]}, nil)
+}
+
+// saveSnapshot keeps revision history for documents, but a session's complete
+// current transcript and lineage replace its earlier snapshot manifests.
+func (s *Store) saveSnapshot(q *Queries, project string, resource Object) {
+	if text(resource["kind"]) == "session" {
+		q.Exec("delete from orka.snapshots where project_id=$1 and resource_id=$2", project, resource["resourceId"])
+	}
+	q.Exec("insert into orka.snapshots values($1,$2,$3,$4) on conflict do nothing", project, resource["resourceId"], resource["revision"], resource)
+}
+
+// Events are lightweight proof that a stale session revision existed. They do
+// not require retaining the transcript bytes of that revision.
+func (s *Store) sessionRevisionKnown(q *Queries, project, id string, revision int64) bool {
+	return q.One(`select 1 from orka.events where project_id=$1 and revision=$3 and
+		(payload->'resource'->>'resourceId'=$2 or payload->'related' @> $4::jsonb)`,
+		project, id, revision, string(jsonBytes([]any{Object{"resource": Object{"resourceId": id}}}))) != nil
 }

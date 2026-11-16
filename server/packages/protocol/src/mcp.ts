@@ -151,7 +151,7 @@ export const orkaTools = [
   ),
   define(
     "get_resource_history",
-    "List accessible resource revisions with author and timestamp. Current resource and historical source permissions are checked for every revision.",
+    "List accessible memory, plan and skill revisions with author and timestamp. Current resource and historical source permissions are checked for every revision. Sessions retain only their latest complete snapshot and have no revision history.",
     z
       .object({
         ...resource,
@@ -162,7 +162,7 @@ export const orkaTools = [
   ),
   define(
     "compare_revisions",
-    "Compare two accessible revisions. Returns changed file manifests and paginated before/after text for one file; session text excludes setup, analysis and tools.",
+    "Compare two accessible memory, plan or skill revisions. Returns changed file manifests and paginated before/after text for one file. Sessions retain only their latest complete snapshot and cannot be compared by revision.",
     z
       .object({
         ...resource,

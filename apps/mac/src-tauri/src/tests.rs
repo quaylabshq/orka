@@ -36,6 +36,8 @@ mod selective_sharing_tests;
 mod session_compatibility_tests;
 #[path = "session_launcher_tests.rs"]
 mod session_launcher_tests;
+#[path = "session_snapshot_tests.rs"]
+mod session_snapshot_tests;
 #[path = "sharing_tests.rs"]
 mod sharing_tests;
 #[path = "source_tests.rs"]

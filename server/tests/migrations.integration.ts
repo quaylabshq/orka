@@ -50,6 +50,7 @@ await test("a fresh server installs the baseline and GitHub migration atomically
       "004_mcp_operations.sql",
       "005_source_removal.sql",
       "006_github_authorization_completion.sql",
+      "007_session_retention.sql",
     ],
   );
   await database(async (pool) => {
@@ -61,6 +62,7 @@ await test("a fresh server installs the baseline and GitHub migration atomically
       "004_mcp_operations.sql",
       "005_source_removal.sql",
       "006_github_authorization_completion.sql",
+      "007_session_retention.sql",
     ]);
     assert.equal(
       (
@@ -68,7 +70,7 @@ await test("a fresh server installs the baseline and GitHub migration atomically
           "select count(*) from pg_tables where schemaname='orka'",
         )
       ).rows[0].count,
-      "45",
+      "47",
     );
     const project = randomUUID(),
       owner = randomUUID();
@@ -92,6 +94,7 @@ await test("a fresh server installs the baseline and GitHub migration atomically
       "004_mcp_operations.sql",
       "005_source_removal.sql",
       "006_github_authorization_completion.sql",
+      "007_session_retention.sql",
     ]);
   });
 });
@@ -148,6 +151,22 @@ await test("an existing baseline upgrades GitHub tables without replacing projec
         "https://orka.example/mcp",
       ],
     );
+    const oldSession = randomUUID();
+    const oldHash = "a".repeat(64);
+    await pool.query("insert into orka.blobs values($1,$2,12)", [
+      project,
+      oldHash,
+    ]);
+    await pool.query("insert into orka.snapshots values($1,$2,1,$3)", [
+      project,
+      oldSession,
+      {
+        kind: "session",
+        files: [
+          { hash: oldHash, size: 12, path: "session.jsonl", executable: false },
+        ],
+      },
+    ]);
     await Promise.all([migrate(pool), migrate(pool)]);
     assert.deepEqual(await ledger(pool), [
       initialMigration,
@@ -156,7 +175,35 @@ await test("an existing baseline upgrades GitHub tables without replacing projec
       "004_mcp_operations.sql",
       "005_source_removal.sql",
       "006_github_authorization_completion.sql",
+      "007_session_retention.sql",
     ]);
+    assert.equal(
+      (
+        await pool.query(
+          "select created_at > now()-interval '1 minute' as fresh from orka.blobs where project_id=$1 and hash=$2",
+          [project, oldHash],
+        )
+      ).rows[0].fresh,
+      true,
+    );
+    assert.equal(
+      (
+        await pool.query(
+          "select count(*)::int as count from orka.session_blob_candidates where project_id=$1 and hash=$2",
+          [project, oldHash],
+        )
+      ).rows[0].count,
+      1,
+    );
+    assert.equal(
+      (
+        await pool.query(
+          "select count(*)::int as count from orka.snapshots where project_id=$1 and resource_id=$2",
+          [project, oldSession],
+        )
+      ).rows[0].count,
+      1,
+    );
     assert.deepEqual(
       (
         await pool.query(
@@ -223,6 +270,7 @@ await test("baseline failure rolls back its DDL and ledger without touching pre-
       "004_mcp_operations.sql",
       "005_source_removal.sql",
       "006_github_authorization_completion.sql",
+      "007_session_retention.sql",
     ]);
   });
 });
@@ -251,6 +299,7 @@ await test("resetting a completed historical ledger is explicit and preserves ap
       "004_mcp_operations.sql",
       "005_source_removal.sql",
       "006_github_authorization_completion.sql",
+      "007_session_retention.sql",
     ]);
     assert.equal(
       (

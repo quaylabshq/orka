@@ -46,7 +46,9 @@ const manifest = {
     module: "github.com/whysosaket/orka-api",
     toolchain: "1.27.4",
   },
-  repository: "https://github.com/whysosaket/orka-api",
+  repository: JSON.parse(
+    readFileSync("package.json", "utf8"),
+  ).repository.url.replace(/\.git$/, ""),
   commit: execFileSync("git", ["rev-parse", "HEAD"], {
     encoding: "utf8",
   }).trim(),

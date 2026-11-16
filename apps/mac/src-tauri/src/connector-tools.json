@@ -386,7 +386,7 @@
   },
   {
     "name": "get_resource_history",
-    "description": "List accessible resource revisions with author and timestamp. Current resource and historical source permissions are checked for every revision.",
+    "description": "List accessible memory, plan and skill revisions with author and timestamp. Current resource and historical source permissions are checked for every revision. Sessions retain only their latest complete snapshot and have no revision history.",
     "scope": "orka.read",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -423,7 +423,7 @@
   },
   {
     "name": "compare_revisions",
-    "description": "Compare two accessible revisions. Returns changed file manifests and paginated before/after text for one file; session text excludes setup, analysis and tools.",
+    "description": "Compare two accessible memory, plan or skill revisions. Returns changed file manifests and paginated before/after text for one file. Sessions retain only their latest complete snapshot and cannot be compared by revision.",
     "scope": "orka.read",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",

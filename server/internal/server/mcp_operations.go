@@ -23,7 +23,10 @@ func (r Reader) operation(ctx context.Context, name string, input Object) (any, 
 		}
 		switch name {
 		case "get_resource_history":
-			r.accepted(q, project, text(input["resourceId"]))
+			resource := r.accepted(q, project, text(input["resourceId"]))
+			if !q.Require(text(resource["kind"]) != "session", 409, "Session revision history is unavailable; only the latest complete snapshot is retained") {
+				return nil
+			}
 			limit := pageLimit(input)
 			before := number(input["beforeRevision"])
 			rows := q.Rows("select payload from orka.snapshots where project_id=$1 and resource_id=$2 and ($3::bigint=0 or revision<$3::bigint) order by revision desc limit $4", project, input["resourceId"], before, limit+1)
@@ -293,7 +296,10 @@ func (r Reader) catalogText(q *Queries, resource Object) (string, bool) {
 }
 
 func (r Reader) compare(q *Queries, project string, input Object) Object {
-	r.accepted(q, project, text(input["resourceId"]))
+	resource := r.accepted(q, project, text(input["resourceId"]))
+	if !q.Require(text(resource["kind"]) != "session", 409, "Session revision history is unavailable; only the latest complete snapshot is retained") {
+		return nil
+	}
 	snapshots := []Object{}
 	for _, key := range []string{"fromRevision", "toRevision"} {
 		snapshot := object(q.One("select payload from orka.snapshots where project_id=$1 and resource_id=$2 and revision=$3", project, input["resourceId"], input[key])["payload"])

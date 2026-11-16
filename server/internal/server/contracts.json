@@ -2559,6 +2559,146 @@
         "type": "integer",
         "exclusiveMinimum": 0,
         "maximum": 9007199254740991
+      },
+      "sourceSnapshot": {
+        "type": "object",
+        "properties": {
+          "resourceId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "sourceId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "memory",
+              "skill",
+              "session",
+              "plan"
+            ]
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "shared",
+              "claude",
+              "codex"
+            ]
+          },
+          "logicalPath": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "x-orka-refinement": "relativePath"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "files": {
+            "maxItems": 200,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024,
+                  "x-orka-refinement": "relativePath"
+                },
+                "hash": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "size": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 134217728
+                },
+                "executable": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "path",
+                "hash",
+                "size",
+                "executable"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "deleted": {
+            "type": "boolean"
+          },
+          "memory": {
+            "type": "object",
+            "properties": {
+              "topic": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160,
+                "x-orka-trim": true
+              },
+              "scope": {
+                "type": "string",
+                "maxLength": 512
+              },
+              "provider": {
+                "type": "string",
+                "enum": [
+                  "codex",
+                  "claude",
+                  "manual"
+                ]
+              },
+              "supersedes": {
+                "default": [],
+                "maxItems": 20,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                }
+              }
+            },
+            "required": [
+              "topic",
+              "scope",
+              "provider"
+            ],
+            "additionalProperties": false,
+            "x-orka-refinement": "memoryMetadata"
+          },
+          "contextSources": {
+            "maxItems": 100,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          }
+        },
+        "required": [
+          "resourceId",
+          "kind",
+          "source",
+          "logicalPath",
+          "title",
+          "files",
+          "deleted"
+        ],
+        "additionalProperties": false,
+        "x-orka-refinement": "resourceInput"
       }
     },
     "required": [

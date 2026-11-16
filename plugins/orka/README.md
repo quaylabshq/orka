@@ -43,6 +43,12 @@ The single server exposes 27 unique tools. Reads require `orka.read`. Mutations 
 | Local installation | `list_local_skills`, `install_skill` |
 | This Mac's sync | `get_sync_status`, `retry_sync`, `repair_sync` |
 
+`get_resource_history` and `compare_revisions` apply to memories, plans, and
+skills. Sessions expose only their latest complete shared snapshot, including
+the retained conversation and native lineage. Use `fetch_resource` to read that
+snapshot with its current revision; restart pagination if the revision changes.
+Session conflicts remain separately reviewable until resolved.
+
 Supply exact project/repository IDs returned by tools. The desktop derives account and service internally. Do not pass account IDs, desktop tokens or connection proofs. Use `list_skills` for accepted shared skills and `list_local_skills` for local/global/shared install packages. Installation uses the returned `origin`, `skillId`, `snapshotHash` and shared `expectedRevision`; it preserves supporting files, executable flags and divergent destination files. Installing does not execute a skill or enable sharing.
 
 Keep operation IDs when retrying uncertain writes. Reread stale revisions before reconciling. Report `queued`, `approval_required` and `conflict` accurately; scheduling work is not completed synchronization. Retry/repair preserve pending bytes and request identities.

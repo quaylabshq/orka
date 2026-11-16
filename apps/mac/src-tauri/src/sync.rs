@@ -208,6 +208,282 @@ pub fn apply_event(db: &rusqlite::Connection, event: &Value) -> Result<()> {
     }
     Ok(())
 }
+
+fn copy_state_key(id: &str) -> String {
+    format!("sessionCopy:{id}")
+}
+
+fn copy_source_snapshot(base: &Value) -> Result<Value> {
+    if base["kind"] != "session"
+        || base["deleted"] == true
+        || base["files"].as_array().is_none_or(Vec::is_empty)
+    {
+        return Err("The cached session snapshot is unavailable; local work was preserved".into());
+    }
+    let mut snapshot = serde_json::Map::new();
+    for field in [
+        "resourceId",
+        "sourceId",
+        "kind",
+        "source",
+        "logicalPath",
+        "title",
+        "files",
+        "deleted",
+        "contextSources",
+    ] {
+        if let Some(value) = base.get(field).filter(|value| !value.is_null()) {
+            snapshot.insert(field.into(), value.clone());
+        }
+    }
+    Ok(Value::Object(snapshot))
+}
+
+fn store_session_snapshot(
+    db: &rusqlite::Connection,
+    source: &Value,
+    device: &str,
+    negotiate: bool,
+) -> Result<Value> {
+    let project = source["projectId"].as_str().ok_or("Missing project")?;
+    let resource = source["resourceId"].as_str().ok_or("Missing resource")?;
+    if source["revision"]
+        .as_u64()
+        .is_none_or(|revision| revision == 0)
+    {
+        return Err("The cached session revision is unavailable; local work was preserved".into());
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    let request = json!({"version":2,"id":id,"projectId":project,"resourceId":resource,"deviceId":device,"expectedRevision":source["revision"],"sourceSnapshot":copy_source_snapshot(source)?});
+    indexer::queue(db, project, "/v2/sessions/copy", &request)?;
+    // Keep the selected local snapshot even when an older service needs the
+    // legacy wire body. It remains the source for a later known-failed retry.
+    db::set(
+        db,
+        &copy_state_key(&id),
+        &json!({"source":source,"negotiate":negotiate}),
+    )?;
+    Ok(request)
+}
+
+pub(crate) fn queue_session_snapshot(
+    db: &rusqlite::Connection,
+    source: &Value,
+    device: &str,
+) -> Result<Value> {
+    let tx = db
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
+    let request = store_session_snapshot(&tx, source, device, true)?;
+    tx.commit().map_err(|error| error.to_string())?;
+    Ok(request)
+}
+
+pub(crate) fn queue_session_copy(
+    db: &rusqlite::Connection,
+    binding: &Value,
+    device: &str,
+) -> Result<Value> {
+    let tx = db
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
+    let request = store_session_snapshot(&tx, &binding["base"], device, true)?;
+    let mut binding = binding.clone();
+    binding["copyRequest"] = request["id"].clone();
+    db::upsert(
+        &tx,
+        "bindings",
+        request["resourceId"].as_str().ok_or("Missing resource")?,
+        request["projectId"].as_str().ok_or("Missing project")?,
+        &binding,
+    )?;
+    tx.commit().map_err(|error| error.to_string())?;
+    Ok(request)
+}
+
+/// Freeze the wire body before its first attempt. A service upgrade must not
+/// change the identity of an uncertain legacy request.
+pub(crate) fn prepare_session_copy(
+    db: &rusqlite::Connection,
+    input: &Value,
+    latest_only: bool,
+) -> Result<Value> {
+    let id = input["id"].as_str().ok_or("Missing request ID")?;
+    let key = copy_state_key(id);
+    let mut state = db::get(db, &key)?;
+    if state["negotiate"] != true {
+        return Ok(input.clone());
+    }
+    let mut request = input.clone();
+    if !latest_only {
+        request
+            .as_object_mut()
+            .ok_or("Invalid session copy request")?
+            .remove("sourceSnapshot");
+    }
+    let tx = db
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
+    if tx
+        .execute(
+            "UPDATE outbox SET value=? WHERE id=? AND value=?",
+            params![request.to_string(), id, input.to_string()],
+        )
+        .map_err(|error| error.to_string())?
+        != 1
+    {
+        return Err("The queued session copy changed; retry was preserved".into());
+    }
+    state["negotiate"] = json!(false);
+    db::set(&tx, &key, &state)?;
+    tx.commit().map_err(|error| error.to_string())?;
+    Ok(request)
+}
+
+/// Return only the selected revision, never a newer cache entry. This also
+/// lets permission/source removal preserve an unsent explicit copy as a draft.
+pub(crate) fn queued_session_snapshot(
+    db: &rusqlite::Connection,
+    input: &Value,
+) -> Result<Option<Value>> {
+    let Some(id) = input["resourceId"].as_str() else {
+        return Ok(None);
+    };
+    let state = match input["id"].as_str() {
+        Some(request) => db::get(db, &copy_state_key(request))?,
+        None => Value::Null,
+    };
+    let mut wire = input["sourceSnapshot"].clone();
+    if wire.is_object() {
+        wire["projectId"] = input["projectId"].clone();
+        wire["revision"] = input["expectedRevision"].clone();
+    }
+    let binding = indexer::binding(db, id)?;
+    let current = db::rows(db, "SELECT value FROM resources WHERE id=?", &[&id])?
+        .into_iter()
+        .next()
+        .unwrap_or(Value::Null);
+    for source in [&state["source"], &wire, &binding["base"], &current] {
+        if source["kind"] == "session"
+            && source["resourceId"] == input["resourceId"]
+            && source["projectId"] == input["projectId"]
+            && source["revision"] == input["expectedRevision"]
+        {
+            return Ok(Some(source.clone()));
+        }
+    }
+    Ok(None)
+}
+
+pub(crate) fn clear_session_copy(db: &rusqlite::Connection, id: &str) -> Result<()> {
+    db.execute("DELETE FROM meta WHERE key=?", [copy_state_key(id)])
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+/// A legacy copy can be replaced only after the service explicitly reports that
+/// no outcome exists for its unavailable revision. Its selected snapshot remains
+/// durable independently of native bindings and newer remote snapshots.
+pub(crate) fn replace_unavailable_session_copy(
+    db: &rusqlite::Connection,
+    input: &Value,
+    device: &str,
+) -> Result<bool> {
+    if input["sourceSnapshot"].is_object() {
+        return Ok(false);
+    }
+    let Some(source) = queued_session_snapshot(db, input)? else {
+        return Ok(false);
+    };
+    let resource = input["resourceId"].as_str().ok_or("Missing resource")?;
+    let mut binding = indexer::binding(db, resource)?;
+    let rebind = binding["needsCopy"] == true && binding["copyRequest"] == input["id"];
+    if rebind
+        && (binding["base"]["resourceId"] != input["resourceId"]
+            || binding["base"]["projectId"] != input["projectId"]
+            || binding["base"]["revision"] != input["expectedRevision"])
+    {
+        return Ok(false);
+    }
+    let tx = db
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
+    let replacement = store_session_snapshot(&tx, &source, device, false)?;
+    if rebind {
+        binding["copyRequest"] = replacement["id"].clone();
+        db::upsert(
+            &tx,
+            "bindings",
+            resource,
+            input["projectId"].as_str().ok_or("Missing project")?,
+            &binding,
+        )?;
+    }
+    if tx
+        .execute("DELETE FROM outbox WHERE id=?", [input["id"].as_str()])
+        .map_err(|error| error.to_string())?
+        != 1
+    {
+        return Err("The queued session copy changed; local work was preserved".into());
+    }
+    clear_session_copy(&tx, input["id"].as_str().ok_or("Missing request ID")?)?;
+    tx.commit().map_err(|error| error.to_string())?;
+    Ok(true)
+}
+
+pub(crate) fn acknowledge_session(
+    db: &rusqlite::Connection,
+    project: &str,
+    path: &str,
+    input: &Value,
+    receipt: &Value,
+) -> Result<()> {
+    if input["resource"]["kind"] == "session"
+        && input["resource"]["deleted"] != true
+        && receipt["conflict"] == false
+    {
+        let id = input["resource"]["resourceId"]
+            .as_str()
+            .ok_or("Missing resource")?;
+        let mut binding = indexer::binding(db, id)?;
+        if !binding["nativeId"].is_null() {
+            // An original ACK may precede the latest pull. Its uploaded bytes
+            // still describe this native binding; never substitute the latest.
+            binding["previous"] = binding["base"].clone();
+            binding["base"] = receipt["event"]["resource"].clone();
+            db::upsert(db, "bindings", id, project, &binding)?;
+        }
+    }
+    if path == "/v2/sessions/copy" || (path == "/v2/sessions/resolve" && input["action"] == "copy")
+    {
+        let old = input["resourceId"]
+            .as_str()
+            .ok_or("Missing copied resource")?;
+        let mut binding = indexer::binding(db, old)?;
+        if (binding["needsCopy"] == true && binding["copyRequest"] == input["id"])
+            || input["action"] == "copy"
+        {
+            let resource = &receipt["event"]["resource"];
+            binding["base"] = resource.clone();
+            binding["needsCopy"] = json!(false);
+            binding["copyRequest"] = Value::Null;
+            db.execute("DELETE FROM bindings WHERE id=?", [old])
+                .map_err(|error| error.to_string())?;
+            db::upsert(
+                db,
+                "bindings",
+                resource["resourceId"].as_str().ok_or("Missing copy")?,
+                project,
+                &binding,
+            )?;
+        }
+    }
+    if path == "/v2/sessions/copy" {
+        clear_session_copy(db, input["id"].as_str().ok_or("Missing request ID")?)?;
+    }
+    Ok(())
+}
+
 pub fn live_hash(binding: &Value, kind: &str, root: &Path) -> Result<Vec<String>> {
     let mut hashes = Vec::new();
     for path in binding["paths"].as_array().ok_or("Missing binding paths")? {
@@ -992,32 +1268,16 @@ async fn sync_workspace(
         packages::recover_installations(db)?;
     }
     let device = db::device(db)?;
-    for mut b in db::rows(
+    for binding in db::rows(
         db,
         &format!("SELECT value FROM bindings WHERE json_extract(value,'$.needsCopy')=1 AND project IN (SELECT id FROM projects WHERE {})",crate::projects::ACTIVE),
         &[],
     )? {
-        if project_filter.is_some_and(|id| b["base"]["projectId"] != id) {
+        if project_filter.is_some_and(|id| binding["base"]["projectId"] != id) {
             continue;
         }
-        if b["copyRequest"].is_null() {
-            let id = uuid::Uuid::new_v4().to_string();
-            let r = b["base"].clone();
-            let request = json!({"version":2,"id":id,"projectId":r["projectId"],"resourceId":r["resourceId"],"deviceId":device,"expectedRevision":r["revision"]});
-            indexer::queue(
-                db,
-                r["projectId"].as_str().ok_or("Missing project")?,
-                "/v2/sessions/copy",
-                &request,
-            )?;
-            b["copyRequest"] = json!(id);
-            db::upsert(
-                db,
-                "bindings",
-                r["resourceId"].as_str().ok_or("Missing resource")?,
-                r["projectId"].as_str().ok_or("Missing project")?,
-                &b,
-            )?;
+        if binding["copyRequest"].is_null() {
+            queue_session_copy(db, &binding, &device)?;
         }
     }
     let local = db::rows(
@@ -1161,7 +1421,7 @@ async fn sync_workspace(
             .iter()
             .find(|p| p["id"] == q["project"])
             .and_then(|p| crate::projects::display_name(p));
-        let input = &q["value"];
+        let mut input = q["value"].clone();
         let resource_name = input["resource"]["title"]
             .as_str()
             .or(input["resource"]["logicalPath"].as_str());
@@ -1178,6 +1438,23 @@ async fn sync_workspace(
             Some(uploads.len()),
         )?;
         let result = async {
+            if q["path"] == "/v2/sessions/copy" {
+                let id = input["id"].as_str().ok_or("Missing request ID")?;
+                if db::get(db, &copy_state_key(id))?["negotiate"] == true {
+                    let capabilities =
+                        api_as(owner, "GET", "/v2/projects/capabilities", None).await?;
+                    input =
+                        prepare_session_copy(db, &input, capabilities["sessionLatestOnly"] == 1)?;
+                }
+                if input["sourceSnapshot"].is_object() {
+                    crate::repair::upload(
+                        owner,
+                        q["project"].as_str().ok_or("Missing project")?,
+                        &input["sourceSnapshot"],
+                    )
+                    .await?;
+                }
+            }
             if q["path"] == crate::selective_sharing::QUEUE_PATH {
                 return crate::selective_sharing::send(db, owner, q).await;
             }
@@ -1200,7 +1477,7 @@ async fn sync_workspace(
                 owner,
                 "POST",
                 q["path"].as_str().ok_or("Missing upload path")?,
-                Some(input),
+                Some(&input),
             )
             .await
         }
@@ -1217,55 +1494,30 @@ async fn sync_workspace(
                 } else {
                     apply_event(&tx, &receipt["event"])?;
                 }
-                if input["resource"]["kind"] == "session"
-                    && input["resource"]["deleted"] != true
-                    && receipt["conflict"] == false
-                {
-                    let id = input["resource"]["resourceId"]
-                        .as_str()
-                        .ok_or("Missing resource")?;
-                    let mut binding = indexer::binding(&tx, id)?;
-                    if !binding["nativeId"].is_null() {
-                        binding["previous"] = binding["base"].clone();
-                        binding["base"] = receipt["event"]["resource"].clone();
-                        db::upsert(
-                            &tx,
-                            "bindings",
-                            id,
-                            q["project"].as_str().ok_or("Missing project")?,
-                            &binding,
-                        )?;
-                    }
-                }
-                if q["path"] == "/v2/sessions/copy"
-                    || (q["path"] == "/v2/sessions/resolve" && input["action"] == "copy")
-                {
-                    let old = input["resourceId"]
-                        .as_str()
-                        .ok_or("Missing copied resource")?;
-                    let mut b = indexer::binding(&tx, old)?;
-                    if b["needsCopy"] == true || input["action"] == "copy" {
-                        let r = &receipt["event"]["resource"];
-                        b["base"] = r.clone();
-                        b["needsCopy"] = json!(false);
-                        b["copyRequest"] = Value::Null;
-                        tx.execute("DELETE FROM bindings WHERE id=?", [old])
-                            .map_err(|e| e.to_string())?;
-                        db::upsert(
-                            &tx,
-                            "bindings",
-                            r["resourceId"].as_str().ok_or("Missing copy")?,
-                            q["project"].as_str().ok_or("Missing project")?,
-                            &b,
-                        )?;
-                    }
-                }
+                acknowledge_session(
+                    &tx,
+                    q["project"].as_str().ok_or("Missing project")?,
+                    q["path"].as_str().ok_or("Missing upload path")?,
+                    &input,
+                    &receipt,
+                )?;
                 tx.execute("DELETE FROM outbox WHERE id=?", [q["id"].as_str()])
                     .map_err(|e| e.to_string())?;
                 tx.commit().map_err(|e| e.to_string())?;
                 deferred.remove(&q["id"]);
             }
             Err(error) => {
+                if q["path"] == "/v2/sessions/copy"
+                    && error == "409: Cached session revision unavailable"
+                    && api_as(owner, "GET", "/v2/projects/capabilities", None).await?
+                        ["sessionLatestOnly"]
+                        == 1
+                    && replace_unavailable_session_copy(db, &input, &device)?
+                {
+                    deferred.remove(&q["id"]);
+                    db::set(db, "syncUploadCursor", &q["sequence"])?;
+                    continue;
+                }
                 db.execute(
                     "UPDATE outbox SET error=? WHERE id=?",
                     params![error, q["id"].as_str()],

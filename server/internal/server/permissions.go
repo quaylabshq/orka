@@ -191,13 +191,13 @@ func (s *Store) blobReadable(q *Queries, user, project, hash string) bool {
 		return q.err == nil
 	}
 	pattern := string(jsonBytes([]any{Object{"hash": hash}}))
-	resources := q.Rows("select distinct resource_id from orka.snapshots where project_id=$1 and payload->'files' @> $2::jsonb union select resource_id from orka.conflicts where project_id=$1 and payload->'candidate'->'files' @> $2::jsonb", project, pattern)
+	resources := q.Rows("select id as resource_id from orka.resources where project_id=$1 and payload->'files' @> $2::jsonb union select resource_id from orka.snapshots where project_id=$1 and payload->>'kind'<>'session' and payload->'files' @> $2::jsonb union select resource_id from orka.conflicts where project_id=$1 and not resolved and payload->'candidate'->'files' @> $2::jsonb", project, pattern)
 	for _, r := range resources {
 		if s.canRead(q, user, project, text(r["resource_id"])) {
 			return true
 		}
 	}
-	proposals := q.Rows("select payload,content from orka.review_requests where project_id=$1 and content->'resource'->'files' @> $2::jsonb", project, pattern)
+	proposals := q.Rows("select payload,content from orka.review_requests where project_id=$1 and (content->'resource'->>'kind'<>'session' or payload->>'status'='pending') and content->'resource'->'files' @> $2::jsonb", project, pattern)
 	for _, row := range proposals {
 		if s.requestReadable(q, user, project, object(row["payload"]), object(field(row["content"], "resource"))) {
 			return true

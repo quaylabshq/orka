@@ -11,6 +11,7 @@ type BlobStore interface {
 	Read(string, string) ([]byte, error)
 	Put(string, []byte) (string, error)
 	RemoveProject(string) error
+	Remove(string, string) error
 }
 
 func (b *Blobs) path(project, hash string) (string, error) {
@@ -69,6 +70,41 @@ func (b *Blobs) Put(project string, data []byte) (string, error) {
 		return "", err
 	}
 	return hash, nil
+}
+func (b *Blobs) Remove(project, hash string) error {
+	path, err := b.path(project, hash)
+	if err != nil {
+		return err
+	}
+	parent, err := os.Lstat(filepath.Dir(path))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !parent.IsDir() {
+		return errors.New("blob cleanup requires a project directory, not a symlink")
+	}
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return errors.New("blob cleanup requires a regular file")
+	}
+	if err = os.Remove(path); err != nil {
+		return err
+	}
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
 }
 func (b *Blobs) RemoveProject(project string) error {
 	if !validUUID(project) {

@@ -543,7 +543,9 @@ func (s *Store) pull(q *Queries, user, project string, cursor, policyRevision in
 	}
 	events, presence := []any{}, []any{}
 	for _, event := range scanned {
-		visible := s.visibleEvent(q, user, project, event)
+		// Feed replay must use current complete session files. Mutation receipts
+		// intentionally keep their original ACK manifests for local bindings.
+		visible := s.visibleEvent(q, user, project, s.currentSessionEvent(q, project, event))
 		if visible != nil {
 			r := object(visible["resource"])
 			events = append(events, merge(visible, Object{"resource": merge(r, Object{"access": s.access(q, user, project, r)})}))
@@ -565,4 +567,28 @@ func (s *Store) pull(q *Queries, user, project string, cursor, policyRevision in
 		requests = s.requestRows(q, user, project)
 	}
 	return Object{"events": events, "cursor": next, "hasMore": next < maximum, "presence": presence, "reset": reset, "governed": p["governed"], "policyRevision": p["policyRevision"], "requests": requests}
+}
+
+// currentSessionEvent materializes a sync feed event without reviving old
+// transcript files or resolved conflict candidates. The original event revision
+// remains the pagination cursor, while each resource carries its current version.
+func (s *Store) currentSessionEvent(q *Queries, project string, event Object) Object {
+	out := clone(event)
+	part := func(value Object) Object {
+		resource := object(value["resource"])
+		current := s.resource(q, project, text(resource["resourceId"]))
+		if text(current["kind"]) != "session" {
+			return value
+		}
+		return merge(value, Object{"resource": current, "conflicts": s.conflicts(q, project, text(current["resourceId"]))})
+	}
+	out = part(out)
+	if related, exists := event["related"]; exists {
+		items := []any{}
+		for _, raw := range array(related) {
+			items = append(items, part(object(raw)))
+		}
+		out["related"] = items
+	}
+	return out
 }
