@@ -5,6 +5,8 @@ description: Prepare work from a ChatGPT or Codex conversation and selected shar
 
 # Prepare a Claude Code handoff
 
+All tools connect through the running Orka desktop and use its signed-in account. Check `get_connection_status` first; sign in or approve the connector session in Orka if required. A stale, denied or revoked session requires reconnecting from the assistant. There is no separate plugin login.
+
 The user requests context transfer to Claude Code. The plugin prepares a reviewable Markdown document and starter prompt. It does not launch Claude Code, publish project knowledge or transfer executable session state.
 
 1. Resolve the Orka project. Use `get_project_context`, `list_team_members`, `list_sessions` and `fetch_resource` as needed to understand the selected shared work. Fetch all relevant pages before drawing conclusions. Use explicitly relevant sources, not a bulk export of unrelated conversations.

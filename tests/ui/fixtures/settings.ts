@@ -260,6 +260,7 @@ export async function settingsFixture(
       updateError: options.updateError ?? "",
       updateDelay: options.updateDelay ?? 0,
       pluginCallback: "",
+      pluginRequestId: "",
       pluginState: "not_linked",
       pluginError: options.pluginError ?? "",
       pluginStatusDelay: options.pluginStatusDelay ?? 0,
@@ -298,10 +299,10 @@ export async function settingsFixture(
             controls.pluginCallback = "";
             return callback || null;
           }
-          if (command === "route_plugin_callback") {
-            controls.pluginCallback = args.callback;
-            return true;
-          }
+          if (command === "plugin_connection_requests")
+            return controls.pluginRequestId
+              ? [{ requestId: controls.pluginRequestId }]
+              : [];
           if (command === "plugin_authorization") {
             await wait(options.pluginDelay ?? 0);
             if (controls.pluginError) throw new Error(controls.pluginError);
@@ -318,14 +319,18 @@ export async function settingsFixture(
                   id: "fixture-assistant",
                   name: options.pluginClientName ?? "Fixture Assistant",
                 },
-                scopes: ["orka.read", "orka.write"],
+                scopes: ["orka.read", "orka.write", "orka.manage"],
                 permissionDescriptions: [
-                  "Read accessible shared project resources, revision history, permissions and review requests. When connected with the desktop app, also discover local resource and skill metadata, preview selected snapshots and view sync status on the approved Mac.",
-                  "Create shared memories, update plans and resolve session conflicts within your current access. When connected with the desktop app, also share explicitly selected snapshots, install selected skills and retry or repair sync on the approved Mac.",
+                  "Read local and shared project context.",
+                  "Share selected content, install skills, update memories and plans, and retry or repair synchronization.",
+                  "Manage project permissions and review requests within your existing authority.",
                 ],
                 expiresAt: new Date(Date.now() + 60000).toISOString(),
               };
             if (args.operation === "approve") controls.pluginState = "linked";
+            if (args.operation === "revoke")
+              controls.pluginState = "not_linked";
+            controls.pluginRequestId = "";
             return {
               [args.operation === "approve" ? "approved" : "cancelled"]: true,
             };
@@ -339,15 +344,25 @@ export async function settingsFixture(
                 displayName: profile.displayName,
               },
               serviceOrigin: state.config.apiUrl,
-              client:
+              connections:
                 controls.pluginState === "not_linked"
-                  ? null
-                  : {
-                      id: "fixture-assistant",
-                      name: options.pluginClientName ?? "Fixture Assistant",
-                    },
-              scopes: ["orka.read", "orka.write"],
-              connectedAt: null,
+                  ? []
+                  : [
+                      {
+                        id: "fixture-connection",
+                        client: {
+                          id: "fixture-assistant",
+                          name: options.pluginClientName ?? "Fixture Assistant",
+                        },
+                        scopes: ["orka.read", "orka.write", "orka.manage"],
+                        state:
+                          controls.pluginState === "linked"
+                            ? "approved"
+                            : "reconnect_required",
+                        connectedAt: null,
+                      },
+                    ],
+              pendingCount: controls.pluginRequestId ? 1 : 0,
               reason:
                 controls.pluginState === "reconnect_required"
                   ? "Your account or service changed. Reconnect your assistant."

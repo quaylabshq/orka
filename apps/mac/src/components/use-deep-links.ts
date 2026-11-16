@@ -18,13 +18,8 @@ export function useDeepLinks(onLink: (link: URL) => void, enabled = true) {
         try {
           const parsed = new URL(link);
           if (parsed.protocol !== "orka:") continue;
-          if (parsed.hostname === "auth" || parsed.hostname === "mcp") {
-            void invoke(
-              parsed.hostname === "mcp"
-                ? "route_plugin_callback"
-                : "route_auth_callback",
-              { callback: link },
-            ).catch(() => {
+          if (parsed.hostname === "auth") {
+            void invoke("route_auth_callback", { callback: link }).catch(() => {
               // Surface invalid/unsupported callbacks through the normal login error path.
               if (!stopped) handler.current(parsed);
             });

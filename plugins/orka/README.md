@@ -1,81 +1,72 @@
 # Orka plugin 0.3.0
 
-Search Orka context, inspect resource history, save memories and plans, review requests and permissions, install complete skills, and inspect local synchronization from your coding agent.
+The plugin uses **one login: the account signed in to Orka desktop**. It has one stdio server and five workflow skills for shared context, teammate sessions, handoffs, selected sharing and resource operations.
 
-The package includes five workflow skills. Its remote MCP server exposes 18 tools through OAuth. The desktop package also connects to the installed Orka app for private local discovery, selected sharing, skill installation and sync recovery. Remote-only hosts and cloud agents can operate shared resources; operations on a Mac require its local desktop connection.
+```text
+Assistant → local stdio bridge → running Orka desktop → Orka API
+                                   ├─ signed-in account / Keychain
+                                   ├─ connector approval and scopes
+                                   └─ local files, skills and sync
+```
 
-## New tools
+The bridge forwards requests over a private, profile-local Unix socket. It does not open account databases, read credentials or execute tools independently. The desktop executes local tools and calls the API with its own session for shared tools. Desktop credentials never reach the assistant. There is no remote MCP server or browser plugin login. Ordinary Dashboard login remains available for the web product.
 
-| Tool | Availability | Behavior |
-| --- | --- | --- |
-| `search_resources` | Remote | Search accessible memories, instructions, plans, skills and session snapshots across projects and repositories. |
-| `get_resource_history` | Remote | Inspect revisions with authors and timestamps. |
-| `compare_revisions` | Remote | Compare two revisions of an accessible resource. |
-| `list_skills` | Remote and desktop | Discover accepted shared skills; the desktop also discovers local skills. |
-| `install_skill` | Desktop | Install a complete local, global or accepted shared skill package into a connected project or supported agent. |
-| `create_memory` | Remote | Save knowledge to a selected project or repository through existing publish/review policy. |
-| `update_plan` | Remote | Update an existing plan with revision protection. |
-| `get_sync_status` | Desktop | Inspect this Mac's project progress, queue, conflicts and errors. |
-| `get_connection_status` | Desktop | Inspect this Mac's account, service, and plugin link state without reading project content or requiring a connection proof. |
-| `retry_sync` | Desktop | Schedule pending or failed work for retry while retaining request identities. |
-| `repair_sync` | Desktop | Repair recoverable local sync state while preserving pending changes. |
-| `get_permissions` | Remote | Inspect effective project, member or resource access. |
-| `update_permissions` | Remote | Change permissions within the caller's existing authority. |
-| `list_requests` | Remote | List accessible requests and proposals awaiting review. |
-| `review_request` | Remote | Inspect and approve or reject a selected request through Orka's workflow. |
-| `resolve_conflict` | Remote | Inspect a sync conflict and apply the selected revision-protected resolution. |
+## Connect
 
-Existing project-context, teammate-session, handoff and selected-sharing tools remain available. Resource access, source audiences, authorship and owner-review requirements are enforced by Orka. ENV content is excluded.
+1. Install an updated Orka desktop and sign in normally. The service must advertise `desktopConnector: 1` at `/v2/instance` for shared tools.
+2. Install the desktop plugin ZIP in Codex or Claude Code and connect Orka.
+3. Review the account, service and requested access in Orka. Approve only the access you want to grant this connector session.
 
-## Consent and outcomes
+`get_connection_status` works before approval and explains the next action without exposing project content. Every new assistant stdio session needs approval. The assistant's reported name is a label, not a verified application identity. An approved live session survives a same-account app restart; a new connection does not inherit another session's approval.
 
-`orka.read` permits reads. `orka.write` additionally permits memory/plan writes, conflict resolutions, selected local sharing, skill installation, and local sync retry/repair; `orka.manage` permits permission changes and request reviews. Mutation tools require read access plus their specific scope and the requesting user's project authority. The consent screen describes the requested scopes. Existing read-only grants stay read-only, including after refresh; reconnect and explicitly consent to enable new operations.
+Signing out, switching account or service, or revoking a connector permanently invalidates its old session, including after switching back. Reconnect from the assistant and approve a new session in Orka. **Settings → Connectors** shows sessions and lets you revoke access. There is no account selection in the plugin.
 
-Use exact project/repository IDs and current resource or policy revisions. Retain an operation ID when retrying an uncertain write. A stale revision requires rereading and reconciling the newer state. Report the returned result accurately: queued, conflicted or awaiting approval does not mean published or completed.
+Closing the main window keeps Orka available through its menu bar. Explicit Quit stops the broker. A new bridge may open the configured app/profile on initial connection; an existing bridge does not reopen Orka after Quit. Open Orka manually before using that live bridge again.
 
-## Local skills and sync
+## Access and tools
 
-Connect the remote plugin through your assistant and choose **Use account in Orka**. The app shows its actual signed-in account, service, requesting client, and scopes. Explicitly approve that connection, then return to the browser to finish. No desktop session token is passed to the browser or assistant. Signing into an assistant account does not select an Orka account.
+The single server exposes 27 unique tools. Reads require `orka.read`. Mutations require `orka.write`; permission changes and request decisions require `orka.manage`, in addition to read access and existing project permissions. Approval cannot bypass service permissions, owner review, source restrictions or revision checks. ENV content is excluded.
 
-Before local content calls, remote `get_profile` must return `desktopLinked: true` and a current `connectionProof`. Pass that proof with the returned account ID, service origin, and selected project ID to every local content tool, including discovery and sync status. Orka verifies the proof against the live grant and this Mac's account, service, device, and connection generation; caller-supplied IDs alone never authorize local access. Local reads require `orka.read`; selected sharing, installation, retry, and repair also require `orka.write`.
+| Area | Tools |
+| --- | --- |
+| Connection | `get_connection_status` |
+| Shared context | `get_profile`, `list_projects`, `get_project_context`, `list_team_members`, `list_sessions`, `fetch_resource`, `prepare_claude_handoff`, `search_resources` |
+| History and shared skills | `get_resource_history`, `compare_revisions`, `list_skills` |
+| Shared writes and reviews | `create_memory`, `update_plan`, `resolve_conflict`, `get_permissions`, `update_permissions`, `list_requests`, `review_request` |
+| Private local snapshots | `list_local_resources`, `preview_share`, `share_selected` |
+| Local installation | `list_local_skills`, `install_skill` |
+| This Mac's sync | `get_sync_status`, `retry_sync`, `repair_sync` |
 
-If local tools require reconnection, use local `get_connection_status` for the actual account and service, then reconnect through the assistant and approve **Use account in Orka** again. Fetch a fresh remote `get_profile` afterward. Sign-out, account changes, and service changes invalidate previous local links even after switching back. A fresh explicitly approved connection works without restarting the local process. Orka does not switch accounts, merge accounts, or retarget an existing grant. Existing browser-only clients continue to use remote tools; they need desktop approval before local content access.
+Supply exact project/repository IDs returned by tools. The desktop derives account and service internally. Do not pass account IDs, desktop tokens or connection proofs. Use `list_skills` for accepted shared skills and `list_local_skills` for local/global/shared install packages. Installation uses the returned `origin`, `skillId`, `snapshotHash` and shared `expectedRevision`; it preserves supporting files, executable flags and divergent destination files. Installing does not execute a skill or enable sharing.
 
-Skill discovery returns an origin (`local`, `global` or `shared`), `skillId`, and `snapshotHash`. Pass those exact values to `install_skill` with `target` set to `project`, `codex` or `claude`; shared skills additionally require their `expectedRevision`. Project installs populate both `.agents/skills` and `.claude/skills`; agent targets use their configured homes. Installation preserves the complete package and executable flags and refuses divergent destination files. Installing a skill does not execute its scripts or enable sharing.
+Keep operation IDs when retrying uncertain writes. Reread stale revisions before reconciling. Report `queued`, `approval_required` and `conflict` accurately; scheduling work is not completed synchronization. Retry/repair preserve pending bytes and request identities.
 
-Sync status describes the connected Mac, not every device in the project. Retry processes existing queued work without scanning new local edits. Account-wide permission refresh retains Orka’s normal revocation cleanup; it may update access state outside the selected project. Retry preserves queued payloads and operation IDs. Repair skips unsafe recovery and preserves pending writes and conflicts. Check status after a retry; scheduling work is not proof of completed synchronization. A cloud-only connection cannot inspect a Mac's private files or recover its local queue.
+## Selected sharing and handoffs
 
-## Selected sharing
+Only an explicit request authorizes publishing one selected frozen snapshot. Use `list_local_resources`, identify the actual item, `preview_share`, then `share_selected`. Recency alone does not identify the current conversation. Sharing once does not authorize future turns or enable automatic category sharing. Complete skills include their supporting files; arbitrary paths and ENV files cannot be shared.
 
-Each category's automatic-sharing preference remains unchanged. **Only when asked** keeps local items private until an explicit request publishes one frozen snapshot. Sharing once does not authorize later edits or conversation turns. Sessions default to this mode for newly connected projects; existing preferences are preserved. ENV sets retain their separate workflow and cannot be published by this plugin.
+`prepare_claude_handoff` returns selected shared excerpts, source revisions and URLs plus supplied current-chat context as Markdown and a starter prompt. It does not transfer unseen history, credentials, local changes or executable agent state, and does not publish a resource.
 
-Use `list_local_resources`, `preview_share` and `share_selected` for an existing local item. Identify the actual item; recency alone cannot establish the current conversation. The preview freezes exact bytes. Publication returns `published`, `approval_required`, `queued` or `conflict`, and safe retries retain the same request ID.
+## Package locally
 
-## Build and connect
+```sh
+node plugins/orka/scripts/package.mjs artifacts/orka-plugin-0.3.0.zip
+```
 
-1. Update the API and apply its migrations, including MCP scope, operation-receipt, and desktop-connection storage. For the managed service, update the Dashboard consent implementation before enabling desktop account connections. The native handoff and proof verification use `/v2/plugin/connection` and `/v2/plugin/connection/verify`; remote `get_profile` supplies the proof only for a desktop-approved grant. Existing remote read-only clients continue to work. Selected sharing additionally requires `selectedSharing: 1` in `/v2/projects/capabilities`.
-2. Build against the updated endpoint:
+This creates one desktop-only ZIP containing Codex and Claude manifests, the same `.mcp.json`, skills and assets. Packaging works offline and contains no account credentials. The default executable is `/Applications/Orka.app/Contents/MacOS/portable-workspace-mac`. For an isolated development app/profile:
 
-   ```sh
-   node plugins/orka/scripts/package.mjs https://your-orka-service.example/mcp artifacts/orka-plugin-0.3.0.zip
-   ```
+```sh
+node plugins/orka/scripts/package.mjs artifacts/orka-dev.zip /absolute/path/to/orka-desktop demo-profile
+```
 
-   The packager validates the 18 required remote tools, their read/write annotations, required scopes and OAuth discovery. Desktop packaging also requires `pluginConnection: 1` in `/v2/instance`. It creates the portable ZIP and `orka-plugin-0.3.0-desktop.zip`. Use `--remote-only` to create just the portable ZIP for an older service that supports the remote tool contract. Discovery verification does not establish authenticated host or native connection acceptance.
-
-3. Use the portable ZIP for remote integrations. Codex and Claude Code on a Mac use the desktop ZIP and an updated Orka app supporting native connection approval and `--orka-plugin`. The default executable is `/Applications/Orka.app/Contents/MacOS/portable-workspace-mac`; pass another absolute path as the fourth argument for a development build. The local process reads project content only after validating a proof for the approved native account.
-4. Install through the host's local plugin support, then connect using browser consent. Choose **Use account in Orka** to link local operations to the account shown in the desktop approval. A browser-account connection remains remote-only. Agent-account login is separate from Orka login. Packages contain no account credentials; a `connectionProof` in an authenticated tool result is short-lived and scoped to native connection verification, never a desktop session token. Do not log, publish, or reuse it across accounts.
+A profile only selects the desktop instance; it never supplies account authority. Legacy remote endpoint arguments and `--remote-only` are rejected. Remove the old HTTP connector and install/reconnect this package; legacy remote MCP/OAuth routes return HTTP 410 with desktop guidance. Older API services produce an explicit upgrade error for shared tools. There is no cloud-only alternative.
 
 For Claude Code:
 
 ```sh
-unzip artifacts/orka-plugin-0.3.0-desktop.zip -d artifacts/orka-plugin
+unzip artifacts/orka-plugin-0.3.0.zip -d artifacts/orka-plugin
 claude plugin validate artifacts/orka-plugin/orka --strict
-claude --plugin-dir artifacts/orka-plugin/orka plugin details orka
 claude --plugin-dir artifacts/orka-plugin/orka
 ```
 
-Use isolated accounts, project folders and agent homes to validate writes, review policy, stale revisions, permission removal, complete skill installation and pending-preserving sync recovery. Signed app distribution, plugin publication and service deployment are separate release steps.
-
-## Handoffs
-
-`prepare_claude_handoff` returns selected shared excerpts, source revisions and URLs, supplied current-chat context, decisions and next steps as Markdown plus a starter prompt. Saving or delivering it does not publish it through Orka. Local code changes, credentials, executable agent state and unseen conversation history are outside the transfer.
+Run `npm run test:plugin-native` against a debug build for isolated broker/bridge/account-switch acceptance. Packaging metadata does not prove authenticated runtime acceptance. Signed installation, plugin publication and production service deployment remain separate release steps.

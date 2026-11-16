@@ -29,8 +29,7 @@ async function capture(page: Page, state: string) {
 
 const openConnection = async (page: Page) => {
   await page.evaluate(() => {
-    (window as any).settingsControls.pluginCallback =
-      `orka://mcp/authorize?handoff=${"h".repeat(43)}&service=https%3A%2F%2Ffixture.example`;
+    (window as any).settingsControls.pluginRequestId = "fixture-request";
   });
   return page.getByRole("dialog", {
     name: "Connect to Orka",
@@ -68,7 +67,13 @@ test("desktop consent shows the native identity and submits only its request ID"
       ({ command, args }) =>
         command === "plugin_authorization" && args.operation === "approve",
     )?.args,
-  ).toEqual({ operation: "approve", input: { requestId: "fixture-request" } });
+  ).toEqual({
+    operation: "approve",
+    input: {
+      requestId: "fixture-request",
+      scopes: ["orka.read", "orka.write", "orka.manage"],
+    },
+  });
   await dialog.getByRole("button", { name: "Done", exact: true }).click();
   await expect(dialog).toHaveCount(0);
   expect(
@@ -246,7 +251,10 @@ test("connections show reconnect instructions and refresh recorded approval", as
     .click();
   await expect(panel.getByRole("status")).toHaveText("Reconnect required");
   await expect(
-    panel.getByText("Use account in Orka", { exact: true }),
+    panel.getByText(
+      "Approve the account and access shown in Orka. Each new session needs approval.",
+      { exact: true },
+    ),
   ).toBeVisible();
   await page.screenshot({
     path: info.outputPath("desktop-reconnect.png"),
@@ -359,4 +367,68 @@ test("long connector identities scroll inside consent without moving its actions
     (await new AxeBuilder({ page }).include(".plugin-authorization").analyze())
       .violations,
   ).toEqual([]);
+});
+
+test("connector scopes can narrow consent and approved sessions can be revoked", async ({
+  page,
+}) => {
+  const settings = await settingsFixture(page);
+  const dialog = await openConnection(page);
+  const checks = dialog.getByRole("checkbox");
+  await expect(checks).toHaveCount(3);
+  await expect(checks.nth(0)).toBeDisabled();
+  await checks.nth(1).uncheck();
+  await checks.nth(2).uncheck();
+  await dialog
+    .getByRole("button", { name: "Allow connection", exact: true })
+    .click();
+  await expect(dialog.getByRole("status")).toContainText("Connection approved");
+  expect(
+    (await settingsCalls(page)).find(
+      ({ command, args }) =>
+        command === "plugin_authorization" && args.operation === "approve",
+    )?.args.input,
+  ).toEqual({ requestId: "fixture-request", scopes: ["orka.read"] });
+  await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  await settings
+    .getByRole("button", { name: "Connectors", exact: true })
+    .click();
+  const panel = page.locator('.settings-panel[data-section="connections"]');
+  await expect(
+    panel.getByRole("button", { name: "Revoke access" }),
+  ).toBeVisible();
+  await capture(page, "sessions");
+  await panel.getByRole("button", { name: "Revoke access" }).click();
+  await expect(panel.getByRole("status")).toHaveText("Not connected");
+  expect(
+    (await settingsCalls(page)).find(
+      ({ command, args }) =>
+        command === "plugin_authorization" && args.operation === "revoke",
+    )?.args.input,
+  ).toEqual({ connectionId: "fixture-connection" });
+});
+
+test("legacy plugin links cannot create approval and Connectors opens without account parameters", async ({
+  page,
+}) => {
+  await settingsFixture(page);
+  await page.evaluate(() => {
+    (window as any).settingsControls.pluginCallback =
+      "orka://mcp/authorize?handoff=old&service=https://other.example";
+  });
+  await page.waitForTimeout(1300);
+  await expect(
+    page.getByRole("dialog", { name: "Connect to Orka", exact: true }),
+  ).toHaveCount(0);
+  expect(
+    (await settingsCalls(page)).filter(
+      ({ command }) => command === "plugin_authorization",
+    ),
+  ).toHaveLength(0);
+  await page.evaluate(() => {
+    (window as any).settingsControls.pluginCallback = "orka://connectors";
+  });
+  await expect(
+    page.locator('.settings-panel[data-section="connections"]'),
+  ).toBeVisible();
 });

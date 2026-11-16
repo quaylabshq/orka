@@ -83,13 +83,38 @@
   }
   .plugin-permissions {
     margin: 12px 0 0;
-    padding-left: 16px;
+    padding-left: 0;
     display: grid;
     gap: 12px;
-    list-style: disc;
+    list-style: none;
     color: var(--text-secondary);
     font-size: var(--body-xs-font-size);
     line-height: var(--body-xs-line-height);
+  }
+  .connector-permission {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+  }
+  .connector-permission input {
+    flex-shrink: 0;
+    margin-top: 2px;
+    accent-color: var(--text-primary);
+  }
+  .connector-session {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+  }
+  .connector-session > div {
+    min-width: 0;
+  }
+  .connector-session h3 {
+    overflow-wrap: anywhere;
+  }
+  .connector-session button {
+    flex-shrink: 0;
   }
   .connector-consent-account {
     padding: 20px 0;

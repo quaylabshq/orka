@@ -5,6 +5,8 @@ description: Find and explain a teammate’s accessible shared Orka sessions, de
 
 # Read teammate session context
 
+All tools connect through the running Orka desktop and use its signed-in account. Check `get_connection_status` first; sign in or approve the connector session in Orka if required. A stale, denied or revoked session requires reconnecting from the assistant. There is no separate plugin login.
+
 1. Resolve the project with `list_projects` and the teammate with `list_team_members`. Use returned IDs. If names are ambiguous, ask which member the user means.
 2. Call `list_sessions` with that `memberId` and optional provider, title query or `since` filter. If the request concerns one repository in a project with multiple repositories, select its `sourceId` from `list_projects.sources`. Follow pagination. A query searches session titles, so broaden it if a narrow query finds nothing.
 3. Read the relevant sessions with `fetch_resource`. Continue character pagination using both `nextOffset` and `expectedRevision`. The readable view excludes setup, tool payloads, analysis and nontext content. Do not claim to have inspected those records.

@@ -26,7 +26,7 @@ export function PluginAuthorization({
   scope,
   onClose,
 }: {
-  request: { callback: string; scope: string };
+  request: { requestId: string; scope: string };
   scope: string;
   onClose: () => void;
 }) {
@@ -34,6 +34,7 @@ export function PluginAuthorization({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [approved, setApproved] = useState(false);
+  const [scopes, setScopes] = useState<string[]>([]);
   const [expired, setExpired] = useState(false);
   const [attempt, setAttempt] = useState(0);
   const changed = request.scope !== scope;
@@ -42,15 +43,13 @@ export function PluginAuthorization({
     let stopped = false;
     void invoke<Authorization>("plugin_authorization", {
       operation: "preview",
-      input: { callback: request.callback },
+      input: { requestId: request.requestId },
     }).then(
       (result) => {
-        if (!stopped) setPreview(result);
-        else
-          void invoke("plugin_authorization", {
-            operation: "cancel",
-            input: { requestId: result.requestId },
-          }).catch(() => {});
+        if (!stopped) {
+          setPreview(result);
+          setScopes(result.scopes);
+        }
       },
       (failure: unknown) => {
         if (!stopped) setError(String(failure));
@@ -59,7 +58,7 @@ export function PluginAuthorization({
     return () => {
       stopped = true;
     };
-  }, [request.callback, request.scope, scope, attempt]);
+  }, [request.requestId, request.scope, scope, attempt]);
   useEffect(() => {
     if (!preview) return;
     const remaining = Date.parse(preview.expiresAt) - Date.now();
@@ -71,15 +70,15 @@ export function PluginAuthorization({
   }, [preview]);
   const close = async () => {
     if (busy) return;
-    if (preview && !approved) {
+    if (!approved) {
       setBusy(true);
       try {
         await invoke("plugin_authorization", {
           operation: "cancel",
-          input: { requestId: preview.requestId },
+          input: { requestId: request.requestId },
         });
       } catch {
-        // An unapproved request expires automatically if the service is offline.
+        // Unapproved requests also expire in the native broker.
       }
     }
     onClose();
@@ -91,7 +90,7 @@ export function PluginAuthorization({
     try {
       await invoke("plugin_authorization", {
         operation: "approve",
-        input: { requestId: preview.requestId },
+        input: { requestId: preview.requestId, scopes },
       });
       setApproved(true);
     } catch (failure) {
@@ -136,7 +135,7 @@ export function PluginAuthorization({
       >
         {approved ? (
           <p role="status">
-            Connection approved. Return to your assistant to finish connecting.
+            Connection approved. Return to your assistant to use Orka.
           </p>
         ) : (
           <>
@@ -151,7 +150,7 @@ export function PluginAuthorization({
                   </div>
                   <div>
                     <h3>{preview.client.name}</h3>
-                    <p>Requests access to your Orka account.</p>
+                    <p>Requests access through Orka on this Mac.</p>
                   </div>
                 </div>
                 <dl
@@ -184,14 +183,33 @@ export function PluginAuthorization({
                     aria-label="Requested permissions"
                   >
                     {preview.permissionDescriptions.map((description, i) => (
-                      <li key={`${preview.scopes[i]}:${description}`}>
-                        {description}
+                      <li key={preview.scopes[i]}>
+                        <label className="connector-permission">
+                          <input
+                            type="checkbox"
+                            checked={scopes.includes(preview.scopes[i]!)}
+                            disabled={busy || preview.scopes[i] === "orka.read"}
+                            onChange={(event) => {
+                              const selected = preview.scopes[i]!;
+                              setScopes((current) =>
+                                event.target.checked
+                                  ? [...current, selected]
+                                  : current.filter(
+                                      (value) => value !== selected,
+                                    ),
+                              );
+                            }}
+                          />
+                          <span>{description}</span>
+                        </label>
                       </li>
                     ))}
                   </ul>
                 </section>
                 <p className="connector-consent-note">
-                  Switching accounts or services requires reconnecting.
+                  The assistant reports its name; Orka does not verify the
+                  application. Access applies to this connector session.
+                  Switching accounts or services requires a new connection.
                 </p>
               </>
             )}

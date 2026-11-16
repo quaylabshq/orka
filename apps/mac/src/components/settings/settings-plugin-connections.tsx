@@ -7,12 +7,18 @@ import { Button } from "../button.js";
 import { SettingsHeading, settingsScope } from "./settings-shared.js";
 
 interface ConnectionStatus {
-  state: "not_linked" | "linked" | "reconnect_required" | "signed_out";
+  state:
+    "not_linked" | "linked" | "pending" | "reconnect_required" | "signed_out";
   account: PluginAccount | null;
   serviceOrigin: string | null;
-  client: { id: string; name: string } | null;
-  scopes: string[];
-  connectedAt: string | null;
+  connections: {
+    id: string;
+    client: { id: string; name: string };
+    scopes: string[];
+    state: string;
+    connectedAt: string | null;
+  }[];
+  pendingCount: number;
   reason: string | null;
   reconnectRequired: boolean;
 }
@@ -27,6 +33,23 @@ export function SettingsPluginConnections({ state }: { state: Snapshot }) {
   const [error, setError] = useState("");
   const [checking, setChecking] = useState(true);
   const [revision, setRevision] = useState(0);
+  const [revoking, setRevoking] = useState<string | null>(null);
+  const [actionError, setActionError] = useState("");
+  const revoke = async (connectionId: string) => {
+    setRevoking(connectionId);
+    setActionError("");
+    try {
+      await invoke("plugin_authorization", {
+        operation: "revoke",
+        input: { connectionId },
+      });
+      setRevision((value) => value + 1);
+    } catch (failure) {
+      setActionError(String(failure));
+    } finally {
+      setRevoking(null);
+    }
+  };
   useEffect(() => {
     let stopped = false;
     let pending = false;
@@ -68,9 +91,11 @@ export function SettingsPluginConnections({ state }: { state: Snapshot }) {
         ? "Approved on this Mac"
         : result?.state === "reconnect_required"
           ? "Reconnect required"
-          : result?.state === "signed_out"
-            ? "Sign in to connect"
-            : "Not connected";
+          : result?.state === "pending"
+            ? "Approval pending"
+            : result?.state === "signed_out"
+              ? "Sign in to connect"
+              : "Not connected";
   return (
     <>
       <SettingsHeading
@@ -86,7 +111,7 @@ export function SettingsPluginConnections({ state }: { state: Snapshot }) {
             <PlugIcon size={24} />
           </div>
           <div>
-            <h3>{result?.client?.name || "Orka"}</h3>
+            <h3>Orka desktop</h3>
             <p role="status">{title}</p>
           </div>
         </div>
@@ -120,13 +145,13 @@ export function SettingsPluginConnections({ state }: { state: Snapshot }) {
             result &&
             (result.state === "linked" ? (
               <p>
-                This Mac approved this connector. Reconnect if you removed it or
-                changed its access in your assistant.
+                Connected assistants use the account signed in here. Review or
+                revoke their sessions below.
               </p>
             ) : (
               <p>
                 {result.reason ||
-                  "Local tools need a connection approved by this Mac."}
+                  "Connect Orka from your assistant, then approve its session here."}
               </p>
             ))
           )}
@@ -140,16 +165,71 @@ export function SettingsPluginConnections({ state }: { state: Snapshot }) {
           </Button>
         </div>
       </section>
+      {result && result.connections.length > 0 && (
+        <section
+          className="settings-group connector-card"
+          aria-label="Connector sessions"
+        >
+          {result.connections.map((connection) => (
+            <div
+              className="connector-card-section connector-session"
+              key={connection.id}
+            >
+              <div>
+                <h3>{connection.client.name}</h3>
+                <p>
+                  {connection.state === "approved"
+                    ? connection.scopes
+                        .map(
+                          (value) =>
+                            ({
+                              "orka.read": "Read",
+                              "orka.write": "Write",
+                              "orka.manage": "Manage",
+                            })[value] ?? value,
+                        )
+                        .join(" · ")
+                    : connection.state === "pending"
+                      ? "Awaiting approval"
+                      : connection.state === "denied"
+                        ? "Access removed"
+                        : "Reconnect required"}
+                </p>
+              </div>
+              {connection.state === "approved" && (
+                <Button
+                  size="sm"
+                  disabled={revoking !== null}
+                  onClick={() => void revoke(connection.id)}
+                >
+                  {revoking === connection.id ? "Revoking…" : "Revoke access"}
+                </Button>
+              )}
+            </div>
+          ))}
+          {actionError && (
+            <p role="alert" className="connector-card-section">
+              {actionError}
+            </p>
+          )}
+        </section>
+      )}
       <section
         className="settings-group connector-setup"
         aria-labelledby="connector-setup-title"
       >
         <h3 id="connector-setup-title">Connect or reconnect</h3>
         <ol>
-          <li>Open connections in your assistant and reconnect Orka.</li>
           <li>
-            Choose <strong>Use account in Orka</strong>, then approve the
-            account and access shown in Orka.
+            Install the desktop Orka plugin in your assistant and connect.
+          </li>
+          <li>
+            Approve the account and access shown in Orka. Each new session needs
+            approval.
+          </li>
+          <li>
+            After an account or service change, reconnect from your assistant
+            and approve a new session.
           </li>
         </ol>
       </section>
