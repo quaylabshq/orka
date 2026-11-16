@@ -63,7 +63,7 @@ Declared licenses are upstream metadata. Preserve the actual license notices and
 | [@esbuild/win32-x64](https://www.npmjs.com/package/@esbuild/win32-x64/v/0.28.2) | 0.28.2 | MIT |
 | [@eslint-community/eslint-utils](https://www.npmjs.com/package/@eslint-community/eslint-utils/v/4.10.1) | 4.10.1 | MIT |
 | [@eslint-community/regexpp](https://www.npmjs.com/package/@eslint-community/regexpp/v/4.12.2) | 4.12.2 | MIT |
-| [@eslint/config-array](https://www.npmjs.com/package/@eslint/config-array/v/0.23.5) | 0.23.5 | Apache-2.0 |
+| [@eslint/config-array](https://www.npmjs.com/package/@eslint/config-array/v/0.23.6) | 0.23.6 | Apache-2.0 |
 | [@eslint/config-helpers](https://www.npmjs.com/package/@eslint/config-helpers/v/0.7.0) | 0.7.0 | Apache-2.0 |
 | [@eslint/core](https://www.npmjs.com/package/@eslint/core/v/1.2.1) | 1.2.1 | Apache-2.0 |
 | [@eslint/js](https://www.npmjs.com/package/@eslint/js/v/10.0.1) | 10.0.1 | MIT |
@@ -83,6 +83,7 @@ Declared licenses are upstream metadata. Preserve the actual license notices and
 | [@humanwhocodes/retry](https://www.npmjs.com/package/@humanwhocodes/retry/v/0.4.3) | 0.4.3 | Apache-2.0 |
 | [@iconify/types](https://www.npmjs.com/package/@iconify/types/v/2.0.0) | 2.0.0 | MIT |
 | [@iconify/utils](https://www.npmjs.com/package/@iconify/utils/v/3.1.7) | 3.1.7 | MIT |
+| [@isaacs/nonrecursive-glob-match](https://www.npmjs.com/package/@isaacs/nonrecursive-glob-match/v/1.1.0) | 1.1.0 | BlueOak-1.0.0 |
 | [@jridgewell/gen-mapping](https://www.npmjs.com/package/@jridgewell/gen-mapping/v/0.3.13) | 0.3.13 | MIT |
 | [@jridgewell/remapping](https://www.npmjs.com/package/@jridgewell/remapping/v/2.3.5) | 2.3.5 | MIT |
 | [@jridgewell/resolve-uri](https://www.npmjs.com/package/@jridgewell/resolve-uri/v/3.1.2) | 3.1.2 | MIT |
@@ -249,7 +250,7 @@ Declared licenses are upstream metadata. Preserve the actual license notices and
 | [balanced-match](https://www.npmjs.com/package/balanced-match/v/4.0.4) | 4.0.4 | MIT |
 | [baseline-browser-mapping](https://www.npmjs.com/package/baseline-browser-mapping/v/2.11.27) | 2.11.27 | Apache-2.0 |
 | [binary-extensions](https://www.npmjs.com/package/binary-extensions/v/2.3.0) | 2.3.0 | MIT |
-| [brace-expansion](https://www.npmjs.com/package/brace-expansion/v/5.0.12) | 5.0.12 | MIT |
+| [brace-expansion](https://www.npmjs.com/package/brace-expansion/v/5.0.13) | 5.0.13 | MIT |
 | [braces](https://www.npmjs.com/package/braces/v/3.0.3) | 3.0.3 | MIT |
 | [browserslist](https://www.npmjs.com/package/browserslist/v/4.29.3) | 4.29.3 | MIT |
 | [cacheable](https://www.npmjs.com/package/cacheable/v/2.5.0) | 2.5.0 | MIT |
@@ -332,7 +333,7 @@ Declared licenses are upstream metadata. Preserve the actual license notices and
 | [escalade](https://www.npmjs.com/package/escalade/v/3.2.0) | 3.2.0 | MIT |
 | [escape-string-regexp](https://www.npmjs.com/package/escape-string-regexp/v/4.0.0) | 4.0.0 | MIT |
 | [escape-string-regexp](https://www.npmjs.com/package/escape-string-regexp/v/5.0.0) | 5.0.0 | MIT |
-| [eslint](https://www.npmjs.com/package/eslint/v/10.12.0) | 10.12.0 | MIT |
+| [eslint](https://www.npmjs.com/package/eslint/v/10.15.0) | 10.15.0 | MIT |
 | [eslint-plugin-react-hooks](https://www.npmjs.com/package/eslint-plugin-react-hooks/v/7.1.1) | 7.1.1 | MIT |
 | [eslint-scope](https://www.npmjs.com/package/eslint-scope/v/9.1.2) | 9.1.2 | BSD-2-Clause |
 | [eslint-visitor-keys](https://www.npmjs.com/package/eslint-visitor-keys/v/3.4.3) | 3.4.3 | Apache-2.0 |
@@ -477,7 +478,7 @@ Declared licenses are upstream metadata. Preserve the actual license notices and
 | [micromark-util-symbol](https://www.npmjs.com/package/micromark-util-symbol/v/2.0.1) | 2.0.1 | MIT |
 | [micromark-util-types](https://www.npmjs.com/package/micromark-util-types/v/2.0.3) | 2.0.3 | MIT |
 | [micromatch](https://www.npmjs.com/package/micromatch/v/4.0.8) | 4.0.8 | MIT |
-| [minimatch](https://www.npmjs.com/package/minimatch/v/10.2.6) | 10.2.6 | BlueOak-1.0.0 |
+| [minimatch](https://www.npmjs.com/package/minimatch/v/11.0.8) | 11.0.8 | BlueOak-1.0.0 |
 | [motion](https://www.npmjs.com/package/motion/v/14.4.0) | 14.4.0 | MIT |
 | [motion-dom](https://www.npmjs.com/package/motion-dom/v/14.4.0) | 14.4.0 | MIT |
 | [motion-utils](https://www.npmjs.com/package/motion-utils/v/14.1.1) | 14.1.1 | MIT |
