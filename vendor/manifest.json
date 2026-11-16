@@ -5,7 +5,7 @@
     "toolchain": "1.27.4"
   },
   "repository": "https://github.com/quaylabshq/orka-api",
-  "commit": "f3075f6c6279481419ba5e63c1b3cbc45caed051",
+  "commit": "c55cc34e55799aaeee7e512889c611fce181c271",
   "packages": [
     {
       "name": "@portable/protocol",
