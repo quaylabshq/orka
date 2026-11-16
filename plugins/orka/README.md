@@ -17,9 +17,13 @@ The bridge forwards requests over a private, profile-local Unix socket. It does 
 2. Install the desktop plugin ZIP in Codex or Claude Code and connect Orka.
 3. Review the account, service and requested access in Orka. Approve only the access you want to grant this connector session.
 
-`get_connection_status` works before approval and explains the next action without exposing project content. Every new assistant stdio session needs approval. The assistant's reported name is a label, not a verified application identity. An approved live session survives a same-account app restart; a new connection does not inherit another session's approval.
+`get_connection_status` works before approval and explains the next action without exposing project content. Approve each running assistant connection once. Its helpers share that approval only when the operating system verifies the same parent process and birth identity; the reported name alone grants nothing. An approved connection survives a same-account app restart while its assistant remains running. A separate or restarted assistant needs new approval.
 
 Signing out, switching account or service, or revoking a connector permanently invalidates its old session, including after switching back. Reconnect from the assistant and approve a new session in Orka. **Settings → Connectors** shows sessions and lets you revoke access. There is no account selection in the plugin.
+
+An assistant may start several plugin helpers for its chats and workers. Helpers belonging to the same running assistant share one connection, approval and selected scopes. Separate assistant processes need separate approval. Revoking that connection removes access from all its helpers; reconnecting cannot restore access to the old helpers. Exited helpers are removed when Orka checks the connection. A still-running assistant with no helpers appears idle and remains revocable; later helpers from that same process retain the selected scopes. **Check connection** reports completion using current running sessions. Saved approvals from older versions appear active only after a live helper authenticates again.
+
+When upgrading from plugin 0.2.0, update the installed plugin as well as Orka desktop. A local plugin marketplace must also contain the new 0.3.0 package; publishing a desktop release does not refresh a local marketplace. The new package has one stdio `orka` connector. A remaining remote `orka` plus local `orka_local` pair indicates the old package and can cause repeated OAuth startup errors against retired endpoints.
 
 Closing the main window keeps Orka available through its menu bar. Explicit Quit stops the broker. A new bridge may open the configured app/profile on initial connection; an existing bridge does not reopen Orka after Quit. Open Orka manually before using that live bridge again.
 

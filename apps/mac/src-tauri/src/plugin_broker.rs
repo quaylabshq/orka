@@ -2,6 +2,7 @@
 use crate::{
     db::{self, Result},
     plugin_connection, plugin_mcp,
+    plugin_process::Peer,
 };
 use fs2::FileExt;
 use serde_json::{json, Value};
@@ -157,9 +158,12 @@ pub(crate) fn start() -> Result<Broker> {
         while !stopping.load(Ordering::SeqCst) {
             match listener.accept() {
                 Ok((mut stream, _)) => {
-                    if active.load(Ordering::SeqCst) >= 16 || verify_peer(&stream).is_err() {
+                    if active.load(Ordering::SeqCst) >= 16 {
                         continue;
                     }
+                    let Ok(peer) = Peer::read(&stream) else {
+                        continue;
+                    };
                     active.fetch_add(1, Ordering::SeqCst);
                     let active = active.clone();
                     std::thread::spawn(move || {
@@ -169,7 +173,7 @@ pub(crate) fn start() -> Result<Broker> {
                         let result = read_frame(&mut stream, REQUEST_LIMIT).and_then(|request| {
                             tokio::runtime::Runtime::new()
                                 .map_err(|e| e.to_string())?
-                                .block_on(dispatch(&request))
+                                .block_on(dispatch(&request, &peer))
                         });
                         let response = match result {
                             Ok(value) => json!({"value":value}),
@@ -200,7 +204,7 @@ pub(crate) fn start() -> Result<Broker> {
     })
 }
 
-async fn dispatch(request: &Value) -> Result<Value> {
+async fn dispatch(request: &Value, peer: &Peer) -> Result<Value> {
     if request["version"] != 1 {
         return Err("Unsupported connector transport".into());
     }
@@ -210,12 +214,19 @@ async fn dispatch(request: &Value) -> Result<Value> {
     let secret = request["secret"]
         .as_str()
         .ok_or("Missing connector credential")?;
+    if matches!(
+        request["operation"].as_str(),
+        Some("close" | "tools" | "call")
+    ) {
+        plugin_connection::identify_session(id, secret, peer)?;
+    }
     match request["operation"].as_str().unwrap_or("") {
         "initialize" => {
             let result = plugin_connection::initialize_session(
                 id,
                 secret,
                 request["clientName"].as_str().unwrap_or("Assistant"),
+                peer,
             )?;
             if result["state"] == "pending" {
                 let _ = db::atomic(&db::root()?.join("focus"), b"");

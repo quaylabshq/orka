@@ -25,6 +25,7 @@ mod plugin_broker;
 mod plugin_connection;
 mod plugin_mcp;
 mod plugin_operations;
+mod plugin_process;
 mod profiles;
 mod projects;
 mod repair;

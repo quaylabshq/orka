@@ -249,10 +249,12 @@ test("connections show reconnect instructions and refresh recorded approval", as
   await panel
     .getByRole("button", { name: "Check connection", exact: true })
     .click();
-  await expect(panel.getByRole("status")).toHaveText("Reconnect required");
+  await expect(panel.getByRole("status")).toHaveText(
+    "Connection checked. Reconnect required",
+  );
   await expect(
     panel.getByText(
-      "Approve the account and access shown in Orka. Each new session needs approval.",
+      "Approve the account and access shown in Orka once for each running assistant.",
       { exact: true },
     ),
   ).toBeVisible();
@@ -267,7 +269,9 @@ test("connections show reconnect instructions and refresh recorded approval", as
   await panel
     .getByRole("button", { name: "Check connection", exact: true })
     .click();
-  await expect(panel.getByRole("status")).toHaveText("Approved on this Mac");
+  await expect(panel.getByRole("status")).toHaveText(
+    "Connection checked. Approved on this Mac",
+  );
   expect(
     (
       await new AxeBuilder({ page })
@@ -332,6 +336,201 @@ test("Connectors keeps account details visible during recheck and reports retrya
   await expect(
     panel.getByRole("button", { name: "Check connection", exact: true }),
   ).toBeEnabled();
+});
+
+test("manual checks acknowledge an unchanged connection and can repeat", async ({
+  page,
+}) => {
+  const settings = await settingsFixture(page, { pluginStatusDelay: 250 });
+  await settings
+    .getByRole("button", { name: "Connectors", exact: true })
+    .click();
+  const panel = page.locator('.settings-panel[data-section="connections"]');
+  await expect(panel.getByRole("status")).toHaveText("Not connected");
+  const calls = () =>
+    settingsCalls(page).then(
+      (values) =>
+        values.filter(({ command }) => command === "plugin_connection_status")
+          .length,
+    );
+  const before = await calls();
+  for (let check = 1; check <= 2; check++) {
+    await panel
+      .getByRole("button", { name: "Check connection", exact: true })
+      .click();
+    await expect(
+      panel.getByRole("button", { name: "Checking…", exact: true }),
+    ).toBeDisabled();
+    await expect(panel.getByRole("status")).toHaveText(
+      "Connection checked. Not connected",
+    );
+    expect(await calls()).toBe(before + check);
+  }
+});
+
+test("hidden connectors still allow manual checks and refresh when visible again", async ({
+  page,
+}) => {
+  const settings = await settingsFixture(page);
+  await page.evaluate(() => {
+    Object.defineProperty(document, "hidden", {
+      configurable: true,
+      value: true,
+    });
+  });
+  await settings
+    .getByRole("button", { name: "Connectors", exact: true })
+    .click();
+  const panel = page.locator('.settings-panel[data-section="connections"]');
+  await expect(panel.getByRole("status")).toHaveText("Not connected");
+  const before = (await settingsCalls(page)).filter(
+    ({ command }) => command === "plugin_connection_status",
+  ).length;
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  expect(
+    (await settingsCalls(page)).filter(
+      ({ command }) => command === "plugin_connection_status",
+    ),
+  ).toHaveLength(before);
+  await panel
+    .getByRole("button", { name: "Check connection", exact: true })
+    .click();
+  await expect(panel.getByRole("status")).toHaveText(
+    "Connection checked. Not connected",
+  );
+  await page.evaluate(() => {
+    (window as any).settingsControls.pluginState = "linked";
+    Object.defineProperty(document, "hidden", { value: false });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await expect(panel.getByRole("status")).toContainText("Approved on this Mac");
+});
+
+test("a manual check joins a pending background check instead of overlapping it", async ({
+  page,
+}) => {
+  const settings = await settingsFixture(page);
+  await settings
+    .getByRole("button", { name: "Connectors", exact: true })
+    .click();
+  const panel = page.locator('.settings-panel[data-section="connections"]');
+  await expect(panel.getByRole("status")).toHaveText("Not connected");
+  const calls = () =>
+    settingsCalls(page).then(
+      (values) =>
+        values.filter(({ command }) => command === "plugin_connection_status")
+          .length,
+    );
+  const before = await calls();
+  await page.evaluate(() => {
+    (window as any).settingsControls.pluginStatusDelay = 1000;
+    window.dispatchEvent(new Event("focus"));
+  });
+  await expect.poll(calls).toBe(before + 1);
+  await panel
+    .getByRole("button", { name: "Check connection", exact: true })
+    .click();
+  await expect(
+    panel.getByRole("button", { name: "Checking…", exact: true }),
+  ).toBeDisabled();
+  await expect(panel.getByRole("status")).toHaveText(
+    "Connection checked. Not connected",
+  );
+  expect(await calls()).toBe(before + 1);
+});
+
+test("checks discard an old service response before loading the new service", async ({
+  page,
+}) => {
+  const settings = await settingsFixture(page);
+  await settings
+    .getByRole("button", { name: "Connectors", exact: true })
+    .click();
+  const panel = page.locator('.settings-panel[data-section="connections"]');
+  await expect(panel.getByRole("status")).toHaveText("Not connected");
+  await page.evaluate(() => {
+    (window as any).settingsControls.pluginStatusDelay = 2000;
+    window.dispatchEvent(new Event("focus"));
+    (window as any).settingsState.config.apiUrl = "https://other.example";
+    (window as any).settingsEmit("workspace-changed", null);
+  });
+  await expect(
+    panel.getByText("https://other.example", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    panel.getByText("https://test.orka", { exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    panel.getByRole("button", { name: "Check connection", exact: true }),
+  ).toBeEnabled();
+});
+
+test("one assistant connection shows its active sessions and revokes them together", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 900, height: 640 });
+  const settings = await settingsFixture(page, {
+    pluginClientName: "Codex",
+    pluginSessionCount: 5,
+  });
+  await page.evaluate(() => {
+    (window as any).settingsControls.pluginState = "linked";
+  });
+  await settings
+    .getByRole("button", { name: "Connectors", exact: true })
+    .click();
+  const panel = page.locator('.settings-panel[data-section="connections"]');
+  const connections = panel.getByRole("region", { name: "Connector sessions" });
+  await expect(
+    connections.getByRole("heading", { name: "Codex", exact: true }),
+  ).toHaveCount(1);
+  await expect(
+    connections.getByText("5 active sessions", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    connections.getByRole("button", { name: "Revoke access" }),
+  ).toHaveCount(1);
+  await connections.getByRole("button", { name: "Revoke access" }).click();
+  await expect(
+    connections.getByText("Reconnect required", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    connections.getByText("5 active sessions", { exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    connections.getByRole("button", { name: "Revoke access" }),
+  ).toHaveCount(0);
+  await expect(panel.getByRole("status")).toHaveText("Reconnect required");
+  expect(
+    (await settingsCalls(page)).filter(
+      ({ command, args }) =>
+        command === "plugin_authorization" && args.operation === "revoke",
+    ),
+  ).toHaveLength(1);
+});
+
+test("an idle assistant approval stays revocable without claiming an active connection", async ({
+  page,
+}) => {
+  const settings = await settingsFixture(page, { pluginClientName: "Codex" });
+  await page.evaluate(() => {
+    (window as any).settingsControls.pluginState = "idle";
+  });
+  await settings
+    .getByRole("button", { name: "Connectors", exact: true })
+    .click();
+  const panel = page.locator('.settings-panel[data-section="connections"]');
+  const connections = panel.getByRole("region", { name: "Connector sessions" });
+  await expect(panel.getByRole("status")).toHaveText("Not connected");
+  await expect(
+    connections.getByText("No active sessions", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    connections.getByText("0 active sessions", { exact: true }),
+  ).toHaveCount(0);
+  await connections.getByRole("button", { name: "Revoke access" }).click();
+  await expect(connections).toHaveCount(0);
+  await expect(panel.getByRole("status")).toHaveText("Not connected");
 });
 
 test("long connector identities scroll inside consent without moving its actions", async ({
@@ -404,7 +603,7 @@ test("connector scopes can narrow consent and approved sessions can be revoked",
   ).toBeVisible();
   await capture(page, "sessions");
   await panel.getByRole("button", { name: "Revoke access" }).click();
-  await expect(panel.getByRole("status")).toHaveText("Not connected");
+  await expect(panel.getByRole("status")).toHaveText("Reconnect required");
   expect(
     (await settingsCalls(page)).find(
       ({ command, args }) =>
