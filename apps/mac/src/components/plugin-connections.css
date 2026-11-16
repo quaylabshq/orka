@@ -93,6 +93,10 @@
   }
   .connector-permission {
     display: flex;
+    flex-direction: row;
+    margin: 0;
+    font: inherit;
+    letter-spacing: inherit;
     align-items: flex-start;
     gap: 12px;
   }

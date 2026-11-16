@@ -377,6 +377,11 @@ test("connector scopes can narrow consent and approved sessions can be revoked",
   const checks = dialog.getByRole("checkbox");
   await expect(checks).toHaveCount(3);
   await expect(checks.nth(0)).toBeDisabled();
+  const permission = dialog.locator(".connector-permission").first();
+  const box = await permission.locator("input").boundingBox();
+  const label = await permission.locator("span").boundingBox();
+  expect(label!.x).toBeGreaterThan(box!.x + box!.width);
+  expect(Math.abs(label!.y - box!.y)).toBeLessThan(4);
   await checks.nth(1).uncheck();
   await checks.nth(2).uncheck();
   await dialog
