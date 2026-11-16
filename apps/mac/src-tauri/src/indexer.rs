@@ -1395,6 +1395,18 @@ fn scan_source(
                         last_history_progress = Some(Instant::now());
                     }
                 }
+                // Codex's first record identifies its project. Avoid loading unrelated
+                // histories in full; uncertain attribution keeps the existing scan path.
+                if tool == "codex"
+                    && history::session_cwd_prefix(e.path(), tool)
+                        .is_some_and(|cwd| !cwd.starts_with(&root))
+                {
+                    if unattributed_paths.contains(&unattributed) {
+                        db.execute("DELETE FROM errors WHERE source=?", [&unattributed])
+                            .map_err(|e| e.to_string())?;
+                    }
+                    continue;
+                }
                 let bytes = match history::read_session(e.path()) {
                     Ok(bytes) => {
                         if unattributed_paths.contains(&unattributed) {
