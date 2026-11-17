@@ -7,7 +7,7 @@ unresolved session conflicts and pending reviews retain the files needed for a
 safe decision.
 
 The API advertises `sessionLatestOnly: 1`. Update the server and desktop together
-as described in [release compatibility](compatibility.md#latest-only-session-snapshots)
+as described in [release compatibility](compatibility.md#latest-complete-session-snapshots)
 before reclaiming old session files. An older/offline Mac must preserve its
 cached continuation rather than replace it with a newer remote conversation.
 Native conversation history and pagination inside the latest snapshot remain

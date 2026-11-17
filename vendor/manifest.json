@@ -5,14 +5,14 @@
     "toolchain": "1.27.4"
   },
   "repository": "https://github.com/quaylabshq/orka-api",
-  "commit": "c55cc34e55799aaeee7e512889c611fce181c271",
+  "commit": "b60d32968c23102049c4816d1fbe3032e3bc87a0",
   "packages": [
     {
       "name": "@portable/protocol",
-      "version": "0.7.2-dev.1",
-      "file": "portable-protocol-0.7.2-dev.1.tgz",
-      "sha256": "8c28bcc1f538fcfe3193c07652a9d9be5dfb1aa4570ac4faadfd06d31aabdbda",
-      "integrity": "sha512-VkMZG8ym8TsixjjjZgI/4mxkPf5iZO78FHLOUGVuNduJf7KbqmWLgSl3z9aEh6/OFlTeIFbGEecnp9DbzLV65w=="
+      "version": "0.7.2",
+      "file": "portable-protocol-0.7.2.tgz",
+      "sha256": "339f012111981ab0685df7a3db8b8cf7fb1500c8358bab02c0da874dc64fe51a",
+      "integrity": "sha512-PT+3F4nFLsYPtwEPBHA+K01XXd1EjyKuTatGAubF0mDqWdvRpT77AvukAFBNmdzCn2Mnv7F7do15AdbrCLvmYg=="
     }
   ]
 }
