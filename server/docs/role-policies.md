@@ -18,7 +18,7 @@ Restriction catalog records remain private to the Owner and the person they rest
 
 Only Owner changes policies, appoints/demotes Admins, or transfers ownership. An Owner must transfer before leaving. Admins invite/remove Members, and cannot manage Owner or another Admin. Invitations retain one use and a 24-hour expiry.
 
-Add only permits creation and reading one's own submissions, with no editing. Members cannot delete shared content. Admin deletion requires write access; Owner may delete. Another person's session cannot be rewritten. An authorized session tombstone preserves attribution/metadata and immutable prior snapshots, and requires the current revision. Role promotion never uploads private work.
+Add only permits creation and reading one's own submissions, with no editing. Members cannot delete shared content. Admin deletion requires write access; Owner may delete. Another person's session cannot be rewritten. An authorized session tombstone preserves attribution/metadata and requires the current revision. Superseded session transcript files are collected under the latest-only retention policy; unresolved conflict and pending-review files stay protected. Role promotion never uploads private work.
 
 ## Verification and rollout
 

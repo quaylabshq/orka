@@ -1,6 +1,5 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
   mkdtemp,
@@ -21,6 +20,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { Store, HttpError } from "./bridge/store.js";
 import { Blobs } from "./fixtures/blobs.js";
 import { createApi } from "./bridge/main.js";
+import { startEnvMac, type EnvMac } from "./fixtures/env-native.js";
 
 const binary = process.env.ORKA_TEST_NATIVE_BINARY;
 const records = (text: string): unknown[] =>
@@ -47,59 +47,37 @@ await test(
     const address = server.address();
     assert.ok(address && typeof address !== "string");
     const origin = `http://127.0.0.1:${address.port}`;
-    const env = {
-      ...process.env,
-      ORKA_TEST_HOME: home,
-      CODEX_HOME: join(home, ".codex"),
-      CLAUDE_CONFIG_DIR: join(home, ".claude"),
-    };
-    const native = async (input: unknown) => {
-      const child = spawn(binary!, ["--orka-test"], {
-        env,
-        stdio: ["pipe", "pipe", "pipe"],
-      });
-      let output = "",
-        error = "";
-      child.stdout.on("data", (chunk) => (output += String(chunk)));
-      child.stderr.on("data", (chunk) => (error += String(chunk)));
-      child.stdin.end(JSON.stringify(input));
-      const timer = setTimeout(() => child.kill("SIGTERM"), 30000);
-      const code = await new Promise<number | null>((resolve) =>
-        child.once("exit", resolve),
-      );
-      clearTimeout(timer);
-      assert.equal(code, 0, error || output);
-      return JSON.parse(output) as unknown;
-    };
+    let mac: EnvMac | undefined;
+    const native = <T = Record<string, unknown>>(input: unknown) =>
+      mac!.request<T>(input);
     let client: Client | undefined;
     try {
-      await native({
-        action: "configure",
-        config: { apiUrl: origin, syncMinutes: 15 },
-      });
-      await native({
-        action: "test-session",
-        session: {
-          access_token: owner,
-          refresh_token: "fixture-refresh",
-          expires_in: 3600,
-          user: { id: owner },
-        },
-      });
       const projectId = await store.createProject(
         owner,
         "Native selected fixture",
         true,
       );
-      const directory = join(home, "project");
-      await mkdir(directory);
-      const root = await realpath(directory);
-      const paths = await readdir(join(home, "orka"), { recursive: true });
+      mac = await startEnvMac({
+        home,
+        name: "selected",
+        user: owner,
+        url: origin,
+        project: projectId,
+        binary,
+        enable: false,
+      });
+      const root = await realpath(mac.path);
+      const env = {
+        ...process.env,
+        ORKA_TEST_HOME: mac.root,
+        CODEX_HOME: join(mac.root, ".codex"),
+        CLAUDE_CONFIG_DIR: join(mac.root, ".claude"),
+      };
+      const paths = await readdir(join(mac.root, "orka"), { recursive: true });
       const database = paths.find(
         (path) => path.includes(owner) && path.endsWith("sync.sqlite"),
       );
       assert.ok(database);
-      const local = new DatabaseSync(join(home, "orka", database));
       const sharing = {
         memory: false,
         skill: false,
@@ -107,19 +85,13 @@ await test(
         session: false,
         env: false,
       };
-      local.prepare("insert into projects values(?,?)").run(
-        projectId,
-        JSON.stringify({
-          id: projectId,
-          name: "Native selected fixture",
-          path: root,
-          governed: true,
-          sharing,
-        }),
-      );
-      local.close();
+      await native({
+        action: "project",
+        operation: "sharing",
+        input: { projectId, sharing },
+      });
       const nativeId = randomUUID();
-      const sessions = join(home, ".codex/sessions");
+      const sessions = join(mac.root, ".codex/sessions");
       await mkdir(sessions, { recursive: true });
       const session = join(sessions, `rollout-${nativeId}.jsonl`);
       const original =
@@ -145,6 +117,7 @@ await test(
           .map((record) => JSON.stringify(record))
           .join("\n") + "\n";
       await writeFile(session, original);
+      await native({ action: "plugin-start" });
       client = new Client({
         name: "Orka native selected fixture",
         version: "0.2.0",
@@ -156,7 +129,41 @@ await test(
           env,
         }),
       );
-      const scope = { accountId: owner, serviceOrigin: origin, projectId };
+      const status = await client.callTool({
+        name: "get_connection_status",
+        arguments: {},
+      });
+      assert.ok(!status.isError, JSON.stringify(status));
+      const connection = status.structuredContent as {
+        connection: { id: string };
+      };
+      const pending = await native<
+        { requestId: string; client: { id: string } }[]
+      >({ action: "plugin-requests" });
+      const request = pending.find(
+        (item) => item.client.id === connection.connection.id,
+      );
+      assert.ok(request, JSON.stringify(pending));
+      const approvedScopes = ["orka.read", "orka.write"];
+      const approval = await native<{
+        account: { id: string };
+        serviceOrigin: string;
+      }>({
+        action: "plugin-authorization",
+        operation: "preview",
+        input: { requestId: request.requestId },
+      });
+      assert.equal(approval.account.id, owner);
+      assert.equal(approval.serviceOrigin, origin);
+      assert.deepEqual(
+        await native({
+          action: "plugin-authorization",
+          operation: "approve",
+          input: { requestId: request.requestId, scopes: approvedScopes },
+        }),
+        { approved: true },
+      );
+      const scope = { projectId };
       const call = async (name: string, input: Record<string, unknown>) => {
         const result = await client!.callTool({
           name,
@@ -169,8 +176,11 @@ await test(
         kind: "session",
         nativeId,
       });
-      const item = (catalog.items as { resourceId: string }[])[0];
+      const item = (
+        catalog.items as { resourceId: string; sourceId: string }[]
+      )[0];
       assert.ok(item, JSON.stringify(catalog));
+      assert.equal(item.sourceId, mac.sources[0].id);
       const preview = await call("preview_share", {
         kind: "session",
         resourceId: item.resourceId,
@@ -230,7 +240,7 @@ await test(
         frozen,
       );
       assert.equal(await readFile(session, "utf8"), original + future);
-      const check = new DatabaseSync(join(home, "orka", database));
+      const check = new DatabaseSync(join(mac.root, "orka", database));
       const saved = check
         .prepare("select value from projects where id=?")
         .get(projectId) as { value: string };
@@ -244,9 +254,33 @@ await test(
         0,
       );
       check.close();
+      const snapshot = await native<{
+        projects: {
+          id: string;
+          sources: { id: string; path: string }[];
+          sharing: typeof sharing;
+        }[];
+      }>({ action: "snapshot" });
+      const mapped = snapshot.projects.filter(
+        (project) => project.id === projectId,
+      );
+      assert.equal(mapped.length, 1);
+      assert.deepEqual(
+        mapped[0].sources.map((source) => source.id),
+        [mac.sources[0].id],
+      );
+      assert.equal(mapped[0].sources[0].path, root);
+      assert.deepEqual(mapped[0].sharing, sharing);
     } finally {
       await client?.close();
-      await native({ action: "sign-out" });
+      if (mac) {
+        try {
+          await native({ action: "plugin-stop" });
+          await native({ action: "plugin-sign-out" });
+        } finally {
+          await mac.close();
+        }
+      }
       await new Promise<void>((resolve) => server.close(() => resolve()));
       await pool.end();
       await rm(home, { recursive: true, force: true });

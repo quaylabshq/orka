@@ -21,7 +21,7 @@ if (
   throw new Error(
     "Desktop only. Usage: node plugins/orka/scripts/package.mjs [output.zip] [orka-executable] [profile]",
   );
-const output = resolve(args[0] ?? "artifacts/orka-plugin-0.3.0.zip");
+const output = resolve(args[0] ?? "artifacts/orka-plugin-0.3.1.zip");
 if (!output.endsWith(".zip")) throw new Error("Output must end in .zip");
 const appBinary =
   args[1] ?? "/Applications/Orka.app/Contents/MacOS/portable-workspace-mac";

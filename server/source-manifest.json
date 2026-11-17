@@ -1,8 +1,8 @@
 {
   "repository": "https://github.com/whysosaket/orka-api",
-  "commit": "433579d6c18b648623a50f80795e4183a5ec66cc",
+  "commit": "b60d32968c23102049c4816d1fbe3032e3bc87a0",
   "candidate": false,
-  "sourceTreeSha256": "0d64d35a12a500f4092e3b0f9f1af5483026536ee14124c295a7e56282186e3c",
+  "sourceTreeSha256": "252223a8c9e6e3de54c5580483a3b97bea52d1a2c31245faedd15d1af5790776",
   "files": [
     {
       "path": ".dockerignore",
@@ -151,7 +151,7 @@
     },
     {
       "path": "docs/compatibility.md",
-      "sha256": "1ffdd445d8fd1c270b39bcf0307d55bb60cd04985f213e1e432b8a9937a9d9bc",
+      "sha256": "cc7e7aa384fb56e9af59c067fb38fd7d2e6050d8779bd93c6ba9e282bdcefbbc",
       "mode": 420
     },
     {
@@ -171,12 +171,12 @@
     },
     {
       "path": "docs/governed-sharing.md",
-      "sha256": "1aa0efd855502c5dd3525ccb446c2e6240b3d50651d96ccc11a792fb89234695",
+      "sha256": "f0f0daa2fd05908d95d7551206eda860dd3aac51c48ce2e196efb90acbff0fd6",
       "mode": 420
     },
     {
       "path": "docs/mcp-operations.md",
-      "sha256": "f46b25dd445dad334207e35108e762370961c75e49e3e3112a82669d03d82c87",
+      "sha256": "4af2e657455d121fb046f327da666342477c64ae6a871cbe0c39d39d6185958f",
       "mode": 420
     },
     {
@@ -186,7 +186,7 @@
     },
     {
       "path": "docs/orka-plugin.md",
-      "sha256": "ad3dee40a16359a0eb074776fe6acfe16c1e0b9de2e5f2d48f9d1912acbd0ca6",
+      "sha256": "0f3999913bb70fef3a2898d84f07062d0c219a3c0abf3bf5b3e8e4c788452cb2",
       "mode": 420
     },
     {
@@ -221,7 +221,12 @@
     },
     {
       "path": "docs/role-policies.md",
-      "sha256": "83688ef89912b62fe76985557419127297114559ad30c42decb165f6d78b88a8",
+      "sha256": "1279a0cb3c7aa31be48446c03edb1389bdee5fe31ee9be858a2c114c0137b4b6",
+      "mode": 420
+    },
+    {
+      "path": "docs/session-retention.md",
+      "sha256": "b00d4a9faa3f3319f8bc3fbc38686f8d24af913f8c95d2573d604193a548ae02",
       "mode": 420
     },
     {
@@ -246,7 +251,7 @@
     },
     {
       "path": "internal/server/api.go",
-      "sha256": "800f2744839efca46fd617580496b92be1a628acf1390adc2a2787d531d7cb51",
+      "sha256": "06f6b214be2bdcb104dce8501a761b1f3dd64fd57f63747c16cb6cde7760cd04",
       "mode": 420
     },
     {
@@ -260,13 +265,18 @@
       "mode": 420
     },
     {
+      "path": "internal/server/blob_cleanup_test.go",
+      "sha256": "324a8d3257254f5aa3796276f17d2ff2d012d9349b930fbcc1ed90bead52c7ff",
+      "mode": 420
+    },
+    {
       "path": "internal/server/blobs.go",
-      "sha256": "267576497cbd69ef2ff64b3a67e92115ba1681f9bbb46cc8d7dda589bee7ab67",
+      "sha256": "7bf9a49e27ad97f2e676e81fae5d85b416faa7ca7d30c128205cbf630ead63a0",
       "mode": 420
     },
     {
       "path": "internal/server/command.go",
-      "sha256": "5d09524d008306b9b9ceb97af13c66f0d32e4ba18de8e4acad685f05de1d13a4",
+      "sha256": "718b0b28b55f20fd818885e95a5c12f705bcbcfb7960af76973067dfe8e48e8c",
       "mode": 420
     },
     {
@@ -286,7 +296,7 @@
     },
     {
       "path": "internal/server/contracts.json",
-      "sha256": "5d3094f6004d18aa3ba6036d9e07d915de35b01dffd8b20707b5ed05f14c37dd",
+      "sha256": "be10e81171e02d18099e5f0edce798aae8a1188d58ec3ee34bc6bc73d71e2db7",
       "mode": 420
     },
     {
@@ -326,7 +336,7 @@
     },
     {
       "path": "internal/server/governance.go",
-      "sha256": "1f6f45962628e56587846caa5e7f7d76c161d6a702c2478a112860a9a71a3a19",
+      "sha256": "8cc61946c9947cc3aa16743910348445e1fe3f03244e43956c88f67be2d9ddbb",
       "mode": 420
     },
     {
@@ -351,12 +361,12 @@
     },
     {
       "path": "internal/server/mcp_operations.go",
-      "sha256": "933c1b9ec23f4d2f20a5e73e876e33fbf5ea01af29eb11e1e2ad3808aea44626",
+      "sha256": "70b7a4096a9c549981abf9acfd06500c13fc7bc0b26fd3767187511c446d53da",
       "mode": 420
     },
     {
       "path": "internal/server/mcp-tools.json",
-      "sha256": "d44e3201ed06d75e78cfce839bd67fdb734f50ff9832b520e5bf83811942bf05",
+      "sha256": "5ae6710ed5d53861210de69608fb29b29db888683b5d7b231723f7d76556b028",
       "mode": 420
     },
     {
@@ -396,7 +406,7 @@
     },
     {
       "path": "internal/server/permissions.go",
-      "sha256": "74db28edca4dbfaa66a8650b09875f9472588cc17c41474dc559587945265536",
+      "sha256": "43b69d59350ca1d80566f071d7aceb7dda4bdf8905aaa1bead16cfe44114ec97",
       "mode": 420
     },
     {
@@ -430,6 +440,11 @@
       "mode": 420
     },
     {
+      "path": "internal/server/session_retention.go",
+      "sha256": "f859901cef2a2a51786e51e88ded8bfa66980941866e85f00e3465c9927853e7",
+      "mode": 420
+    },
+    {
       "path": "internal/server/sessions_test.go",
       "sha256": "89c5d79dec4d5322733746484f61e0b672f35d4ac10a800772cd7d85e1334663",
       "mode": 420
@@ -446,7 +461,7 @@
     },
     {
       "path": "internal/server/sync.go",
-      "sha256": "8cb2d00c702cbf8b06ebe19c4b58b7f458a499f3be1b6eed0ee79524e0e9df75",
+      "sha256": "832395c5a7e3bd284d4354558aeb86734a8e3b2089fd49b9d512b161a4df933e",
       "mode": 420
     },
     {
@@ -466,7 +481,7 @@
     },
     {
       "path": "internal/server/testdata/protocol.json",
-      "sha256": "355f5f6bd91200b995ed37e5f7c25d70b6796c7ca066e9f80d8f0e49a973f75a",
+      "sha256": "b195fa9ace4185b4f60c7f145d8d413c127e91f3091de06886c244cb80f2db23",
       "mode": 420
     },
     {
@@ -506,17 +521,17 @@
     },
     {
       "path": "orka-server",
-      "sha256": "f5e1e217f43b63353a0ed1244ab719b38073d3153bc42223a531b3eaf7fbe56d",
+      "sha256": "b659a8d58ca9acbca9c6a60849e0e019f4e4bfe319214d6ab883064732f35060",
       "mode": 420
     },
     {
       "path": "package-lock.json",
-      "sha256": "29b1b3af2ee17cfb8c58748316b42461e5e2fba2e0a358d2d3b9d20f12d59105",
+      "sha256": "22f46f72e41a5751d43e576ff3c6352ce1f05b8811f144fc7bd27a3a2fe28ef0",
       "mode": 420
     },
     {
       "path": "package.json",
-      "sha256": "f2b273b332d820c22aa8b421a4c9c03d5466d666cecde9736638ea86d9ad787b",
+      "sha256": "55081df954ac6ab924a128b04168d534557879661ed7a094bf796403a4e2f6f1",
       "mode": 420
     },
     {
@@ -531,7 +546,7 @@
     },
     {
       "path": "packages/protocol/package.json",
-      "sha256": "956e2ec26632e42a6dd35989ecff7e2db1210665c7ba8b2f8fe59038ea901d1a",
+      "sha256": "d5a0274af323907e60742b09fa77e260e891866b7e3d7947499c48db09ce82da",
       "mode": 420
     },
     {
@@ -546,12 +561,12 @@
     },
     {
       "path": "packages/protocol/src/index.ts",
-      "sha256": "b1900a7c408bf51bd4d214a25cec467d0cf8ac6f7b4529454abdc19347b60a61",
+      "sha256": "9cd61b99557e1d80121fb8484c5f1785fdb360c3a090776365f8713a2f6b8471",
       "mode": 420
     },
     {
       "path": "packages/protocol/src/mcp.ts",
-      "sha256": "8090df37e70ec078854f320e2876d154797a08aed4a138ab624ff186febcd68e",
+      "sha256": "2f87b26752b9683e80fed5fd443989dd3d8679bfcdd1d2fbc8c643c05d36b987",
       "mode": 420
     },
     {
@@ -605,6 +620,11 @@
       "mode": 420
     },
     {
+      "path": "packages/server-core/migrations/007_session_retention.sql",
+      "sha256": "0bccbe01d5c1f0fd591da635365623bf248a7f733fc4b1701e3a71afb4b18a47",
+      "mode": 420
+    },
+    {
       "path": "packages/server-core/migrations/assets.go",
       "sha256": "c251e8ed88aad92c47371cd7fa6f1ccc56bdb7f4660a9f41398b6e0876318127",
       "mode": 420
@@ -621,7 +641,7 @@
     },
     {
       "path": "scripts/check-repository.ts",
-      "sha256": "ef9d65ac4109ca3d28a447e5dee9fb45c30f07bd7bf6dcea9e399d4b0d16b660",
+      "sha256": "74938867ffd731bddc6d0a51311660b53788718bca566ecc96479e2d7b86a6a3",
       "mode": 420
     },
     {
@@ -636,7 +656,7 @@
     },
     {
       "path": "scripts/generate-go-fixtures.mjs",
-      "sha256": "4b470a6faf19aa44ab52f79619aa79608465fe75aa57f74fd543c41d7ccfccde",
+      "sha256": "ca2a90078adc169ec61095e7f9153c31882fdbbe15a6cd3cd86e54963585f70e",
       "mode": 420
     },
     {
@@ -676,7 +696,7 @@
     },
     {
       "path": "scripts/release/package-release.mjs",
-      "sha256": "b7fc5a0fd38fb462bd01ab2451469be49d2afae27332226dd4597f229139f021",
+      "sha256": "99a426222a678beffad009116e0c4de8e007097b228dd4705b45a5a056199252",
       "mode": 420
     },
     {
@@ -706,7 +726,7 @@
     },
     {
       "path": "tests/acceptance/integration.ts",
-      "sha256": "b4185686c715e50b6967c3f93a9081f971915c18f0257ba507e151be18c2b53d",
+      "sha256": "201786caf8bd67edc05aec4499cc7e97a8c99faf7b66241c82c4662d358c31a8",
       "mode": 420
     },
     {
@@ -721,7 +741,7 @@
     },
     {
       "path": "tests/acceptance/self-hosted-e2e.ts",
-      "sha256": "d22fc290af84e832689bdf6888643e85e846ff8f0cc579d34e0a4571b9123ded",
+      "sha256": "4a7b9786d485ba787a2035d524ae6461e9145c24b4c6a2c5464a476c077066da",
       "mode": 420
     },
     {
@@ -776,7 +796,7 @@
     },
     {
       "path": "tests/cloud.integration.ts",
-      "sha256": "733f1d634473f8a2fa19ccafdb722ea2fd41114e87b4bb16dacb39cf903b2587",
+      "sha256": "a8b3e7bd85f8f689c7ed977e3782862e2bc6978d799eebfdadd76fac1cc715f5",
       "mode": 420
     },
     {
@@ -831,7 +851,7 @@
     },
     {
       "path": "tests/fixtures/env-native.ts",
-      "sha256": "c076ace2d62fa172257fdbf59a9903f37f8e0e6f35fce340cbe84f8a31bf0e87",
+      "sha256": "8d38153b40d66e0946267a474b9eac925ac1483bcd189f5ab138913a6c878f7d",
       "mode": 420
     },
     {
@@ -886,7 +906,7 @@
     },
     {
       "path": "tests/migrations.integration.ts",
-      "sha256": "dfdd4cb0ff7cea57fdf6ae01315f86c77479dba11f0f4534c71c08494607c4f6",
+      "sha256": "2e6a0dba31bbc4d62afb65da65482c450b54cfa1edc515f40e927d537474a588",
       "mode": 420
     },
     {
@@ -896,7 +916,7 @@
     },
     {
       "path": "tests/operator.test.ts",
-      "sha256": "4e5090f62bf8381e330daa9663d915e4f896a4b1fa5196207725b3b22ea55b9f",
+      "sha256": "970fbb59fab3b8e12e1f997b39aa9a0f9d23b756ea6e34b8fd8000a75991c1a7",
       "mode": 420
     },
     {
@@ -926,12 +946,12 @@
     },
     {
       "path": "tests/role-policies.integration.ts",
-      "sha256": "b251653061c3d6df5ff14815e167e9eab06a6d37780a92201e919803dccb3945",
+      "sha256": "26dd401813abbf965d3263478a605a4c3bd36ba0933438a3d924990b69f80f61",
       "mode": 420
     },
     {
       "path": "tests/selected-sharing-native.integration.ts",
-      "sha256": "282dae4fa047bd29a078d869d6620dfbee80ddd42deb1d938104eb191979e08d",
+      "sha256": "198b2e2cd35e1ed9bd43ca1b48c27e65c9ce3bc93ad0317fdb92ed2c17318ed4",
       "mode": 420
     },
     {
@@ -942,6 +962,21 @@
     {
       "path": "tests/self-hosted.test.ts",
       "sha256": "63a8a66cf7b0147f7aaa8b93af9d8b07c68473a9052fbd63e6a31160c74627f0",
+      "mode": 420
+    },
+    {
+      "path": "tests/session-latest-native.integration.ts",
+      "sha256": "ed133ad70e429648482263d78b98cea67b049dd51c68324bce16564d4f4f4ffd",
+      "mode": 420
+    },
+    {
+      "path": "tests/session-latest.integration.ts",
+      "sha256": "cbb95000e81d33ac71646d05c570b19b2c9a624fc35e06ba8f7902f4fa1ceff8",
+      "mode": 420
+    },
+    {
+      "path": "tests/session-retention.integration.ts",
+      "sha256": "e4a6b4f128b6f1220d26529ea9b38faacd4b89f0c1e11b807451717f3bd5d224",
       "mode": 420
     },
     {

@@ -1,3 +1,44 @@
+## Latest complete session snapshots
+
+`sessionLatestOnly: 1` in `/v2/projects/capabilities` advertises latest-only
+session storage and exact cached-session copying. Each session keeps its current
+complete native transcript and lineage, while superseded session snapshots are
+removed. Memory, plan, skill and encrypted ENV revision histories are unchanged.
+Unresolved session conflicts and pending reviews retain their candidate files.
+Session requests to `get_resource_history` and `compare_revisions` return an
+explicit latest-only error after normal authorization; use `fetch_resource` to
+read the current conversation.
+
+Revision numbers remain monotonic concurrency identifiers. Stale session pushes
+still produce conflicts rather than overwriting newer work, without loading the
+old transcript. Pull feeds materialize current session resources, related
+resources and unresolved conflicts while preserving event cursors and activity
+notices. Old event/receipt manifests are small operational metadata and do not
+pin superseded session files. Mutation retries keep their original acknowledgement
+and outcome, so a desktop never rebases its native binding to bytes it has not
+written. Non-session feed/history behavior is unchanged.
+
+The optional `sourceSnapshot` on `POST /v2/sessions/copy` is the exact cached
+`resourceInput` manifest; it excludes server fields such as owner, revision,
+project ID and access. Upload its files with the signed-in account before copying.
+The server validates source identity, current read/addition permissions, the
+observed source revision and every file before creating the new owned session.
+It does not substitute a newer remote conversation. An older copy request without
+`sourceSnapshot` remains valid when its `expectedRevision` is current; a stale
+request receives 409 `Cached session revision unavailable` without a receipt.
+Committed legacy requests retain their original retry identity.
+
+Update the API before updated desktops. Desktops detect this capability and
+freeze the cached source into their durable request before first submission.
+Requests already submitted to older services keep their original body and ID;
+a known-failed stale copy can be replaced with a new request ID and its frozen
+cached manifest. Existing clients may continue reading and publishing sessions,
+but must update to promote a superseded cached session after its files have been
+collected. Local native history, paginated Codex lineage, resume, handoff and
+exports remain complete. Follow the [session retention operator guide](session-retention.md)
+for the grace period, dry-run, backup and rollout steps before upgrading an
+existing installation. A source change does not itself run production cleanup.
+
 # Release compatibility
 
 Email invitation candidates add migration 003 and optional `invites.email` /

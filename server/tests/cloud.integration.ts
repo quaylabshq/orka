@@ -440,6 +440,7 @@ await test("exchange API: isolation, retries, merges, snapshots, and session con
       deviceId: teammateDevice,
       resourceId: session.resourceId,
       expectedRevision: sessionBase.event.revision,
+      sourceSnapshot: session,
     };
     const copied = await store.copy(teammate, copyInput);
     assert.equal(copied.event.resource.owner, teammate);

@@ -669,7 +669,8 @@ pub fn session_action(
         }
         json!({"version":2,"id":Uuid::new_v4().to_string(),"projectId":project,"deviceId":db::device(&db)?,"resourceId":id,"expectedRevision":r["revision"],"conflictId":c,"action":action,"selected":selected})
     } else if action == "copy" {
-        json!({"version":2,"id":Uuid::new_v4().to_string(),"projectId":project,"deviceId":db::device(&db)?,"resourceId":id,"expectedRevision":r["revision"]})
+        sync::queue_session_snapshot(&db, &r, &db::device(&db)?)?;
+        return sync_now();
     } else if action == "delete" {
         let mut resource = r.clone();
         for key in [
@@ -694,8 +695,6 @@ pub fn session_action(
     };
     let endpoint = if input["conflictId"].is_string() {
         "/v2/sessions/resolve"
-    } else if action == "copy" {
-        "/v2/sessions/copy"
     } else {
         "/v2/sync/push"
     };

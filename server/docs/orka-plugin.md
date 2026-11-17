@@ -51,7 +51,7 @@ provider and Dashboard authentication continue unchanged. See
 
 ## Transcript and handoff behavior
 
-Session reading supports Claude JSONL and Codex legacy/paginated JSONL. Paginated history resolves only the exact inherited file and byte/ordinal boundaries declared in the snapshot. Corrupt, missing, cyclic or unreferenced lineage fails visibly. Complete source blobs remain unchanged.
+Sessions retain their latest complete snapshot rather than a browser of superseded revisions. Memory, plan and skill history remains available through the history tools. Unresolved conflict and pending-review versions are protected until resolved. Session reading supports Claude JSONL and Codex legacy/paginated JSONL. Paginated history resolves only the exact inherited file and byte/ordinal boundaries declared in the snapshot. Corrupt, missing, cyclic or unreferenced lineage fails visibly. Complete source blobs remain unchanged.
 
 The readable conversation excludes setup, analysis, tool payloads and nontext blocks. Mirrored Codex message forms are deduplicated within turns, while repeated turns are retained. A session bundle must be at most 32 MB for plugin reading; larger bundles remain available through the desktop. Ordinary text sources are bounded by their existing 1 MB limit. Fetch results contain up to 40,000 UTF-16 code units per page. Continue with both `nextOffset` and `expectedRevision`; a changed source requires restarting the read.
 

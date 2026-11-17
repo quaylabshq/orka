@@ -17,7 +17,7 @@ The desktop injects identity and service internally. Supply project/repository I
 
 Use `search_resources` for accessible memories, instructions, plans, skills and session snapshots across projects. Filter to the requested project or repository and follow pagination. Attribute results with their source URLs and dates. Read relevant sources before making claims; a search result is not the full resource.
 
-Use `get_resource_history` and `compare_revisions` to inspect authors, timestamps and changes. Keep revisions tied to their exact resource and distinguish a historical revision from the accepted current version. Session views omit private execution details; never infer omitted records.
+Use `get_resource_history` and `compare_revisions` to inspect authors, timestamps and changes for memories, plans and skills. Keep revisions tied to their exact resource and distinguish a historical revision from the accepted current version. Sessions expose only their latest complete shared snapshot; use `fetch_resource` with its current revision, and restart pagination if that revision changes. Session views omit private execution details; never infer omitted records. Unresolved session conflicts remain available through the conflict workflow.
 
 For a requested knowledge write, use `create_memory` or `update_plan` with the selected repository, exact content and current revision where required. Keep the same operation ID when retrying an uncertain result. A stale revision requires reading and reconciling the newer content before a new write. Report the actual outcome, including approval requirements or conflicts. Saving knowledge never enables automatic sharing.
 

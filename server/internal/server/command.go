@@ -94,6 +94,25 @@ func Command(ctx context.Context, args []string) error {
 			return fmt.Errorf("Initial CI deployment requires an empty database directory; migrate existing stacks explicitly")
 		}
 		return nil
+	case "prune-session-history":
+		for _, arg := range args {
+			if arg != "--apply" {
+				return fmt.Errorf("usage: orka-server prune-session-history [--apply]")
+			}
+		}
+		if env["DATABASE_URL"] == "" || env["BLOB_ROOT"] == "" {
+			return fmt.Errorf("DATABASE_URL and BLOB_ROOT are required")
+		}
+		store, err := Open(ctx, env["DATABASE_URL"], env["BLOB_ROOT"])
+		if err != nil {
+			return err
+		}
+		defer store.Pool.Close()
+		stats, err := store.PruneSessionHistory(ctx, includes(args, "--apply"))
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(stats)
 	case "migrate", "migrate-sources":
 		store, err := Open(ctx, env["DATABASE_URL"], env["BLOB_ROOT"])
 		if err != nil {
@@ -110,7 +129,7 @@ func Command(ctx context.Context, args []string) error {
 		}
 		return store.Migrate(ctx, includes(args, "--reset-ledger"))
 	case "help", "--help", "-h":
-		fmt.Println("orka-server [serve|version|healthcheck|doctor|create-user|migrate|migrate-sources|check-deployment|verify-deployment]")
+		fmt.Println("orka-server [serve|version|healthcheck|doctor|create-user|migrate|migrate-sources|prune-session-history|check-deployment|verify-deployment]")
 		return nil
 	default:
 		return fmt.Errorf("unknown command %q; run orka-server help", action)
@@ -172,8 +191,19 @@ func run(parent context.Context, env map[string]string) error {
 		defer close(stopped)
 		timer := time.NewTicker(time.Minute)
 		defer timer.Stop()
+		retentionCursor := ""
 		for {
 			store.cleanupBlobs(ctx)
+			stats, err := store.pruneSessionHistoryBatch(ctx, true, retentionCursor)
+			if err != nil {
+				log.Print("session_retention_cleanup_pending")
+			} else if stats.CatalogBlobsRemoved > 0 || stats.PrunedSnapshots > 0 || stats.FilesRemoved > 0 {
+				_ = printSessionRetention(stats)
+			}
+			retentionCursor = stats.LastProject
+			if stats.ProjectsInspected+stats.SkippedProjects < sessionRetentionProjects {
+				retentionCursor = ""
+			}
 			select {
 			case <-ctx.Done():
 				return
