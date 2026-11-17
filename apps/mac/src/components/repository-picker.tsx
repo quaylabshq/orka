@@ -1,6 +1,7 @@
+import { ChevronDownIcon, XIcon } from "lucide-react";
+import { GithubMarkIcon } from "./icons.js";
 import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { ChevronDownIcon, MarkGithubIcon, XIcon } from "@primer/octicons-react";
 import type { GitHubRepository } from "@portable/protocol";
 import type { Project } from "../types.js";
 import type { RepositoryController } from "./use-repositories.js";
@@ -372,7 +373,7 @@ export function RepositoryPicker({
                   aria-label={`GitHub account options for @${status?.identity?.login}`}
                   disabled={busy}
                 >
-                  <MarkGithubIcon size={16} aria-hidden="true" />
+                  <GithubMarkIcon size={16} aria-hidden="true" />
                   <span>@{status?.identity?.login}</span>
                   <ChevronDownIcon size={14} aria-hidden="true" />
                 </Button>

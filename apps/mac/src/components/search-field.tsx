@@ -1,5 +1,5 @@
+import { SearchIcon, XIcon } from "lucide-react";
 import React, { forwardRef, useImperativeHandle, useRef } from "react";
-import { SearchIcon, XIcon } from "@primer/octicons-react";
 import { TextField, type TextFieldProps } from "./text-field.js";
 import { IconButton } from "./icon-button.js";
 export interface SearchFieldProps extends Omit<

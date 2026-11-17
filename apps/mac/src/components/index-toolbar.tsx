@@ -1,5 +1,5 @@
+import { RefreshCwIcon } from "lucide-react";
 import React from "react";
-import { SyncIcon } from "@primer/octicons-react";
 import type { Resource } from "@portable/protocol";
 import { IconButton } from "./icon-button.js";
 import { SearchField } from "./search-field.js";
@@ -196,7 +196,7 @@ export function IndexToolbar({
       />
       {kind === "skill" && onRefreshUsage && (
         <IconButton
-          icon={SyncIcon}
+          icon={RefreshCwIcon}
           size="sm"
           variant="tertiary"
           aria-label="Refresh skill usage"

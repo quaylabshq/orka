@@ -1,3 +1,4 @@
+import { UserIcon } from "lucide-react";
 import React, {
   memo,
   useEffect,
@@ -8,7 +9,6 @@ import React, {
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { PersonIcon } from "@primer/octicons-react";
 import type { Resource } from "@portable/protocol";
 import { Button } from "./button.js";
 import { Icon } from "./icon.js";
@@ -64,7 +64,7 @@ const SessionTurn = memo(function SessionTurn({
       <div className="session-turn-speaker">
         {user ? (
           <>
-            <Icon icon={PersonIcon} size="sm" variant="primary" />
+            <Icon icon={UserIcon} size="sm" variant="primary" />
             <span>You</span>
           </>
         ) : (

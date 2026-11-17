@@ -1,7 +1,7 @@
+import { FileIcon, GitCompareIcon, PencilIcon } from "lucide-react";
 import React, { type MouseEvent } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { FileIcon, GitCompareIcon, PencilIcon } from "@primer/octicons-react";
 import type { Inspection, ProjectResource as Resource } from "../types.js";
 import { Button } from "./button.js";
 import { Icon } from "./icon.js";

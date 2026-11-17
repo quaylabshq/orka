@@ -1,9 +1,6 @@
+import { CheckIcon, LinkIcon } from "lucide-react";
+import { type IconGlyph } from "./icons.js";
 import React, { useEffect, useRef, useState } from "react";
-import {
-  CheckIcon,
-  LinkIcon,
-  type Icon as OcticonIcon,
-} from "@primer/octicons-react";
 import { Button, type ButtonVariant } from "./button.js";
 import { Icon } from "./icon.js";
 
@@ -27,7 +24,7 @@ export function CopyLinkButton({
   onError: (message: string) => void;
   iconOnly?: boolean;
   loadValue?: () => Promise<string>;
-  icon?: OcticonIcon;
+  icon?: IconGlyph;
   variant?: ButtonVariant;
   role?: React.AriaRole;
   nativeTooltip?: boolean;

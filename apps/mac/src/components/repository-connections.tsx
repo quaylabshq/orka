@@ -1,14 +1,11 @@
+import { FolderIcon, PlusIcon, RefreshCwIcon, XIcon } from "lucide-react";
+import {
+  CircleCheckFilledIcon,
+  DotFilledIcon,
+  TriangleAlertFilledIcon,
+} from "./icons.js";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import {
-  CheckCircleFillIcon,
-  AlertFillIcon,
-  DotFillIcon,
-  FileDirectoryIcon,
-  PlusIcon,
-  SyncIcon,
-  XIcon,
-} from "@primer/octicons-react";
 import type { RepositoryAccessRequest } from "@portable/protocol";
 import type { Project, Snapshot } from "../types.js";
 import { Button } from "./button.js";
@@ -269,10 +266,10 @@ export function RepositoryConnections({
                   ? "Connect GitHub to verify access"
                   : "Could not check GitHub access";
           const StatusIcon = ready
-            ? CheckCircleFillIcon
+            ? CircleCheckFilledIcon
             : value
-              ? AlertFillIcon
-              : DotFillIcon;
+              ? TriangleAlertFilledIcon
+              : DotFilledIcon;
           const actions: ItemMenuAction[] = [];
           if (active && job.state !== "connecting")
             actions.push({
@@ -406,7 +403,7 @@ export function RepositoryConnections({
             >
               <div className="repository-card-row">
                 <div className="repository-card-main">
-                  <FileDirectoryIcon size={18} aria-hidden="true" />
+                  <FolderIcon size={18} aria-hidden="true" />
                   <div className="repository-card-identity">
                     <strong>{source.repository!.fullName}</strong>
                     <span className="repository-card-meta">
@@ -474,7 +471,7 @@ export function RepositoryConnections({
                       </Button>
                     ) : failed ? (
                       <IconButton
-                        icon={SyncIcon}
+                        icon={RefreshCwIcon}
                         size="sm"
                         variant="tertiary"
                         aria-label={`Retry access check for ${source.name}`}

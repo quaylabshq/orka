@@ -8,7 +8,8 @@ The native frontend now uses Pitch color tokens, the approved Inter Variable sca
 - `apps/mac/src/style.css`: app layout, navigation, input, resource, and overlay treatments.
 - `apps/mac/tailwind.config.cjs`: semantic Tailwind colors and typography mapped to the canonical tokens. Existing color aliases remain compatible.
 - `apps/mac/src/components/button.tsx`: text action control.
-- `apps/mac/src/components/icon.tsx`: Primer Octicon glyph and its alignment container.
+- `apps/mac/src/components/icon.tsx`: Lucide glyph and its alignment container.
+- `apps/mac/src/components/icons.tsx`: the `IconGlyph` type plus the few glyphs Lucide does not ship: the GitHub and Markdown marks and the filled status icons.
 - `apps/mac/src/components/icon-button.tsx`: accessible square action control.
 
 ## Button
@@ -54,17 +55,17 @@ Text and icon buttons keep their resting size on hover. Background, color, and p
 
 Both icon components are separate files. Standalone Icon variants select primary, secondary, or tertiary text tones; `inherit` is the default so icons inside a white button use its dark label color. An optional `label` exposes a standalone icon to assistive technology; otherwise it is decorative. IconButton requires an accessible name and supports all three action treatments in all three sizes.
 
-| Size | Button / icon-button height | Inline icon container | Octicon glyph | Icon/text gap |
+| Size | Button / icon-button height | Inline icon container | Icon glyph | Icon/text gap |
 | ---- | --------------------------- | --------------------- | ------------- | ------------- |
 | lg   | 48px                        | 24px                  | 20px          | 8px           |
 | md   | 40px                        | 20px                  | 16px          | 8px           |
 | sm   | 32px                        | 18px                  | 14px          | 6px           |
 
-Icon-only controls are square. Inline containers match the label line height. Octicon glyphs are filled with currentColor and stay centered. Within Button, the parent control's size determines the icon dimensions.
+Icon-only controls are square. Inline containers match the label line height. Lucide glyphs are stroked with currentColor at a 1.75 stroke width on their 24px grid (`--icon-stroke`) and stay centered; the local filled glyphs use a currentColor fill. Within Button, the parent control's size determines the icon dimensions.
 
 ## Skill reader
 
-The Skills detail (`apps/mac/src/components/skill-detail.tsx`) is a document column beside a 360px rail with Skill info and Files; below an 840px reader width it folds into one column with a meta line and a Files popover. Styles live in `apps/mac/src/components/skill-detail.css` as un-layered rules so they win over the shared `.resource-detail` layout.
+Memory, plan, session, and skill detail pages share one shell (`apps/mac/src/components/detail-layout.tsx`): a reading column capped at 870px beside a 360px info rail, centered together; below an 840px reader width it folds into one column with a meta line, and Files moves into a popover. `memory-detail.tsx`, `session-detail.tsx`, and `skill-detail.tsx` plug their own pieces into it. Styles live in `apps/mac/src/components/detail-layout.css` as un-layered rules so they win over the base `.resource-detail` layout.
 
 - `SkillDetail`: title card from SKILL.md frontmatter, status pill, Formatted/Markdown segmented control for Markdown files, and the Skill info actions as separate `IconButton`s with accessible labels and `SkillActionTooltip` hover/focus descriptions.
 - `SourceCard` and `FileDiffCard` (`file-diff.tsx`): read-only source with line numbers and Markdown tinting. Text comparisons use the actual `@pierre/diffs` React `FileDiff` through `pierre-diff.tsx`, with an Orka header, unified rows, green additions, red deletions, syntax highlighting, word emphasis, and expandable unchanged regions. Shadow-root styles consume Orka semantic tokens and IBM Plex Mono; rendering is read-only and all editing remains external. The bundled Shiki JavaScript engine requires no remote service, worker, or relaxed CSP. Older WebViews that lack Pierre’s CSS/JavaScript capabilities show a clear preview-unavailable message and retain Open in editor; the app’s macOS 12 minimum stays unchanged. Binary files keep their existing summary cards.

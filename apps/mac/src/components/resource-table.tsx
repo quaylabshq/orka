@@ -1,12 +1,12 @@
+import {
+  ChevronDownIcon,
+  ChevronRightIcon,
+  GitForkIcon,
+  TriangleAlertIcon,
+} from "lucide-react";
 import { ResourceItemMenu } from "./resource-menu.js";
 import { ItemMenuButton } from "./item-menu.js";
 import React, { useMemo, useState } from "react";
-import {
-  AlertIcon,
-  ChevronDownIcon,
-  ChevronRightIcon,
-  RepoForkedIcon,
-} from "@primer/octicons-react";
 import type { ProjectResource as Resource } from "../types.js";
 import { useMemberLabel } from "./member-names.js";
 import { RepositoryLabel } from "./repository-label.js";
@@ -207,7 +207,7 @@ export function ResourceTable({
                         </span>
                       )}
                       {resource.fork && (
-                        <RepoForkedIcon
+                        <GitForkIcon
                           className="session-fork-icon"
                           size={16}
                           aria-label="Forked session"
@@ -255,7 +255,7 @@ export function ResourceTable({
                           )}
                         {conflicted.has(resource.resourceId) && (
                           <span className="resource-conflict">
-                            <AlertIcon size={12} aria-hidden="true" />
+                            <TriangleAlertIcon size={12} aria-hidden="true" />
                             Needs resolution
                           </span>
                         )}

@@ -1,12 +1,12 @@
-import { useId } from "react";
 import {
-  BookIcon,
-  CommentDiscussionIcon,
-  KeyIcon,
-  TasklistIcon,
+  BookOpenIcon,
+  KeyRoundIcon,
+  ListTodoIcon,
+  MessagesSquareIcon,
   ZapIcon,
-  type Icon as OcticonIcon,
-} from "@primer/octicons-react";
+} from "lucide-react";
+import { type IconGlyph } from "./icons.js";
+import { useId } from "react";
 import type { ProjectSharing } from "../types.js";
 import { Icon } from "./icon.js";
 import { Switch } from "./switch.js";
@@ -66,17 +66,17 @@ const choices: {
   key: keyof ProjectSharing;
   label: string;
   description?: string;
-  icon: OcticonIcon;
+  icon: IconGlyph;
 }[] = [
-  { key: "memory", label: "Memories", icon: BookIcon },
-  { key: "session", label: "Sessions", icon: CommentDiscussionIcon },
-  { key: "plan", label: "Plans", icon: TasklistIcon },
+  { key: "memory", label: "Memories", icon: BookOpenIcon },
+  { key: "session", label: "Sessions", icon: MessagesSquareIcon },
+  { key: "plan", label: "Plans", icon: ListTodoIcon },
   { key: "skill", label: "Skills", icon: ZapIcon },
   {
     key: "env",
     label: "ENVs",
     description: "Encrypted. Published manually after review.",
-    icon: KeyIcon,
+    icon: KeyRoundIcon,
   },
 ];
 

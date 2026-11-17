@@ -1,3 +1,5 @@
+import { EyeIcon, MessageSquareIcon, PencilIcon, XIcon } from "lucide-react";
+import { type IconGlyph } from "./icons.js";
 import React, {
   useCallback,
   useEffect,
@@ -7,13 +9,6 @@ import React, {
   useState,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import {
-  CommentIcon,
-  EyeIcon,
-  PencilIcon,
-  XIcon,
-  type Icon as OcticonIcon,
-} from "@primer/octicons-react";
 import type { AccessMode } from "@portable/protocol";
 import type {
   Inspection,
@@ -81,9 +76,9 @@ const sampleLoaded: Loaded = {
   signature: "",
 };
 
-const accessIcons: Record<AccessMode, OcticonIcon> = {
+const accessIcons: Record<AccessMode, IconGlyph> = {
   publish: PencilIcon,
-  suggest: CommentIcon,
+  suggest: MessageSquareIcon,
   read: EyeIcon,
   hidden: EyeIcon,
 };

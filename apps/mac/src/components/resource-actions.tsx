@@ -1,6 +1,6 @@
+import { EllipsisIcon } from "lucide-react";
 import React, { useState } from "react";
 import * as Popover from "@radix-ui/react-popover";
-import { KebabHorizontalIcon } from "@primer/octicons-react";
 import { IconButton } from "./icon-button.js";
 
 export interface ActionPopoverProps {
@@ -74,7 +74,7 @@ export function ResourceActions({ children }: { children: React.ReactNode }) {
       label="Resource actions"
       trigger={
         <IconButton
-          icon={KebabHorizontalIcon}
+          icon={EllipsisIcon}
           size="sm"
           variant="tertiary"
           aria-label="More resource actions"

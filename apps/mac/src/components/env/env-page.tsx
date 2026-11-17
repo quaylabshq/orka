@@ -1,9 +1,9 @@
 import {
   LockIcon,
   PlusIcon,
+  RefreshCwIcon,
   ShieldCheckIcon,
-  SyncIcon,
-} from "@primer/octicons-react";
+} from "lucide-react";
 import type { Project } from "../../types.js";
 import { Button } from "../button.js";
 import { IconButton } from "../icon-button.js";
@@ -68,7 +68,7 @@ function EnabledEnvPage({
           aria-label="ENV actions"
         >
           <IconButton
-            icon={SyncIcon}
+            icon={RefreshCwIcon}
             size="sm"
             aria-label="Refresh ENVs"
             disabled={Boolean(c.busy)}

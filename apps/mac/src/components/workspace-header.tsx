@@ -1,6 +1,6 @@
+import { PanelLeftCloseIcon, PanelLeftOpenIcon } from "lucide-react";
 import React from "react";
 import { motion, useReducedMotion } from "motion/react";
-import { SidebarCollapseIcon, SidebarExpandIcon } from "@primer/octicons-react";
 import { Button } from "./button.js";
 import { spring } from "../lib/springs.js";
 
@@ -63,14 +63,14 @@ export function WorkspaceHeader({
               animate={collapsed ? hidden : shown}
               transition={instantTransition ?? (collapsed ? leave : enter)}
             >
-              <SidebarCollapseIcon size={16} />
+              <PanelLeftCloseIcon size={16} />
             </motion.span>
             <motion.span
               initial={false}
               animate={collapsed ? shown : hidden}
               transition={instantTransition ?? (collapsed ? enter : leave)}
             >
-              <SidebarExpandIcon size={16} />
+              <PanelLeftOpenIcon size={16} />
             </motion.span>
           </span>
         </Button>

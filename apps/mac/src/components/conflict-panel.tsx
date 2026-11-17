@@ -1,5 +1,5 @@
+import { TriangleAlertIcon } from "lucide-react";
 import React from "react";
-import { AlertIcon } from "@primer/octicons-react";
 import type { SessionConflict } from "@portable/protocol";
 import { Button } from "./button.js";
 import type {
@@ -40,7 +40,7 @@ export function ConflictPanel({
   return (
     <div className="conflict">
       <strong>
-        <AlertIcon size={16} aria-hidden="true" />
+        <TriangleAlertIcon size={16} aria-hidden="true" />
         Two session versions need a choice.
       </strong>
       <p>

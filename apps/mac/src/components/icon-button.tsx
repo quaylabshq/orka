@@ -1,10 +1,10 @@
+import { type IconGlyph } from "./icons.js";
 import React, { forwardRef } from "react";
-import { type Icon as OcticonIcon } from "@primer/octicons-react";
 import { Button, type ButtonProps } from "./button.js";
 import { Icon } from "./icon.js";
 
 export interface IconButtonProps extends Omit<ButtonProps, "children"> {
-  icon: OcticonIcon;
+  icon: IconGlyph;
   "aria-label": string;
 }
 

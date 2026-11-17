@@ -1,10 +1,5 @@
+import { ArrowRightIcon, FolderIcon, PlusIcon, XIcon } from "lucide-react";
 import React, { useState } from "react";
-import {
-  ArrowRightIcon,
-  FileDirectoryIcon,
-  PlusIcon,
-  XIcon,
-} from "@primer/octicons-react";
 import { Overlay } from "./overlay.js";
 import { Button } from "./button.js";
 import { Icon, type ControlSize } from "./icon.js";
@@ -47,7 +42,7 @@ export default function DesignSystem({ onClose }: { onClose: () => void }) {
       <header className="ds-header">
         <div>
           <h1>Design system</h1>
-          <p>Actual app components · Inter Variable · Octicons</p>
+          <p>Actual app components · Inter Variable · Lucide</p>
         </div>
         <IconButton
           icon={XIcon}
@@ -127,7 +122,7 @@ export default function DesignSystem({ onClose }: { onClose: () => void }) {
                   <React.Fragment key={variant}>
                     <Button variant={variant} size={buttonSize}>
                       {variant === "tertiary" ? null : (
-                        <Icon icon={FileDirectoryIcon} />
+                        <Icon icon={FolderIcon} />
                       )}
                       {variant}
                     </Button>
@@ -189,7 +184,7 @@ export default function DesignSystem({ onClose }: { onClose: () => void }) {
                 <TextField
                   size={size}
                   label="Project name"
-                  icon={FileDirectoryIcon}
+                  icon={FolderIcon}
                   placeholder="e.g. Website redesign"
                   value={name}
                   required
@@ -241,47 +236,47 @@ export default function DesignSystem({ onClose }: { onClose: () => void }) {
                 <TextField
                   label="Default"
                   size={size}
-                  icon={FileDirectoryIcon}
+                  icon={FolderIcon}
                   placeholder="Project name"
                 />
                 <TextField
                   label="Hover"
                   className="ds-hover"
                   size={size}
-                  icon={FileDirectoryIcon}
+                  icon={FolderIcon}
                   placeholder="Project name"
                 />
                 <TextField
                   label="Focus"
                   className="ds-focus"
                   size={size}
-                  icon={FileDirectoryIcon}
+                  icon={FolderIcon}
                   placeholder="Project name"
                 />
                 <TextField
                   label="Filled"
                   size={size}
-                  icon={FileDirectoryIcon}
+                  icon={FolderIcon}
                   defaultValue="Website redesign"
                 />
                 <TextField
                   label="Error"
                   size={size}
-                  icon={FileDirectoryIcon}
+                  icon={FolderIcon}
                   placeholder="Project name"
                   error="Enter a project name to continue."
                 />
                 <TextField
                   label="Disabled"
                   size={size}
-                  icon={FileDirectoryIcon}
+                  icon={FolderIcon}
                   placeholder="Project name"
                   disabled
                 />
                 <TextField
                   label="Read-only"
                   size={size}
-                  icon={FileDirectoryIcon}
+                  icon={FolderIcon}
                   defaultValue="Website redesign"
                   readOnly
                   hint="You can select and copy this value."

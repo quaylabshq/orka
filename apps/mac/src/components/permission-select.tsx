@@ -1,6 +1,6 @@
+import { CheckIcon, ChevronDownIcon } from "lucide-react";
 import React, { useId } from "react";
 import * as Select from "@radix-ui/react-select";
-import { CheckIcon, ChevronDownIcon } from "@primer/octicons-react";
 
 export function PermissionSelect<T extends string>({
   label,

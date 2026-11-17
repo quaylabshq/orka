@@ -1,6 +1,6 @@
+import { HistoryIcon, MailIcon, UserPlusIcon } from "lucide-react";
 import { RepositoryRequests } from "../repository-connections.js";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { HistoryIcon, MailIcon, PersonAddIcon } from "@primer/octicons-react";
 import type { Project, ProjectMember, Snapshot } from "../../types.js";
 import {
   governanceCall,
@@ -282,7 +282,7 @@ export function SettingsMembers({
               disabled={Boolean(busy) || staleAuthority}
               onClick={() => setInvite(true)}
             >
-              <PersonAddIcon size={16} />
+              <UserPlusIcon size={16} />
               Add Member
             </Button>
           )

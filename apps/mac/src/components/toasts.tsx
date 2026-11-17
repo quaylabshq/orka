@@ -1,3 +1,10 @@
+import {
+  CircleCheckIcon,
+  CircleXIcon,
+  ClockIcon,
+  InfoIcon,
+  TriangleAlertIcon,
+} from "lucide-react";
 import React, {
   createContext,
   useCallback,
@@ -16,13 +23,6 @@ import {
   useReducedMotion,
   useTransform,
 } from "motion/react";
-import {
-  AlertIcon,
-  CheckCircleIcon,
-  ClockIcon,
-  InfoIcon,
-  XCircleIcon,
-} from "@primer/octicons-react";
 import { Button } from "./button.js";
 import { spring } from "../lib/springs.js";
 import { noticeToast } from "./toast-copy.js";
@@ -400,13 +400,13 @@ export function ToastViewport({ modal = false }: { modal?: boolean }) {
   const active = hostActive ? context.queue[0] : undefined;
   const icon =
     active?.kind === "error"
-      ? XCircleIcon
+      ? CircleXIcon
       : active?.kind === "warning"
-        ? AlertIcon
+        ? TriangleAlertIcon
         : active?.kind === "queued"
           ? ClockIcon
           : active?.kind === "success"
-            ? CheckCircleIcon
+            ? CircleCheckIcon
             : InfoIcon;
   const Glyph = icon;
   return (

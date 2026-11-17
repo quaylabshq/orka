@@ -1,3 +1,4 @@
+import { FileIcon, RefreshCwIcon } from "lucide-react";
 import React, {
   createContext,
   useContext,
@@ -7,7 +8,6 @@ import React, {
   useState,
 } from "react";
 import { Channel, invoke } from "@tauri-apps/api/core";
-import { FileIcon, SyncIcon } from "@primer/octicons-react";
 import type {
   Project,
   ProjectResource,
@@ -719,7 +719,7 @@ function ResourceCommandDialog({
                   aria-atomic="true"
                 >
                   <Icon
-                    icon={SyncIcon}
+                    icon={RefreshCwIcon}
                     size="sm"
                     className="sync-activity-icon"
                   />

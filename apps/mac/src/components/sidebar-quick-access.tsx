@@ -1,10 +1,6 @@
+import { CirclePlusIcon, SettingsIcon, UserPlusIcon } from "lucide-react";
+import { type IconGlyph } from "./icons.js";
 import React from "react";
-import {
-  GearIcon,
-  PersonAddIcon,
-  PlusCircleIcon,
-  type Icon as Octicon,
-} from "@primer/octicons-react";
 import {
   useFluidHover,
   useRegisterFluidHoverItem,
@@ -21,7 +17,7 @@ function QuickAction({
   collapsed,
   selected,
 }: {
-  icon: Octicon;
+  icon: IconGlyph;
   text: string;
   label: string;
   run: () => void;
@@ -68,17 +64,22 @@ export function SidebarQuickAccess({
   const ref = React.useRef<HTMLDivElement>(null);
   const hover = useFluidHover(ref, { axis: "y" });
   const entries = [
-    { label: "Settings", text: "Settings", icon: GearIcon, run: onSettings },
+    {
+      label: "Settings",
+      text: "Settings",
+      icon: SettingsIcon,
+      run: onSettings,
+    },
     {
       label: "Join project",
       text: "Join Project",
-      icon: PersonAddIcon,
+      icon: UserPlusIcon,
       run: onJoin,
     },
     {
       label: "Add project",
       text: "Add project",
-      icon: PlusCircleIcon,
+      icon: CirclePlusIcon,
       run: onCreate,
     },
   ];

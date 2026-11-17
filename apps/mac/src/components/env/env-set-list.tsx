@@ -1,5 +1,5 @@
+import { KeyRoundIcon } from "lucide-react";
 import { useState } from "react";
-import { KeyIcon } from "@primer/octicons-react";
 import { SearchField } from "../search-field.js";
 import type { EnvController } from "./use-environments.js";
 import { repositoryLabel } from "../project-sources.js";
@@ -32,7 +32,7 @@ export function EnvSetList({
       <div className="env-list-items">
         {c.hasUnpublishedChanges && !c.draft?.revision && (
           <div className="env-list-item env-draft-item" aria-current="true">
-            <KeyIcon size={16} />
+            <KeyRoundIcon size={16} />
             <span>
               <strong>{c.name.trim() || "New ENV set"}</strong>
               <RepositoryLabel
@@ -65,7 +65,7 @@ export function EnvSetList({
             key={set.setId}
             onClick={() => c.select(set.setId)}
           >
-            <KeyIcon size={16} />
+            <KeyRoundIcon size={16} />
             <span>
               <strong>{set.name}</strong>
               <RepositoryLabel

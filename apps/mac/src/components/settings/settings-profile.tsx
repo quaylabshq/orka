@@ -1,3 +1,4 @@
+import { CopyIcon, LogOutIcon, MailIcon, PencilIcon } from "lucide-react";
 import {
   forwardRef,
   useCallback,
@@ -7,12 +8,6 @@ import {
   useState,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import {
-  CopyIcon,
-  MailIcon,
-  PencilIcon,
-  SignOutIcon,
-} from "@primer/octicons-react";
 import type { Snapshot } from "../../types.js";
 import type { AccountProfile } from "../onboarding/model.js";
 import { photoData } from "../onboarding/profile-step.js";
@@ -485,7 +480,7 @@ export const SettingsProfile = forwardRef<
             disabled={saving}
             onClick={onSignOut}
           >
-            <Icon icon={SignOutIcon} />
+            <Icon icon={LogOutIcon} />
             Sign out
           </Button>
         </div>

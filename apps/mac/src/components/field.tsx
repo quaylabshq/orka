@@ -1,5 +1,6 @@
+import { TriangleAlertIcon } from "lucide-react";
+import { type IconGlyph } from "./icons.js";
 import React, { useId } from "react";
-import { AlertIcon, type Icon as OcticonIcon } from "@primer/octicons-react";
 import { Icon, type ControlSize } from "./icon.js";
 
 export interface FieldProps {
@@ -7,7 +8,7 @@ export interface FieldProps {
   hint?: string;
   error?: string;
   size?: ControlSize;
-  icon?: OcticonIcon;
+  icon?: IconGlyph;
   className?: string;
 }
 
@@ -77,7 +78,7 @@ export function Field({
           <p id={`${id}-error`} className="ui-field__error" role="alert">
             {error && (
               <>
-                <Icon icon={AlertIcon} size="sm" />
+                <Icon icon={TriangleAlertIcon} size="sm" />
                 <span>{error}</span>
               </>
             )}

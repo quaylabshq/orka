@@ -1,3 +1,4 @@
+import { ArrowLeftIcon } from "lucide-react";
 import {
   activeSources,
   hasConnectedSource,
@@ -34,7 +35,6 @@ import { RequestAccess } from "./components/request-access.js";
 import { GovernanceDialog } from "./components/governance-dialog.js";
 import { SkillReviewOverlay } from "./components/skill-review-overlay.js";
 import { Icon } from "./components/icon.js";
-import { ArrowLeftIcon } from "@primer/octicons-react";
 import { Button } from "./components/button.js";
 import { ProjectHome } from "./components/project-home.js";
 import {

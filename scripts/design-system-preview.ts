@@ -1,12 +1,8 @@
+import { ArrowRightIcon, FolderIcon, PlusIcon } from "lucide-react";
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import {
-  ArrowRightIcon,
-  FileDirectoryIcon,
-  PlusIcon,
-} from "@primer/octicons-react";
 import { Button } from "../apps/mac/src/components/button.js";
 import { Icon, type ControlSize } from "../apps/mac/src/components/icon.js";
 import { IconButton } from "../apps/mac/src/components/icon-button.js";
@@ -77,7 +73,7 @@ const content = h(
   h(
     "p",
     null,
-    "Pitch · Inter Variable · Octicons · Built from the app components",
+    "Pitch · Inter Variable · Lucide · Built from the app components",
   ),
   h(
     "section",
@@ -190,9 +186,7 @@ const content = h(
           h(
             Button,
             { key: variant, variant, size, className: `preview-${variant}` },
-            variant === "tertiary"
-              ? null
-              : h(Icon, { icon: FileDirectoryIcon }),
+            variant === "tertiary" ? null : h(Icon, { icon: FolderIcon }),
             variant.charAt(0).toUpperCase() + variant.slice(1),
           ),
         ),

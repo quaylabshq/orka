@@ -1,5 +1,5 @@
+import { RefreshCwIcon, TriangleAlertIcon } from "lucide-react";
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { AlertIcon, SyncIcon } from "@primer/octicons-react";
 import type { ProjectResource as Resource } from "../types.js";
 import { SegmentedControl } from "./segmented-control.js";
 import { IconButton } from "./icon-button.js";
@@ -174,7 +174,7 @@ export function ResourceIndex({
             />
             {onRefreshLocal && (
               <IconButton
-                icon={SyncIcon}
+                icon={RefreshCwIcon}
                 size="sm"
                 variant="tertiary"
                 aria-label="Refresh local items"
@@ -194,7 +194,7 @@ export function ResourceIndex({
           <div className="resource-discovery-status">
             <div role={refreshing ? "status" : "alert"} aria-atomic="true">
               <p className="resource-discovery-title">
-                <Icon icon={AlertIcon} size="sm" variant="secondary" />
+                <Icon icon={TriangleAlertIcon} size="sm" variant="secondary" />
                 {refreshing
                   ? `Checking local ${collectionNoun(kind)}…`
                   : refreshFailed
@@ -219,7 +219,7 @@ export function ResourceIndex({
                 disabled={refreshing}
               >
                 <span className={refreshing ? "sync-activity-icon" : ""}>
-                  <Icon icon={SyncIcon} size="sm" />
+                  <Icon icon={RefreshCwIcon} size="sm" />
                 </span>
                 {refreshing ? "Checking…" : "Try again"}
               </Button>

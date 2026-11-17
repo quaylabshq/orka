@@ -1,7 +1,7 @@
+import { DownloadIcon, XIcon } from "lucide-react";
 import { useState, type MouseEvent } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import * as Popover from "@radix-ui/react-popover";
-import { DownloadIcon, XIcon } from "@primer/octicons-react";
 import { Button } from "./button.js";
 import { IconButton } from "./icon-button.js";
 

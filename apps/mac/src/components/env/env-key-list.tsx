@@ -1,4 +1,4 @@
-import { EyeClosedIcon, EyeIcon } from "@primer/octicons-react";
+import { EyeIcon, EyeOffIcon } from "lucide-react";
 import { Button } from "../button.js";
 import { IconButton } from "../icon-button.js";
 import type { EnvController } from "./use-environments.js";
@@ -46,7 +46,7 @@ export function EnvKeyList({ c }: { c: EnvController }) {
               {revealed?.key === key ? revealed.value : "••••••••"}
             </span>
             <IconButton
-              icon={revealed?.key === key ? EyeClosedIcon : EyeIcon}
+              icon={revealed?.key === key ? EyeOffIcon : EyeIcon}
               size="sm"
               variant="tertiary"
               aria-label={`${revealed?.key === key ? "Hide" : "Reveal"} ${key}`}

@@ -1,5 +1,5 @@
 import React from "react";
-import { type Icon as OcticonIcon } from "@primer/octicons-react";
+import type { IconGlyph } from "./icons.js";
 
 export type ControlSize = "lg" | "md" | "sm";
 /** Control sizes plus the 12px inline glyph used by facts and path lines. */
@@ -20,7 +20,7 @@ const variants = {
 };
 
 export interface IconProps {
-  icon: OcticonIcon;
+  icon: IconGlyph;
   size?: IconSize;
   variant?: IconVariant;
   /** Omit for decorative icons; labeled controls supply their own name. */
@@ -28,7 +28,7 @@ export interface IconProps {
   className?: string;
 }
 
-/** A Primer Octicon centered in a container matching the label line height. */
+/** A Lucide or local glyph centered in a container matching the label line height. */
 export function Icon({
   icon: Glyph,
   size = "md",

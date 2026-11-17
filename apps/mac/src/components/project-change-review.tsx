@@ -1,5 +1,5 @@
+import { XIcon } from "lucide-react";
 import React from "react";
-import { XIcon } from "@primer/octicons-react";
 import type { Resource } from "@portable/protocol";
 import type { LocalDraft } from "../types.js";
 import { Button } from "./button.js";

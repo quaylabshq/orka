@@ -1,6 +1,6 @@
+import { HistoryIcon } from "lucide-react";
 import React, { useCallback, useEffect, useState } from "react";
 import type { ManagementLog } from "@portable/protocol";
-import { HistoryIcon } from "@primer/octicons-react";
 import { Button } from "./button.js";
 import { displayText } from "./resource-presentation.js";
 import { visibleManagementLog } from "../lib/features.js";

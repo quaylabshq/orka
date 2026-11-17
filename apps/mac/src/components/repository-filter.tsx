@@ -1,6 +1,6 @@
+import { BookMarkedIcon, CheckIcon, ChevronDownIcon } from "lucide-react";
 import React, { useRef } from "react";
 import * as Select from "@radix-ui/react-select";
-import { CheckIcon, ChevronDownIcon, RepoIcon } from "@primer/octicons-react";
 import {
   useFluidHover,
   useRegisterFluidHoverItem,
@@ -90,7 +90,7 @@ export function RepositoryFilter({
           aria-label="Filter by repository"
           title={label}
         >
-          <RepoIcon size={16} aria-hidden="true" />
+          <BookMarkedIcon size={16} aria-hidden="true" />
           <Select.Value>
             <span className="repository-filter-label">{label}</span>
           </Select.Value>

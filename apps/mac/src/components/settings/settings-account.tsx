@@ -1,5 +1,5 @@
+import { ServerIcon } from "lucide-react";
 import { useState } from "react";
-import { ServerIcon } from "@primer/octicons-react";
 import type { Snapshot } from "../../types.js";
 import { Button } from "../button.js";
 import { Icon } from "../icon.js";

@@ -1,5 +1,6 @@
+import { ServerIcon } from "lucide-react";
+import { GithubMarkIcon } from "./icons.js";
 import React, { useState } from "react";
-import { MarkGithubIcon, ServerIcon } from "@primer/octicons-react";
 import { Button } from "./button.js";
 import { Icon } from "./icon.js";
 import { TextField } from "./text-field.js";
@@ -164,7 +165,7 @@ export function SignInEntry({
                 onGitHub();
               }}
             >
-              <Icon icon={MarkGithubIcon} />
+              <Icon icon={GithubMarkIcon} />
               {busy && submitting === "github"
                 ? "Opening GitHub…"
                 : "Continue with GitHub"}

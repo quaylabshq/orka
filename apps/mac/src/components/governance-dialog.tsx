@@ -1,3 +1,4 @@
+import { XIcon } from "lucide-react";
 import { sourcePath } from "./project-sources.js";
 import { ENV_ENABLED } from "../lib/features.js";
 import React, {
@@ -9,7 +10,6 @@ import React, {
   useState,
 } from "react";
 import { useToastNotice } from "./toasts.js";
-import { XIcon } from "@primer/octicons-react";
 import type { Project, Snapshot } from "../types.js";
 import { Overlay } from "./overlay.js";
 import { handleReviewTab } from "./review-focus.js";

@@ -1,3 +1,4 @@
+import { XIcon } from "lucide-react";
 import { EnvConflictDialog } from "./conflict-dialog.js";
 import { DeleteEnvDialog } from "./delete-dialog.js";
 import { ApplyEnvDialog } from "./apply-dialog.js";
@@ -6,7 +7,6 @@ import { DeviceApprovalDialog } from "./device-dialog.js";
 import { ApprovalCodeDialog } from "./code-dialog.js";
 import { ImportEnvDialog } from "./import-dialog.js";
 import { Button } from "../button.js";
-import { XIcon } from "@primer/octicons-react";
 import { IconButton } from "../icon-button.js";
 import { Overlay } from "../overlay.js";
 import type { EnvController } from "./use-environments.js";

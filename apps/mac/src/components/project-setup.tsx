@@ -1,16 +1,16 @@
+import {
+  ArrowRightIcon,
+  FolderIcon,
+  LogInIcon,
+  PlusIcon,
+  TriangleAlertIcon,
+  XIcon,
+} from "lucide-react";
 import { TextField } from "./text-field.js";
 import { IconButton } from "./icon-button.js";
 import { Button } from "./button.js";
 import { Icon } from "./icon.js";
 import React from "react";
-import {
-  AlertIcon,
-  ArrowRightIcon,
-  FileDirectoryIcon,
-  PlusIcon,
-  SignInIcon,
-  XIcon,
-} from "@primer/octicons-react";
 import { Overlay } from "./overlay.js";
 import { ProjectSharingChoices } from "./project-sharing.js";
 import { SegmentedControl } from "./segmented-control.js";
@@ -93,7 +93,7 @@ export function ProjectSetupDialog({
             <>
               <TextField
                 label="Project name"
-                icon={FileDirectoryIcon}
+                icon={FolderIcon}
                 autoFocus
                 required
                 maxLength={128}
@@ -131,7 +131,7 @@ export function ProjectSetupDialog({
           ) : (
             <TextField
               label="Invite link or token"
-              icon={SignInIcon}
+              icon={LogInIcon}
               autoFocus
               required
               maxLength={2048}
@@ -170,7 +170,7 @@ export function ProjectSetupDialog({
           />
           {error && (
             <div className="setup-error" role="alert">
-              <AlertIcon size={16} aria-hidden="true" />
+              <TriangleAlertIcon size={16} aria-hidden="true" />
               <span>{error}</span>
             </div>
           )}
@@ -202,7 +202,7 @@ export function ProjectEmptyState({
   return (
     <section className="project-empty" aria-labelledby="project-empty-title">
       <div className="setup-symbol">
-        <FileDirectoryIcon size={25} aria-hidden="true" />
+        <FolderIcon size={25} aria-hidden="true" />
       </div>
       <h2 id="project-empty-title">Start with a project</h2>
       <div className="actions">
@@ -211,7 +211,7 @@ export function ProjectEmptyState({
           Add project
         </Button>
         <Button onClick={onJoin} variant="secondary" size="lg">
-          <Icon icon={SignInIcon} />
+          <Icon icon={LogInIcon} />
           Join project
         </Button>
       </div>
@@ -233,7 +233,7 @@ export function FolderConnectionPrompt({
   return (
     <section className="folder-connection" aria-label="Connect this Mac">
       <div className="connection-symbol">
-        <FileDirectoryIcon size={18} aria-hidden="true" />
+        <FolderIcon size={18} aria-hidden="true" />
       </div>
       <div className="min-w-0 flex-1">
         <h2>Connect this Mac</h2>

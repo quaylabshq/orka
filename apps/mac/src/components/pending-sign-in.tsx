@@ -1,5 +1,5 @@
+import { GithubMarkIcon } from "./icons.js";
 import React, { useRef, useState } from "react";
-import { MarkGithubIcon } from "@primer/octicons-react";
 import { Button } from "./button.js";
 import { Icon } from "./icon.js";
 import { TextField } from "./text-field.js";
@@ -77,7 +77,7 @@ export function PendingSignIn({
           </div>
         ) : (
           <div className="onboarding-entry__browser-icon" aria-hidden="true">
-            <Icon icon={MarkGithubIcon} size="lg" />
+            <Icon icon={GithubMarkIcon} size="lg" />
           </div>
         )}
         <div className="onboarding-entry__pending-actions">

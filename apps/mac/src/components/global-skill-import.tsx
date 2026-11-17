@@ -1,3 +1,4 @@
+import { CheckIcon, PlusIcon, RefreshCwIcon, XIcon } from "lucide-react";
 import React, {
   useCallback,
   useEffect,
@@ -6,7 +7,6 @@ import React, {
   useState,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { CheckIcon, PlusIcon, SyncIcon, XIcon } from "@primer/octicons-react";
 import type { Project } from "../types.js";
 import { Button } from "./button.js";
 import { Icon } from "./icon.js";
@@ -372,7 +372,7 @@ function GlobalSkillsDialog({
           onValueChange={setQuery}
         />
         <IconButton
-          icon={SyncIcon}
+          icon={RefreshCwIcon}
           size="lg"
           variant="secondary"
           aria-label="Scan again"

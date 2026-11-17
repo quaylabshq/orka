@@ -1,5 +1,5 @@
+import { XIcon } from "lucide-react";
 import React, { useRef, useState } from "react";
-import { XIcon } from "@primer/octicons-react";
 import type { ReviewRequest, Resource } from "@portable/protocol";
 import type { Project, Snapshot } from "../types.js";
 import { displayText } from "./resource-presentation.js";

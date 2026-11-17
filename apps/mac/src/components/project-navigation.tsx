@@ -1,17 +1,17 @@
-import React from "react";
-import * as Popover from "@radix-ui/react-popover";
-import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
   CheckIcon,
   ChevronUpIcon,
-  CommentDiscussionIcon,
-  FileDirectoryIcon,
   FileIcon,
-  HomeIcon,
-  KeyIcon,
-  LogIcon,
-  VersionsIcon,
-} from "@primer/octicons-react";
+  FolderIcon,
+  HouseIcon,
+  KeyRoundIcon,
+  LayersIcon,
+  MessagesSquareIcon,
+  ScrollTextIcon,
+} from "lucide-react";
+import React from "react";
+import * as Popover from "@radix-ui/react-popover";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import type { Resource } from "@portable/protocol";
 import type { Project, ProjectPage } from "../types.js";
 import { displayText } from "./resource-presentation.js";
@@ -25,12 +25,12 @@ import { FluidHoverHighlight } from "./fluid-hover-highlight.js";
 import { ItemContextMenu, type ItemMenuAction } from "./item-menu.js";
 
 const sections = [
-  { kind: "home", label: "Home", icon: HomeIcon },
-  { kind: "memory", label: "Memories", icon: VersionsIcon },
+  { kind: "home", label: "Home", icon: HouseIcon },
+  { kind: "memory", label: "Memories", icon: LayersIcon },
   { kind: "skill", label: "Skills", icon: FileIcon },
-  { kind: "session", label: "Sessions", icon: CommentDiscussionIcon },
-  { kind: "plan", label: "Plans", icon: LogIcon },
-  { kind: "env", label: "ENVs", icon: KeyIcon },
+  { kind: "session", label: "Sessions", icon: MessagesSquareIcon },
+  { kind: "plan", label: "Plans", icon: ScrollTextIcon },
+  { kind: "env", label: "ENVs", icon: KeyRoundIcon },
 ] as const;
 type NavigationSection = (typeof sections)[number];
 
@@ -75,7 +75,7 @@ function ProjectOption({
         className="project-menu-item"
         onClick={onChoose}
       >
-        <FileDirectoryIcon size={16} aria-hidden="true" />
+        <FolderIcon size={16} aria-hidden="true" />
         <span>{projectLabel(project)}</span>
         {selected && <CheckIcon size={16} aria-hidden="true" />}
       </button>
@@ -199,7 +199,7 @@ export function ProjectPicker({
               }
             }}
           >
-            <FileDirectoryIcon
+            <FolderIcon
               className="project-selector-symbol"
               size={16}
               aria-hidden="true"

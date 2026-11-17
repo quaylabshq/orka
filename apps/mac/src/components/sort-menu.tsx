@@ -1,5 +1,5 @@
+import { CheckIcon, ChevronDownIcon } from "lucide-react";
 import React, { useRef } from "react";
-import { CheckIcon, ChevronDownIcon } from "@primer/octicons-react";
 import { Button, type ButtonVariant } from "./button.js";
 import { Icon, type ControlSize } from "./icon.js";
 import { ActionPopover } from "./resource-actions.js";

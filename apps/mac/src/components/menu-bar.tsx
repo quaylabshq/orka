@@ -1,7 +1,7 @@
+import { ArrowUpRightIcon, RefreshCwIcon } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { motion, useReducedMotion } from "motion/react";
-import { ArrowUpRightIcon, SyncIcon } from "@primer/octicons-react";
 import type { Snapshot, SyncProgress } from "../types.js";
 import { Button } from "./button.js";
 import { Icon } from "./icon.js";
@@ -186,7 +186,7 @@ export function MenuBar() {
           onClick={signedIn ? () => void act("sync_now") : open}
         >
           <Icon
-            icon={signedIn ? SyncIcon : ArrowUpRightIcon}
+            icon={signedIn ? RefreshCwIcon : ArrowUpRightIcon}
             className={syncing ? "menu-bar-spinning" : ""}
           />
           {signedIn ? (syncing ? "Syncing…" : "Sync now") : "Open Orka"}

@@ -1,8 +1,4 @@
-import {
-  CheckCircleIcon,
-  DownloadIcon,
-  SyncIcon,
-} from "@primer/octicons-react";
+import { CircleCheckIcon, DownloadIcon, RefreshCwIcon } from "lucide-react";
 import { Button } from "../button.js";
 import { ActivityIndicator } from "../activity-indicator.js";
 import { UpdateChangelog, UpdateInstallation } from "../desktop-updates.js";
@@ -27,8 +23,8 @@ export function SettingsUpdates({ updates }: { updates: DesktopUpdates }) {
   const StatusIcon = status?.update
     ? DownloadIcon
     : checkedAt && !error
-      ? CheckCircleIcon
-      : SyncIcon;
+      ? CircleCheckIcon
+      : RefreshCwIcon;
   return (
     <>
       <SettingsHeading

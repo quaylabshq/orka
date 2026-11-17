@@ -1,11 +1,11 @@
 import {
   ClockIcon,
-  GitCommitIcon,
-  KeyIcon,
-  PeopleIcon,
-  PersonIcon,
+  GitCommitHorizontalIcon,
+  KeyRoundIcon,
   ShieldCheckIcon,
-} from "@primer/octicons-react";
+  UserIcon,
+  UsersIcon,
+} from "lucide-react";
 import { governanceCall } from "../project-permissions.js";
 import { Button } from "../button.js";
 import { TextField } from "../text-field.js";
@@ -349,18 +349,18 @@ export function EnvDetail({
                 {set && (
                   <>
                     <span>
-                      <GitCommitIcon size={14} />
+                      <GitCommitHorizontalIcon size={14} />
                       {draft?.revision
                         ? `Reviewing version ${draft.revision}`
                         : `Version ${set.revision}`}
                     </span>
                     <span>
-                      <PeopleIcon size={14} />
+                      <UsersIcon size={14} />
                       {set.grants.length}{" "}
                       {set.grants.length === 1 ? "recipient" : "recipients"}
                     </span>
                     <span>
-                      <PersonIcon size={14} />
+                      <UserIcon size={14} />
                       {c.label(set.updatedBy)}
                     </span>
                     <span title="Last published">
@@ -479,7 +479,7 @@ export function EnvDetail({
           </>
         ) : (
           <div className="env-empty">
-            <KeyIcon size={24} />
+            <KeyRoundIcon size={24} />
             <h2>
               {c.listing?.sets.length
                 ? "Choose an ENV set"

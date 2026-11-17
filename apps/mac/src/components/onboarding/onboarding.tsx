@@ -1,13 +1,9 @@
+import { ArrowRightIcon, FolderIcon, UserPlusIcon } from "lucide-react";
 import React, { useEffect, useEffectEvent, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { Button } from "../button.js";
 import { TextField } from "../text-field.js";
 import { Icon } from "../icon.js";
-import {
-  ArrowRightIcon,
-  PersonAddIcon,
-  FileDirectoryIcon,
-} from "@primer/octicons-react";
 import { PermissionSelect } from "../permission-select.js";
 import { SharingModeSelect } from "../project-sharing.js";
 import { OnboardingError, onboardingAsset } from "../onboarding-auth-layout.js";
@@ -403,7 +399,7 @@ export function Onboarding({
                       disabled={busy}
                       onClick={flow.find}
                     >
-                      <Icon icon={FileDirectoryIcon} />
+                      <Icon icon={FolderIcon} />
                       Find my projects
                     </Button>
                     <div
@@ -652,7 +648,7 @@ export function Onboarding({
                               });
                           }}
                         >
-                          <Icon icon={PersonAddIcon} size="sm" />
+                          <Icon icon={UserPlusIcon} size="sm" />
                           Invite teammate
                         </Button>
                       </div>

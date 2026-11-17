@@ -1,4 +1,11 @@
 import {
+  BookOpenIcon,
+  ListTodoIcon,
+  LockIcon,
+  MessagesSquareIcon,
+  ZapIcon,
+} from "lucide-react";
+import {
   forwardRef,
   useCallback,
   useEffect,
@@ -7,13 +14,6 @@ import {
   useState,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import {
-  BookIcon,
-  CommentDiscussionIcon,
-  TasklistIcon,
-  ZapIcon,
-  LockIcon,
-} from "@primer/octicons-react";
 import {
   defaultProjectRules,
   type AccessMode,
@@ -52,9 +52,9 @@ import {
 } from "./settings-permission-model.js";
 
 const icons = {
-  memory: BookIcon,
-  session: CommentDiscussionIcon,
-  plan: TasklistIcon,
+  memory: BookOpenIcon,
+  session: MessagesSquareIcon,
+  plan: ListTodoIcon,
   skill: ZapIcon,
 };
 type Migration = {

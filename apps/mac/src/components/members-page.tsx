@@ -1,9 +1,5 @@
+import { ArrowLeftIcon, ChevronRightIcon, UsersIcon } from "lucide-react";
 import React, { useCallback, useEffect, useState } from "react";
-import {
-  ArrowLeftIcon,
-  ChevronRightIcon,
-  PeopleIcon,
-} from "@primer/octicons-react";
 import { defaultProjectRules } from "@portable/protocol";
 import { ENV_ENABLED } from "../lib/features.js";
 import type { Project, Snapshot } from "../types.js";
@@ -30,7 +26,7 @@ import { LoadingRegion } from "./loading-region.js";
 function MemberIdentity({ name, role }: { name: string; role: string }) {
   return (
     <>
-      <PeopleIcon size={16} aria-hidden="true" />
+      <UsersIcon size={16} aria-hidden="true" />
       <span>
         <strong>{name}</strong>
         <small>{role === "owner" ? "Owner" : "Member"}</small>

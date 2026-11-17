@@ -439,6 +439,13 @@
     width: var(--icon-size);
     height: var(--icon-size);
     display: block;
+  }
+  /* Lucide icons are stroked on a 24px grid. 1.75 keeps a 14px icon at a
+     1px line beside Inter; the local filled glyphs carry no stroke. */
+  svg.lucide {
+    stroke-width: var(--icon-stroke, 1.75);
+  }
+  .ui-icon > svg:not(.lucide) {
     fill: currentColor;
     stroke: none;
   }

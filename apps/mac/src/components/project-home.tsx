@@ -1,11 +1,11 @@
-import React, { useMemo } from "react";
 import {
   ChevronRightIcon,
-  CommentDiscussionIcon,
   FileIcon,
-  LogIcon,
-  VersionsIcon,
-} from "@primer/octicons-react";
+  LayersIcon,
+  MessagesSquareIcon,
+  ScrollTextIcon,
+} from "lucide-react";
+import React, { useMemo } from "react";
 import type { Project, ProjectResource as Resource } from "../types.js";
 import { ResourceItemMenu } from "./resource-menu.js";
 import {
@@ -18,15 +18,15 @@ import { useMemberLabel } from "./member-names.js";
 import "./project-home.css";
 
 const collections = [
-  { kind: "memory", label: "Memories", noun: "Memory", icon: VersionsIcon },
+  { kind: "memory", label: "Memories", noun: "Memory", icon: LayersIcon },
   { kind: "skill", label: "Skills", noun: "Skill", icon: FileIcon },
   {
     kind: "session",
     label: "Sessions",
     noun: "Session",
-    icon: CommentDiscussionIcon,
+    icon: MessagesSquareIcon,
   },
-  { kind: "plan", label: "Plans", noun: "Plan", icon: LogIcon },
+  { kind: "plan", label: "Plans", noun: "Plan", icon: ScrollTextIcon },
 ] as const;
 
 function updatedTime(value: string, now: number) {

@@ -1,11 +1,11 @@
-import React, { useState } from "react";
-import * as Popover from "@radix-ui/react-popover";
 import {
   ChevronRightIcon,
-  GearIcon,
-  SyncIcon,
+  RefreshCwIcon,
+  SettingsIcon,
   XIcon,
-} from "@primer/octicons-react";
+} from "lucide-react";
+import React, { useState } from "react";
+import * as Popover from "@radix-ui/react-popover";
 import type { Resource } from "@portable/protocol";
 import type { Snapshot } from "../types.js";
 import { Button } from "./button.js";
@@ -143,7 +143,11 @@ export function SyncMenu({
             aria-hidden="true"
           >
             {progress ? (
-              <Icon icon={SyncIcon} size="xs" className="sync-activity-icon" />
+              <Icon
+                icon={RefreshCwIcon}
+                size="xs"
+                className="sync-activity-icon"
+              />
             ) : (
               <span className={`dot${connected ? " connected" : ""}`} />
             )}
@@ -172,7 +176,7 @@ export function SyncMenu({
           <div className="sync-menu-heading">
             <h2>Sync</h2>
             <IconButton
-              icon={GearIcon}
+              icon={SettingsIcon}
               size="sm"
               variant="tertiary"
               aria-label="Sync settings"
@@ -224,7 +228,7 @@ export function SyncMenu({
                 disabled={busy || !running || Boolean(progress)}
                 onClick={onSync}
               >
-                <Icon icon={SyncIcon} />
+                <Icon icon={RefreshCwIcon} />
                 {progress ? "Syncing…" : busy ? "Working…" : "Sync now"}
               </Button>
               {!running && (
@@ -548,7 +552,7 @@ export function SyncMenu({
                 aria-atomic="true"
               >
                 <Icon
-                  icon={SyncIcon}
+                  icon={RefreshCwIcon}
                   size="sm"
                   className="sync-activity-icon"
                 />

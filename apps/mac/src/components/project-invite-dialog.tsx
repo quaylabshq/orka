@@ -1,6 +1,6 @@
+import { MailIcon, XIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { MailIcon, XIcon } from "@primer/octicons-react";
 import { Button } from "./button.js";
 import { IconButton } from "./icon-button.js";
 import { Overlay } from "./overlay.js";

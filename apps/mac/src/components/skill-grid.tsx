@@ -1,7 +1,7 @@
+import { TriangleAlertIcon } from "lucide-react";
 import React from "react";
 import { ResourceItemMenu } from "./resource-menu.js";
 import { ItemMenuButton } from "./item-menu.js";
-import { AlertIcon } from "@primer/octicons-react";
 import type { ProjectResource as Resource } from "../types.js";
 import { skillSummaryKey, type SkillSummaries } from "./use-skill-summaries.js";
 import { SourceLabel } from "./source-label.js";
@@ -68,7 +68,7 @@ export function SkillGrid({
                   ) : null}
                   {conflicted.has(skill.resourceId) && (
                     <span className="resource-conflict">
-                      <AlertIcon size={12} aria-hidden="true" />
+                      <TriangleAlertIcon size={12} aria-hidden="true" />
                       Needs resolution
                     </span>
                   )}

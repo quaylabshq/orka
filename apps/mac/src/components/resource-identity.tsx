@@ -1,5 +1,5 @@
+import { UserIcon } from "lucide-react";
 import React, { useEffect, useState } from "react";
-import { PersonIcon } from "@primer/octicons-react";
 import type { ProjectResource } from "../types.js";
 import { useMemberLabel, useMemberPhoto } from "./member-names.js";
 import { SourceLabel } from "./source-label.js";
@@ -53,7 +53,7 @@ export function ResourceIdentity({
       </span>
       {stacked && (
         <span className="resource-identity-avatar" aria-hidden="true">
-          <PersonIcon size={20} />
+          <UserIcon size={20} />
           {photo && (
             <img
               key={photo}

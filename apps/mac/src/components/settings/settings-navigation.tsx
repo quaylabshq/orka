@@ -1,24 +1,24 @@
 import {
-  FileDirectoryIcon,
-  PeopleIcon,
-  SyncIcon,
   DownloadIcon,
-  DeviceDesktopIcon,
-  PersonIcon,
-  ShieldLockIcon,
-} from "@primer/octicons-react";
+  FolderIcon,
+  MonitorIcon,
+  RefreshCwIcon,
+  ShieldUserIcon,
+  UserIcon,
+  UsersIcon,
+} from "lucide-react";
 import type { Project } from "../../types.js";
 
 export const settingsSections = {
-  account: { label: "Profile", icon: PersonIcon },
-  devices: { label: "Devices", icon: DeviceDesktopIcon },
+  account: { label: "Profile", icon: UserIcon },
+  devices: { label: "Devices", icon: MonitorIcon },
   updates: { label: "Updates", icon: DownloadIcon },
-  sync: { label: "Sync & startup", icon: SyncIcon },
-  general: { label: "General", icon: FileDirectoryIcon },
-  members: { label: "Members", icon: PeopleIcon },
-  permissions: { label: "Permissions", icon: ShieldLockIcon },
-  folder: { label: "Source folders", icon: FileDirectoryIcon },
-  sharing: { label: "Sharing", icon: PeopleIcon },
+  sync: { label: "Sync & startup", icon: RefreshCwIcon },
+  general: { label: "General", icon: FolderIcon },
+  members: { label: "Members", icon: UsersIcon },
+  permissions: { label: "Permissions", icon: ShieldUserIcon },
+  folder: { label: "Source folders", icon: FolderIcon },
+  sharing: { label: "Sharing", icon: UsersIcon },
 } as const;
 export type SettingsSection = keyof typeof settingsSections;
 const groups = {

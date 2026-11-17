@@ -1,5 +1,5 @@
+import { UploadIcon } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { UploadIcon } from "@primer/octicons-react";
 import { Button } from "../button.js";
 import { Textarea } from "../textarea.js";
 import type { EnvController } from "./use-environments.js";

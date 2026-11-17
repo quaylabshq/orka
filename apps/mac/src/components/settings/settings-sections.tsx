@@ -1,11 +1,6 @@
+import { CopyIcon, FolderIcon, PlusIcon, XIcon } from "lucide-react";
 import { useCallback, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import {
-  CopyIcon,
-  FileDirectoryIcon,
-  PlusIcon,
-  XIcon,
-} from "@primer/octicons-react";
 import {
   ItemContextMenu,
   ItemMenuButton,
@@ -272,7 +267,7 @@ export function SettingsFolder({
                     <div className="settings-folder-row">
                       <div className="settings-folder-identity">
                         <Icon
-                          icon={FileDirectoryIcon}
+                          icon={FolderIcon}
                           className="settings-folder-icon"
                         />
                         <span

@@ -1,5 +1,5 @@
+import { UsersIcon } from "lucide-react";
 import React from "react";
-import { PeopleIcon } from "@primer/octicons-react";
 import type { Resource } from "@portable/protocol";
 
 export function SourceLabel({ source }: { source: Resource["source"] }) {
@@ -8,7 +8,7 @@ export function SourceLabel({ source }: { source: Resource["source"] }) {
   return (
     <span className="source-label">
       {source === "shared" ? (
-        <PeopleIcon size={14} aria-hidden="true" />
+        <UsersIcon size={14} aria-hidden="true" />
       ) : (
         <img
           src={`${import.meta.env.BASE_URL}source-icons/${source}.svg`}

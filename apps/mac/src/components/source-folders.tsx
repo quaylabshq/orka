@@ -1,7 +1,7 @@
+import { FolderIcon, SearchIcon } from "lucide-react";
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { FileDirectoryIcon, SearchIcon } from "@primer/octicons-react";
 import { Button } from "./button.js";
 
 export interface FolderCandidate {
@@ -105,7 +105,7 @@ export function SourceFolders({
           variant="secondary"
           onClick={() => run(selection.choose)}
         >
-          <FileDirectoryIcon size={16} />
+          <FolderIcon size={16} />
           Add folders
         </Button>
         <Button

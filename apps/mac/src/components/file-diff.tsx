@@ -1,11 +1,6 @@
+import { CodeIcon, FileIcon, TableIcon } from "lucide-react";
+import { MarkdownMarkIcon, type IconGlyph } from "./icons.js";
 import React, { lazy, Suspense, useMemo } from "react";
-import {
-  CodeIcon,
-  FileIcon,
-  MarkdownIcon,
-  TableIcon,
-  type Icon as OcticonIcon,
-} from "@primer/octicons-react";
 import { Icon } from "./icon.js";
 import {
   summarizeDiff,
@@ -24,9 +19,9 @@ const PierreDiff = lazy(() =>
 export type SourceLanguage = "markdown" | "plain";
 
 export interface FileKind {
-  icon: OcticonIcon;
+  icon: IconGlyph;
   /** The icon used in file lists, where the design keeps Markdown generic. */
-  listIcon: OcticonIcon;
+  listIcon: IconGlyph;
   label: string;
   language: SourceLanguage;
 }
@@ -61,7 +56,7 @@ export function fileKind(path: string): FileKind {
   const extension = /\.([^./]+)$/.exec(path)?.[1]?.toLowerCase() ?? "";
   if (["md", "markdown", "mdown"].includes(extension))
     return {
-      icon: MarkdownIcon,
+      icon: MarkdownMarkIcon,
       listIcon: FileIcon,
       label: "Markdown",
       language: "markdown",
