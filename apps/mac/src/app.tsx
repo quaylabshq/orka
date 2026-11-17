@@ -25,6 +25,7 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Overlay } from "./components/overlay.js";
 import { SettingsUpdates } from "./components/settings/settings-updates.js";
+import { SettingsPluginConnections } from "./components/settings/settings-plugin-connections.js";
 import type { Resource } from "@portable/protocol";
 import type { ProjectPage, ProjectResource } from "./types.js";
 import {
@@ -75,6 +76,7 @@ import {
 import { WorkspaceHeader } from "./components/workspace-header.js";
 import { projectAttention } from "./components/sync-attention.js";
 import { useDeepLinks } from "./components/use-deep-links.js";
+import { PluginAuthorization } from "./components/plugin-authorization.js";
 import { parseProjectInvite } from "./components/project-invite.js";
 import { useIndexFilters } from "./components/use-index-filters.js";
 import { useResourceView } from "./components/use-resource-view.js";
@@ -86,6 +88,10 @@ import { useSessionTitles } from "./components/use-session-titles.js";
 import { useLocalResources } from "./components/use-local-resources.js";
 import { resourceCatalog } from "./components/resource-catalog.js";
 import { useWorkspace } from "./components/use-workspace.js";
+import {
+  WorkspaceCache,
+  WorkspaceCacheProvider,
+} from "./components/workspace-cache.js";
 import { useAccount } from "./components/use-account.js";
 import { MemberNamesProvider } from "./components/member-names.js";
 import { LoadingProvider } from "./components/loading-region.js";
@@ -132,30 +138,53 @@ export function App() {
     return () => document.removeEventListener("contextmenu", menu);
   }, []);
   const workspace = useWorkspace();
+  if (!workspace.hasSnapshot)
+    return (
+      <main className="app-startup" data-tauri-drag-region>
+        <div className="app-startup__content">
+          {workspace.refreshError ? (
+            <>
+              <p className="content-message" role="alert">
+                Could not load Orka: {workspace.refreshError}
+              </p>
+              <Button onClick={() => void workspace.refresh().catch(() => {})}>
+                Try again
+              </Button>
+            </>
+          ) : (
+            <p className="content-message" role="status">
+              Loading…
+            </p>
+          )}
+        </div>
+      </main>
+    );
   return (
-    <LoadingProvider
-      scope={JSON.stringify([
-        workspace.state.profile,
-        workspace.state.user,
-        workspace.state.config?.apiUrl,
-      ])}
-    >
-      <ToastProvider
+    <WorkspaceCacheProvider state={workspace.state}>
+      <LoadingProvider
         scope={JSON.stringify([
           workspace.state.profile,
           workspace.state.user,
           workspace.state.config?.apiUrl,
-          workspace.project,
         ])}
       >
-        <MemberNamesProvider
-          state={workspace.state}
-          projectId={workspace.project}
+        <ToastProvider
+          scope={JSON.stringify([
+            workspace.state.profile,
+            workspace.state.user,
+            workspace.state.config?.apiUrl,
+            workspace.project,
+          ])}
         >
-          <WorkspaceApp workspace={workspace} />
-        </MemberNamesProvider>
-      </ToastProvider>
-    </LoadingProvider>
+          <MemberNamesProvider
+            state={workspace.state}
+            projectId={workspace.project}
+          >
+            <WorkspaceApp workspace={workspace} />
+          </MemberNamesProvider>
+        </ToastProvider>
+      </LoadingProvider>
+    </WorkspaceCacheProvider>
   );
 }
 
@@ -181,11 +210,7 @@ function WorkspaceApp({
   const { notify } = useToasts();
   const updates = useDesktopUpdates();
   const account = useAccount(state.config, !state.user);
-  const workspaceScope = JSON.stringify([
-    state.profile,
-    state.user,
-    state.config?.apiUrl,
-  ]);
+  const workspaceScope = WorkspaceCache.scope(state);
   useBackgroundRepositoryAccess(state);
   const [repositorySetup, setRepositorySetup] = useState("");
   const setup = useProjectSetup(
@@ -205,6 +230,10 @@ function WorkspaceApp({
   const [returnFocus, setReturnFocus] = useState("");
   const clearReturnFocus = useCallback(() => setReturnFocus(""), []);
   const [settings, setSettings] = useState<SettingsSection | null>(null);
+  const [pluginRequest, setPluginRequest] = useState<{
+    requestId: string;
+    scope: string;
+  } | null>(null);
   const [settingsProject, setSettingsProject] = useState<string | null>(null);
   useEffect(() => {
     if (!settings) setSettingsProject(null);
@@ -412,12 +441,8 @@ function WorkspaceApp({
     resource,
     state.user ? selected : undefined,
     state.conflicts,
-    JSON.stringify([
-      state.profile,
-      state.user,
-      state.config?.apiUrl,
-      state.deviceId,
-    ]),
+    workspaceScope,
+    state.deviceId,
   );
   useEffect(() => {
     if (comparison && selected?.resourceId === comparison) {
@@ -425,7 +450,38 @@ function WorkspaceApp({
       setComparison("");
     }
   }, [comparison, selected?.resourceId, view]);
+  // Pending requests originate in the native broker, never from callback URLs.
+  useEffect(() => {
+    if (busy || pluginRequest || !state.user) return;
+    let stopped = false;
+    let timer: number | undefined;
+    const poll = async () => {
+      try {
+        const pending = await invoke<{ requestId: string }[]>(
+          "plugin_connection_requests",
+        );
+        if (!stopped && pending[0])
+          setPluginRequest({
+            requestId: pending[0].requestId,
+            scope: workspaceScope,
+          });
+      } catch {
+        // The broker may still be starting. Native commands enforce identity.
+      } finally {
+        if (!stopped) timer = window.setTimeout(() => void poll(), 1000);
+      }
+    };
+    void poll();
+    return () => {
+      stopped = true;
+      window.clearTimeout(timer);
+    };
+  }, [busy, pluginRequest, state.user, workspaceScope]);
   useDeepLinks((link) => {
+    if (link.hostname === "connectors") {
+      openSettings("connections");
+      return;
+    }
     if (link.hostname === "auth") {
       void act(() => account.complete(link.href));
       return;
@@ -504,6 +560,28 @@ function WorkspaceApp({
         </div>
       </Overlay>
     ) : null;
+  const connectorsDialog =
+    settings === "connections" && (!state.user || state.onboarding?.active) ? (
+      <Overlay
+        open
+        title="Connectors"
+        onClose={() => setSettings(null)}
+        className="settings-updates-dialog"
+      >
+        <div className="settings-panel" data-section="connections">
+          <SettingsPluginConnections state={state} />
+          <Button onClick={() => setSettings(null)}>Done</Button>
+        </div>
+      </Overlay>
+    ) : null;
+  const pluginDialog = pluginRequest ? (
+    <PluginAuthorization
+      key={pluginRequest.requestId}
+      request={pluginRequest}
+      scope={workspaceScope}
+      onClose={() => setPluginRequest(null)}
+    />
+  ) : null;
   if (!state.user)
     return (
       <>
@@ -519,6 +597,8 @@ function WorkspaceApp({
           }
         />
         {updatesDialog}
+        {connectorsDialog}
+        {pluginDialog}
       </>
     );
   if (state.onboarding?.active && setup.dialog !== "join")
@@ -531,6 +611,8 @@ function WorkspaceApp({
           onComplete={setProject}
         />
         {updatesDialog}
+        {connectorsDialog}
+        {pluginDialog}
       </>
     );
   const openResource = (id: string) => {
@@ -1086,6 +1168,7 @@ function WorkspaceApp({
             onRefresh={refresh}
           />
         )}
+        {pluginDialog}
       </div>
     </ResourceMenuProvider>
   );

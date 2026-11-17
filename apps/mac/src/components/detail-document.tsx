@@ -1,7 +1,7 @@
-import { FileIcon, GitCompareIcon, PencilIcon } from "lucide-react";
 import React, { type MouseEvent } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { FileIcon, GitCompareIcon, PencilIcon } from "lucide-react";
 import type { Inspection, ProjectResource as Resource } from "../types.js";
 import { Button } from "./button.js";
 import { Icon } from "./icon.js";
@@ -61,6 +61,7 @@ interface FileDocumentProps {
   file: string;
   changes: boolean;
   rawMarkdown: boolean;
+  comparisonFallback?: React.ReactNode;
 }
 
 /**
@@ -74,6 +75,7 @@ function FileDocument({
   file,
   changes,
   rawMarkdown,
+  comparisonFallback,
 }: FileDocumentProps) {
   const kind = fileKind(file);
   const skillFile = file === "SKILL.md";
@@ -113,6 +115,7 @@ function FileDocument({
           path={file}
           before={inspection.previous}
           after={inspection.content}
+          fallback={comparisonFallback}
         />
       </div>
     );
@@ -158,6 +161,7 @@ export function DetailDocument({
   offline,
   othersMessage,
   skeleton,
+  comparisonFallback,
 }: {
   id: string;
   view: ResourceView;
@@ -166,6 +170,8 @@ export function DetailDocument({
   /** Shown when the file is missing but other files can still be opened. */
   othersMessage: string;
   skeleton?: React.ReactNode;
+  /** Retains a reader's text comparison on older supported WebViews. */
+  comparisonFallback?: React.ReactNode;
 }) {
   const retry = (
     <Button size="sm" variant="tertiary" onClick={view.retryInspection}>
@@ -209,6 +215,7 @@ export function DetailDocument({
           file={view.file}
           changes={view.changes}
           rawMarkdown={view.rawMarkdown}
+          comparisonFallback={comparisonFallback}
         />
       )}
     </LoadingRegion>

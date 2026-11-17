@@ -1,9 +1,3 @@
-import {
-  ChevronDownIcon,
-  CopyIcon,
-  DownloadIcon,
-  SquareTerminalIcon,
-} from "lucide-react";
 import React, {
   useEffect,
   useId,
@@ -11,6 +5,12 @@ import React, {
   useState,
   type CSSProperties,
 } from "react";
+import {
+  ChevronDownIcon,
+  DownloadIcon,
+  CopyIcon,
+  SquareTerminalIcon,
+} from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import type { Project, ProjectResource } from "../types.js";
 import { Button } from "./button.js";

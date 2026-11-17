@@ -29,6 +29,7 @@ import { SettingsPermissions } from "./settings-permissions.js";
 import { SettingsHeading, type SettingsEditor } from "./settings-shared.js";
 
 import { SettingsUpdates } from "./settings-updates.js";
+import { SettingsPluginConnections } from "./settings-plugin-connections.js";
 import type { DesktopUpdates } from "../use-desktop-updates.js";
 
 export interface SettingsNavigationHandle {
@@ -828,6 +829,9 @@ export const SettingsModal = forwardRef<
                   </>
                 )}
                 {section === "updates" && <SettingsUpdates updates={updates} />}
+                {section === "connections" && (
+                  <SettingsPluginConnections state={state} />
+                )}
                 {section === "devices" && (
                   <SettingsDeviceScreen state={state} />
                 )}

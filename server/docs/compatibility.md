@@ -1,3 +1,44 @@
+## Latest complete session snapshots
+
+`sessionLatestOnly: 1` in `/v2/projects/capabilities` advertises latest-only
+session storage and exact cached-session copying. Each session keeps its current
+complete native transcript and lineage, while superseded session snapshots are
+removed. Memory, plan, skill and encrypted ENV revision histories are unchanged.
+Unresolved session conflicts and pending reviews retain their candidate files.
+Session requests to `get_resource_history` and `compare_revisions` return an
+explicit latest-only error after normal authorization; use `fetch_resource` to
+read the current conversation.
+
+Revision numbers remain monotonic concurrency identifiers. Stale session pushes
+still produce conflicts rather than overwriting newer work, without loading the
+old transcript. Pull feeds materialize current session resources, related
+resources and unresolved conflicts while preserving event cursors and activity
+notices. Old event/receipt manifests are small operational metadata and do not
+pin superseded session files. Mutation retries keep their original acknowledgement
+and outcome, so a desktop never rebases its native binding to bytes it has not
+written. Non-session feed/history behavior is unchanged.
+
+The optional `sourceSnapshot` on `POST /v2/sessions/copy` is the exact cached
+`resourceInput` manifest; it excludes server fields such as owner, revision,
+project ID and access. Upload its files with the signed-in account before copying.
+The server validates source identity, current read/addition permissions, the
+observed source revision and every file before creating the new owned session.
+It does not substitute a newer remote conversation. An older copy request without
+`sourceSnapshot` remains valid when its `expectedRevision` is current; a stale
+request receives 409 `Cached session revision unavailable` without a receipt.
+Committed legacy requests retain their original retry identity.
+
+Update the API before updated desktops. Desktops detect this capability and
+freeze the cached source into their durable request before first submission.
+Requests already submitted to older services keep their original body and ID;
+a known-failed stale copy can be replaced with a new request ID and its frozen
+cached manifest. Existing clients may continue reading and publishing sessions,
+but must update to promote a superseded cached session after its files have been
+collected. Local native history, paginated Codex lineage, resume, handoff and
+exports remain complete. Follow the [session retention operator guide](session-retention.md)
+for the grace period, dry-run, backup and rollout steps before upgrading an
+existing installation. A source change does not itself run production cleanup.
+
 # Release compatibility
 
 Email invitation candidates add migration 003 and optional `invites.email` /
@@ -26,8 +67,9 @@ the Go validators, comparing acceptance and normalized output. Cases cover
 required and unknown fields, defaults, trimming, Unicode length boundaries,
 safe integers, nested resource refinements and MCP request envelopes.
 
-Go regression tests also cover MCP batches, version negotiation and canonical
-OAuth origins. PostgreSQL integration starts the production executable and
+Go regression tests cover shared tool schemas, native authentication and canonical
+service origins. Remote MCP transport is no longer served. PostgreSQL integration
+starts the production executable and
 verifies that SIGTERM drains an authenticated request before closing the pool
 and exiting. These checks supplement the HTTP, authorization, migration,
 encrypted ENV, sync and final-image suites; credential-dependent provider and
@@ -74,11 +116,39 @@ files are no longer shipped. Baseline-era backups restore through the normal
 recovery procedure. Historical backups need the matching older server or the
 explicit ledger-adoption step before a baseline-based server can start.
 
+## One desktop connector account
+
+The plugin now uses only the running desktop account. Update the API before the
+desktop/plugin: `/v2/instance` must advertise `desktopConnector:1` and authenticated
+`GET`/`POST /v2/connector/tools` must be available. Shared tools keep their existing
+schemas, authorization, review, revision and receipt semantics. Desktop approval
+owns read/write/manage scopes; no browser OAuth account or remote MCP credential
+is created. See [authentication](authentication.md#desktop-connector-authentication).
+
+This intentionally retires remote-only plugins and old independent OAuth sessions.
+Their tool, consent, token and discovery routes return HTTP 410 desktop reconnect
+guidance. Old opaque tokens are rejected by native authentication. Reconnect the
+updated plugin in Orka desktop; an old remote refresh token cannot upgrade it.
+Desktop account/service switches invalidate local approval. The old
+`MCP_ENABLED` environment setting has no effect. Source-opening links and ordinary
+desktop/provider/Dashboard authentication remain supported.
+
+No new migration is required. Shipped migrations 001–006 and stored OAuth rows
+remain unchanged; the unmerged handoff/proof migration 007 is removed rather than
+shipping unnecessary state. Operation receipts introduced by migration 004 remain
+in use by the shared handlers.
+
 ## Selected sharing
 
 `selectedSharing: 1` in `/v2/projects/capabilities` advertises authenticated `POST /v2/sharing/selected`. The endpoint accepts the existing v2 change schema and returns `published` with its normal mutation receipt, `conflict` with its normal conflict receipt, or `approval_required` with an immutable review request. Exact retries retain their identity. Deletions and secret-file payloads are rejected. Existing membership, source audience, publication, suggestion, and ownership checks apply.
 
-Automatic category sharing is a local desktop preference. The updated native plugin bridge can submit one explicitly selected frozen snapshot without changing that preference. Remote MCP tokens cannot call this ordinary API endpoint; shared-resource operations use separate MCP handlers and consent scopes. OSS and managed editions share this implementation. Selected local publication itself requires no protocol or database migration, OAuth scope expansion, provider setting, or environment variable. Plugin 0.3 shared-resource operations additionally require migration `004_mcp_operations.sql` and explicit write/manage consent. Update the service before enabling local publication; older remote read-only plugins remain compatible.
+Automatic category sharing is a local desktop preference. The native plugin
+bridge can submit one explicitly selected frozen snapshot without changing that
+preference. Publication and shared-resource tools use the desktop's native
+session and the existing project permissions. OSS and managed editions share the
+implementation. Selected publication requires no new protocol or migration; the
+shared operation receipts continue to use migration `004_mcp_operations.sql`.
+
 
 ## Reviewed resource deletion
 
@@ -236,10 +306,7 @@ Rust verifies the canonical signing fixture from the installed protocol package.
 Before upgrades, take and verify a coordinated database/blob backup. Baseline-era startup is idempotent; adopt a completed historical ledger explicitly as described above. Rollback after a destructive migration needs a tested restore; changing an image tag alone is not a database rollback plan.
 
 
-The MCP operations update adds migration `004_mcp_operations.sql`, eleven remote
-operation tools and explicit `orka.write`/`orka.manage` OAuth grants. Existing
-`orka.read` tokens remain read-only. Updated managed Dashboard consent and plugin
-packaging must accompany the API before write-capable distribution. Normal desktop
-wire contracts, sync formats and ENV encryption remain unchanged. See
-[MCP operations](mcp-operations.md) for tool boundaries, exact revisions, retry
-receipts and local-only operations. This source change is not a deployment claim.
+The historical MCP operations update added migration `004_mcp_operations.sql`
+and shared operation receipts. Those receipts and the eleven tool handlers are
+retained behind the desktop connector API; independent OAuth grants and remote
+transport are retired. See [desktop tool operations](mcp-operations.md).

@@ -24,7 +24,7 @@ The component can use `size="lg"`, `size="md"`, and `size="sm"`; the correspondi
 | `md` | 36px | 20 × 20px | 16 × 16px | 8px | 36 × 36px |
 | `sm` | 32px | 18 × 18px | 14 × 14px | 6px | 32 × 32px |
 
-An inline icon container matches the text line height. The icon glyph is centered inside it. Equal vertical padding then gives icon and text the same vertical center. Octicons are filled paths: fill with currentColor, no stroke, and inherit the label color.
+An inline icon container matches the text line height. The icon glyph is centered inside it. Equal vertical padding then gives icon and text the same vertical center. Lucide glyphs use a currentColor stroke at 1.75 on their 24px grid (`--icon-stroke`); local filled glyphs use currentColor fill with no stroke. Both inherit the label color.
 
 An icon-only button uses the full corresponding button height for both width and height, with its icon centered. It requires an accessible name. Tertiary buttons use Surface tertiary.
 

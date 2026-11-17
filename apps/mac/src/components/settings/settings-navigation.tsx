@@ -1,11 +1,12 @@
 import {
-  DownloadIcon,
   FolderIcon,
-  MonitorIcon,
-  RefreshCwIcon,
-  ShieldUserIcon,
-  UserIcon,
   UsersIcon,
+  RefreshCwIcon,
+  DownloadIcon,
+  MonitorIcon,
+  UserIcon,
+  ShieldUserIcon,
+  PlugIcon,
 } from "lucide-react";
 import type { Project } from "../../types.js";
 
@@ -13,6 +14,7 @@ export const settingsSections = {
   account: { label: "Profile", icon: UserIcon },
   devices: { label: "Devices", icon: MonitorIcon },
   updates: { label: "Updates", icon: DownloadIcon },
+  connections: { label: "Connectors", icon: PlugIcon },
   sync: { label: "Sync & startup", icon: RefreshCwIcon },
   general: { label: "General", icon: FolderIcon },
   members: { label: "Members", icon: UsersIcon },
@@ -23,7 +25,7 @@ export const settingsSections = {
 export type SettingsSection = keyof typeof settingsSections;
 const groups = {
   Account: ["account", "devices"],
-  "This Mac": ["sync", "updates"],
+  "This Mac": ["sync", "connections", "updates"],
   Project: ["general", "members", "permissions"],
 } as const;
 export function SettingsNavigation({

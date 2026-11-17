@@ -122,8 +122,8 @@ func TestEmailHookAuthenticatesPayloadAndDelivery(t *testing.T) {
 	mail := <-deliveries
 	for _, format := range []string{"text", "html"} {
 		content := text(mail.body[format])
-		if !strings.Contains(content, "123456") || !strings.Contains(content, "Orka connection page") || strings.Contains(content, "auth/confirm") {
-			t.Fatal("MCP code content changed")
+		if !strings.Contains(content, "123456") || strings.Contains(content, "Orka connection page") || !strings.Contains(content, "auth/confirm") {
+			t.Fatal("retired plugin redirect did not use desktop sign-in")
 		}
 	}
 	fail.Store(true)

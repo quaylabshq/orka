@@ -100,7 +100,6 @@ services:
       JEV_API_KEY: ${JEV_API_KEY:-}
       TYPESAFE_API_KEY: ${TYPESAFE_API_KEY:-}
       PUBLIC_URL: https://${DOMAIN}
-      MCP_ENABLED: ${MCP_ENABLED:-false}
       DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-self-hosted}
       PASSWORD_ENABLED: ${PASSWORD_ENABLED:-true}
       GITHUB_ENABLED: ${GITHUB_ENABLED:-false}

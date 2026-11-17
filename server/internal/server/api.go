@@ -18,7 +18,6 @@ type API struct {
 	AuthURL      string
 	Environment  map[string]string
 	Authenticate Authenticate
-	MCP          http.Handler
 	Repositories *GitHub
 }
 
@@ -88,19 +87,24 @@ func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 func (a *API) handle(w http.ResponseWriter, r *http.Request) (any, bool, error) {
 	path, method, s := r.URL.Path, r.Method, a.Store
-	if a.MCP != nil && isMCPPath(path) {
-		a.MCP.ServeHTTP(w, r)
-		return nil, true, nil
+	if strings.HasPrefix(path, "/mcp/source/") && method == http.MethodGet {
+		return nil, true, a.connectorSource(w, r)
+	}
+	if isMCPPath(path) || strings.HasPrefix(path, "/v2/plugin/connection") {
+		w.WriteHeader(http.StatusGone)
+		return Object{"error": "desktop_required", "error_description": "Open Orka desktop and reconnect the Orka plugin. The desktop account is the only connector login."}, false, nil
 	}
 	if path == "/v2/instance" && method == http.MethodGet {
 		auth := Object{"password": a.Settings.Password, "github": a.Settings.GitHub, "magicLink": a.Settings.MagicLink, "profileRedirect": true, "emailCode": a.Settings.MagicLink}
+		instance := Object{"version": 1, "onboarding": 1, "invites": Object{"email": a.invitationEmailAvailable()}, "profile": Object{"version": 2, "jobRole": true, "avatarUpload": true, "conditionalSave": 1}, "mode": a.Settings.Mode, "repositories": Object{"github": choose(a.Repositories.Settings.Enabled, 1, 0)}, "auth": auth}
+		instance["desktopConnector"] = 1
 		if a.Settings.DashboardURL != "" {
 			auth["browserOrigin"] = a.Settings.DashboardURL
 			if fromDashboard(r) {
 				auth["browserBridge"] = true
 			}
 		}
-		return Object{"version": 1, "onboarding": 1, "invites": Object{"email": a.invitationEmailAvailable()}, "profile": Object{"version": 2, "jobRole": true, "avatarUpload": true, "conditionalSave": 1}, "mode": a.Settings.Mode, "repositories": Object{"github": choose(a.Repositories.Settings.Enabled, 1, 0)}, "auth": auth}, false, nil
+		return instance, false, nil
 	}
 	if path == "/integrations/github/webhook" && method == http.MethodPost {
 		raw, err := readBytes(w, r, 1_000_000)
@@ -119,12 +123,7 @@ func (a *API) handle(w http.ResponseWriter, r *http.Request) (any, bool, error) 
 	}
 	if path == "/email-template" && method == http.MethodGet {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		desktop := desktopEmailHTML("{{ .ConfirmationURL }}", "{{ .Token }}")
-		body := desktop
-		if a.Settings.MCPEnabled && a.Settings.PublicURL != "" {
-			body = `{{ if eq .RedirectTo "` + a.Settings.PublicURL + `/mcp/connect" }}<p>Enter this code on the Orka connection page:</p><h1>{{ .Token }}</h1><p>This code expires in 10 minutes and can be used once. If you did not request it, ignore this email.</p>{{ else }}` + desktop + `{{ end }}`
-		}
-		_, err := w.Write([]byte("<html><body>" + body + "</body></html>"))
+		_, err := w.Write([]byte("<html><body>" + desktopEmailHTML("{{ .ConfirmationURL }}", "{{ .Token }}") + "</body></html>"))
 		return nil, true, err
 	}
 	if path == "/health" {
@@ -229,6 +228,16 @@ func (a *API) handle(w http.ResponseWriter, r *http.Request) (any, bool, error) 
 		return object(parsed), err
 	}
 	switch {
+	case path == "/v2/connector/tools" && method == http.MethodGet:
+		return Object{"tools": connectorTools}, false, nil
+	case path == "/v2/connector/tools" && method == http.MethodPost:
+		input, err := parse(map[string]Field{"name": strField(1, 80), "arguments": {Kind: "any"}})
+		if err != nil {
+			return nil, false, err
+		}
+		result, err := a.connectorTool(r.Context(), user, text(input["name"]), input["arguments"])
+		return result, false, err
+
 	case path == "/v2/github/action" && method == http.MethodPost:
 		raw, err := body()
 		if err != nil {
@@ -257,7 +266,7 @@ func (a *API) handle(w http.ResponseWriter, r *http.Request) (any, bool, error) 
 		}
 		return tx(func(q *Queries) any { return s.putProfile(q, user, input) })
 	case path == "/v2/projects/capabilities" && method == http.MethodGet:
-		return Object{"lifecycle": 1, "governance": 1, "sources": 1, "sourcesRemoval": 1, "rename": 1, "rolePolicies": 1, "policyOperations": 1, "deviceHardware": 1, "selectedSharing": 1, "resourceDeletion": 1}, false, nil
+		return Object{"lifecycle": 1, "governance": 1, "sources": 1, "sourcesRemoval": 1, "rename": 1, "rolePolicies": 1, "policyOperations": 1, "deviceHardware": 1, "selectedSharing": 1, "resourceDeletion": 1, "sessionLatestOnly": 1}, false, nil
 	case path == "/v2/projects/sources/remove" && method == http.MethodPost:
 		input, err := contract("removeProjectSource")
 		if err != nil {
@@ -453,7 +462,7 @@ func (a *API) handle(w http.ResponseWriter, r *http.Request) (any, bool, error) 
 				s.member(q, user, project)
 				s.putBlob(q, project, content)
 				q.Exec("insert into orka.blob_uploads values($1,$2,$3) on conflict do nothing", project, hash, user)
-				q.Exec("insert into orka.blobs values($1,$2,$3) on conflict do nothing", project, hash, len(content))
+				q.Exec("insert into orka.blobs(project_id,hash,size) values($1,$2,$3) on conflict(project_id,hash) do update set created_at=now()", project, hash, len(content))
 				return Object{"hash": hash}
 			})
 		}

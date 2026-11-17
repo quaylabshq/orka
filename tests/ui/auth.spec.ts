@@ -1,6 +1,12 @@
 import { test, expect, type Page } from "@playwright/test";
 import { AxeBuilder } from "@axe-core/playwright";
 
+declare global {
+  interface Window {
+    deliverAuthLink: (link: string) => void;
+  }
+}
+
 async function fixture(
   page: Page,
   signedIn = false,
@@ -503,6 +509,83 @@ for (const width of [1160, 900]) {
     ).toEqual([]);
   });
 }
+
+test("a runtime invite survives password sign-in", async ({ page }) => {
+  await fixture(page, false, { passwordOnly: true });
+  await openEmailSignIn(page);
+  const invite = `orka://join/${"ab".repeat(24)}?server=https%3A%2F%2Fcloud.example.test`;
+  // Unlike a launch URL, this consumed runtime event cannot replay on remount.
+  await page.evaluate((link) => window.deliverAuthLink(link), invite);
+  await expect(page.getByText(/Your invite is ready/)).toBeVisible();
+  await page.getByLabel("Email", { exact: true }).fill("person@example.test");
+  await page.getByLabel("Password", { exact: true }).fill("fixture-password");
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+
+  const dialog = page.getByRole("dialog", { name: "Join project" });
+  await expect(dialog.getByLabel("Invite link or token")).toHaveValue(invite);
+  await expect(
+    dialog.getByRole("button", { name: "Join project", exact: true }),
+  ).toBeEnabled();
+});
+
+test("a runtime invite survives selecting its service", async ({ page }) => {
+  await fixture(page, false, { passwordOnly: true });
+  await openEmailSignIn(page);
+  const invite = `orka://join/${"cd".repeat(24)}?server=https%3A%2F%2Fprivate.example.test`;
+  await page.evaluate((link) => window.deliverAuthLink(link), invite);
+  await page.getByRole("button", { name: "Use invite service" }).click();
+
+  await expect(
+    page.getByRole("heading", { name: "Welcome back to Orka" }),
+  ).toBeVisible();
+  await expect(page.getByText(/Your invite is ready/)).toContainText(
+    "Sign in to https://private.example.test",
+  );
+  await expect(
+    page.getByRole("button", { name: "Dismiss invite" }),
+  ).toBeEnabled();
+  await expect(
+    page.getByRole("button", { name: "Use invite service" }),
+  ).toHaveCount(0);
+  await page.getByLabel("Email", { exact: true }).fill("person@example.test");
+  await page.getByLabel("Password", { exact: true }).fill("fixture-password");
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await expect(
+    page
+      .getByRole("dialog", { name: "Join project" })
+      .getByLabel("Invite link or token"),
+  ).toHaveValue(invite);
+});
+
+test("fresh GitHub sign-in keeps the browser waiting screen after configuring the service", async ({
+  page,
+}) => {
+  await fixture(page, false, { fresh: true });
+  await page.getByRole("button", { name: "Continue with GitHub" }).click();
+  const waiting = page.getByRole("heading", {
+    name: "Continue in your browser",
+  });
+  const retry = page.getByRole("button", { name: "Try again", exact: true });
+  const cancel = page.getByRole("button", {
+    name: "Cancel sign-in",
+    exact: true,
+  });
+  await expect(waiting).toBeVisible();
+  await expect(page.getByRole("status")).toContainText(
+    "Continue with GitHub in your browser",
+  );
+  await expect(retry).toBeEnabled();
+  await expect(cancel).toBeEnabled();
+
+  await retry.click();
+  await expect(waiting).toBeVisible();
+  await expect(cancel).toBeEnabled();
+  await cancel.click();
+  await expect(waiting).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Continue with GitHub" }),
+  ).toBeEnabled();
+});
 
 test("joining another service requires an explicit switch and keeps the invite through sign-in", async ({
   page,

@@ -34,7 +34,7 @@ try {
         "download",
         tag,
         "--repo",
-        "whysosaket/orka-api",
+        "quaylabshq/orka-api",
         "--dir",
         temporary,
         "--pattern",
@@ -47,7 +47,13 @@ try {
   const manifest = JSON.parse(
     readFileSync(join(temporary, "manifest.json"), "utf8"),
   );
-  assert.equal(manifest.repository, "https://github.com/whysosaket/orka-api");
+  assert.ok(
+    [
+      "https://github.com/quaylabshq/orka-api",
+      "https://github.com/whysosaket/orka-api",
+    ].includes(manifest.repository),
+    "Expected an Orka API release manifest",
+  );
   assert.match(manifest.commit, /^[a-f0-9]{40}$/);
   if (manifest.candidate) {
     assert.ok(
@@ -101,6 +107,28 @@ try {
       `./vendor/portable-protocol-${tag.slice(1)}.tgz`,
     ],
     { stdio: "inherit" },
+  );
+  const { orkaTools } = await import("@portable/protocol/mcp");
+  const catalogPath = "apps/mac/src-tauri/src/connector-tools.json";
+  const local = JSON.parse(readFileSync(catalogPath, "utf8")).filter(
+    (tool) => tool.name === "get_profile",
+  );
+  assert.equal(local.length, 1, "Keep the desktop account tool in the catalog");
+  writeFileSync(
+    catalogPath,
+    JSON.stringify(
+      [
+        ...local,
+        ...orkaTools.map((tool) => ({
+          name: tool.name,
+          description: tool.description,
+          scope: tool.scope,
+          inputSchema: tool.schema.toJSONSchema(),
+        })),
+      ],
+      null,
+      2,
+    ) + "\n",
   );
   console.log(
     `Pinned protocol ${tag} from ${manifest.commit}${manifest.candidate ? ` with candidate source tree ${manifest.sourceTreeSha256}` : ""}; run the desktop compatibility checks before committing.`,

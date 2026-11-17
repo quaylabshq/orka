@@ -430,9 +430,14 @@ fn reset_source(db: &Connection, project_id: &str, events: &Value, p: &Value) ->
         }
         let b = indexer::binding(db, id)?;
         crate::local_resources::remember_origin(db, p, &r, &b)?;
-        for queued in db::rows(db,"SELECT json_object('id',id,'value',json(value)) FROM outbox WHERE project=? AND (json_extract(value,'$.resource.resourceId')=? OR json_extract(value,'$.resourceId')=?)",&[&project_id,&id,&id])? {
+        for queued in db::rows(db,"SELECT json_object('id',id,'path',path,'value',json(value)) FROM outbox WHERE project=? AND (json_extract(value,'$.resource.resourceId')=? OR json_extract(value,'$.resourceId')=?)",&[&project_id,&id,&id])? {
             if queued["value"]["resource"]["files"].is_array() {
                 capture(db,p,&queued["value"]["resource"],&b["paths"])?;
+            } else if queued["path"] == "/v2/sessions/copy" {
+                if let Some(snapshot) = sync::queued_session_snapshot(db, &queued["value"])? {
+                    capture(db,p,&snapshot,&b["paths"])?;
+                }
+                sync::clear_session_copy(db, queued["id"].as_str().ok_or("Missing request ID")?)?;
             }
             db.execute("DELETE FROM outbox WHERE id=?",[queued["id"].as_str()]).map_err(|e|e.to_string())?;
         }

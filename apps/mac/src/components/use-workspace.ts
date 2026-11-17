@@ -23,6 +23,7 @@ const empty: Snapshot = {
 /** Reads native state and serializes user actions independently of navigation. */
 export function useWorkspace() {
   const [state, setState] = useState(empty);
+  const [hasSnapshot, setHasSnapshot] = useState(false);
   const [project, setProject] = useState("");
   const [error, setError] = useState("");
   const [refreshError, setRefreshError] = useState("");
@@ -61,6 +62,7 @@ export function useWorkspace() {
       const next = await invoke<Snapshot>("snapshot");
       if (!active.current || current !== generation.current) return;
       setState(next);
+      setHasSnapshot(true);
       setRefreshError("");
       setProject((selected) =>
         next.projects.some((item) => item.id === selected)
@@ -68,7 +70,10 @@ export function useWorkspace() {
           : (next.projects[0]?.id ?? ""),
       );
     } catch (error) {
-      if (active.current && current === generation.current) throw error;
+      if (active.current && current === generation.current) {
+        setRefreshError(String(error));
+        throw error;
+      }
     }
   }, []);
 
@@ -195,6 +200,7 @@ export function useWorkspace() {
 
   return {
     state,
+    hasSnapshot,
     project,
     setProject,
     error,

@@ -20,6 +20,60 @@ pub(crate) const UNATTRIBUTED_SESSION_ERROR: &str =
 const MAX_ATTRIBUTION_PREFIX: u64 = 1024 * 1024;
 const MAX_TOTAL: usize = 256 * 1024 * 1024;
 
+#[cfg(test)]
+thread_local! {
+    static READ_COUNTS: std::cell::RefCell<std::collections::BTreeMap<PathBuf, (usize, usize)>> = Default::default();
+}
+
+#[cfg(test)]
+pub(crate) fn read_counts(path: &Path) -> (usize, usize) {
+    READ_COUNTS.with_borrow(|counts| counts.get(path).copied().unwrap_or_default())
+}
+
+pub(crate) struct NegativeAttribution {
+    key: String,
+    fingerprint: Value,
+}
+
+impl NegativeAttribution {
+    pub(crate) fn new(project: &Value, root: &Path, tool: &str, path: &Path) -> Option<Self> {
+        let path = std::path::absolute(path).ok()?;
+        let scope = json!([project["id"], project["sourceId"], root, tool, path]);
+        Some(Self {
+            key: format!(
+                "unrelatedHistory:{}",
+                db::digest(scope.to_string().as_bytes())
+            ),
+            fingerprint: Self::fingerprint(&path)?,
+        })
+    }
+
+    fn fingerprint(path: &Path) -> Option<Value> {
+        let metadata = fs::symlink_metadata(path).ok()?;
+        if !metadata.is_file() {
+            return None;
+        }
+        let modified = metadata
+            .modified()
+            .ok()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_nanos();
+        Some(json!([modified.to_string(), metadata.len()]))
+    }
+
+    pub(crate) fn contains(&self, db: &rusqlite::Connection) -> Result<bool> {
+        Ok(db::get(db, &self.key)? == self.fingerprint)
+    }
+
+    pub(crate) fn remember(&self, db: &rusqlite::Connection, path: &Path) -> Result<()> {
+        if Self::fingerprint(path).as_ref() == Some(&self.fingerprint) {
+            db::set(db, &self.key, &self.fingerprint)?;
+        }
+        Ok(())
+    }
+}
+
 pub fn clear_missing_session_errors(db: &rusqlite::Connection) -> Result<()> {
     for source in db::rows(
         db,
@@ -107,6 +161,8 @@ fn read(path: &Path, prefix: Option<u64>) -> Result<Vec<u8>> {
 }
 
 pub fn read_session(path: &Path) -> Result<Vec<u8>> {
+    #[cfg(test)]
+    READ_COUNTS.with_borrow_mut(|counts| counts.entry(path.into()).or_default().0 += 1);
     if path.extension().is_some_and(|ext| ext == "jsonl")
         && fs::symlink_metadata(path).is_ok_and(|info| info.is_file() && info.len() > MAX_FILE)
     {
@@ -116,6 +172,8 @@ pub fn read_session(path: &Path) -> Result<Vec<u8>> {
 }
 
 pub(crate) fn session_cwd_prefix(path: &Path, tool: &str) -> Option<PathBuf> {
+    #[cfg(test)]
+    READ_COUNTS.with_borrow_mut(|counts| counts.entry(path.into()).or_default().1 += 1);
     let mut prefix = Vec::new();
     reader(path)
         .ok()?

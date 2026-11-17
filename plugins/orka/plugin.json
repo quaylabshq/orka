@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "orka",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Search Orka context, manage project knowledge and reviews, install complete skills, and diagnose local synchronization.",
   "author": {
     "name": "Orka"
@@ -13,7 +13,7 @@
       "interface": {
         "displayName": "Orka",
         "shortDescription": "Project context across agents",
-        "longDescription": "Search accessible project resources, inspect revision history, save memories, update plans, and manage permissions and requests within your Orka authority. Codex and Claude Code can also install complete skills and inspect or recover synchronization through the Orka desktop app. Writes and administration require explicit OAuth consent; existing read-only connections retain their limits. ENV content is excluded.",
+        "longDescription": "Use the Orka account already signed in on this Mac. Approve the connector session in Orka to search shared context and history, save memories and plans, manage requests and permissions, install complete skills and inspect local sync within your access. The desktop app owns login and tool execution. Changing accounts or services requires a new connection. ENV content is excluded.",
         "developerName": "Orka",
         "category": "Developer Tools",
         "capabilities": [],
@@ -22,7 +22,7 @@
         "defaultPrompt": [
           "Find the shared context and skills relevant to my project.",
           "Save this decision to Orka and update the project plan.",
-          "Check this project’s sync health and pending requests."
+          "Check this project\u2019s sync health and pending requests."
         ]
       }
     }

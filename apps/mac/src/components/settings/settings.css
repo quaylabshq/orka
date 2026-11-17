@@ -583,7 +583,7 @@
     @apply h-10 w-10 object-cover;
   }
   .settings-member-identity {
-    @apply min-w-0 flex-1 space-y-1 pr-10;
+    @apply min-w-0 flex-1 space-y-1;
     min-height: 44px;
     display: flex;
     flex-direction: column;
@@ -604,16 +604,7 @@
     @apply inline-flex h-8 items-center rounded-lg border border-line px-3 text-label-xs text-foreground;
   }
   .settings-member-controls {
-    @apply relative shrink-0;
-  }
-  .settings-member-menu {
-    @apply absolute right-full top-0 mr-2;
-    opacity: 0;
-  }
-  .settings-member-row:hover .settings-member-menu,
-  .settings-member-row:focus-within .settings-member-menu,
-  .settings-member-menu[data-state="open"] {
-    opacity: 1;
+    @apply flex shrink-0 items-center gap-2;
   }
   .settings-panel .settings-member-controls .permission-select-trigger {
     background: var(--surface-secondary);

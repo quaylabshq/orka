@@ -1,5 +1,5 @@
-import { DownloadIcon, GitPullRequestIcon, ListChecksIcon } from "lucide-react";
 import React, { useLayoutEffect, useRef, useState } from "react";
+import { ListChecksIcon, DownloadIcon, GitPullRequestIcon } from "lucide-react";
 import type {
   Project,
   ProjectResource as Resource,

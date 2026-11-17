@@ -34,18 +34,19 @@ Generated from the locked npm graph with `npm run licenses`. Includes developmen
 | [@esbuild/win32-x64](https://www.npmjs.com/package/@esbuild/win32-x64/v/0.28.2) | 0.28.2 | MIT |
 | [@eslint-community/eslint-utils](https://www.npmjs.com/package/@eslint-community/eslint-utils/v/4.10.1) | 4.10.1 | MIT |
 | [@eslint-community/regexpp](https://www.npmjs.com/package/@eslint-community/regexpp/v/4.12.2) | 4.12.2 | MIT |
-| [@eslint/config-array](https://www.npmjs.com/package/@eslint/config-array/v/0.23.5) | 0.23.5 | Apache-2.0 |
+| [@eslint/config-array](https://www.npmjs.com/package/@eslint/config-array/v/0.23.6) | 0.23.6 | Apache-2.0 |
 | [@eslint/config-helpers](https://www.npmjs.com/package/@eslint/config-helpers/v/0.7.0) | 0.7.0 | Apache-2.0 |
 | [@eslint/core](https://www.npmjs.com/package/@eslint/core/v/1.2.1) | 1.2.1 | Apache-2.0 |
 | [@eslint/js](https://www.npmjs.com/package/@eslint/js/v/10.0.1) | 10.0.1 | MIT |
 | [@eslint/object-schema](https://www.npmjs.com/package/@eslint/object-schema/v/3.0.5) | 3.0.5 | Apache-2.0 |
 | [@eslint/plugin-kit](https://www.npmjs.com/package/@eslint/plugin-kit/v/0.7.3) | 0.7.3 | Apache-2.0 |
-| [@hono/node-server](https://www.npmjs.com/package/@hono/node-server/v/2.1.5) | 2.1.5 | MIT |
+| [@hono/node-server](https://www.npmjs.com/package/@hono/node-server/v/2.1.8) | 2.1.8 | MIT |
 | [@humanfs/core](https://www.npmjs.com/package/@humanfs/core/v/0.19.2) | 0.19.2 | Apache-2.0 |
 | [@humanfs/node](https://www.npmjs.com/package/@humanfs/node/v/0.16.8) | 0.16.8 | Apache-2.0 |
 | [@humanfs/types](https://www.npmjs.com/package/@humanfs/types/v/0.15.0) | 0.15.0 | Apache-2.0 |
 | [@humanwhocodes/module-importer](https://www.npmjs.com/package/@humanwhocodes/module-importer/v/1.0.1) | 1.0.1 | Apache-2.0 |
 | [@humanwhocodes/retry](https://www.npmjs.com/package/@humanwhocodes/retry/v/0.4.3) | 0.4.3 | Apache-2.0 |
+| [@isaacs/nonrecursive-glob-match](https://www.npmjs.com/package/@isaacs/nonrecursive-glob-match/v/1.1.0) | 1.1.0 | BlueOak-1.0.0 |
 | [@keyv/bigmap](https://www.npmjs.com/package/@keyv/bigmap/v/1.3.1) | 1.3.1 | MIT |
 | [@keyv/serialize](https://www.npmjs.com/package/@keyv/serialize/v/1.1.1) | 1.1.1 | MIT |
 | [@modelcontextprotocol/sdk](https://www.npmjs.com/package/@modelcontextprotocol/sdk/v/1.32.1) | 1.32.1 | MIT |
@@ -73,7 +74,7 @@ Generated from the locked npm graph with `npm run licenses`. Includes developmen
 | [ajv-formats](https://www.npmjs.com/package/ajv-formats/v/3.0.1) | 3.0.1 | MIT |
 | [balanced-match](https://www.npmjs.com/package/balanced-match/v/4.0.4) | 4.0.4 | MIT |
 | [body-parser](https://www.npmjs.com/package/body-parser/v/2.4.0) | 2.4.0 | MIT |
-| [brace-expansion](https://www.npmjs.com/package/brace-expansion/v/5.0.12) | 5.0.12 | MIT |
+| [brace-expansion](https://www.npmjs.com/package/brace-expansion/v/5.0.13) | 5.0.13 | MIT |
 | [bytes](https://www.npmjs.com/package/bytes/v/3.1.2) | 3.1.2 | MIT |
 | [cacheable](https://www.npmjs.com/package/cacheable/v/2.5.0) | 2.5.0 | MIT |
 | [call-bind-apply-helpers](https://www.npmjs.com/package/call-bind-apply-helpers/v/1.0.2) | 1.0.2 | MIT |
@@ -101,7 +102,7 @@ Generated from the locked npm graph with `npm run licenses`. Includes developmen
 | [esbuild](https://www.npmjs.com/package/esbuild/v/0.28.2) | 0.28.2 | MIT |
 | [escape-html](https://www.npmjs.com/package/escape-html/v/1.0.3) | 1.0.3 | MIT |
 | [escape-string-regexp](https://www.npmjs.com/package/escape-string-regexp/v/4.0.0) | 4.0.0 | MIT |
-| [eslint](https://www.npmjs.com/package/eslint/v/10.12.0) | 10.12.0 | MIT |
+| [eslint](https://www.npmjs.com/package/eslint/v/10.15.0) | 10.15.0 | MIT |
 | [eslint-scope](https://www.npmjs.com/package/eslint-scope/v/9.1.2) | 9.1.2 | BSD-2-Clause |
 | [eslint-visitor-keys](https://www.npmjs.com/package/eslint-visitor-keys/v/3.4.3) | 3.4.3 | Apache-2.0 |
 | [eslint-visitor-keys](https://www.npmjs.com/package/eslint-visitor-keys/v/5.0.1) | 5.0.1 | Apache-2.0 |
@@ -137,7 +138,7 @@ Generated from the locked npm graph with `npm run licenses`. Includes developmen
 | [has-symbols](https://www.npmjs.com/package/has-symbols/v/1.1.0) | 1.1.0 | MIT |
 | [hashery](https://www.npmjs.com/package/hashery/v/1.5.1) | 1.5.1 | MIT |
 | [hasown](https://www.npmjs.com/package/hasown/v/2.0.4) | 2.0.4 | MIT |
-| [hono](https://www.npmjs.com/package/hono/v/4.13.13) | 4.13.13 | MIT |
+| [hono](https://www.npmjs.com/package/hono/v/4.13.19) | 4.13.19 | MIT |
 | [hookified](https://www.npmjs.com/package/hookified/v/1.15.1) | 1.15.1 | MIT |
 | [hookified](https://www.npmjs.com/package/hookified/v/2.2.0) | 2.2.0 | MIT |
 | [http-errors](https://www.npmjs.com/package/http-errors/v/2.0.1) | 2.0.1 | MIT |
@@ -166,7 +167,7 @@ Generated from the locked npm graph with `npm run licenses`. Includes developmen
 | [merge-descriptors](https://www.npmjs.com/package/merge-descriptors/v/2.0.0) | 2.0.0 | MIT |
 | [mime-db](https://www.npmjs.com/package/mime-db/v/1.54.0) | 1.54.0 | MIT |
 | [mime-types](https://www.npmjs.com/package/mime-types/v/3.0.2) | 3.0.2 | MIT |
-| [minimatch](https://www.npmjs.com/package/minimatch/v/10.2.6) | 10.2.6 | BlueOak-1.0.0 |
+| [minimatch](https://www.npmjs.com/package/minimatch/v/11.0.8) | 11.0.8 | BlueOak-1.0.0 |
 | [ms](https://www.npmjs.com/package/ms/v/2.1.3) | 2.1.3 | MIT |
 | [natural-compare](https://www.npmjs.com/package/natural-compare/v/1.4.0) | 1.4.0 | MIT |
 | [negotiator](https://www.npmjs.com/package/negotiator/v/1.1.0) | 1.1.0 | MIT |
