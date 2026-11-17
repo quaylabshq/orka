@@ -396,7 +396,7 @@ for (const { kind, label } of kinds) {
         page.getByRole("article", { name: "Rendered Markdown" }),
       ).toContainText("Local content remains readable offline");
     await expect(
-      page.getByRole("group", { name: "Resource facts" }),
+      page.locator(".detail-title-card .detail-status"),
     ).toContainText("On this Mac");
     await page
       .getByRole("button", { name: "More resource actions", exact: true })

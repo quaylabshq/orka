@@ -1,31 +1,35 @@
-/* Skill detail: reader beside a 360px information rail (Orka Figma 1474:10032),
-   folding into one column below 840px (1484:5475). Un-layered so these rules
-   win over the shared .resource-detail layout. */
-.resource-detail.skill-detail {
+/* The shared detail shell for memories, plans, sessions, and skills: a reader
+   capped at 870px beside a 360px information rail (Orka Figma 1474:10032),
+   centered together, folding into one column below 840px (1484:5475).
+   Un-layered so these rules win over the base .resource-detail layout. */
+.resource-detail.detail-layout {
   display: flex;
   align-items: stretch;
+  justify-content: center;
   align-self: stretch;
   width: 100%;
   max-width: none;
   padding: 0;
   overflow: hidden;
 }
-.skill-reader {
+.detail-reader {
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
   gap: 24px;
   min-width: 0;
+  /* 870px of content plus the inline padding. */
+  max-width: 922px;
   height: 100%;
   padding: 32px 24px 32px 28px;
   overflow-x: hidden;
   overflow-y: auto;
 }
-.skill-detail[data-layout="compact"] .skill-reader {
+.detail-layout[data-layout="compact"] .detail-reader {
   gap: 16px;
   padding: 24px;
 }
-.skill-rail {
+.detail-rail {
   display: flex;
   flex: 0 0 360px;
   flex-direction: column;
@@ -35,9 +39,6 @@
   padding: 32px 28px 32px 24px;
   overflow-x: hidden;
   overflow-y: auto;
-}
-.skill-rail > .resource-access-request {
-  align-self: flex-start;
 }
 
 /* Title card */
@@ -67,21 +68,24 @@
   .sync-status-count {
   display: none;
 }
-.app[data-detail-kind="skill"] > main > .toast-viewport {
+.app[data-detail-kind]:not([data-detail-kind="session"])
+  > main
+  > .toast-viewport {
   bottom: 16px;
 }
-.app[data-detail-kind="skill"] .orka-toast {
+.app[data-detail-kind]:not([data-detail-kind="session"]) .orka-toast {
   border-radius: 12px;
 }
-.app[data-detail-kind="skill"] .toast-title {
+.app[data-detail-kind]:not([data-detail-kind="session"]) .toast-title {
   font-size: 13px;
   line-height: 20px;
 }
-.app[data-detail-kind="skill"] .toast-action.ui-button {
+.app[data-detail-kind]:not([data-detail-kind="session"])
+  .toast-action.ui-button {
   background: var(--interaction-hover);
 }
 .workspace-header--detail .ui-button,
-.skill-detail .ui-button {
+.detail-layout .ui-button {
   --control-icon-container: 14px;
 }
 /* Keep the shell control available on hover and keyboard focus without
@@ -93,7 +97,7 @@
 .workspace-header--detail:focus-within .sidebar-toggle {
   opacity: 1;
 }
-.skill-title-card {
+.detail-title-card {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
@@ -102,18 +106,24 @@
   border-radius: 16px;
   background: rgb(255 255 255 / 2%);
 }
-.skill-detail[data-layout="compact"] .skill-title-card {
+.detail-layout[data-layout="compact"] .detail-title-card {
   gap: 8px;
   padding: 12px 16px;
 }
-.skill-title-row {
+/* A title on its own needs no card around it. */
+.detail-layout[data-layout] .detail-title-card.detail-title-card--plain {
+  padding: 0;
+  border-radius: 0;
+  background: none;
+}
+.detail-title-row {
   display: flex;
   align-items: center;
   gap: 8px;
   min-width: 0;
   max-width: 100%;
 }
-.skill-title {
+.detail-title {
   font-family: "Orka Display Inter", "Inter Variable", sans-serif;
   font-optical-sizing: auto;
   margin: 0;
@@ -142,7 +152,7 @@
   overflow: hidden;
   white-space: normal;
 }
-.skill-status {
+.detail-status {
   display: inline-flex;
   align-items: center;
   margin: 0;
@@ -153,52 +163,57 @@
   font-weight: var(--font-weight-medium);
   white-space: nowrap;
 }
-.skill-status--info {
+.detail-status-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.detail-status--info {
   background: var(--status-info-bg);
   color: var(--status-info);
 }
-.skill-status--warning {
+.detail-status--warning {
   background: var(--status-warning-bg);
   color: var(--status-warning);
 }
-.skill-status--neutral {
+.detail-status--neutral {
   background: var(--surface-tertiary);
   color: var(--text-secondary);
 }
-.skill-meta {
+.detail-meta {
   margin: 0;
   font-size: 12px;
   line-height: 20px;
   color: var(--text-secondary);
 }
-.skill-compact-notes {
+.detail-compact-notes {
   display: flex;
   flex-direction: column;
   gap: 8px;
   align-items: flex-start;
 }
-.skill-compact-notes:empty {
+.detail-compact-notes:empty {
   display: none;
 }
-.skill-detail[data-layout="compact"] .markdown-content pre code {
+.detail-layout[data-layout="compact"] .markdown-content pre code {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   word-break: break-all;
 }
-.skill-compact-actions {
+.detail-compact-actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
 }
-.skill-actions-inline {
+.detail-actions-inline {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
 }
-.skill-context {
+.detail-context {
   margin: 0;
   padding: 10px 12px;
   border-radius: 8px;
@@ -207,77 +222,91 @@
   line-height: 20px;
   color: var(--text-secondary);
 }
-.skill-file-tabs {
+.detail-toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   min-height: 40px;
 }
-.skill-file-tabs-start {
+.detail-toolbar-end {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-height: 40px;
+}
+.detail-toolbar-end:empty {
+  display: none;
+}
+.detail-toolbar-end .resource-access-request {
+  margin: 0;
+}
+.detail-toolbar-start {
   display: flex;
   align-items: center;
   min-width: 0;
 }
-.skill-document {
+.detail-document {
   display: flex;
   flex-direction: column;
   gap: 16px;
   min-width: 0;
 }
-.skill-document > .loading-region {
+.detail-document > .loading-region {
   min-width: 0;
 }
-.skill-file-tabs .segmented-control {
+.detail-toolbar .segmented-control {
   gap: 4px;
   padding: 4px;
   border-radius: 8px;
 }
-.skill-file-tabs .segmented-control .ui-button {
+.detail-toolbar .segmented-control .ui-button {
   --control-height: 32px;
   --control-padding-y: 7px;
   --control-padding-x: 12px;
   border-radius: 6px;
   color: var(--text-tertiary);
 }
-.skill-file-tabs .segmented-control .ui-button[aria-pressed="true"] {
+.detail-toolbar .segmented-control .ui-button[aria-pressed="true"] {
   color: var(--text-primary);
 }
-.skill-file-tabs .segmented-control .ui-button:disabled {
+.detail-toolbar .segmented-control .ui-button:disabled {
   color: var(--text-disabled);
 }
-.skill-file-tabs[data-unavailable] .segmented-control .ui-button:disabled {
+.detail-toolbar[data-unavailable] .segmented-control .ui-button:disabled {
   background: transparent;
 }
-.skill-file-tabs[data-forced-markdown] .segmented-control .ui-button:disabled {
+.detail-toolbar[data-forced-markdown] .segmented-control .ui-button:disabled {
   color: var(--text-primary);
 }
-.skill-file-tabs[data-forced-markdown]
+.detail-toolbar[data-forced-markdown]
   .segmented-control
   .ui-button[aria-pressed="true"]:disabled {
   color: var(--text-tertiary);
 }
-.skill-document .markdown-content {
+.detail-document .markdown-content {
   line-height: 20px;
 }
-.skill-comparison {
+.detail-comparison {
   display: flex;
   align-items: stretch;
   gap: 24px;
   padding-bottom: 40px;
 }
-.skill-comparison > .diff-card {
+.detail-comparison > .diff-card {
   flex: 1 1 auto;
   min-width: 0;
 }
-.skill-comparison-timeline {
+.detail-comparison-timeline {
   display: flex;
   flex: 0 0 24px;
   flex-direction: column;
   align-items: center;
   margin-bottom: -40px;
 }
-.skill-comparison-timeline > span {
+.detail-comparison-timeline > span {
   width: 24px;
   height: 24px;
   border: 7px solid var(--status-connected-bg);
@@ -285,19 +314,19 @@
   background: var(--status-connected-dot);
   background-clip: content-box;
 }
-.skill-comparison-timeline::after {
+.detail-comparison-timeline::after {
   content: "";
   flex: 1 1 auto;
   border-left: 1px dashed var(--border-subtle);
 }
-.skill-document .markdown-content h1 {
+.detail-document .markdown-content h1 {
   font-family: "Orka Display Inter", "Inter Variable", sans-serif;
   font-optical-sizing: auto;
   font-size: 24px;
   line-height: 30px;
   letter-spacing: -0.01em;
 }
-.skill-document .markdown-content h2 {
+.detail-document .markdown-content h2 {
   font-family: "Orka Display Inter", "Inter Variable", sans-serif;
   font-optical-sizing: auto;
   font-size: 20px;
@@ -305,28 +334,28 @@
   letter-spacing: -0.01em;
   margin-top: 48px;
 }
-.skill-document .markdown-content pre {
+.detail-document .markdown-content pre {
   margin: 16px 0;
   padding: 12px 16px;
   line-height: 20px;
   background: var(--surface-tertiary);
 }
-.skill-document .markdown-content p + p {
+.detail-document .markdown-content p + p {
   margin-top: 32px;
 }
-.skill-document .markdown-content p + ul,
-.skill-document .markdown-content p + ol {
+.detail-document .markdown-content p + ul,
+.detail-document .markdown-content p + ol {
   margin-top: 24px;
 }
-.skill-document .markdown-content h2 + ul,
-.skill-document .markdown-content h2 + ol {
+.detail-document .markdown-content h2 + ul,
+.detail-document .markdown-content h2 + ol {
   margin-top: 32px;
 }
-.skill-document .markdown-content code {
+.detail-document .markdown-content code {
   font-size: 16px;
   line-height: 20px;
 }
-.skill-document .markdown-content li {
+.detail-document .markdown-content li {
   min-height: 24px;
   margin-block: 8px;
 }
@@ -363,37 +392,37 @@
 }
 
 /* Rail cards */
-.skill-rail-card {
+.detail-card {
   border: 1px solid var(--border-subtle);
   border-radius: 12px;
   background: var(--surface-tertiary);
   overflow: hidden;
 }
-.skill-info-body {
+.detail-info-body {
   display: flex;
   flex-direction: column;
   gap: 18px;
   padding: 12px 16px 16px;
 }
-.skill-info-heading,
-.skill-files-heading {
+.detail-info-heading,
+.detail-files-heading {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   min-height: 32px;
 }
-.skill-files-heading {
+.detail-files-heading {
   min-height: 20px;
 }
-.skill-card-label {
+.detail-card-label {
   margin: 0;
   font-size: 12px;
   line-height: 20px;
   font-weight: var(--font-weight-regular);
   color: var(--text-tertiary);
 }
-.skill-info-actions {
+.detail-info-actions {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -412,7 +441,7 @@
   background: var(--status-info);
   pointer-events: none;
 }
-.skill-facts {
+.detail-facts {
   display: grid;
   grid-template-columns: 90px minmax(0, 1fr);
   gap: 12px 8px;
@@ -421,20 +450,41 @@
   line-height: 20px;
   letter-spacing: -0.005em;
 }
-.skill-fact {
+.detail-fact {
   display: contents;
 }
-.skill-facts dt {
+.detail-facts dt {
   color: var(--text-secondary);
 }
-.skill-facts dd {
+.detail-facts dd {
   margin: 0;
   min-width: 0;
   font-weight: var(--font-weight-medium);
   color: var(--text-primary);
   overflow-wrap: anywhere;
 }
-.skill-info-note {
+.detail-facts .source-label,
+.detail-meta .source-label {
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  vertical-align: bottom;
+}
+.detail-meta .source-label {
+  gap: 4px;
+}
+.detail-meta .source-label > img,
+.detail-meta .source-label > svg {
+  width: 14px;
+  height: 14px;
+}
+.detail-info-note + .detail-info-note {
+  margin-top: -10px;
+}
+.detail-info-note.detail-info-note--error {
+  color: var(--status-error);
+}
+.detail-info-note {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -444,38 +494,50 @@
   line-height: 18px;
   color: var(--text-tertiary);
 }
-.skill-actions {
+.detail-actions {
   display: flex;
   gap: 12px;
   padding: 16px;
   border-top: 1px solid var(--border-subtle);
 }
-.skill-actions,
-.skill-actions-inline {
+.detail-actions,
+.detail-actions-inline {
   --button-primary-bg: var(--text-primary);
 }
-.skill-actions > .ui-button {
+.detail-actions > .ui-button {
   flex: 1 1 0;
   min-width: 0;
 }
-.skill-actions .ui-button--tertiary,
-.skill-actions-inline .ui-button--tertiary {
+.detail-actions .ui-button--tertiary,
+.detail-actions-inline .ui-button--tertiary {
   background: var(--interaction-hover);
 }
-.skill-actions .ui-button--tertiary:hover:not(:disabled),
-.skill-actions-inline .ui-button--tertiary:hover:not(:disabled) {
+.detail-actions .ui-button--tertiary:hover:not(:disabled),
+.detail-actions-inline .ui-button--tertiary:hover:not(:disabled) {
   background: var(--interaction-selected);
 }
-.skill-detail .skill-compare[aria-pressed="true"] {
+.detail-layout .session-launcher {
+  gap: 1px;
+  background: transparent;
+}
+.detail-actions > .session-launcher {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.detail-actions > .session-launcher > .session-launcher-open {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.detail-layout .detail-compare[aria-pressed="true"] {
   box-shadow: none;
 }
-.skill-files {
+.detail-files {
   display: flex;
   flex-direction: column;
   gap: 18px;
   padding: 12px 16px 16px;
 }
-.skill-files-heading h2 {
+.detail-files-heading h2 {
   margin: 0;
   font-size: 14px;
   line-height: 20px;
@@ -483,12 +545,12 @@
   letter-spacing: -0.005em;
   color: var(--text-primary);
 }
-.skill-files-count {
+.detail-files-count {
   font-size: 12px;
   line-height: 20px;
   color: var(--text-tertiary);
 }
-.skill-file-list {
+.detail-file-list {
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -496,7 +558,7 @@
   padding: 0;
   list-style: none;
 }
-.skill-file {
+.detail-file {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -515,33 +577,33 @@
     background-color 120ms ease,
     color 120ms ease;
 }
-.skill-file:hover {
+.detail-file:hover {
   background: var(--interaction-hover);
   color: var(--text-primary);
 }
-.skill-file > .ui-icon {
+.detail-file > .ui-icon {
   --icon-container: 14px;
 }
-.skill-file[aria-current="true"] {
+.detail-file[aria-current="true"] {
   background: var(--interaction-selected);
   color: var(--text-primary);
 }
-.skill-file:focus-visible {
+.detail-file:focus-visible {
   outline: 1px solid var(--focus-ring);
   outline-offset: 2px;
 }
-.skill-file-name {
+.detail-file-name {
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.skill-files-popover {
+.detail-files-popover {
   width: 280px;
   max-width: calc(100vw - 48px);
 }
-.skill-files-popover .skill-file-list {
+.detail-files-popover .detail-file-list {
   gap: 2px;
 }
 
@@ -923,11 +985,11 @@
 .review-files > * {
   flex-shrink: 0;
 }
-.review-files > .skill-status {
+.review-files > .detail-status {
   align-self: flex-start;
   margin: 0;
 }
-.review-drawer .skill-status--warning {
+.review-drawer .detail-status--warning {
   color: var(--status-warning);
 }
 /* Leave the last changed line clear of the 48px bottom scroll mask. */
@@ -1028,4 +1090,8 @@
   position: absolute;
   top: calc(50% - 8px);
   left: calc(50% - 8px);
+}
+/* The reader's gap already separates a conflict panel from its neighbors. */
+.detail-reader > .conflict {
+  margin-block: 0;
 }

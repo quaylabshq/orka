@@ -96,13 +96,11 @@ export function ItemContextMenu({
   actions,
   label,
   children,
-  footer,
   disabled = false,
 }: {
   actions: ItemMenuAction[];
   label: string;
   children: React.ReactElement;
-  footer?: React.ReactNode;
   disabled?: boolean;
 }) {
   const trigger = useRef<HTMLSpanElement>(null);
@@ -172,7 +170,6 @@ export function ItemContextMenu({
               selected.current = action.restoreFocus === false;
             }}
           />
-          {footer}
         </ContextMenu.Content>
       </ContextMenu.Portal>
     </ContextMenu.Root>
@@ -183,13 +180,11 @@ export function ItemMenuButton({
   actions,
   label,
   disabled,
-  footer,
   size = "sm",
 }: {
   actions: ItemMenuAction[];
   label: string;
   disabled?: boolean;
-  footer?: React.ReactNode;
   size?: "sm" | "md" | "lg";
 }) {
   const selected = useRef(false);
@@ -231,7 +226,6 @@ export function ItemMenuButton({
               selected.current = action.restoreFocus === false;
             }}
           />
-          {footer}
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>

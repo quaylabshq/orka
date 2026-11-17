@@ -90,7 +90,6 @@ export function RequestAccess({
         The project Owner manages access for your role.
       </p>
     );
-  const label = category.label.toLowerCase();
   return (
     <>
       <Button
@@ -132,7 +131,6 @@ export function RequestAccess({
               onClick={() => setOpen(false)}
             />
           </div>
-          <p>Choose what you need for {label}.</p>
           <label>
             Permission
             <PermissionSelect
@@ -150,17 +148,6 @@ export function RequestAccess({
               }}
             />
           </label>
-          <p>
-            {mode === "read"
-              ? "Read shared content."
-              : mode === "suggest"
-                ? "Read content and propose changes for approval."
-                : "Update shared content and approve proposed changes."}
-          </p>
-          <p>
-            A project owner can review this request. Decisions appear in Manage
-            → Requests. Personal work stays writable.
-          </p>
           {error && <p role="alert">{error}</p>}
           <div className="actions">
             <Button

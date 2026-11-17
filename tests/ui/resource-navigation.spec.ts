@@ -161,8 +161,6 @@ const backButton = (
   page: import("@playwright/test").Page,
   collection: string,
 ) => page.getByRole("button", { name: `Back to ${collection}`, exact: true });
-const facts = (page: import("@playwright/test").Page) =>
-  page.getByRole("group", { name: "Resource facts" });
 
 for (const outcome of ["success", "failure"] as const)
   test(`an older snapshot ${outcome} cannot overwrite an action refresh`, async ({
@@ -237,10 +235,10 @@ test("session deep links reset memory diff mode and keep the segmented modes", a
       exact: true,
     })
     .click();
-  await expect(page.getByLabel("File changes", { exact: true })).toBeVisible();
-  await expect(page.locator(".resource-detail--memory")).toContainText(
-    "Comparing with the previous revision",
-  );
+  await expect(page.locator(".diff-card")).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Show content", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
   await page
     .getByRole("button", { name: "More resource actions", exact: true })
     .click();
@@ -255,7 +253,7 @@ test("session deep links reset memory diff mode and keep the segmented modes", a
   );
   await expect(heading(page)).toHaveText("Sessions");
   await expect(backButton(page, "Sessions")).toBeVisible();
-  await expect(page.getByLabel("File changes", { exact: true })).toHaveCount(0);
+  await expect(page.locator(".diff-card")).toHaveCount(0);
   const conversation = page.getByLabel("Conversation", { exact: true });
   await expect(conversation).toContainText("Session conversation");
   await expect(conversation.locator(".session-turn")).not.toHaveCount(90);
@@ -299,18 +297,10 @@ test("memories list in a table and open the full-width reading view", async ({
     .click();
   const view = page.locator(".resource-detail--memory");
   await expect(view.locator("h2").first()).toHaveText("Design decisions");
-  await expect(facts(page)).not.toContainText("Revision");
-  await expect(facts(page)).not.toContainText("1 file");
-  await view
-    .getByRole("button", { name: "More resource actions", exact: true })
-    .click();
-  await expect(page.locator(".resource-diagnostics")).toContainText(
-    "codex/memory-a",
-  );
-  await expect(page.locator(".resource-diagnostics")).toContainText(
-    "Revision 1",
-  );
-  await page.keyboard.press("Escape");
+  const info = view.getByRole("complementary", { name: "Memory information" });
+  await expect(info.locator(".detail-facts")).toContainText("Version1");
+  // A single-file memory has no file switcher.
+  await expect(info.locator(".detail-files")).toHaveCount(0);
   await expect(view).not.toContainText("Stored as");
   await expect(view).toContainText("Some content");
   await expect(view.locator(".resource-summary")).toHaveCount(0);
@@ -338,13 +328,6 @@ test("sessions list in a table, open a reading view, and page turns on demand", 
     .click();
   const view = page.locator(".session-view");
   await expect(view.locator("h2").first()).toHaveText("Polish navigation");
-  await view
-    .getByRole("button", { name: "More resource actions", exact: true })
-    .click();
-  await expect(page.locator(".resource-diagnostics")).toContainText(
-    "Stored as “Imported session”",
-  );
-  await page.keyboard.press("Escape");
   await expect(page.getByLabel("Conversation", { exact: true })).toContainText(
     "Session conversation",
   );
@@ -353,14 +336,18 @@ test("sessions list in a table, open a reading view, and page turns on demand", 
     () => (window as any).sessionMessageCalls.length,
   );
   expect(firstCalls).toBe(1);
-  await expect(facts(page)).not.toContainText("90 messages");
+  await expect(
+    view.getByRole("complementary", { name: "Session information" }),
+  ).not.toContainText("90 messages");
   await expect(view.locator(".session-turn--user").first()).toContainText(
     "You",
   );
   await expect(view.locator(".session-turn--assistant").first()).toContainText(
     "Codex",
   );
-  await view.evaluate((element) => element.scrollTo(0, element.scrollHeight));
+  await view
+    .locator(".detail-reader")
+    .evaluate((element) => element.scrollTo(0, element.scrollHeight));
   await expect
     .poll(() => page.evaluate(() => (window as any).sessionMessageCalls.length))
     .toBeGreaterThan(1);

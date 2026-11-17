@@ -170,18 +170,6 @@ export function resourceViewMenuActions(
   return items;
 }
 
-function resourceMenuFacts(resource: ProjectResource) {
-  return (
-    <div className="resource-diagnostics" role="note">
-      {!resource.local && resource.revision > 0 && (
-        <p>Revision {resource.revision}</p>
-      )}
-      <p>{resource.logicalPath}</p>
-      <p>Stored as “{resource.title}”</p>
-    </div>
-  );
-}
-
 function ResourceMenuTarget({
   resource,
   file,
@@ -453,7 +441,6 @@ export function ResourceMenuButton({
       {(actions) => (
         <ItemMenuButton
           actions={actions}
-          footer={resourceMenuFacts(resource)}
           label={label}
           disabled={context.busy}
         />

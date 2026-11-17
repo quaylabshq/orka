@@ -1,5 +1,4 @@
 import React from "react";
-import { ResourceItemMenu, resourceViewMenuActions } from "./resource-menu.js";
 import type { SessionConflict } from "@portable/protocol";
 import type {
   Project,
@@ -7,10 +6,9 @@ import type {
   Snapshot,
 } from "../types.js";
 import { displayText } from "./resource-presentation.js";
-import { DetailHeader } from "./detail-header.js";
-import { ResourceContent } from "./resource-content.js";
-import { SessionView } from "./session-view.js";
+import { SessionDetail } from "./session-detail.js";
 import { SkillDetail } from "./skill-detail.js";
+import { MemoryDetail } from "./memory-detail.js";
 import { useSkillMetadata } from "./skill-metadata.js";
 import type { SkillSummary } from "./use-skill-summaries.js";
 import { useResourceActions, type Run } from "./use-resource-actions.js";
@@ -36,13 +34,12 @@ export interface ResourceDetailProps {
   state: Snapshot;
   offline?: boolean;
   onRefresh: () => Promise<void>;
-  onBack: () => void;
   onNotice: (message: string) => void;
   onGovernance?: () => void;
   onError: (message: string) => void;
 }
 
-/** Routes Skills to their reader and shares the other resource reading shells. */
+/** Routes each resource kind to its reader. */
 export function ResourceDetail(props: ResourceDetailProps) {
   const {
     resource,
@@ -53,7 +50,6 @@ export function ResourceDetail(props: ResourceDetailProps) {
     state,
     offline = false,
     onRefresh,
-    ...shared
   } = props;
   const inspectedSkill = useSkillMetadata(resource, props.scope);
   const skill =
@@ -99,71 +95,39 @@ export function ResourceDetail(props: ResourceDetailProps) {
         onGovernance={props.onGovernance}
       />
     );
-  const header = (
-    <DetailHeader
-      {...shared}
-      resource={resource}
-      view={view}
-      title={title}
-      actions={actions}
-    />
-  );
   if (resource.kind === "session")
     return (
-      <SessionView
-        resource={resource}
-        menuActions={resourceViewMenuActions(view, true)}
+      <SessionDetail
         key={resource.resourceId}
-        id={resource.resourceId}
-        revision={resource.revision}
-        contentKey={resource.files.map((file) => file.hash).join(":")}
-        conflictId={view.preview}
-        source={resource.source}
-        header={header}
-        mode={view.fullTranscript ? "transcript" : "conversation"}
-        raw={view.rawMarkdown}
-        transcript={
-          <ResourceContent
-            inspection={view.inspection}
-            error={view.inspectionError}
-            onRetry={view.retryInspection}
-            changes={false}
-            markdown={false}
-          />
-        }
+        scope={props.scope}
+        resource={resource}
+        title={title}
+        project={props.project}
+        user={props.user}
+        deviceId={props.deviceId}
+        busy={props.busy}
+        accessRequest={props.accessRequest}
+        conflicts={props.conflicts}
+        view={view}
+        actions={actions}
+        offline={offline}
+        onError={props.onError}
       />
     );
-  const body = (
-    <div className="detail-body">
-      {view.changes && (
-        <p className="detail-notice">Comparing with the previous revision</p>
-      )}
-      <ResourceContent
-        inspection={view.inspection}
-        error={view.inspectionError}
-        onRetry={view.retryInspection}
-        changes={view.changes}
-        markdown={view.canRenderMarkdown && !view.rawMarkdown}
-      />
-    </div>
-  );
   return (
-    <ResourceItemMenu
+    <MemoryDetail
       resource={resource}
-      file={view.file}
-      extraActions={resourceViewMenuActions(view, false)}
-    >
-      {() => (
-        <section
-          className="resource-detail resource-detail--memory"
-          aria-label={
-            resource.kind === "plan" ? "Plan details" : "Memory details"
-          }
-        >
-          {header}
-          {body}
-        </section>
-      )}
-    </ResourceItemMenu>
+      title={title}
+      project={props.project}
+      user={props.user}
+      deviceId={props.deviceId}
+      busy={props.busy}
+      accessRequest={props.accessRequest}
+      conflicts={props.conflicts}
+      view={view}
+      actions={actions}
+      offline={offline}
+      onError={props.onError}
+    />
   );
 }

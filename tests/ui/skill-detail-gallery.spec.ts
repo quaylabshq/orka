@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { capture } from "./fixtures/detail-gallery.js";
 import {
   detail,
   rail,
@@ -6,11 +7,10 @@ import {
   type SkillFixtureOptions,
 } from "./fixtures/skill-detail.js";
 
-// Review gallery: one screenshot per linked Figma state, in the order of the
+// States page: one screenshot per linked Figma state, in the order of the
 // handoff boards. Assertions keep each capture honest about what is on screen.
-const shots = ".scratch/skills-detail-redesign/screenshots";
-const shot = (page: Page, name: string) =>
-  page.screenshot({ path: `${shots}/${name}.png` });
+// detail-gallery.spec.ts captures memories, plans, and sessions.
+const shot = (page: Page, name: string) => capture(page, "skills", name);
 const wide = { width: 1440, height: 900 };
 const compact = { width: 900, height: 640 };
 
@@ -35,7 +35,7 @@ test("reader and file previews", async ({ page }) => {
     view.getByRole("group", { name: "Markdown source" }),
   ).toBeVisible();
   await shot(page, "02-reader-raw-markdown");
-  const files = rail(page).locator(".skill-file");
+  const files = rail(page).locator(".detail-file");
   await files.filter({ hasText: "scripts/candidates.sh" }).click();
   await expect(view.locator(".source-card-type")).toHaveText("Shell script");
   await shot(page, "03-reader-script");
@@ -60,7 +60,7 @@ test("file loading skeleton", async ({ page }) => {
     (window as any).slowInspect = "scripts/candidates.sh";
   });
   await rail(page)
-    .locator(".skill-file")
+    .locator(".detail-file")
     .filter({ hasText: "scripts/candidates.sh" })
     .click();
   await expect(
@@ -72,21 +72,21 @@ test("file loading skeleton", async ({ page }) => {
 
 test("comparison states", async ({ page }) => {
   const view = await open(page, wide);
-  await rail(page).locator(".skill-compare").click();
+  await rail(page).locator(".detail-compare").click();
   await expect(view.locator(".diff-card")).toBeVisible();
   await shot(page, "07-compare-diff");
 });
 
 test("comparison without changes", async ({ page }) => {
   const view = await open(page, wide, { previous: "equal" });
-  await rail(page).locator(".skill-compare").click();
+  await rail(page).locator(".detail-compare").click();
   await expect(view.locator(".reader-state-title")).toHaveText("No changes");
   await shot(page, "08-compare-no-changes");
 });
 
 test("comparison without a cached previous version", async ({ page }) => {
   const view = await open(page, wide, { previous: "missing" });
-  await rail(page).locator(".skill-compare").click();
+  await rail(page).locator(".detail-compare").click();
   await expect(view.locator(".reader-state-title")).toHaveText(
     "Previous version unavailable",
   );
@@ -138,13 +138,13 @@ test("invalid metadata", async ({ page }) => {
     skillContent:
       "---\nname: [unclosed\ndescription: broken\n---\n# Issue follow-up\n\n- Review the issue report.\n",
   });
-  await expect(view.locator(".skill-context")).toBeVisible();
+  await expect(view.locator(".detail-context")).toBeVisible();
   await shot(page, "14-invalid-metadata");
 });
 
 test("folder disconnected", async ({ page }) => {
   const view = await open(page, wide, { disconnected: true });
-  await expect(view.locator(".skill-context")).toBeVisible();
+  await expect(view.locator(".detail-context")).toBeVisible();
   await shot(page, "15-folder-disconnected");
 });
 
@@ -192,7 +192,7 @@ test("outgoing review as suggest changes", async ({ page }) => {
   await dialog
     .getByRole("button", { name: "Send for approval", exact: true })
     .click();
-  await expect(detail(page).locator(".skill-status")).toHaveText(
+  await expect(detail(page).locator(".detail-status")).toHaveText(
     "Awaiting approval",
   );
   await shot(page, "19-suggestion-pending");
@@ -377,4 +377,87 @@ test("compact reader and review", async ({ page }) => {
       .locator(".diff-card"),
   ).toHaveCount(2);
   await shot(page, "32-compact-review");
+});
+
+// Implicit states: what appears on hover, focus, right-click, or expansion.
+test("menus, tooltip, and keyboard focus", async ({ page }) => {
+  const view = await open(page, wide);
+  await rail(page)
+    .getByRole("button", { name: "More skill actions", exact: true })
+    .click();
+  await expect(
+    page.getByRole("menuitem", { name: "Copy file content", exact: true }),
+  ).toBeVisible();
+  await page.waitForTimeout(400);
+  await capture(
+    page,
+    "skills",
+    "33-more-menu",
+    "Implicit. The More menu for a skill.",
+  );
+  await page.keyboard.press("Escape");
+  await view.locator(".markdown-content").click({ button: "right" });
+  await expect(
+    page.getByRole("menuitem", { name: "Copy file content", exact: true }),
+  ).toBeVisible();
+  await page.waitForTimeout(400);
+  await capture(
+    page,
+    "skills",
+    "34-context-menu",
+    "Implicit. Right-clicking anywhere in the reader opens the same actions.",
+  );
+  await page.keyboard.press("Escape");
+  await rail(page)
+    .getByRole("button", { name: "Export ZIP", exact: true })
+    .hover();
+  await expect(page.locator(".skill-action-tooltip")).toHaveText("Export ZIP");
+  await capture(
+    page,
+    "skills",
+    "35-action-tooltip",
+    "Implicit. Icon actions name themselves on hover.",
+  );
+  const row = rail(page)
+    .locator(".detail-file")
+    .filter({ hasText: "scripts/candidates.sh" });
+  await row.hover();
+  await page.waitForTimeout(400);
+  await capture(
+    page,
+    "skills",
+    "36-file-hover",
+    "Implicit. Hovering a file that isn’t selected.",
+  );
+  await page.mouse.move(0, 0);
+  const editor = rail(page).getByRole("button", {
+    name: "Open in editor",
+    exact: true,
+  });
+  for (let presses = 0; presses < 40; presses++) {
+    await page.keyboard.press("Tab");
+    if (await editor.evaluate((element) => element === document.activeElement))
+      break;
+  }
+  await expect(editor).toBeFocused();
+  await capture(
+    page,
+    "skills",
+    "37-keyboard-focus",
+    "Implicit. The focus ring when tabbing to Open in editor.",
+  );
+});
+
+test("compact description expanded", async ({ page }) => {
+  const view = await open(page, compact);
+  await view.getByRole("button", { name: "Show more", exact: true }).click();
+  await expect(
+    view.getByRole("button", { name: "Show less", exact: true }),
+  ).toBeVisible();
+  await capture(
+    page,
+    "skills",
+    "38-compact-description-expanded",
+    "Implicit. Narrow window after Show more: the full description, with Show less.",
+  );
 });

@@ -209,7 +209,7 @@ test("Figma shell geometry, fluid gap selection, collapse reversal and keyboard 
   const controls = (await page
     .locator(".sidebar-window-controls")
     .boundingBox())!;
-  expect(controls).toMatchObject({ x: 12, y: 16, width: 216, height: 38 });
+  expect(controls).toMatchObject({ x: 12, y: 16, width: 216, height: 24 });
   await expect(page.locator(".sidebar-window-controls")).toHaveAttribute(
     "data-tauri-drag-region",
     "true",
@@ -238,7 +238,7 @@ test("Figma shell geometry, fluid gap selection, collapse reversal and keyboard 
   boxes.forEach((box, index) =>
     expect(box).toMatchObject({
       x: 12,
-      y: 74 + index * 44,
+      y: 60 + index * 44,
       width: 216,
       height: 36,
     }),

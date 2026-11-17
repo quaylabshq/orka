@@ -541,7 +541,7 @@ for (const viewport of [
       page.getByRole("heading", { name: "Code review", exact: true }),
     ).toBeVisible();
     await expect(
-      page.locator(".skill-title-card .skill-origin-badge"),
+      page.locator(".detail-title-card .skill-origin-badge"),
     ).toHaveText("Global");
     await expect(
       page.getByText(
@@ -827,12 +827,12 @@ test("first approval keeps one status pill and the local editor action", async (
   await card.click();
   const detail = page.getByRole("region", { name: "Skill details" });
   const info = detail.getByRole("region", { name: "Skill info", exact: true });
-  await expect(detail.locator(".skill-status")).toHaveText([
+  await expect(detail.locator(".detail-status")).toHaveText([
     "Awaiting approval",
   ]);
   await expect(info.getByRole("term")).toHaveText(["Updated by", "Updated at"]);
-  await expect(info.locator(".skill-info-note")).toHaveCount(0);
-  await expect(info.locator(".skill-actions").getByRole("button")).toHaveText([
+  await expect(info.locator(".detail-info-note")).toHaveCount(0);
+  await expect(info.locator(".detail-actions").getByRole("button")).toHaveText([
     "Open in editor",
   ]);
   await expect(

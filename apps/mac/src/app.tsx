@@ -731,9 +731,9 @@ function WorkspaceApp({
         <main>
           <WorkspaceHeader
             leading={
-              !settings && selected?.kind === "skill" ? (
+              !settings && selected ? (
                 <Button size="sm" variant="tertiary" onClick={closeDetail}>
-                  <Icon icon={ArrowLeftIcon} /> Back to Skills
+                  <Icon icon={ArrowLeftIcon} /> Back to {collectionLabel}
                 </Button>
               ) : undefined
             }
@@ -954,7 +954,6 @@ function WorkspaceApp({
                     state={state}
                     offline={state.sync ? !state.sync.online : false}
                     onRefresh={refresh}
-                    onBack={closeDetail}
                     onGovernance={() =>
                       selected.local
                         ? openManagement("requests")

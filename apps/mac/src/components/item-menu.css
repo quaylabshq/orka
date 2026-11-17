@@ -412,12 +412,3 @@
 .resource-command-button-size {
   visibility: hidden;
 }
-
-.item-menu-content .resource-diagnostics {
-  margin: 5px 4px 0;
-  padding: 9px 6px 4px;
-  border-top: 1px solid var(--surface-stroke);
-  color: var(--text-tertiary);
-  font-size: 11px;
-  overflow-wrap: anywhere;
-}

@@ -985,7 +985,6 @@ test("access requests start from resource pages and do not appear in management"
     name: "Request access",
     exact: true,
   });
-  await expect(dialog).toContainText("for plans");
   await dialog
     .getByRole("button", { name: "Send request", exact: true })
     .click();

@@ -3,7 +3,7 @@
 @import "./components/settings/settings.css";
 
 @import "./components/toasts.css";
-@import "./components/skill-detail.css";
+@import "./components/detail-layout.css";
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -76,6 +76,7 @@
 @media (prefers-reduced-motion: no-preference) {
   .collection-skeleton-rows,
   .loading-fade,
+  .session-launcher-skeleton,
   .skill-content-skeleton {
     animation: loading-breathe 2.4s ease-in-out infinite;
   }
@@ -391,9 +392,11 @@
   .sidebar[data-motion="instant"] *:not(.project-section-highlight) {
     transition: none !important;
   }
+  /* Clears the macOS window buttons; navigation starts level with the
+     workspace content below the header. */
   .sidebar-window-controls {
     @apply shrink-0;
-    height: 38px;
+    height: 24px;
   }
   .project-selector-actions {
     display: flex;
@@ -740,25 +743,43 @@
     width: 28px;
   }
   .session-launcher-popover {
-    min-width: 260px;
+    min-width: 240px;
     max-width: 340px;
   }
   .session-launcher-popover [role="menu"] {
     @apply flex flex-col gap-1;
   }
   .session-launcher-popover .ui-button {
-    min-height: var(--control-height);
-    height: auto;
-    white-space: normal;
+    justify-content: flex-start;
     text-align: left;
   }
   .session-launcher-option-text {
-    @apply flex min-w-0 flex-1 flex-col gap-0.5;
+    @apply min-w-0 flex-1 truncate;
   }
-  .session-launcher-hint,
   .session-launcher-default,
   .session-launcher-status {
     @apply text-body-xs text-secondary;
+  }
+  .session-launcher-skeleton {
+    @apply flex flex-col gap-1;
+  }
+  .session-launcher-skeleton span[aria-hidden] {
+    @apply flex items-center gap-2 px-3;
+    height: var(--control-height-sm, 32px);
+  }
+  .session-launcher-skeleton span[aria-hidden]::before,
+  .session-launcher-skeleton span[aria-hidden]::after {
+    content: "";
+    height: 10px;
+    border-radius: var(--radius-control);
+    background: var(--surface-stroke);
+  }
+  .session-launcher-skeleton span[aria-hidden]::before {
+    width: 14px;
+    height: 14px;
+  }
+  .session-launcher-skeleton span[aria-hidden]::after {
+    width: var(--skeleton-width);
   }
   .session-launcher-default {
     margin-left: auto;
@@ -780,36 +801,12 @@
   .ui-button--primary .resume-source-icon--codex {
     filter: invert(1);
   }
-  /* Resource reading view: one shell for memories, skills, and sessions. */
+  /* Resource reading view; the shared shell lives in detail-layout.css. */
   .resource-detail {
     @apply min-h-0 min-w-0 flex-1 overflow-y-auto px-7 pb-7;
     width: 100%;
     max-width: var(--resource-detail-max-width);
     align-self: center;
-  }
-  .detail-back {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    /* Offset by the sm button padding so the arrow's edge aligns with the title. */
-    @apply -ml-3 mt-3;
-  }
-  .detail-title-row {
-    @apply mt-4 flex items-start justify-between gap-4;
-  }
-  .detail-title {
-    @apply m-0 min-w-0 flex-1 text-heading-sm;
-    overflow-wrap: anywhere;
-  }
-  .detail-title-row--session {
-    flex-wrap: wrap;
-  }
-  .detail-title-row--session .detail-title {
-    flex-basis: 280px;
-  }
-  .detail-title-actions {
-    @apply flex shrink-0 items-center gap-2;
   }
   .segmented-control {
     @apply inline-flex p-0.5;
@@ -826,52 +823,6 @@
   .segmented-control .ui-button[aria-pressed="true"] {
     background: var(--interaction-selected);
     color: var(--text-primary);
-  }
-  .detail-facts {
-    @apply -ml-1.5 mt-2.5 flex flex-wrap items-center gap-x-2.5 gap-y-1;
-  }
-  .fact-chip {
-    @apply inline-flex h-6 max-w-full items-center gap-1.5 px-1.5 text-body-xs text-secondary;
-    border-radius: var(--radius-detail);
-  }
-  .fact-chip-author {
-    @apply max-w-48 truncate;
-  }
-  .fact-chip--menu {
-    @apply border-0 bg-transparent text-foreground;
-    transition: background-color 120ms ease;
-  }
-  .fact-chip--menu:hover:not(:disabled) {
-    background: var(--interaction-hover);
-  }
-  .fact-chip--menu[data-state="open"] {
-    background: var(--interaction-selected);
-  }
-  .fact-chip--menu:focus-visible {
-    outline: 1px solid var(--focus-ring);
-    outline-offset: 2px;
-  }
-  .fact-menu-file .fact-menu-file-name {
-    @apply min-w-0 flex-1 truncate text-left;
-  }
-  .resource-diagnostics {
-    @apply mt-1 border-t border-line px-2 pt-2 text-body-xs text-secondary;
-    overflow-wrap: anywhere;
-  }
-  .resource-diagnostics p {
-    @apply my-1;
-  }
-  .detail-path {
-    @apply mb-0 mt-1.5 flex items-start gap-1.5 text-body-xs text-muted;
-  }
-  .detail-note {
-    @apply mb-0 mt-3 text-body-xs text-muted;
-  }
-  .detail-body {
-    @apply mt-6 min-w-0;
-  }
-  .detail-notice {
-    @apply mb-3 text-body-xs text-muted;
   }
   .session-preview-status {
     @apply flex items-center justify-between gap-2 px-7 py-2 text-xs text-muted;
@@ -1446,7 +1397,7 @@
     @apply mr-2 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-secondary text-label-2xs;
   }
   .conflict {
-    @apply my-6 rounded-lg border border-strong bg-raised p-4 text-xs;
+    @apply my-6 rounded-lg bg-raised p-4 text-xs;
   }
   .conflict > strong {
     @apply flex items-center gap-2 text-label-sm;

@@ -117,7 +117,7 @@ test("the wide reader shows frontmatter, facts, files, and header navigation", a
     page.getByRole("button", { name: "Back to Skills", exact: true }),
   ).toBeVisible();
   await expect(page.locator(".workspace-header h1")).toHaveText("Skills");
-  await expect(view.locator(".skill-title")).toHaveText(
+  await expect(view.locator(".detail-title")).toHaveText(
     "issue-investigate-followup",
   );
   await expect(view.locator(".skill-description")).toContainText(
@@ -125,12 +125,12 @@ test("the wide reader shows frontmatter, facts, files, and header navigation", a
   );
   const info = rail(page);
   await expect(info.getByRole("heading", { name: "Skill info" })).toBeVisible();
-  await expect(info.locator(".skill-facts dt")).toHaveText([
+  await expect(info.locator(".detail-facts dt")).toHaveText([
     "Updated by",
     "Updated at",
     "Version",
   ]);
-  await expect(info.locator(".skill-facts dd")).toHaveText([
+  await expect(info.locator(".detail-facts dd")).toHaveText([
     "You",
     /Oct 2\d at \d+:\d\d [AP]M/,
     "3",
@@ -145,7 +145,7 @@ test("the wide reader shows frontmatter, facts, files, and header navigation", a
   }
   await page.evaluate(() => document.fonts.ready);
   // The rail must not inherit padding or hover fill from collection cards.
-  const card = info.locator(".skill-info");
+  const card = info.locator(".detail-info");
   await expect(card).toHaveCSS("padding", "0px");
   await card.hover();
   await expect(card).toHaveCSS("background-color", "rgb(28, 28, 28)");
@@ -155,7 +155,7 @@ test("the wide reader shows frontmatter, facts, files, and header navigation", a
     width: 308,
     height: 229,
   });
-  await expect(info.locator('.skill-file[aria-current="true"]')).toHaveCSS(
+  await expect(info.locator('.detail-file[aria-current="true"]')).toHaveCSS(
     "background-color",
     "rgb(46, 46, 46)",
   );
@@ -165,8 +165,8 @@ test("the wide reader shows frontmatter, facts, files, and header navigation", a
   await expect(info.getByRole("button", { name: /Review local/ })).toHaveCount(
     0,
   );
-  await expect(info.locator(".skill-files-count")).toContainText("4");
-  const files = info.locator(".skill-file");
+  await expect(info.locator(".detail-files-count")).toContainText("4");
+  const files = info.locator(".detail-file");
   await expect(files).toHaveText([
     "SKILL.md",
     "scripts/candidates.sh",
@@ -205,7 +205,7 @@ test("file selection reads each type and scopes the editor action", async ({
 }) => {
   await skillFixture(page);
   const view = detail(page);
-  const files = rail(page).locator(".skill-file");
+  const files = rail(page).locator(".detail-file");
   await files.filter({ hasText: "scripts/candidates.sh" }).click();
   const source = view.locator(".source-card");
   await expect(source.locator(".source-card-type")).toHaveText("Shell script");
@@ -259,7 +259,7 @@ test("a late read for an earlier file cannot replace the selected file", async (
 }) => {
   await skillFixture(page);
   const view = detail(page);
-  const files = rail(page).locator(".skill-file");
+  const files = rail(page).locator(".detail-file");
   await page.evaluate(() => {
     (window as any).slowInspect = "assets/platform-checks.csv";
   });
@@ -292,7 +292,7 @@ test("view changes compares the selected file with its cached previous copy", as
 }) => {
   await skillFixture(page);
   const view = detail(page);
-  const compare = rail(page).locator(".skill-compare");
+  const compare = rail(page).locator(".detail-compare");
   await expect(compare).toHaveText("View changes");
   await compare.click();
   await expect(compare).toHaveText("Show content");
@@ -342,12 +342,12 @@ test("view changes compares the selected file with its cached previous copy", as
     )
     .toContain("rgb(96, 165, 250)");
   await rail(page)
-    .locator(".skill-file")
+    .locator(".detail-file")
     .filter({ hasText: "scripts/candidates.sh" })
     .click();
   await expect(view.locator(".reader-state-title")).toHaveText("No changes");
   await rail(page)
-    .locator(".skill-file")
+    .locator(".detail-file")
     .filter({ hasText: "SKILL.md" })
     .click();
   await expect(card).toBeVisible();
@@ -585,7 +585,7 @@ test("read failures retry in place and offline reads explain the cache", async (
   await expect(failed.locator(".reader-state-title")).toHaveText(
     "Couldn’t load SKILL.md",
   );
-  await expect(view.locator(".skill-title")).toHaveText(
+  await expect(view.locator(".detail-title")).toHaveText(
     "issue-investigate-followup",
   );
   await page.evaluate(() => {
@@ -617,7 +617,7 @@ test("offline reads of uncached files explain the cache", async ({ page }) => {
   ).toBeDisabled();
   // Other cached files still read.
   await rail(page)
-    .locator(".skill-file")
+    .locator(".detail-file")
     .filter({ hasText: "assets/platform-checks.csv" })
     .click();
   await expect(detail(page).locator(".source-plain")).toContainText(
@@ -633,7 +633,7 @@ test("a missing SKILL.md keeps the other files reachable", async ({ page }) => {
     files: ["scripts/candidates.sh", "assets/platform-checks.csv"],
   });
   const view = detail(page);
-  await expect(view.locator(".skill-title")).toHaveText(
+  await expect(view.locator(".detail-title")).toHaveText(
     "issue-investigate-followup",
   );
   const state = view.locator(".reader-state");
@@ -650,14 +650,14 @@ test("a missing SKILL.md keeps the other files reachable", async ({ page }) => {
   await expect(
     rail(page).getByRole("button", { name: "View changes", exact: true }),
   ).toBeDisabled();
-  await expect(rail(page).locator(".skill-files-count")).toContainText("3");
+  await expect(rail(page).locator(".detail-files-count")).toContainText("3");
   const missing = rail(page).getByRole("button", {
     name: "SKILL.md · Missing",
     exact: true,
   });
   await expect(missing).toHaveAttribute("aria-current", "true");
   await rail(page)
-    .locator(".skill-file")
+    .locator(".detail-file")
     .filter({ hasText: "scripts/candidates.sh" })
     .click();
   await expect(view.locator(".source-plain")).toContainText("gh pr list");
@@ -760,7 +760,7 @@ test("a file that has never been read does not invent a description", async ({
     "Couldn’t load SKILL.md",
   );
   await expect(detail(page).locator(".skill-description")).toHaveCount(0);
-  await expect(detail(page).locator(".skill-title")).toHaveText(
+  await expect(detail(page).locator(".detail-title")).toHaveText(
     "issue-investigate-followup",
   );
 });
@@ -776,14 +776,16 @@ test("first approval shows one pending pill and only local skill actions", async
   });
   const view = detail(page);
   const info = rail(page);
-  await expect(view.locator(".skill-status")).toHaveText(["Awaiting approval"]);
-  await expect(info.locator(".skill-facts dt")).toHaveText([
+  await expect(view.locator(".detail-status")).toHaveText([
+    "Awaiting approval",
+  ]);
+  await expect(info.locator(".detail-facts dt")).toHaveText([
     "Updated by",
     "Updated at",
   ]);
-  await expect(info.locator(".skill-info-note")).toHaveCount(0);
+  await expect(info.locator(".detail-info-note")).toHaveCount(0);
   await expect(info.locator(".resource-access-request")).toHaveCount(0);
-  await expect(info.locator(".skill-actions").getByRole("button")).toHaveText([
+  await expect(info.locator(".detail-actions").getByRole("button")).toHaveText([
     "Open in editor",
   ]);
   await expect(
@@ -810,7 +812,7 @@ test("metadata-only and invalid skill files fall back clearly", async ({
       "---\nname: Metadata only\ndescription: Nothing else yet.\n---\n",
   });
   const view = detail(page);
-  await expect(view.locator(".skill-title")).toHaveText("Metadata only");
+  await expect(view.locator(".detail-title")).toHaveText("Metadata only");
   await expect(view.locator(".reader-state-title")).toHaveText(
     "No skill instructions",
   );
@@ -828,7 +830,7 @@ test("invalid frontmatter shows the original file with a notice", async ({
     skillContent: original,
   });
   const view = detail(page);
-  await expect(view.locator(".skill-context")).toHaveText(
+  await expect(view.locator(".detail-context")).toHaveText(
     "Couldn’t read skill metadata. Showing the original file.",
   );
   const source = view.getByRole("region", {
@@ -849,7 +851,7 @@ test("a disconnected folder and editor failures stay recoverable", async ({
   page,
 }) => {
   await skillFixture(page, { disconnected: true });
-  await expect(detail(page).locator(".skill-context")).toHaveText([
+  await expect(detail(page).locator(".detail-context")).toHaveText([
     "Reconnect the project folder in Settings to open files in your editor.",
   ]);
   await expect(
@@ -877,7 +879,7 @@ test("review entries follow bindings and drafts independently", async ({
 }) => {
   await skillFixture(page, { installation: "update" });
   const info = rail(page);
-  await expect(detail(page).locator(".skill-status")).toHaveText(
+  await expect(detail(page).locator(".detail-status")).toHaveText(
     "Review needed",
   );
   await expect(
@@ -900,7 +902,7 @@ test("local drafts show the outgoing entry and pending drafts show their status"
   await expect(
     info.getByRole("button", { name: /Review local update/ }),
   ).toHaveCount(0);
-  await expect(detail(page).locator(".skill-status")).toHaveCount(0);
+  await expect(detail(page).locator(".detail-status")).toHaveCount(0);
 });
 
 test("pending suggestions hide the outgoing entry and announce approval", async ({
@@ -912,7 +914,7 @@ test("pending suggestions hide the outgoing entry and announce approval", async 
     access: "suggest",
     role: "member",
   });
-  await expect(detail(page).locator(".skill-status")).toHaveText(
+  await expect(detail(page).locator(".detail-status")).toHaveText(
     "Awaiting approval",
   );
   await expect(
@@ -944,10 +946,10 @@ test("local edits that block an approved update show both entries and the blue d
   await expect(
     info.getByRole("button", { name: "Review local edits", exact: true }),
   ).toBeVisible();
-  await expect(detail(page).locator(".skill-status")).toHaveText(
+  await expect(detail(page).locator(".detail-status")).toHaveText(
     "Review needed",
   );
-  await expect(info.locator(".skill-facts")).toContainText(
+  await expect(info.locator(".detail-facts")).toContainText(
     "3 shared · 2 on this Mac",
   );
   const box = await incoming.boundingBox();
@@ -1005,7 +1007,7 @@ test("suggesting changes sends the exact reviewed draft for approval", async ({
   ]);
   await expect(dialog).toHaveCount(0);
   await expect(toast(page)).toHaveText("Suggestion sent for review");
-  await expect(detail(page).locator(".skill-status")).toHaveText(
+  await expect(detail(page).locator(".detail-status")).toHaveText(
     "Awaiting approval",
   );
   await expect(
@@ -1735,8 +1737,8 @@ test("compact windows fold the rail into the reader and keep the drawer usable",
   await skillFixture(page, { installation: "blocked", draft: "local" });
   const view = detail(page);
   await expect(view).toHaveAttribute("data-layout", "compact");
-  await expect(view.locator(".skill-rail")).toHaveCount(0);
-  await expect(view.locator(".skill-meta")).toContainText(
+  await expect(view.locator(".detail-rail")).toHaveCount(0);
+  await expect(view.locator(".detail-meta")).toContainText(
     /Updated by You · .* · Version 3/,
   );
   await expect(
@@ -1748,9 +1750,9 @@ test("compact windows fold the rail into the reader and keep the drawer usable",
   ).toBeVisible();
   await view.getByRole("button", { name: "Files, 4" }).click();
   const menu = page.getByRole("dialog", { name: "Files", exact: true });
-  await expect(menu.locator(".skill-file")).toHaveCount(4);
+  await expect(menu.locator(".detail-file")).toHaveCount(4);
   await menu
-    .locator(".skill-file")
+    .locator(".detail-file")
     .filter({ hasText: "scripts/candidates.sh" })
     .click();
   await expect(menu).toHaveCount(0);

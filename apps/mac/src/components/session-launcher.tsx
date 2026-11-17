@@ -1,4 +1,10 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, {
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import {
   ChevronDownIcon,
   DownloadIcon,
@@ -89,6 +95,7 @@ export function SessionLauncher({
     destination: SessionDestination;
   } | null>(null);
   const menu = useRef<HTMLDivElement>(null);
+  const hints = useId();
   const current = state?.key === key ? state : null;
   const options = current?.options ?? [];
   const defaultOption =
@@ -168,63 +175,56 @@ export function SessionLauncher({
     };
   }, [key, resource.resourceId, refresh]);
 
+  // One line per option. What would be a second line is the hover title and
+  // the option's accessible description, so it is still announced.
+  const hintId = (name: string) => `${hints}-${name}`;
   const renderOption = (option: SessionLaunchOption) => {
     const handoff = option.tool !== tool;
+    const name = `${option.tool}:${option.destination}`;
+    const hint =
+      option.reason ??
+      (handoff
+        ? option.destination === "desktop"
+          ? "Starts a new conversation with this session’s context"
+          : `Starts a new conversation in ${option.label} with this session’s context`
+        : option.destination !== "desktop"
+          ? `${option.mode === "fork" ? "New fork" : "Existing session"} in ${option.label}`
+          : undefined);
     return (
-      <Button
-        key={`${option.tool}:${option.destination}`}
-        variant="tertiary"
-        size="sm"
-        role="menuitem"
-        disabled={busy || !option.available}
-        title={
-          option.reason ??
-          (handoff && option.destination !== "desktop"
-            ? "Starts a new conversation immediately with the transferred context"
-            : undefined)
-        }
-        onClick={() => void actions.resume(option)}
-      >
-        <AppIcon option={option} tool={option.tool} />
-        <span className="session-launcher-option-text">
-          <span>
+      <React.Fragment key={name}>
+        <Button
+          variant="tertiary"
+          size="sm"
+          role="menuitem"
+          disabled={busy || !option.available}
+          title={hint}
+          aria-describedby={hint ? hintId(name) : undefined}
+          onClick={() => void actions.resume(option)}
+        >
+          <AppIcon option={option} tool={option.tool} />
+          <span className="session-launcher-option-text">
             {handoff
               ? `Continue in ${targetLabel(option)}…`
               : option.mode === "fork"
                 ? `Fork in ${targetLabel(option)}`
                 : `Open in ${targetLabel(option)}`}
           </span>
-          {option.reason ? (
-            <span className="session-launcher-hint">{option.reason}</span>
-          ) : handoff ? (
-            <span className="session-launcher-hint">
-              {option.destination === "desktop"
-                ? "New conversation with context"
-                : `Starts immediately in ${option.label} with context`}
-            </span>
-          ) : option.destination !== "desktop" ? (
-            <span className="session-launcher-hint">
-              {option.mode === "fork" ? "New fork" : "Existing session"} in{" "}
-              {option.label}
-            </span>
-          ) : (
-            <span className="session-launcher-hint">
-              {option.mode === "fork"
-                ? "Creates a new fork"
-                : "Opens the existing session"}
-            </span>
+          {option === primary && option.available && (
+            <span className="session-launcher-default">Default</span>
           )}
-        </span>
-        {option === primary && option.available && (
-          <span className="session-launcher-default">Default</span>
+        </Button>
+        {hint && (
+          <span id={hintId(name)} hidden>
+            {hint}
+          </span>
         )}
-      </Button>
+      </React.Fragment>
     );
   };
   return (
     <div className="session-launcher">
       <Button
-        variant="secondary"
+        variant="primary"
         size="sm"
         className="session-launcher-open"
         aria-label={actionLabel}
@@ -256,7 +256,7 @@ export function SessionLauncher({
           <IconButton
             icon={ChevronDownIcon}
             size="sm"
-            variant="secondary"
+            variant="primary"
             className="session-launcher-trigger"
             aria-label="Choose how to open session"
             aria-haspopup="menu"
@@ -293,51 +293,57 @@ export function SessionLauncher({
             }
           }}
         >
-          {current?.error ? (
-            <div className="session-launcher-status" data-keep-open>
-              <p role="status">Couldn’t check available apps.</p>
-              <Button
-                variant="tertiary"
-                size="sm"
-                onClick={() => setRefresh((value) => value + 1)}
-              >
-                Try again
-              </Button>
+          {!current ? (
+            <div className="session-launcher-skeleton">
+              <span className="sr-only" role="status">
+                Checking apps…
+              </span>
+              {[132, 156, 118].map((width) => (
+                <span
+                  key={width}
+                  aria-hidden="true"
+                  style={{ "--skeleton-width": `${width}px` } as CSSProperties}
+                />
+              ))}
             </div>
-          ) : !current ? (
-            <p className="session-launcher-status" role="status">
-              Checking apps…
-            </p>
-          ) : (
+          ) : current.error ? null : (
             <>
               {visibleOptions.map(renderOption)}
               {forkOptions.length > 0 && (
                 <div role="separator" className="session-launcher-separator" />
               )}
-              {forkOptions.map((forkOption) => (
-                <Button
-                  key={`fork:${forkOption.tool}:${forkOption.destination}`}
-                  variant="tertiary"
-                  size="sm"
-                  role="menuitem"
-                  disabled={
-                    busy || !(forkOption.forkAvailable ?? forkOption.available)
-                  }
-                  title={forkOption.forkReason ?? undefined}
-                  onClick={() => void actions.resume(forkOption, true)}
-                >
-                  <AppIcon option={forkOption} tool={forkOption.tool} />
-                  <span className="session-launcher-option-text">
-                    <span>Fork and open in {targetLabel(forkOption)}</span>
-                    <span className="session-launcher-hint">
-                      {forkOption.forkReason ??
-                        (forkOption.destination === "desktop"
-                          ? "Creates another session"
-                          : `Creates another session in ${forkOption.label}`)}
+              {forkOptions.map((forkOption) => {
+                const name = `fork:${forkOption.tool}:${forkOption.destination}`;
+                const hint =
+                  forkOption.forkReason ??
+                  (forkOption.destination === "desktop"
+                    ? "Creates another session"
+                    : `Creates another session in ${forkOption.label}`);
+                return (
+                  <React.Fragment key={name}>
+                    <Button
+                      variant="tertiary"
+                      size="sm"
+                      role="menuitem"
+                      disabled={
+                        busy ||
+                        !(forkOption.forkAvailable ?? forkOption.available)
+                      }
+                      title={hint}
+                      aria-describedby={hintId(name)}
+                      onClick={() => void actions.resume(forkOption, true)}
+                    >
+                      <AppIcon option={forkOption} tool={forkOption.tool} />
+                      <span className="session-launcher-option-text">
+                        Fork and open in {targetLabel(forkOption)}
+                      </span>
+                    </Button>
+                    <span id={hintId(name)} hidden>
+                      {hint}
                     </span>
-                  </span>
-                </Button>
-              ))}
+                  </React.Fragment>
+                );
+              })}
               {options.length === 0 && (
                 <p className="session-launcher-status">
                   No compatible app available.
@@ -345,7 +351,9 @@ export function SessionLauncher({
               )}
             </>
           )}
-          <div role="separator" className="session-launcher-separator" />
+          {!current?.error && (
+            <div role="separator" className="session-launcher-separator" />
+          )}
           <CopyLinkButton
             value={key}
             label="Copy session prompt"

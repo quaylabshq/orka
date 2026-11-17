@@ -557,7 +557,7 @@ export function SkillReviewOverlay({
                     )}
                     {stale && (
                       <p
-                        className="skill-status skill-status--warning"
+                        className="detail-status detail-status--warning"
                         role="status"
                       >
                         Files changed since this preview.

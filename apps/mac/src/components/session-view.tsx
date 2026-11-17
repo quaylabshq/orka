@@ -15,10 +15,10 @@ import { Icon } from "./icon.js";
 import { SourceLabel } from "./source-label.js";
 import { markdownComponents } from "./resource-content.js";
 import { useSessionMessages } from "./use-session-messages.js";
-import type { SessionMessage, ProjectResource } from "../types.js";
-import { ResourceItemMenu } from "./resource-menu.js";
-import type { ItemMenuAction } from "./item-menu.js";
+import type { SessionMessage } from "../types.js";
+import { DetailLayout, type DetailLayoutProps } from "./detail-layout.js";
 import { LoadingRegion } from "./loading-region.js";
+import { ReaderState } from "./skill-state.js";
 
 const sampleMessages: SessionMessage[] = [
   {
@@ -90,46 +90,44 @@ const SessionTurn = memo(function SessionTurn({
 });
 
 export interface SessionViewProps {
-  resource: ProjectResource;
-  menuActions?: ItemMenuAction[];
   id: string;
   revision: number;
   contentKey: string;
   /** Conflict preview to read instead of the shared version. */
   conflictId: string;
   source: Resource["source"];
-  /** Title row, facts, and conflict panels. */
-  header: React.ReactNode;
+  /** The shared detail shell around the turns. */
+  shell: Omit<DetailLayoutProps, "children" | "readerRef" | "bodyClassName">;
   mode: SessionViewMode;
   /** Show turns as literal text instead of rendered Markdown. */
   raw: boolean;
   /** The unchanged original transcript; loaded only in transcript mode. */
   transcript: React.ReactNode;
+  offline: boolean;
 }
 
-/** Full-width reading view for one session with paged, windowed turns. */
+/** The reading view for one session with paged, windowed turns. */
 export function SessionView({
-  resource,
-  menuActions,
   id,
   revision,
   contentKey,
   conflictId,
   source,
-  header,
+  shell,
   mode,
   raw,
   transcript,
+  offline,
 }: SessionViewProps) {
-  const scrollRef = useRef<HTMLElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const [scrollMargin, setScrollMargin] = useState(0);
   const { messages, total, loading, error, removed, hasMore, loadMore, retry } =
     useSessionMessages(id, revision, conflictId, contentKey);
   const initialLoading = loading && total === null && !error;
   const conversation = mode === "conversation";
-  // The header scrolls with the turns, so the virtualizer needs the list's
-  // offset inside the scroll container, refreshed whenever the header resizes.
+  // The title card scrolls with the turns, so the virtualizer needs the list's
+  // offset inside the reading column, refreshed whenever anything above resizes.
   useLayoutEffect(() => {
     const scroller = scrollRef.current;
     const list = listRef.current;
@@ -169,99 +167,110 @@ export function SessionView({
     if (hasMore && !loading && !error && lastVisible >= messages.length - 5)
       loadMore();
   }, [hasMore, loading, error, lastVisible, messages.length, loadMore]);
+  const retryButton = (
+    <Button size="sm" variant="tertiary" onClick={retry}>
+      Retry
+    </Button>
+  );
   return (
-    <ResourceItemMenu resource={resource} extraActions={menuActions}>
-      {() => (
-        <section
-          className="resource-detail resource-detail--session session-view"
-          aria-label="Session details"
-          ref={scrollRef}
+    <DetailLayout {...shell} readerRef={scrollRef} bodyClassName="session-body">
+      {!conversation ? (
+        transcript
+      ) : (
+        <div
+          className="session-conversation"
+          aria-label="Conversation"
+          aria-busy={loading}
         >
-          {header}
-          {!conversation ? (
-            <div className="detail-body">{transcript}</div>
-          ) : (
-            <div
-              className="session-conversation"
-              aria-label="Conversation"
-              aria-busy={loading}
-            >
-              {removed && (
-                <p className="content-message">
-                  This version removes the session from shared history.
-                </p>
-              )}
-              {error && (
-                <p className="content-message" role="alert">
-                  {error}{" "}
-                  <Button size="sm" variant="tertiary" onClick={retry}>
-                    Retry
-                  </Button>
-                </p>
-              )}
-              {!error && !removed && total === 0 && (
-                <p className="content-message">
-                  No readable conversation messages. View the transcript for
-                  setup and tool records.
-                </p>
-              )}
-              <LoadingRegion
-                id={`session:${id}:${revision}:${conflictId}`}
-                label="Loading messages…"
-                loading={initialLoading}
+          {removed && (
+            <ReaderState
+              illustration="preview-unavailable"
+              title="Removed in this version"
+              message="This version removes the session from shared history."
+            />
+          )}
+          {error && messages.length === 0 && (
+            <ReaderState
+              tone={offline ? "status" : "alert"}
+              illustration={
+                offline ? "file-unavailable-offline" : "preview-unavailable"
+              }
+              title={
+                offline
+                  ? "Conversation unavailable offline"
+                  : "Couldn’t load this conversation"
+              }
+              message={offline ? "Reconnect and sync to load it." : undefined}
+              action={retryButton}
+            />
+          )}
+          {error && messages.length > 0 && (
+            <p className="content-message" role="alert">
+              {error} {retryButton}
+            </p>
+          )}
+          {!error && !removed && total === 0 && (
+            <ReaderState
+              illustration="empty-markdown-body"
+              title="No conversation messages"
+              message="View the transcript for setup and tool records."
+            />
+          )}
+          <LoadingRegion
+            id={`session:${id}:${revision}:${conflictId}`}
+            label="Loading messages…"
+            loading={initialLoading}
+          >
+            {initialLoading ? (
+              <div>
+                {sampleMessages.map((message) => (
+                  <SessionTurn
+                    key={message.index}
+                    message={message}
+                    raw={raw}
+                    source={source}
+                  />
+                ))}
+              </div>
+            ) : (
+              <div
+                ref={listRef}
+                className="session-turns"
+                style={{ height: virtualizer.getTotalSize() }}
               >
-                {initialLoading ? (
-                  <div>
-                    {sampleMessages.map((message) => (
-                      <SessionTurn
-                        key={message.index}
-                        message={message}
-                        raw={raw}
-                        source={source}
-                      />
-                    ))}
-                  </div>
-                ) : (
+                {items.map((item) => (
                   <div
-                    ref={listRef}
-                    className="session-turns"
-                    style={{ height: virtualizer.getTotalSize() }}
+                    key={item.key}
+                    data-index={item.index}
+                    ref={virtualizer.measureElement}
+                    className="session-turn-slot"
+                    style={{
+                      transform: `translateY(${item.start - scrollMargin}px)`,
+                    }}
                   >
-                    {items.map((item) => (
-                      <div
-                        key={item.key}
-                        data-index={item.index}
-                        ref={virtualizer.measureElement}
-                        className="session-turn-slot"
-                        style={{
-                          transform: `translateY(${item.start - scrollMargin}px)`,
-                        }}
-                      >
-                        <SessionTurn
-                          message={messages[item.index]}
-                          raw={raw}
-                          source={source}
-                        />
-                      </div>
-                    ))}
+                    <SessionTurn
+                      message={messages[item.index]}
+                      raw={raw}
+                      source={source}
+                    />
                   </div>
-                )}
-              </LoadingRegion>
-              {!error && hasMore && (
-                <div className="session-load-more">
-                  {loading ? (
-                    <span role="status">Loading messages…</span>
-                  ) : (
-                    <Button size="sm" variant="secondary" onClick={loadMore}>
-                      Show more messages
-                    </Button>
-                  )}
-                </div>
+                ))}
+              </div>
+            )}
+          </LoadingRegion>
+          {!error && hasMore && (
+            <div className="session-load-more">
+              {loading ? (
+                <span role="status">Loading messages…</span>
+              ) : (
+                <Button size="sm" variant="secondary" onClick={loadMore}>
+                  Show more messages
+                </Button>
               )}
             </div>
           )}
-        </section>
+        </div>
       )}
-    </ResourceItemMenu>
+    </DetailLayout>
   );
 }

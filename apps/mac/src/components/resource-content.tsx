@@ -106,6 +106,8 @@ type ResourceContentProps = {
   markdown: boolean;
   error?: string;
   onRetry?: () => void;
+  /** Replaces the plain error message, for readers with illustrated states. */
+  errorState?: React.ReactNode;
 };
 
 export function ResourceContent(props: ResourceContentProps) {
@@ -116,7 +118,9 @@ export function ResourceContent(props: ResourceContentProps) {
       data={props.inspection}
       sample={sampleInspection}
       error={
-        props.error ? (
+        props.error && props.errorState ? (
+          props.errorState
+        ) : props.error ? (
           <div className="content-message" role="alert">
             <p>{props.error}</p>
             {props.onRetry && (

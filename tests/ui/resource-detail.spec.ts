@@ -622,7 +622,7 @@ test("conversation skeletons give way to virtualized turns and paging preserves 
   await page.screenshot({ path: "artifacts/conversation-loading.png" });
   await page.evaluate(() => (window as any).finishMessageLoad());
   await expect(page.getByText("Message 0", { exact: true })).toBeVisible();
-  await view.evaluate((element) => {
+  await view.locator(".detail-reader").evaluate((element) => {
     element.scrollTop = element.scrollHeight;
   });
   await expect(
@@ -635,7 +635,7 @@ test("conversation skeletons give way to virtualized turns and paging preserves 
   await expect(view.getByText("Message 39", { exact: true })).toBeVisible();
   await expect(view.locator(".session-turns")).toHaveCSS("mask-image", "none");
   await page.evaluate(() => (window as any).finishMessageLoad());
-  await view.evaluate((element) => {
+  await view.locator(".detail-reader").evaluate((element) => {
     element.scrollTop = element.scrollHeight;
   });
   await expect(page.getByText("Message 79", { exact: true })).toBeVisible();
@@ -695,15 +695,13 @@ for (const [width, height, memberCatalog] of [
           exact: collection !== "Skills",
         })
         .click();
-      // Skills show the author in the rail facts, or in the compact meta line.
-      if (collection !== "Skills")
-        await expect(page.locator(".fact-chip-author")).toHaveText(author);
-      else if (width === 900)
-        await expect(page.locator(".skill-meta")).toContainText(
+      // Readers show the author in the rail facts, or in the compact meta line.
+      if (width === 900)
+        await expect(page.locator(".detail-meta")).toContainText(
           `Updated by ${author}`,
         );
       else
-        await expect(page.locator(".skill-facts dd").first()).toHaveText(
+        await expect(page.locator(".detail-facts dd").first()).toHaveText(
           author,
         );
       await expect(page.locator("body")).not.toContainText(
@@ -906,15 +904,17 @@ test("Plans supports both providers, source filters, Markdown, editor actions, a
   await page
     .getByRole("menuitem", { name: "Show Markdown", exact: true })
     .click();
-  await expect(detail.locator("pre.content")).toHaveText([/- \[x\] Design/]);
+  await expect(
+    detail.getByRole("group", { name: "Markdown source" }),
+  ).toContainText("- [x] Design");
   await detail
     .getByRole("button", { name: "More resource actions", exact: true })
     .click();
   await page
     .getByRole("menuitem", { name: "Compare with previous revision" })
     .click();
-  await expect(detail.getByLabel("File changes")).toHaveText([/Old content/]);
-  await detail
+  await expect(detail.locator(".diff-card")).toContainText("Old content");
+  await page
     .getByRole("button", { name: "Back to Plans", exact: true })
     .click();
   await page.getByRole("button", { name: "Claude", exact: true }).click();
@@ -947,7 +947,7 @@ test("another owner's session shows the copy note and hides Remove from history"
     .getByRole("button", { name: "Shared planning", exact: true })
     .click();
   const view = page.locator(".session-view");
-  await expect(view.locator(".detail-note")).toHaveText(
+  await expect(view.locator(".detail-info-note")).toHaveText(
     "Resuming saves your continuation as a copy.",
   );
   await expect(
@@ -978,7 +978,7 @@ test("another owner's session shows the copy note and hides Remove from history"
   await page
     .getByRole("button", { name: "Polish navigation", exact: true })
     .click();
-  await expect(view.locator(".detail-note")).toHaveCount(0);
+  await expect(view.locator(".detail-info-note")).toHaveCount(0);
   await more(page).click();
   await expect(menu(page)).not.toContainText("Continue in Claude");
   await expect(menu(page)).toContainText("Remove from history");
@@ -1457,7 +1457,7 @@ test("failed session pages wait for an explicit retry", async ({ page }) => {
     .getByRole("button", { name: "Polish navigation", exact: true })
     .click();
   await expect(page.getByText("Message 0", { exact: true })).toBeVisible();
-  await page.locator(".session-view").evaluate((el) => {
+  await page.locator(".session-view .detail-reader").evaluate((el) => {
     el.scrollTop = el.scrollHeight;
   });
   await expect(page.getByRole("alert")).toContainText(
@@ -1472,7 +1472,7 @@ test("failed session pages wait for an explicit retry", async ({ page }) => {
   );
   await page.getByRole("button", { name: "Retry", exact: true }).click();
   await expect(page.getByRole("alert")).toHaveCount(0);
-  await page.locator(".session-view").evaluate((el) => {
+  await page.locator(".session-view .detail-reader").evaluate((el) => {
     el.scrollTop = el.scrollHeight;
   });
   await expect(page.getByText("Message 79", { exact: true })).toBeVisible();
@@ -1654,7 +1654,7 @@ test("opening retains the existing fork and only the explicit action creates ano
     .click();
   await page
     .getByRole("menuitem", {
-      name: /^Fork and open in Codex Creates another session$/,
+      name: /^Fork and open in Codex$/,
     })
     .click();
   await expect.poll(() => calls(page, "resume_session")).toHaveLength(4);
@@ -1681,7 +1681,7 @@ test("explicit forks can use the selected terminal without changing the opening 
   await chooseTerminal(page, "Warp");
   await page
     .getByRole("menuitem", {
-      name: /^Fork and open in Codex CLI Creates another session in Warp$/,
+      name: /^Fork and open in Codex CLI$/,
     })
     .click();
   expect((await calls(page, "resume_session")).at(-1)).toEqual({
@@ -1753,7 +1753,7 @@ for (const [title, tool, label] of [
       await page
         .getByRole("menuitem", {
           name: new RegExp(
-            `^Fork in ${tool === "claude" ? "Claude Code CLI" : "Codex CLI"} New fork in ${name}`,
+            `^Fork in ${tool === "claude" ? "Claude Code CLI" : "Codex CLI"}`,
           ),
         })
         .click();
@@ -1797,13 +1797,10 @@ test("session destinations render icons provided by the local app discovery", as
     .getByRole("button", { name: "Choose how to open session" })
     .click();
   for (const [label, app] of [
-    ["Fork in Codex Creates a new fork Default", "codex"],
-    ["Fork in Codex CLI New fork in Terminal", "terminal"],
-    [
-      "Continue in Claude Code CLI… Starts immediately in Terminal with context",
-      "terminal",
-    ],
-    ["Continue in Claude Desktop… New conversation with context", "claude"],
+    ["Fork in Codex Default", "codex"],
+    ["Fork in Codex CLI", "terminal"],
+    ["Continue in Claude Code CLI…", "terminal"],
+    ["Continue in Claude Desktop…", "claude"],
   ]) {
     const image = page
       .getByRole("menuitem", { name: label, exact: true })
@@ -1824,7 +1821,7 @@ test("session destinations render icons provided by the local app discovery", as
     image?.dispatchEvent(new Event("error"));
   });
   const warp = page.getByRole("menuitem", {
-    name: "Fork in Codex CLI New fork in Warp",
+    name: "Fork in Codex CLI",
     exact: true,
   });
   await expect(warp.locator("img")).toHaveCount(0);
@@ -1851,7 +1848,9 @@ test("cross-provider continuation is labeled as new context and routes to the ot
     const handoff = page.getByRole("menuitem", {
       name: new RegExp(`^Continue in ${other}…`),
     });
-    await expect(handoff).toContainText("New conversation with context");
+    await expect(handoff).toHaveAccessibleDescription(
+      "Starts a new conversation with this session’s context",
+    );
     await handoff.click();
     await expect
       .poll(() => calls(page, "resume_session"))
@@ -1909,12 +1908,18 @@ test("missing default app leaves alternatives and download available", async ({
   await page
     .getByRole("button", { name: "Choose how to open session" })
     .click();
-  await expect(
-    page.getByRole("menuitem", { name: /Codex.*Update the desktop/ }),
-  ).toBeDisabled();
+  // The reason an option is unavailable is its hover title.
+  const unavailable = page.getByRole("menuitem", {
+    name: "Fork in Codex",
+    exact: true,
+  });
+  await expect(unavailable).toBeDisabled();
+  await expect(unavailable).toHaveAccessibleDescription(
+    "Update the desktop resume integration",
+  );
   await expect(
     page.getByRole("menuitem", {
-      name: /^Fork in Codex CLI New fork in Terminal/,
+      name: /^Fork in Codex CLI/,
     }),
   ).toBeEnabled();
   await expect(
@@ -1923,7 +1928,7 @@ test("missing default app leaves alternatives and download available", async ({
   await page.keyboard.press("Home");
   await expect(
     page.getByRole("menuitem", {
-      name: /^Fork in Codex CLI New fork in Terminal/,
+      name: /^Fork in Codex CLI/,
     }),
   ).toBeFocused();
   await page.keyboard.press("Escape");
@@ -1962,7 +1967,7 @@ test("opening the destination menu rechecks apps installed since the reader load
     .click();
   await expect(
     page.getByRole("menuitem", {
-      name: "Fork in Codex Creates a new fork Default",
+      name: "Fork in Codex Default",
       exact: true,
     }),
   ).toBeEnabled();
@@ -2087,7 +2092,7 @@ test("Warp falls back to a copyable command without claiming the session opened"
   await chooseTerminal(page, "Warp");
   await page
     .getByRole("menuitem", {
-      name: "Fork in Codex CLI New fork in Warp",
+      name: "Fork in Codex CLI",
       exact: true,
     })
     .click();
@@ -2125,7 +2130,7 @@ test("a failed launch gives an error without success or automatic retry", async 
   await expect(
     page.locator("[data-orka-toast]").getByRole("alert"),
   ).toContainText("Couldn’t open session");
-  await expect(page.locator(".detail-launch-error")).toContainText(
+  await expect(page.locator(".detail-info-note--error")).toContainText(
     "Could not launch destination",
   );
   await expect(
@@ -2153,26 +2158,27 @@ test("offline sync does not disable fork and open from cached session history", 
   await expect(primary).toBeEnabled();
 });
 
-test("failed app discovery keeps download available and can be retried", async ({
+test("failed app discovery keeps download available and rechecks when the menu reopens", async ({
   page,
 }) => {
   await detailFixture(page, { launchOptions: "error" });
   await openSession(page);
-  await page
-    .getByRole("button", { name: "Choose how to open session" })
-    .click();
-  await expect(page.getByRole("status")).toContainText(
-    "Couldn’t check available apps",
-  );
+  const trigger = page.getByRole("button", {
+    name: "Choose how to open session",
+  });
+  await trigger.click();
+  const menu = page.getByRole("menu", { name: "Open session" });
   await expect(
-    page.getByRole("menuitem", { name: "Download session (.zip)…" }),
+    menu.getByRole("menuitem", { name: "Download session (.zip)…" }),
   ).toBeEnabled();
+  await expect(menu.getByRole("menuitem")).toHaveCount(2);
   const before = (await calls(page, "session_launch_options")).length;
-  await page.getByRole("button", { name: "Try again", exact: true }).click();
+  await page.keyboard.press("Escape");
+  await trigger.click();
   await expect
     .poll(async () => (await calls(page, "session_launch_options")).length)
     .toBeGreaterThan(before);
-  await expect(page.getByRole("menu", { name: "Open session" })).toBeVisible();
+  await expect(menu).toBeVisible();
 });
 
 test("late launch options cannot enable a different session", async ({
@@ -2254,7 +2260,7 @@ for (const dimension of ["profile", "user", "service"] as const) {
         await chooseTerminal(page, "Warp");
         await page
           .getByRole("menuitem", {
-            name: "Fork in Codex CLI New fork in Warp",
+            name: "Fork in Codex CLI",
             exact: true,
           })
           .click();
@@ -2316,7 +2322,8 @@ for (const [tool, sourceTitle, label] of [
           exact: true,
         }),
       ).toHaveText(`Fork and open in ${label}`);
-      const heading = page.locator(".detail-title");
+      // The launcher sits in the rail or below the title, never beside it.
+      const heading = page.locator(".detail-title-card");
       expect((await heading.boundingBox())!.width).toBeGreaterThanOrEqual(280);
       const trigger = page.getByRole("button", {
         name: "Choose how to open session",
@@ -2332,7 +2339,7 @@ for (const [tool, sourceTitle, label] of [
       await page.keyboard.press("Home");
       await expect(
         page.getByRole("menuitem", {
-          name: `Fork in ${label} Creates a new fork Default`,
+          name: `Fork in ${label} Default`,
           exact: true,
         }),
       ).toBeFocused();
@@ -2340,7 +2347,7 @@ for (const [tool, sourceTitle, label] of [
       await expect(
         page.getByRole("menuitem", {
           name: new RegExp(
-            `^Fork in ${tool === "claude" ? "Claude Code CLI" : "Codex CLI"} New fork in Terminal`,
+            `^Fork in ${tool === "claude" ? "Claude Code CLI" : "Codex CLI"}`,
           ),
         }),
       ).toBeFocused();
@@ -2445,14 +2452,16 @@ for (const width of [1160, 900])
       .getByRole("menuitem", { name: "Show Markdown", exact: true })
       .click();
     await expect(diagram).toHaveCount(0);
-    await expect(page.locator("pre.content")).toHaveText([source]);
+    await expect(
+      page.getByRole("group", { name: "Markdown source" }),
+    ).toContainText("flowchart LR");
     await page
       .getByRole("button", { name: "More resource actions", exact: true })
       .click();
     await page
       .getByRole("menuitem", { name: "Compare with previous revision" })
       .click();
-    await expect(page.getByLabel("File changes")).toHaveText([/flowchart LR/]);
+    await expect(page.locator(".diff-card")).toContainText("flowchart LR");
     await expect(diagram).toHaveCount(0);
   });
 
@@ -2700,7 +2709,7 @@ for (const [title, label, tool] of [
       .getByRole("button", { name: "Choose how to open session" })
       .click();
     await expect(page.getByRole("menuitem").first()).toContainText(
-      `Fork in ${label}New fork in TerminalDefault`,
+      `Fork in ${label}Default`,
     );
   });
 }
@@ -2717,7 +2726,9 @@ test("cross-provider CLI continuation names immediate startup and uses the selec
   const cli = page.getByRole("menuitem", {
     name: /^Continue in Claude Code CLI/,
   });
-  await expect(cli).toContainText("Starts immediately in Warp with context");
+  await expect(cli).toHaveAccessibleDescription(
+    "Starts a new conversation in Warp with this session’s context",
+  );
   await cli.click();
   expect((await calls(page, "resume_session")).at(-1)).toEqual({
     id: "session-c",
