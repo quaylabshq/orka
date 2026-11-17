@@ -88,6 +88,10 @@ import { useSessionTitles } from "./components/use-session-titles.js";
 import { useLocalResources } from "./components/use-local-resources.js";
 import { resourceCatalog } from "./components/resource-catalog.js";
 import { useWorkspace } from "./components/use-workspace.js";
+import {
+  WorkspaceCache,
+  WorkspaceCacheProvider,
+} from "./components/workspace-cache.js";
 import { useAccount } from "./components/use-account.js";
 import { MemberNamesProvider } from "./components/member-names.js";
 import { LoadingProvider } from "./components/loading-region.js";
@@ -134,30 +138,53 @@ export function App() {
     return () => document.removeEventListener("contextmenu", menu);
   }, []);
   const workspace = useWorkspace();
+  if (!workspace.hasSnapshot)
+    return (
+      <main className="app-startup" data-tauri-drag-region>
+        <div className="app-startup__content">
+          {workspace.refreshError ? (
+            <>
+              <p className="content-message" role="alert">
+                Could not load Orka: {workspace.refreshError}
+              </p>
+              <Button onClick={() => void workspace.refresh().catch(() => {})}>
+                Try again
+              </Button>
+            </>
+          ) : (
+            <p className="content-message" role="status">
+              Loading…
+            </p>
+          )}
+        </div>
+      </main>
+    );
   return (
-    <LoadingProvider
-      scope={JSON.stringify([
-        workspace.state.profile,
-        workspace.state.user,
-        workspace.state.config?.apiUrl,
-      ])}
-    >
-      <ToastProvider
+    <WorkspaceCacheProvider state={workspace.state}>
+      <LoadingProvider
         scope={JSON.stringify([
           workspace.state.profile,
           workspace.state.user,
           workspace.state.config?.apiUrl,
-          workspace.project,
         ])}
       >
-        <MemberNamesProvider
-          state={workspace.state}
-          projectId={workspace.project}
+        <ToastProvider
+          scope={JSON.stringify([
+            workspace.state.profile,
+            workspace.state.user,
+            workspace.state.config?.apiUrl,
+            workspace.project,
+          ])}
         >
-          <WorkspaceApp workspace={workspace} />
-        </MemberNamesProvider>
-      </ToastProvider>
-    </LoadingProvider>
+          <MemberNamesProvider
+            state={workspace.state}
+            projectId={workspace.project}
+          >
+            <WorkspaceApp workspace={workspace} />
+          </MemberNamesProvider>
+        </ToastProvider>
+      </LoadingProvider>
+    </WorkspaceCacheProvider>
   );
 }
 
@@ -183,11 +210,7 @@ function WorkspaceApp({
   const { notify } = useToasts();
   const updates = useDesktopUpdates();
   const account = useAccount(state.config, !state.user);
-  const workspaceScope = JSON.stringify([
-    state.profile,
-    state.user,
-    state.config?.apiUrl,
-  ]);
+  const workspaceScope = WorkspaceCache.scope(state);
   useBackgroundRepositoryAccess(state);
   const [repositorySetup, setRepositorySetup] = useState("");
   const setup = useProjectSetup(
@@ -418,12 +441,8 @@ function WorkspaceApp({
     resource,
     state.user ? selected : undefined,
     state.conflicts,
-    JSON.stringify([
-      state.profile,
-      state.user,
-      state.config?.apiUrl,
-      state.deviceId,
-    ]),
+    workspaceScope,
+    state.deviceId,
   );
   useEffect(() => {
     if (comparison && selected?.resourceId === comparison) {

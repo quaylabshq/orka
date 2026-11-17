@@ -1,5 +1,5 @@
 import { useEffect, useState, type Dispatch, type SetStateAction } from "react";
-import { QueryClient, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import type { Resource, SessionConflict } from "@portable/protocol";
 import type { Inspection } from "../types.js";
@@ -33,46 +33,26 @@ export function useResourceView(
   resource: Resource | undefined,
   conflicts: SessionConflict[],
   scope: string,
+  deviceId?: string,
 ): ResourceView {
-  // A private, memory-only cache for this pilot. Scope is part of every key,
-  // and account/service/profile changes remove the previous scope's contents.
-  const [client] = useState(
-    () =>
-      new QueryClient({
-        defaultOptions: {
-          queries: {
-            networkMode: "always", // Local IPC reads must also work offline.
-            retry: false,
-            refetchOnWindowFocus: false,
-            refetchOnReconnect: false,
-            staleTime: 30_000,
-            gcTime: 5 * 60_000,
-          },
-        },
-      }),
-  );
-  useEffect(() => {
-    client.mount();
-    return () => {
-      client.unmount();
-      client.clear();
-    };
-  }, [client]);
-  useEffect(() => {
-    client.removeQueries({ predicate: (query) => query.queryKey[1] !== scope });
-  }, [client, scope]);
-  const [file, setFile] = useState("");
-  const [selection, setSelection] = useState("");
+  const loaded = Boolean(resource);
+  const defaultFile =
+    resource?.kind === "skill" ? "SKILL.md" : (resource?.files[0]?.path ?? "");
+  const selectionKey = JSON.stringify([
+    scope,
+    deviceId,
+    resourceId,
+    loaded,
+    defaultFile,
+  ]);
+  const [file, setFile] = useState(defaultFile);
+  const [selection, setSelection] = useState(selectionKey);
   const [preview, setPreview] = useState("");
   const [fullTranscript, setFullTranscript] = useState(false);
   const [changes, setChanges] = useState(false);
   const [rawMarkdown, setRawMarkdown] = useState(false);
-  const loaded = Boolean(resource);
-  const defaultFile =
-    resource?.kind === "skill" ? "SKILL.md" : (resource?.files[0]?.path ?? "");
   const id = resource?.resourceId;
   const kind = resource?.kind;
-  const selectionKey = JSON.stringify([scope, resourceId, loaded, defaultFile]);
   useEffect(() => {
     setRawMarkdown(false);
   }, [resourceId, file, preview]);
@@ -96,35 +76,33 @@ export function useResourceView(
     (!preview || conflict) &&
     (kind !== "session" || fullTranscript),
   );
-  const inspection = useQuery(
-    {
-      queryKey: [
-        "resource-inspection",
-        scope,
-        resource?.projectId,
+  const inspection = useQuery({
+    queryKey: [
+      "resource-inspection",
+      scope,
+      deviceId,
+      resource?.projectId,
+      id,
+      resource?.revision,
+      file,
+      resource?.files.find((item) => item.path === file)?.hash,
+      preview,
+      conflict?.revision,
+      conflict?.candidate.files,
+    ],
+    enabled,
+    queryFn: async ({ signal }) => {
+      const result = await invoke<Inspection>("inspect_resource", {
         id,
-        resource?.revision,
         file,
-        resource?.files.find((item) => item.path === file)?.hash,
-        preview,
-        conflict?.revision,
-        conflict?.candidate.files,
-      ],
-      enabled,
-      queryFn: async ({ signal }) => {
-        const result = await invoke<Inspection>("inspect_resource", {
-          id,
-          file,
-          conflictId: preview || null,
-        });
-        // Native IPC itself cannot be aborted. Consuming the signal lets Query
-        // discard a response after selection or scope changes.
-        if (signal.aborted) throw new Error("Resource inspection canceled");
-        return result;
-      },
+        conflictId: preview || null,
+      });
+      // Native IPC itself cannot be aborted. Consuming the signal lets Query
+      // discard a response after selection or scope changes.
+      if (signal.aborted) throw new Error("Resource inspection canceled");
+      return result;
     },
-    client,
-  );
+  });
   return {
     file,
     setFile,

@@ -253,6 +253,13 @@
 }
 
 @layer components {
+  .app-startup {
+    @apply grid min-h-screen place-items-center px-8 py-16;
+  }
+  .app-startup__content {
+    @apply flex w-full max-w-md flex-col items-center gap-4 text-center;
+    overflow-wrap: anywhere;
+  }
   .copy-link-content {
     display: grid;
   }

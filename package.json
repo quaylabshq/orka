@@ -11,7 +11,7 @@
     "dev:profile": "tsx scripts/dev-profile.ts",
     "build": "npm run build -w @portable/mac",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test tests/*.test.ts",
+    "test": "tsx --test tests/*.test.ts && npm test -w @portable/mac",
     "format": "prettier --write \"*.{js,json,ts}\" .github/workflows apps/mac/src tests scripts",
     "native:test": "cargo test --manifest-path apps/mac/src-tauri/Cargo.toml -- --test-threads=1",
     "package:local": "npm run tauri -w @portable/mac -- build --debug --bundles app && tsx scripts/local-installer.ts",
