@@ -1395,6 +1395,30 @@ fn scan_source(
                         last_history_progress = Some(Instant::now());
                     }
                 }
+                let negative = history::NegativeAttribution::new(project, &root, tool, e.path());
+                let cached_unrelated = negative
+                    .as_ref()
+                    .map(|cache| cache.contains(db))
+                    .transpose()?
+                    .unwrap_or(false);
+                // Codex's first record identifies its project. Avoid loading unrelated
+                // histories in full; uncertain attribution keeps the existing scan path.
+                if cached_unrelated
+                    || (tool == "codex"
+                        && history::session_cwd_prefix(e.path(), tool)
+                            .is_some_and(|cwd| !cwd.starts_with(&root)))
+                {
+                    if !cached_unrelated {
+                        if let Some(cache) = &negative {
+                            cache.remember(db, e.path())?;
+                        }
+                    }
+                    if unattributed_paths.contains(&unattributed) {
+                        db.execute("DELETE FROM errors WHERE source=?", [&unattributed])
+                            .map_err(|e| e.to_string())?;
+                    }
+                    continue;
+                }
                 let bytes = match history::read_session(e.path()) {
                     Ok(bytes) => {
                         if unattributed_paths.contains(&unattributed) {
@@ -1419,6 +1443,9 @@ fn scan_source(
                                     )
                                     .map_err(|e| e.to_string())?;
                                     if !cwd.starts_with(&root) {
+                                        if let Some(cache) = &negative {
+                                            cache.remember(db, e.path())?;
+                                        }
                                         continue;
                                     }
                                 }
@@ -1449,6 +1476,11 @@ fn scan_source(
                     |cwd| cwd.starts_with(&root),
                 );
                 if !attributable {
+                    if native::session_cwd(tool, &records).is_ok() {
+                        if let Some(cache) = &negative {
+                            cache.remember(db, e.path())?;
+                        }
+                    }
                     continue;
                 }
                 report_file(e.path())?;

@@ -13,6 +13,36 @@ The implementation follows four boundaries:
 
 ## Native import strategies
 
+### Latest shared session snapshots
+
+Services advertising `sessionLatestOnly: 1` retain the latest complete shared
+session snapshot. That snapshot includes the full conversation, original native
+records, and any inherited lineage needed to resume or export it. Publishing a
+newer snapshot supersedes the earlier shared version; session revision browsing
+and comparison are unavailable. Memories, skills, plans, and ENV history keep
+their existing behavior. Unresolved session conflicts and pending reviews remain
+protected until resolved.
+
+The explicit Create copy action freezes the selected cached snapshot, even when
+that session has no native binding. When a teammate's session is continued locally,
+the desktop freezes the exact cached source snapshot in its durable copy request
+and uploads those source files before promoting the continuation to an owned
+session. A newer remote snapshot
+does not substitute a different conversation. The final request body is saved
+before its first send, so an uncertain retry keeps the same identity across
+service upgrades. An older queued request whose source revision is no longer
+available is replaced only after the service confirms that failure, using a new
+request ID and the matching retained local selection. The selected source remains
+durable when an older service needs the legacy wire body. Manual copies leave
+existing native bindings intact. Missing or changed cached sources remain queued
+for review instead of being replaced with the latest. Source removal and
+permission refresh preserve unsent selections as private drafts.
+
+Older services receive the existing copy contract. Upgrade the service before
+the desktop and enable storage cleanup only after the compatible server/client
+paths have been validated. Existing native conversations, local drafts, resume,
+handoff, forks, and full-session ZIP exports remain available.
+
 Incoming Codex session snapshots are stored in Orka's cache without creating native
 rollouts, registering projects or threads, or starting Codex's app server. Synced
 sessions remain readable and exportable in Orka. An explicit Open or Fork and open

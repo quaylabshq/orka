@@ -24,6 +24,7 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Overlay } from "./components/overlay.js";
 import { SettingsUpdates } from "./components/settings/settings-updates.js";
+import { SettingsPluginConnections } from "./components/settings/settings-plugin-connections.js";
 import type { Resource } from "@portable/protocol";
 import type { ProjectPage, ProjectResource } from "./types.js";
 import {
@@ -75,6 +76,7 @@ import {
 import { WorkspaceHeader } from "./components/workspace-header.js";
 import { projectAttention } from "./components/sync-attention.js";
 import { useDeepLinks } from "./components/use-deep-links.js";
+import { PluginAuthorization } from "./components/plugin-authorization.js";
 import { parseProjectInvite } from "./components/project-invite.js";
 import { useIndexFilters } from "./components/use-index-filters.js";
 import { useResourceView } from "./components/use-resource-view.js";
@@ -205,6 +207,10 @@ function WorkspaceApp({
   const [returnFocus, setReturnFocus] = useState("");
   const clearReturnFocus = useCallback(() => setReturnFocus(""), []);
   const [settings, setSettings] = useState<SettingsSection | null>(null);
+  const [pluginRequest, setPluginRequest] = useState<{
+    requestId: string;
+    scope: string;
+  } | null>(null);
   const [settingsProject, setSettingsProject] = useState<string | null>(null);
   useEffect(() => {
     if (!settings) setSettingsProject(null);
@@ -425,7 +431,38 @@ function WorkspaceApp({
       setComparison("");
     }
   }, [comparison, selected?.resourceId, view]);
+  // Pending requests originate in the native broker, never from callback URLs.
+  useEffect(() => {
+    if (busy || pluginRequest || !state.user) return;
+    let stopped = false;
+    let timer: number | undefined;
+    const poll = async () => {
+      try {
+        const pending = await invoke<{ requestId: string }[]>(
+          "plugin_connection_requests",
+        );
+        if (!stopped && pending[0])
+          setPluginRequest({
+            requestId: pending[0].requestId,
+            scope: workspaceScope,
+          });
+      } catch {
+        // The broker may still be starting. Native commands enforce identity.
+      } finally {
+        if (!stopped) timer = window.setTimeout(() => void poll(), 1000);
+      }
+    };
+    void poll();
+    return () => {
+      stopped = true;
+      window.clearTimeout(timer);
+    };
+  }, [busy, pluginRequest, state.user, workspaceScope]);
   useDeepLinks((link) => {
+    if (link.hostname === "connectors") {
+      openSettings("connections");
+      return;
+    }
     if (link.hostname === "auth") {
       void act(() => account.complete(link.href));
       return;
@@ -504,6 +541,28 @@ function WorkspaceApp({
         </div>
       </Overlay>
     ) : null;
+  const connectorsDialog =
+    settings === "connections" && (!state.user || state.onboarding?.active) ? (
+      <Overlay
+        open
+        title="Connectors"
+        onClose={() => setSettings(null)}
+        className="settings-updates-dialog"
+      >
+        <div className="settings-panel" data-section="connections">
+          <SettingsPluginConnections state={state} />
+          <Button onClick={() => setSettings(null)}>Done</Button>
+        </div>
+      </Overlay>
+    ) : null;
+  const pluginDialog = pluginRequest ? (
+    <PluginAuthorization
+      key={pluginRequest.requestId}
+      request={pluginRequest}
+      scope={workspaceScope}
+      onClose={() => setPluginRequest(null)}
+    />
+  ) : null;
   if (!state.user)
     return (
       <>
@@ -519,6 +578,8 @@ function WorkspaceApp({
           }
         />
         {updatesDialog}
+        {connectorsDialog}
+        {pluginDialog}
       </>
     );
   if (state.onboarding?.active && setup.dialog !== "join")
@@ -531,6 +592,8 @@ function WorkspaceApp({
           onComplete={setProject}
         />
         {updatesDialog}
+        {connectorsDialog}
+        {pluginDialog}
       </>
     );
   const openResource = (id: string) => {
@@ -1086,6 +1149,7 @@ function WorkspaceApp({
             onRefresh={refresh}
           />
         )}
+        {pluginDialog}
       </div>
     </ResourceMenuProvider>
   );

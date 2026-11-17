@@ -5,6 +5,7 @@ import {
   mergeText,
   envCanonical,
   resourceInput,
+  sessionCopy,
   relativePath,
   memoryMetadata,
 } from "../packages/protocol/dist/index.js";
@@ -110,6 +111,32 @@ for (const change of [
   },
 ])
   check("resourceInput", resourceInput, { ...resource, ...change });
+const cachedSession = {
+  ...resource,
+  kind: "session",
+  source: "claude",
+  logicalPath: "claude/session",
+  files: [{ ...file, path: "session.jsonl" }],
+};
+const copyRequest = {
+  version: 2,
+  id: resource.resourceId,
+  projectId: resource.resourceId,
+  deviceId: resource.resourceId,
+  resourceId: resource.resourceId,
+  expectedRevision: 1,
+};
+for (const sourceSnapshot of [
+  undefined,
+  cachedSession,
+  { ...cachedSession, files: [] },
+  { ...cachedSession, owner: resource.resourceId },
+  { ...cachedSession, files: [{ ...file, path: "../session.jsonl" }] },
+])
+  check("sessionCopy", sessionCopy, {
+    ...copyRequest,
+    ...(sourceSnapshot === undefined ? {} : { sourceSnapshot }),
+  });
 const output = "internal/server/testdata/protocol.json";
 const origins = [
   "https://EXAMPLE.COM:443",

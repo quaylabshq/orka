@@ -216,3 +216,60 @@ esac
       await rm(directory, { recursive: true, force: true });
     }
   });
+
+await test("session cleanup operator defaults to preview and forwards only explicit apply", async () => {
+  const directory = await mkdtemp(
+    join(tmpdir(), "orka-operator-session-retention-"),
+  );
+  try {
+    await mkdir(join(directory, "deploy/self-hosted"), { recursive: true });
+    for (const file of [
+      "orka-server",
+      "configure.sh",
+      "deploy/self-hosted/.env.example",
+    ])
+      await copyFile(file, join(directory, file));
+    const configured = spawnSync("sh", ["./configure.sh", "localhost"], {
+      cwd: directory,
+      encoding: "utf8",
+    });
+    assert.equal(configured.status, 0, configured.stderr);
+    const before = await readFile(join(directory, ".env"), "utf8");
+    const bin = join(directory, "bin"),
+      calls = join(directory, "calls");
+    await mkdir(bin);
+    await writeFile(
+      join(bin, "docker"),
+      '#!/bin/sh\nprintf "%s\\n" "$*" >> "$ORKA_TEST_DOCKER_CALLS"\nexit 0\n',
+    );
+    await chmod(join(bin, "docker"), 0o755);
+    const run = (...args: string[]) =>
+      spawnSync("sh", ["./orka-server", "prune-session-history", ...args], {
+        cwd: directory,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH}`,
+          ORKA_TEST_DOCKER_CALLS: calls,
+        },
+      });
+    assert.equal(run().status, 0);
+    assert.equal(run("--apply").status, 0);
+    assert.notEqual(run("--unknown").status, 0);
+    assert.notEqual(run("--apply", "--apply").status, 0);
+    const operations = await readFile(calls, "utf8");
+    assert.match(operations, /exec -T api orka-server prune-session-history\n/);
+    assert.match(
+      operations,
+      /exec -T api orka-server prune-session-history --apply\n/,
+    );
+    assert.equal(
+      (operations.match(/exec -T api orka-server prune-session-history/g) ?? [])
+        .length,
+      2,
+    );
+    assert.equal(await readFile(join(directory, ".env"), "utf8"), before);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

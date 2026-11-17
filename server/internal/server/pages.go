@@ -77,6 +77,3 @@ func (a *API) invitePage(w http.ResponseWriter, r *http.Request) error {
 func escapeHTML(s string) string {
 	return strings.ReplaceAll(strings.ReplaceAll(html.EscapeString(s), "&#34;", "&quot;"), "&#39;", "&#039;")
 }
-
-//go:embed templates/oauth.html
-var oauthTemplate string

@@ -1,6 +1,7 @@
 @import "./design-system.css";
 @import "./components/env/env.css";
 @import "./components/settings/settings.css";
+@import "./components/plugin-connections.css";
 
 @import "./components/toasts.css";
 @import "./components/detail-layout.css";

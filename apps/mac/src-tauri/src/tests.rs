@@ -22,6 +22,8 @@ mod memory_context_tests;
 mod menu_bar_tests;
 #[path = "plan_tests.rs"]
 mod plan_tests;
+#[path = "plugin_connection_tests.rs"]
+mod plugin_connection_tests;
 #[path = "plugin_operations_tests.rs"]
 mod plugin_operations_tests;
 #[path = "repository_tests.rs"]
@@ -34,6 +36,8 @@ mod selective_sharing_tests;
 mod session_compatibility_tests;
 #[path = "session_launcher_tests.rs"]
 mod session_launcher_tests;
+#[path = "session_snapshot_tests.rs"]
+mod session_snapshot_tests;
 #[path = "sharing_tests.rs"]
 mod sharing_tests;
 #[path = "source_tests.rs"]

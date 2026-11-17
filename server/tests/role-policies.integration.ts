@@ -416,18 +416,18 @@ await test("role policies: authorization, atomic rollback, replay, conflicts, ac
               "Deleting shared history never rewrites its authorship",
             );
             if (category === "session") {
-              const snapshot = await pool.query(
-                "select payload from orka.snapshots where project_id=$1 and resource_id=$2 and revision=$3",
-                [
-                  projectId,
-                  candidate.resource.resourceId,
-                  edit.value.event.revision,
-                ],
+              const snapshots = await pool.query(
+                "select revision,payload from orka.snapshots where project_id=$1 and resource_id=$2 order by revision",
+                [projectId, candidate.resource.resourceId],
               );
               assert.deepEqual(
-                snapshot.rows[0].payload.files,
-                edit.value.event.resource.files,
+                snapshots.rows.map((row) => Number(row.revision)),
+                [removal.value.event.resource.revision],
+                "Session deletion keeps only the latest tombstone snapshot",
               );
+              assert.equal(snapshots.rows[0].payload.owner, member);
+              assert.equal(snapshots.rows[0].payload.deleted, true);
+              assert.deepEqual(snapshots.rows[0].payload.files, []);
               assert.equal(
                 removal.value.event.resource.title,
                 edit.value.event.resource.title,

@@ -1,36 +1,33 @@
-# Operating Orka through MCP
+# Desktop connector tool operations
 
-The plugin exposes accepted shared resources to local and cloud agents using the
+The plugin exposes accepted shared resources to desktop-connected agents using the
 same project permissions and review services as Orka. Private local files,
-credentials and encrypted ENV sets are excluded from the remote tools.
+credentials and encrypted ENV sets are excluded from shared tools.
 
-## Consent and compatibility
+## Desktop approval and compatibility
 
-Migration `004_mcp_operations.sql` adds scope persistence to MCP grants and durable
-operation receipts. Existing tokens remain `orka.read`. Reconnect and explicitly
-consent to additional permissions before using writes or administration. A refresh
-can retain or reduce its grant; it cannot add permissions. Refresh rotation and
-family revocation continue to apply.
+The desktop is the sole account and approval owner. The local plugin gateway
+forwards shared calls to native-authenticated `POST /v2/connector/tools` with
+`{name, arguments}`. `GET` on that path returns the shared schemas and scopes.
+The helper never receives native credentials. The desktop checks each approved
+scope before forwarding, while the API always checks the actual account's
+project membership, source restrictions and current resource permissions.
 
-| Scope | Tools |
+| Desktop scope | Shared tools |
 | --- | --- |
-| `orka.read` | Existing context/session tools, `search_resources`, `get_resource_history`, `compare_revisions`, `list_skills`, `get_permissions`, `list_requests` |
-| `orka.read orka.write` | `create_memory`, `update_plan`, `resolve_conflict` |
-| `orka.read orka.manage` | `update_permissions`, `review_request` |
+| `orka.read` | Context/session tools, `search_resources`, `get_resource_history`, `compare_revisions`, `list_skills`, `get_permissions`, `list_requests` |
+| `orka.write` | `create_memory`, `update_plan`, `resolve_conflict` |
+| `orka.manage` | `update_permissions`, `review_request` |
 
-Inspection through `resolve_conflict` or `review_request` requires that tool's
-write/manage scope even when the individual call does not mutate state. OAuth
-consent does not override project membership, source restrictions, session
-ownership, current permissions or the existing approval workflow. Missing scopes
-return an MCP `insufficient_scope` challenge. Both server editions share this
-implementation.
+Inspection through `resolve_conflict` or `review_request` still requires that
+tool's write/manage approval even when that individual call does not mutate.
+Approval does not override session ownership, current permissions or review.
+Both server editions share the same handlers and operation receipts from shipped
+migration `004_mcp_operations.sql`. No new migration is required.
 
-The managed Dashboard must describe the returned `scopes` on the consent page,
-including failed-login retries, with matching permission descriptions.
-Its issuer, resource and token endpoints remain on the API. Self-hosted consent
-uses the API's matching permission descriptions. Deploy compatible consent pages
-and migration before distributing the updated plugin. Older read-only clients
-continue to work.
+Remote MCP/OAuth grants are retired; their routes return HTTP 410. Reconnect the
+updated local plugin in Orka desktop. Old remote tokens cannot call this endpoint
+or acquire desktop approval. See [authentication](authentication.md#desktop-connector-authentication).
 
 ## Discover and inspect
 
@@ -43,14 +40,14 @@ Results describe accepted shared snapshots, not live agent activity.
 
 History uses `beforeRevision`/`nextBeforeRevision`. Revision comparisons return
 changed file manifests, changed metadata and bounded before/after text for the
-selected file. Continue with `nextOffset` and the same revision pair. Session
-comparisons use the readable conversation representation and omit setup,
-analysis and tool records. Every history read checks current access and the
-historical resource's source dependencies.
+selected file. Continue with `nextOffset` and the same revision pair. These
+history and comparison tools support memories, plans and skills. Sessions retain
+only their latest complete snapshot and return an explicit latest-only error;
+read the current conversation with `fetch_resource`. Every supported history
+read checks current access and the historical resource's source dependencies.
 
 Skill discovery includes complete file manifests, executable flags, revision and
-`snapshotHash`. Installations use the separate local `install_skill` tool; a cloud
-MCP connection cannot write onto a disconnected Mac. The native authenticated
+`snapshotHash`. Installations use the separate local `install_skill` tool; the desktop must be running to install onto its Mac. The native authenticated
 `installation` governance action checks the exact current accepted skill revision
 before returning its resource and access, and existing blob routes enforce access
 on every download. Complete packages retain the normal 200-file, 4 MB total and

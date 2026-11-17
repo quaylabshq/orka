@@ -10,6 +10,7 @@ export async function startEnvMac(options: {
   user: string;
   url: string;
   project: string;
+  binary?: string;
   enable?: boolean;
   session?: Record<string, unknown>;
   sources?: { id: string; name: string }[];
@@ -54,7 +55,7 @@ export async function startEnvMac(options: {
     ),
   );
   const child = spawn(
-    resolve(process.env.ORKA_ENV_NATIVE_BIN!),
+    resolve(options.binary ?? process.env.ORKA_ENV_NATIVE_BIN!),
     ["--orka-env-test"],
     {
       env: {

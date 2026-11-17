@@ -66,9 +66,10 @@ fi
 if [[ -n ${ORKA_SIGNING_KEYCHAIN:-} ]]; then
   signing+=(--keychain "$ORKA_SIGNING_KEYCHAIN")
 fi
-codesign "${signing[@]}" --identifier com.relay.portable-workspace "$payload"
-codesign "${signing[@]}" --identifier com.relay.portable-workspace.launcher "$launcher"
+# Sign nested code before the native executable, which is the bundle entry point.
 codesign "${signing[@]}" "$updater"
+codesign "${signing[@]}" --identifier com.relay.portable-workspace.launcher "$launcher"
+codesign "${signing[@]}" --identifier com.relay.portable-workspace "$payload"
 codesign "${signing[@]}" "$app"
 codesign --verify --deep --strict "$app"
 codesign --verify --deep --strict "$updater"

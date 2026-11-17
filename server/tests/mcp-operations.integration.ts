@@ -5,16 +5,16 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Pool } from "pg";
-import { Store } from "./bridge/store.js";
+import { Store, HttpError } from "./bridge/store.js";
 import { Blobs } from "./fixtures/blobs.js";
 import { acceptingMemoryResolver } from "./fixtures/memory-fixtures.js";
-import { OrkaReader, OrkaOAuth, tokenHash } from "./bridge/mcp.js";
+import { OrkaReader } from "./bridge/mcp.js";
 import { createApi } from "./bridge/main.js";
 import { authSettings } from "./bridge/auth.js";
 import { createServer } from "node:http";
 import type { ResourceInput } from "@portable/protocol";
 
-await test("MCP operations preserve ACLs, revision history, exact writes, reviews and OAuth scope isolation", async () => {
+await test("Desktop connector operations preserve ACLs, revision history, exact writes and reviews", async () => {
   const pool = new Pool({ connectionString: process.env.DATABASE_URL });
   const directory = await mkdtemp(join(tmpdir(), "orka-mcp-operations-"));
   const store = new Store(
@@ -47,10 +47,12 @@ await test("MCP operations preserve ACLs, revision history, exact writes, review
   const settings = authSettings({ PUBLIC_URL: origin });
   const server = createApi(
     store,
-    async (token) => token,
+    async (token) => {
+      if ([owner, member, outsider].some((id) => id === token)) return token;
+      throw new HttpError(401, "Invalid native credentials");
+    },
     undefined,
     settings,
-    true,
   );
   await new Promise<void>((r) => server.listen(addr.port, "127.0.0.1", r));
   const reader = new OrkaReader(store, owner, origin),
@@ -501,103 +503,45 @@ await test("MCP operations preserve ACLs, revision history, exact writes, review
     );
     assert.ok(!JSON.stringify(sessionPreview).includes("HIDDEN_"));
     assert.equal(sessionPreview.proposedFiles, undefined);
-    // A legacy read token cannot perform a write, even for the project owner.
-    const client = randomUUID(),
-      family = randomUUID(),
-      access = "A".repeat(43),
-      refresh = "B".repeat(43);
-    await pool.query("insert into orka.mcp_clients values($1,$2)", [
-      client,
-      { client_id: client, redirect_uris: ["http://localhost/callback"] },
-    ]);
-    await pool.query(
-      "insert into orka.mcp_tokens(access_hash,refresh_hash,family,client_id,user_id,resource,access_expires_at,refresh_expires_at) values($1,$2,$3,$4,$5,$6,now()+interval '1 hour',now()+interval '1 day')",
-      [
-        tokenHash(access),
-        tokenHash(refresh),
-        family,
-        client,
-        owner,
-        origin + "/mcp",
-      ],
-    );
-    const rpcTool = async (token: string, name: string, args: object) => {
-      const response = await fetch(origin + "/mcp", {
+    // The same native identity and project permission checks apply over HTTP.
+    const nativeTool = async (account: string, name: string, args: object) => {
+      const response = await fetch(origin + "/v2/connector/tools", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Accept: "application/json, text/event-stream",
-          Authorization: `Bearer ${token}`,
+          Authorization: `Bearer ${account}`,
         },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          id: 1,
-          method: "tools/call",
-          params: { name, arguments: args },
-        }),
+        body: JSON.stringify({ name, arguments: args }),
       });
-      assert.equal(response.status, 200);
-      const payload = (await response.json()) as {
-        result: {
-          isError?: boolean;
+      return {
+        status: response.status,
+        body: (await response.json()) as {
           structuredContent?: Record<string, unknown>;
-          _meta?: unknown;
-        };
+          error?: string;
+        },
       };
-      return payload.result;
     };
-    const answer = await rpcTool(access, "create_memory", {
+    const createdOverHTTP = await nativeTool(owner, "create_memory", {
       ...input,
       requestId: randomUUID(),
+      title: "Native HTTP memory",
     });
-    assert.equal(answer.isError, true);
-    assert.ok(JSON.stringify(answer).includes("insufficient_scope"));
-    const scopedToken = async (scopes: string, marker: string) => {
-      const token = marker.repeat(43),
-        refreshToken = marker.toLowerCase().repeat(43);
-      await pool.query(
-        "insert into orka.mcp_tokens(access_hash,refresh_hash,family,client_id,user_id,resource,access_expires_at,refresh_expires_at,scopes) values($1,$2,$3,$4,$5,$6,now()+interval '1 hour',now()+interval '1 day',$7)",
-        [
-          tokenHash(token),
-          tokenHash(refreshToken),
-          randomUUID(),
-          client,
-          owner,
-          origin + "/mcp",
-          scopes,
-        ],
-      );
-      return { token, refreshToken };
-    };
-    const writer = await scopedToken("orka.read orka.write", "C");
-    const createdOverHTTP = await rpcTool(writer.token, "create_memory", {
-      ...input,
-      requestId: randomUUID(),
-      title: "HTTP scoped memory",
-    });
-    assert.equal(createdOverHTTP.isError, undefined);
-    assert.equal(createdOverHTTP.structuredContent?.status, "published");
-    const rejectedManage = await rpcTool(writer.token, "review_request", {
+    assert.equal(createdOverHTTP.status, 200);
+    assert.equal(createdOverHTTP.body.structuredContent?.status, "published");
+    const inspectedOverHTTP = await nativeTool(owner, "review_request", {
       projectId: project,
       requestId: sessionRequestId,
     });
-    assert.equal(rejectedManage.isError, true);
-    assert.ok(JSON.stringify(rejectedManage).includes("insufficient_scope"));
-    const manager = await scopedToken("orka.read orka.manage", "D");
-    const inspectedOverHTTP = await rpcTool(manager.token, "review_request", {
-      projectId: project,
-      requestId: sessionRequestId,
-    });
-    assert.equal(inspectedOverHTTP.isError, undefined);
+    assert.equal(inspectedOverHTTP.status, 200);
     assert.ok(
-      JSON.stringify(inspectedOverHTTP).includes(
+      JSON.stringify(inspectedOverHTTP.body).includes(
         "Proposed visible conversation",
       ),
     );
     const currentPermissions = await call(reader, "get_permissions", {
       projectId: project,
     });
-    const updatedOverHTTP = await rpcTool(manager.token, "update_permissions", {
+    const updatedOverHTTP = await nativeTool(owner, "update_permissions", {
       projectId: project,
       requestId: randomUUID(),
       expectedPolicyRevision: currentPermissions.policyRevision,
@@ -606,63 +550,26 @@ await test("MCP operations preserve ACLs, revision history, exact writes, review
       memberId: member,
       rule: { mode: "read", create: "hidden", canShare: false },
     });
-    assert.equal(updatedOverHTTP.isError, undefined);
+    assert.equal(updatedOverHTTP.status, 200);
     assert.equal(
-      updatedOverHTTP.structuredContent?.policyRevision,
+      updatedOverHTTP.body.structuredContent?.policyRevision,
       Number(currentPermissions.policyRevision) + 1,
     );
-    const rejectedWrite = await rpcTool(manager.token, "create_memory", {
-      ...input,
+    const deniedManage = await nativeTool(member, "update_permissions", {
+      projectId: project,
       requestId: randomUUID(),
+      expectedPolicyRevision: Number(currentPermissions.policyRevision) + 1,
+      action: "policy",
+      category: "plan",
+      memberId: owner,
+      rule: { mode: "publish", create: "publish", canShare: true },
     });
-    assert.equal(rejectedWrite.isError, true);
-    assert.ok(JSON.stringify(rejectedWrite).includes("insufficient_scope"));
-    const oauth = new OrkaOAuth(
-      store,
-      origin,
-      async (token) => token,
-      settings,
-    );
-    await assert.rejects(
-      oauth.exchangeRefreshToken(
-        { client_id: client, redirect_uris: ["http://localhost/callback"] },
-        refresh,
-        ["orka.read", "orka.write"],
-        new URL(origin + "/mcp"),
-      ),
-      /Refresh cannot add permissions/,
-    );
-    const rotated = await oauth.exchangeRefreshToken(
-      { client_id: client, redirect_uris: ["http://localhost/callback"] },
-      refresh,
-      undefined,
-      new URL(origin + "/mcp"),
-    );
-    assert.equal(rotated.scope, "orka.read");
-    const reduced = await oauth.exchangeRefreshToken(
-      { client_id: client, redirect_uris: ["http://localhost/callback"] },
-      writer.refreshToken,
-      ["orka.read"],
-      new URL(origin + "/mcp"),
-    );
-    assert.equal(reduced.scope, "orka.read");
-    const reducedAuth = await oauth.verifyAccessToken(reduced.access_token);
-    assert.deepEqual(reducedAuth.scopes, ["orka.read"]);
-    const deniedAfterReduction = await rpcTool(
-      reduced.access_token,
-      "create_memory",
-      { ...input, requestId: randomUUID() },
-    );
-    assert.equal(deniedAfterReduction.isError, true);
-    await assert.rejects(
-      oauth.exchangeRefreshToken(
-        { client_id: client, redirect_uris: ["http://localhost/callback"] },
-        reduced.refresh_token!,
-        ["orka.read", "orka.write"],
-        new URL(origin + "/mcp"),
-      ),
-      /Refresh cannot add permissions/,
-    );
+    assert.equal(deniedManage.status, 403);
+    const deniedProject = await nativeTool(outsider, "fetch_resource", {
+      projectId: project,
+      resourceId: plan,
+    });
+    assert.ok([403, 404].includes(deniedProject.status));
   } finally {
     await new Promise<void>((r) => server.close(() => r()));
     await store.close();

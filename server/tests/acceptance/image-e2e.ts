@@ -344,7 +344,7 @@ try {
   for (const route of ["/auth/admin/users", "/auth/signup", "/auth/user"])
     assert.equal((await post(route, {})).status, 404);
 
-  let session: Session, other: Session, password: string | undefined;
+  let session: Session, other: Session;
   if (managed) {
     session = await emailAccount("owner@example.test", "qa-login");
     other = await emailAccount("other@example.test", undefined, true);
@@ -363,7 +363,7 @@ try {
       "/auth/token?grant_type=password&grant_type=pkce",
     ])
       assert.equal((await post(route, {})).status, 404);
-    ({ session, password } = await passwordAccount("owner@example.test"));
+    ({ session } = await passwordAccount("owner@example.test"));
     ({ session: other } = await passwordAccount("other@example.test"));
   }
   const githubStatus = await post(
@@ -530,12 +530,44 @@ try {
     ).status,
     404, // A member cannot read another person's unpublished upload.
   );
-  await checkMcpImage(
-    base,
-    project,
-    session.access_token,
-    managed ? { email } : { password: password! },
-  );
+  await checkMcpImage(base, project, session.access_token);
+  const connectorChainScript = process.env.ORKA_CONNECTOR_CHAIN_SCRIPT;
+  if (connectorChainScript) {
+    const fixturePath = join(root, "connector-service-fixture.json");
+    await writeFile(
+      fixturePath,
+      JSON.stringify({
+        serviceOrigin: base,
+        projectId: project,
+        accounts: [
+          {
+            id: session.user.id,
+            email: "owner@example.test",
+            accessToken: session.access_token,
+            refreshToken: session.refresh_token,
+          },
+          {
+            id: other.user.id,
+            email: "other@example.test",
+            accessToken: other.access_token,
+            refreshToken: other.refresh_token,
+          },
+        ],
+      }),
+      { mode: 0o600 },
+    );
+    try {
+      const chain = spawnSync(
+        "python3",
+        [connectorChainScript, "--service-fixture", fixturePath],
+        { stdio: "inherit", env: process.env },
+      );
+      assert.equal(chain.status, 0, "Native connector chain acceptance failed");
+    } finally {
+      await rm(fixturePath, { force: true });
+    }
+  }
+
   assert.equal(
     (
       await post("/auth/token?grant_type=refresh_token", {
@@ -621,7 +653,7 @@ try {
     data,
   );
   console.log(
-    `Passed ${edition} image: actual GoTrue, ${managed ? "signed Resend hook, scanner-safe desktop PKCE and email code, GitHub redirect" : "admin-provisioned password-only sign-in"}, project invites, session refresh, membership/blob isolation, MCP consent and all seven tools, handoff, token refresh/revocation, coordinated backup/restore.`,
+    `Passed ${edition} image: actual GoTrue, ${managed ? "signed Resend hook, scanner-safe desktop PKCE and email code, GitHub redirect" : "admin-provisioned password-only sign-in"}, project invites, session refresh, membership/blob isolation, desktop-native connector inventory/read/write/handoff, retired remote paths and old token rejection, coordinated backup/restore.`,
   );
 } finally {
   try {

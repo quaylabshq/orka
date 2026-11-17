@@ -9,7 +9,7 @@ async function choose(scope: Locator, label: string, value: string) {
   await scope.page().getByRole("option", { name: value, exact: true }).click();
 }
 
-test("all seven destinations and no-project account and Mac settings stay usable", async ({
+test("all eight destinations and no-project account and Mac settings stay usable", async ({
   page,
 }) => {
   const settings = await settingsFixture(page, { noProjects: true });
@@ -17,7 +17,7 @@ test("all seven destinations and no-project account and Mac settings stay usable
     settings
       .getByRole("navigation", { name: "Settings sections" })
       .getByRole("button"),
-  ).toHaveCount(7);
+  ).toHaveCount(8);
   await expect(button(settings, "General")).toBeDisabled();
   await button(settings, "Profile").click();
   await expect(

@@ -20,6 +20,7 @@ Orka server — Docker Compose, no host Node.js required
   sh ./orka-server stop                  Stop containers and keep all data
   sh ./orka-server status                Show containers and connection address
   sh ./orka-server doctor                Check database, auth, API and public HTTPS
+  sh ./orka-server prune-session-history [--apply]  Preview or apply session-file cleanup
   sh ./orka-server logs [service]         Show the last 100 log lines
   sh ./orka-server user teammate@example.com
   sh ./orka-server backup [directory]    Back up data/configuration and verify restore
@@ -128,7 +129,7 @@ if [ "$action" = credentials ]; then
   cat .runtime/accounts/owner.json
   exit 0
 fi
-case "$action" in setup|start|build|stop|status|doctor|logs|user|backup|verify-backup|restore|upgrade) ;; *) help >&2; exit 1 ;; esac
+case "$action" in setup|start|build|stop|status|doctor|prune-session-history|logs|user|backup|verify-backup|restore|upgrade) ;; *) help >&2; exit 1 ;; esac
 docker_ready
 if [ "$action" = restore ]; then
   sh deploy/self-hosted/restore.sh "$@"
@@ -198,6 +199,10 @@ case "$action" in
   stop) [ "$#" -eq 0 ] || fail 'Usage: sh ./orka-server stop'; compose down; printf 'Stopped. Database, blobs, certificates and configuration were kept.\n' ;;
   status) compose ps; connection ;;
   doctor) doctor; connection ;;
+  prune-session-history)
+    [ "$#" -le 1 ] || fail 'Usage: sh ./orka-server prune-session-history [--apply]'
+    if [ "$#" -eq 1 ]; then [ "$1" = --apply ] || fail 'Usage: sh ./orka-server prune-session-history [--apply]'; fi
+    compose exec -T api orka-server prune-session-history "$@" ;;
   logs) compose logs --tail 100 "$@" ;;
   user) [ "$#" -eq 1 ] || fail 'Usage: sh ./orka-server user teammate@example.com'; compose run --rm --no-deps admin "$1" ;;
   backup) [ "$#" -le 1 ] || fail 'Usage: sh ./orka-server backup [directory]'; backup "$@" ;;

@@ -33,8 +33,10 @@ cannot collide. Session originals retain creator-only mutation.
 
 Creating, copying, restoring and suggesting check category creation rights. File
 manifests require verified uploader-owned bytes or an authorized reference. Blob
-downloads require current readable accepted history or an authorized proposal;
-unreferenced staged uploads are private to their uploader. Known source references
+downloads require a current readable resource, retained non-session history, an
+unresolved session conflict or an authorized proposal. Superseded session
+snapshots do not grant historical blob access; unreferenced staged uploads are
+private to their uploader. Known source references
 constrain derived audiences dynamically, including later membership/policy changes.
 Self-references, cycles and more than 100 normalized sources are rejected.
 

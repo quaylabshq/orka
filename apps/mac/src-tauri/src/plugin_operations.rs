@@ -262,13 +262,27 @@ pub(crate) fn install(
     )
 }
 
-pub(crate) async fn command(action: &str, input: &Value) -> Result<Value> {
+pub(crate) async fn command(
+    action: &str,
+    input: &Value,
+    binding: Option<&crate::plugin_connection::Binding>,
+) -> Result<Value> {
     if action == "get_sync_status" {
+        if let Some(binding) = binding {
+            binding.check_current()?;
+        }
         let db = db::open()?;
         let project = selective_sharing::context(&db, input)?;
-        return status(&db, &project, input);
+        let result = status(&db, &project, input)?;
+        if let Some(binding) = binding {
+            binding.check_current()?;
+        }
+        return Ok(result);
     }
     let lock = projects::lock()?;
+    if let Some(binding) = binding {
+        binding.check_current()?;
+    }
     let db = db::open()?;
     let project = selective_sharing::context(&db, input)?;
     match action {
@@ -354,7 +368,10 @@ pub(crate) async fn command(action: &str, input: &Value) -> Result<Value> {
             let id = project["id"].as_str().ok_or("Missing project")?;
             drop(db);
             drop(lock);
-            let attempted = sync::plugin_once(owner, &origin, id).await;
+            let attempted = sync::plugin_once_bound(owner, &origin, id, binding).await;
+            if let Some(binding) = binding {
+                binding.check_current()?;
+            }
             let db = db::open()?;
             let project = selective_sharing::context(&db, input)?;
             result["after"] = status(&db, &project, &json!({}))?;

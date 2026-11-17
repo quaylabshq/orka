@@ -27,7 +27,7 @@ var tokenPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,256}$`)
 
 type AuthSettings struct {
 	Mode                                                 string
-	Password, GitHub, MagicLink, TrustProxy, MCPEnabled  bool
+	Password, GitHub, MagicLink, TrustProxy              bool
 	EmailProvider, PublicURL, DashboardURL, dashboardKey string
 }
 
@@ -45,7 +45,7 @@ func SettingsFromEnv(env map[string]string, managed bool) (AuthSettings, error) 
 		env["MAGIC_LINK_ENABLED"] = "true"
 		env["EMAIL_PROVIDER"] = "resend"
 	}
-	settings := AuthSettings{Mode: get("DEPLOYMENT_MODE", "self-hosted"), Password: get("PASSWORD_ENABLED", "") != "false", GitHub: get("GITHUB_ENABLED", "") == "true", MagicLink: get("MAGIC_LINK_ENABLED", "") == "true", TrustProxy: get("TRUST_PROXY", "") == "true", EmailProvider: get("EMAIL_PROVIDER", "smtp"), PublicURL: strings.TrimSuffix(get("PUBLIC_URL", ""), "/"), MCPEnabled: get("MCP_ENABLED", "") == "true"}
+	settings := AuthSettings{Mode: get("DEPLOYMENT_MODE", "self-hosted"), Password: get("PASSWORD_ENABLED", "") != "false", GitHub: get("GITHUB_ENABLED", "") == "true", MagicLink: get("MAGIC_LINK_ENABLED", "") == "true", TrustProxy: get("TRUST_PROXY", "") == "true", EmailProvider: get("EMAIL_PROVIDER", "smtp"), PublicURL: strings.TrimSuffix(get("PUBLIC_URL", ""), "/")}
 	if !includes([]string{"cloud", "self-hosted"}, settings.Mode) || !includes([]string{"smtp", "resend"}, settings.EmailProvider) {
 		return settings, fmt.Errorf("invalid deployment or email provider")
 	}
@@ -441,20 +441,14 @@ func (a *API) emailHook(ctx context.Context, payload []byte, headers http.Header
 	if !regexp.MustCompile(`^[^\s@]+@[^\s@]+\.[^\s@]+$`).MatchString(address) || !regexp.MustCompile(`^\d{6,10}$`).MatchString(token) || !tokenPattern.MatchString(tokenHash) || !includes([]string{"signup", "magiclink", "recovery", "invite"}, kind) || email["redirect_to"] == nil {
 		return bad("Invalid request")
 	}
-	plugin := redirect == a.Settings.PublicURL+"/mcp/connect"
 	target := a.Settings.signInRedirect(redirect, true)
 	link := a.Settings.browserURL() + "/auth/confirm?" + url.Values{"token": []string{tokenHash}, "type": []string{kind}, "redirect_to": []string{target}}.Encode()
-	end := "This code expires in 10 minutes and can be used once. If you did not request it, ignore this email."
 	escapedLink := html.EscapeString(link)
 	plain := "Open this link on the Mac where you requested it:\n" + link + "\n\nOr enter this code in Orka: " + token + "\n\n" + desktopEmailExpiry
 	content := desktopEmailHTML(escapedLink, token)
 	if target != SafeDesktopRedirect(target) {
 		plain = "Open this link in the browser where you requested it:\n" + link + "\n\nThis link expires in 10 minutes and can be used once. If you did not request it, ignore this email."
 		content = `<p>Open this link in the browser where you requested it:</p><p><a href="` + escapedLink + `">Sign in to Orka</a></p><p>This link expires in 10 minutes and can be used once. If you did not request it, ignore this email.</p>`
-	}
-	if plugin {
-		plain = "Enter this code on the Orka connection page: " + token + "\n\n" + end
-		content = "<p>Enter this code on the Orka connection page:</p><h1>" + token + "</h1><p>" + end + "</p>"
 	}
 	base := a.Environment["RESEND_API_URL"]
 	if base == "" {

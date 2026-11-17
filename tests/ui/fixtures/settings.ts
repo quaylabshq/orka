@@ -20,6 +20,11 @@ export async function settingsFixture(
     updateDelay?: number;
     updateInstallError?: string;
     updateInstallDelay?: number;
+    pluginDelay?: number;
+    pluginError?: string;
+    pluginClientName?: string;
+    pluginStatusDelay?: number;
+    pluginSessionCount?: number;
     role?: "owner" | "admin" | "member";
     queued?: boolean;
     pendingRequests?: boolean;
@@ -255,6 +260,13 @@ export async function settingsFixture(
       update: options.update ?? { installedVersion: "0.3.0" },
       updateError: options.updateError ?? "",
       updateDelay: options.updateDelay ?? 0,
+      pluginCallback: "",
+      pluginRequestId: "",
+      pluginState: "not_linked",
+      pluginError: options.pluginError ?? "",
+      pluginStatusDelay: options.pluginStatusDelay ?? 0,
+      pluginSessionCount: options.pluginSessionCount ?? 1,
+      pluginStatusError: "",
     };
     const wait = (ms: number) =>
       new Promise((resolve) => setTimeout(resolve, ms));
@@ -284,6 +296,98 @@ export async function settingsFixture(
           if (command === "sync_progress")
             return { user: state.user, progress: null };
           calls.push({ command, args: structuredClone(args) });
+          if (command === "profile_events") {
+            const callback = controls.pluginCallback;
+            controls.pluginCallback = "";
+            return callback || null;
+          }
+          if (command === "plugin_connection_requests")
+            return controls.pluginRequestId
+              ? [{ requestId: controls.pluginRequestId }]
+              : [];
+          if (command === "plugin_authorization") {
+            await wait(options.pluginDelay ?? 0);
+            if (controls.pluginError) throw new Error(controls.pluginError);
+            if (args.operation === "preview")
+              return {
+                requestId: "fixture-request",
+                account: {
+                  id: state.user,
+                  email: profile.email,
+                  displayName: profile.displayName,
+                },
+                serviceOrigin: state.config.apiUrl,
+                client: {
+                  id: "fixture-assistant",
+                  name: options.pluginClientName ?? "Fixture Assistant",
+                },
+                scopes: ["orka.read", "orka.write", "orka.manage"],
+                permissionDescriptions: [
+                  "Read local and shared project context.",
+                  "Share selected content, install skills, update memories and plans, and retry or repair synchronization.",
+                  "Manage project permissions and review requests within your existing authority.",
+                ],
+                expiresAt: new Date(Date.now() + 60000).toISOString(),
+              };
+            if (args.operation === "approve") controls.pluginState = "linked";
+            if (args.operation === "revoke")
+              controls.pluginState =
+                controls.pluginState === "idle"
+                  ? "not_linked"
+                  : "reconnect_required";
+            controls.pluginRequestId = "";
+            return {
+              [args.operation === "approve" ? "approved" : "cancelled"]: true,
+            };
+          }
+          if (command === "plugin_connection_status") {
+            const result = {
+              state:
+                controls.pluginState === "idle"
+                  ? "not_linked"
+                  : controls.pluginState,
+              account: {
+                id: state.user,
+                email: profile.email,
+                displayName: profile.displayName,
+              },
+              serviceOrigin: state.config.apiUrl,
+              connections:
+                controls.pluginState === "not_linked"
+                  ? []
+                  : [
+                      {
+                        id: "fixture-connection",
+                        client: {
+                          id: "fixture-assistant",
+                          name: options.pluginClientName ?? "Fixture Assistant",
+                        },
+                        scopes: ["orka.read", "orka.write", "orka.manage"],
+                        state:
+                          controls.pluginState === "linked"
+                            ? "approved"
+                            : controls.pluginState === "idle"
+                              ? "idle"
+                              : "reconnect_required",
+                        connectedAt: null,
+                        sessionCount:
+                          controls.pluginState === "idle"
+                            ? 0
+                            : controls.pluginSessionCount,
+                      },
+                    ],
+              pendingCount: controls.pluginRequestId ? 1 : 0,
+              reason:
+                controls.pluginState === "reconnect_required"
+                  ? "Your account or service changed. Reconnect your assistant."
+                  : null,
+              reconnectRequired: controls.pluginState === "reconnect_required",
+            };
+            await wait(controls.pluginStatusDelay);
+            if (controls.pluginStatusError)
+              throw new Error(controls.pluginStatusError);
+            return result;
+          }
           if (command === "update_status") {
             const update = structuredClone(controls.update);
             const error = controls.updateError;

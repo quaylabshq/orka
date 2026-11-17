@@ -175,6 +175,16 @@ pub fn route_auth_callback(callback: String) -> Result<()> {
     Ok(())
 }
 
+#[tauri::command]
+pub fn route_plugin_callback(callback: String) -> Result<()> {
+    let (name, _, _) = crate::plugin_connection::callback(&callback)?;
+    queue_callback_for(&name, &callback)?;
+    if name != current() {
+        open_profile(name)?;
+    }
+    Ok(())
+}
+
 fn callback_lock(root: &std::path::Path) -> Result<fs::File> {
     let file = fs::OpenOptions::new()
         .create(true)
@@ -189,7 +199,12 @@ fn callback_lock(root: &std::path::Path) -> Result<fs::File> {
 
 pub fn queue_callback(callback: &str) -> Result<String> {
     let name = crate::auth::callback_profile(callback)?;
-    let root = root(&name)?;
+    queue_callback_for(&name, callback)?;
+    Ok(name)
+}
+
+fn queue_callback_for(name: &str, callback: &str) -> Result<()> {
+    let root = root(name)?;
     if !root.is_dir() {
         return Err("The window that requested this sign-in is unavailable".into());
     }
@@ -201,7 +216,7 @@ pub fn queue_callback(callback: &str) -> Result<String> {
         )
         .map_err(|e| e.to_string())?,
     )?;
-    Ok(name)
+    Ok(())
 }
 
 pub fn take_callback() -> Result<Option<String>> {

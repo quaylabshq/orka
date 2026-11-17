@@ -88,10 +88,45 @@ GoTrue remains the OAuth and session authority. Add the dashboard’s
 
 Desktop invite URLs retain the service origin so existing desktop versions can
 paste them directly. Browser visits redirect to the dashboard, which requests a
-read-only preview and links back to the original service. MCP discovery
-advertises the dashboard’s consent URL while keeping the original API issuer,
-resource, and token endpoints. Existing API browser entry URLs continue to
-work. Self-hosted project invites and optional MCP consent continue to use the API.
+read-only preview and links back to the original service. Connector tools use
+the signed-in desktop; existing API browser entry URLs for ordinary authentication
+continue to work. Self-hosted project invite pages continue to use the API.
+
+## Desktop connector authentication
+
+The Orka desktop session is the only plugin account. An installed plugin starts
+a local MCP helper which talks to the running desktop broker. The desktop owns
+connector approval, scopes, native Keychain credentials and session refresh. The
+helper receives tool results, never the native bearer or refresh token. Changing
+account, service, signing out or resetting the desktop invalidates the local
+connector approval; the user reconnects in Orka.
+
+The desktop uses its current native bearer for `GET /v2/connector/tools` and
+`POST /v2/connector/tools` with `{name, arguments}`. The inventory lists the 18
+shared tool schemas and their `orka.read`, `orka.write` or `orka.manage` scope.
+The desktop enforces the approved scope before forwarding. The API derives the
+account solely from native authentication and reuses the same shared tool
+handlers, project membership, source restrictions, current permissions, revision
+checks, review workflows and operation receipts. Caller-supplied account IDs
+cannot select another identity. Successful calls return `{content,
+structuredContent}`; arrays are wrapped in `{items}`. Failures retain ordinary
+HTTP status codes and `{error}` messages. Results contain no credentials.
+
+`/v2/instance` advertises `desktopConnector:1`. Both server editions expose the
+same contract with no new provider, migration or configuration requirement.
+`PUBLIC_URL` supplies the canonical service origin for source references. The
+old `MCP_ENABLED` variable is ignored and cannot restore remote access.
+
+Remote MCP and its independent OAuth account are retired. `/mcp`, `/authorize`,
+`/register`, `/token`, `/revoke`, `/mcp/connect`, OAuth discovery metadata and the
+unreleased `/v2/plugin/connection` handoff/proof routes return HTTP 410 with
+`error: desktop_required` and instructions to reconnect through Orka desktop.
+Old remote access and refresh tokens cannot authenticate native tool endpoints.
+Existing OAuth database records remain dormant for upgrade compatibility; the
+unreleased connection-proof migration is not shipped. Ordinary desktop,
+provider and Dashboard login and existing `/v2` data/sync routes are preserved.
+Historical `/mcp/source/<project>/<resource>` links still open a static desktop
+resource landing page without exposing source content or a connector login.
 
 ## Project email invitations
 
