@@ -5,6 +5,7 @@ import type { Project, ProjectResource as Resource } from "../types.js";
 import { IconButton } from "./icon-button.js";
 import { ConflictPanel } from "./conflict-panel.js";
 import { CopyLinkButton } from "./copy-link-button.js";
+import { ResourceContent } from "./resource-content.js";
 import {
   ResourceMenuButton,
   resourceViewMenuActions,
@@ -180,6 +181,13 @@ export function MemoryDetail({
         state={file}
         offline={offline}
         othersMessage="You can still open the other files."
+        comparisonFallback={
+          <ResourceContent
+            inspection={view.inspection}
+            changes
+            markdown={false}
+          />
+        }
       />
     </DetailLayout>
   );
