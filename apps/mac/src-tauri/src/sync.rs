@@ -303,6 +303,47 @@ pub(crate) fn queue_session_copy(
     Ok(request)
 }
 
+fn selected_resolution_snapshot(db: &rusqlite::Connection, input: &Value) -> Result<Option<Value>> {
+    let source = if input["selected"] == "candidate" {
+        db::rows(db,"SELECT json_extract(value,'$.candidate') FROM conflicts WHERE id=? AND project=? AND json_extract(value,'$.resourceId')=?",&[&input["conflictId"].as_str(),&input["projectId"].as_str(),&input["resourceId"].as_str()])?
+            .into_iter()
+            .next()
+    } else if input["selected"] == "current" {
+        db::rows(db,"SELECT value FROM resources WHERE id=? AND project=? AND json_extract(value,'$.revision')=?",&[&input["resourceId"].as_str(),&input["projectId"].as_str(),&input["expectedRevision"].as_i64()])?
+            .into_iter()
+            .next()
+    } else {
+        None
+    };
+    Ok(source.filter(|source| {
+        source["kind"] == "session"
+            && source["resourceId"] == input["resourceId"]
+            && source["projectId"] == input["projectId"]
+    }))
+}
+
+/// A resolution's wire body names a version but carries no files. Freeze that
+/// selection locally so a later pull or project removal cannot replace it.
+pub(crate) fn queue_session_resolution(db: &rusqlite::Connection, input: &Value) -> Result<()> {
+    let tx = db
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
+    let source = selected_resolution_snapshot(&tx, input)?
+        .ok_or("The selected session version is unavailable; refresh before resolving")?;
+    indexer::queue(
+        &tx,
+        input["projectId"].as_str().ok_or("Missing project")?,
+        "/v2/sessions/resolve",
+        input,
+    )?;
+    db::set(
+        &tx,
+        &copy_state_key(input["id"].as_str().ok_or("Missing request ID")?),
+        &json!({"source":source,"resolution":input}),
+    )?;
+    tx.commit().map_err(|error| error.to_string())
+}
+
 /// Freeze the wire body before its first attempt. A service upgrade must not
 /// change the identity of an uncertain legacy request.
 pub(crate) fn prepare_session_copy(
@@ -355,6 +396,18 @@ pub(crate) fn queued_session_snapshot(
         Some(request) => db::get(db, &copy_state_key(request))?,
         None => Value::Null,
     };
+    if input["conflictId"].is_string() {
+        if state["resolution"] == *input
+            && state["source"]["kind"] == "session"
+            && state["source"]["resourceId"] == input["resourceId"]
+            && state["source"]["projectId"] == input["projectId"]
+        {
+            return Ok(Some(state["source"].clone()));
+        }
+        // Old queued resolutions have no frozen local snapshot. A selected
+        // current version must still have precisely the observed revision.
+        return selected_resolution_snapshot(db, input);
+    }
     let mut wire = input["sourceSnapshot"].clone();
     if wire.is_object() {
         wire["projectId"] = input["projectId"].clone();
@@ -480,7 +533,7 @@ pub(crate) fn acknowledge_session(
             )?;
         }
     }
-    if path == "/v2/sessions/copy" {
+    if matches!(path, "/v2/sessions/copy" | "/v2/sessions/resolve") {
         clear_session_copy(db, input["id"].as_str().ok_or("Missing request ID")?)?;
     }
     Ok(())
