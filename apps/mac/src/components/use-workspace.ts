@@ -24,7 +24,11 @@ const empty: Snapshot = {
 /** Reads native state and serializes user actions independently of navigation. */
 export function useWorkspace() {
   const [state, setState] = useState(empty);
-  const [queue, setQueue] = useState<SyncQueueEntry[]>([]);
+  const [queue, setQueue] = useState<{
+    scope: string;
+    entries: SyncQueueEntry[];
+  } | null>(null);
+  const queueGeneration = useRef(0);
   const [hasSnapshot, setHasSnapshot] = useState(false);
   const [project, setProject] = useState("");
   const [error, setError] = useState("");
@@ -166,16 +170,36 @@ export function useWorkspace() {
   const user = state.user;
   const apiUrl = state.config?.apiUrl;
   const running = state.daemon?.running;
+  const queueScope = JSON.stringify([profile, user, apiUrl, running]);
+  const queueScopeRef = useRef(queueScope);
+  queueScopeRef.current = queueScope;
   const refreshQueue = useCallback(async () => {
+    if (
+      !active.current ||
+      !user ||
+      !running ||
+      queueScopeRef.current !== queueScope
+    )
+      return;
+    const current = ++queueGeneration.current;
     try {
       const next = queueEntries(await invoke("sync_queue_state"));
-      setQueue((current) =>
-        JSON.stringify(current) === JSON.stringify(next) ? current : next,
+      if (
+        !active.current ||
+        current !== queueGeneration.current ||
+        queueScopeRef.current !== queueScope
+      )
+        return;
+      setQueue((previous) =>
+        previous?.scope === queueScope &&
+        JSON.stringify(previous.entries) === JSON.stringify(next)
+          ? previous
+          : { scope: queueScope, entries: next },
       );
     } catch {
       // The queue panel is descriptive; sync progress still drives the status.
     }
-  }, []);
+  }, [queueScope, user, running]);
   useEffect(() => {
     if (!user || !running) return;
     let stopped = false;
@@ -207,14 +231,15 @@ export function useWorkspace() {
     void poll();
     return () => {
       stopped = true;
+      queueGeneration.current += 1;
       window.clearTimeout(timer);
-      setQueue([]);
+      setQueue(null);
     };
   }, [profile, user, apiUrl, running, refreshQueue]);
 
   return {
     state,
-    queue,
+    queue: queue?.scope === queueScope ? queue.entries : [],
     refreshQueue,
     hasSnapshot,
     project,
