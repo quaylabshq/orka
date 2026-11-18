@@ -247,6 +247,8 @@ mod plan_tests;
 mod plugin_connection_tests;
 #[path = "plugin_operations_tests.rs"]
 mod plugin_operations_tests;
+#[path = "project_conflict_tests.rs"]
+mod project_conflict_tests;
 #[path = "repository_tests.rs"]
 mod repository_tests;
 #[path = "resource_command_tests.rs"]

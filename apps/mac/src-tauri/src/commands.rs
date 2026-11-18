@@ -693,12 +693,11 @@ pub fn session_action(
     } else {
         return Err("Invalid session action".into());
     };
-    let endpoint = if input["conflictId"].is_string() {
-        "/v2/sessions/resolve"
+    if input["conflictId"].is_string() {
+        sync::queue_session_resolution(&db, &input)?;
     } else {
-        "/v2/sync/push"
-    };
-    indexer::queue(&db, project, endpoint, &input)?;
+        indexer::queue(&db, project, "/v2/sync/push", &input)?;
+    }
     sync_now()
 }
 #[tauri::command]

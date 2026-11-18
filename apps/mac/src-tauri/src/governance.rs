@@ -388,8 +388,17 @@ impl DetachProject for Connection {
 fn preserve_queued(db: &Connection, project: &Value, queued: &Value, paths: &Value) -> Result<()> {
     if queued["value"]["resource"]["files"].is_array() {
         capture(db, project, &queued["value"]["resource"], paths)?;
-    } else if queued["path"] == "/v2/sessions/copy" {
-        if let Some(snapshot) = sync::queued_session_snapshot(db, &queued["value"])? {
+    } else if matches!(
+        queued["path"].as_str(),
+        Some("/v2/sessions/copy" | "/v2/sessions/resolve")
+    ) {
+        let snapshot = sync::queued_session_snapshot(db, &queued["value"])?;
+        if queued["path"] == "/v2/sessions/resolve" && snapshot.is_none() {
+            return Err(
+                "The queued session selection is unavailable; local work was preserved".into(),
+            );
+        }
+        if let Some(snapshot) = snapshot {
             capture(db, project, &snapshot, paths)?;
         }
         sync::clear_session_copy(db, queued["id"].as_str().ok_or("Missing request ID")?)?;
@@ -537,6 +546,19 @@ fn reset_source(db: &Connection, project_id: &str, events: &Value, p: &Value) ->
                     }
                     .map_err(|e| e.to_string())?;
                 }
+            }
+        }
+        let user = db::get(db, "user")?;
+        for conflict in db::rows(
+            db,
+            "SELECT value FROM conflicts WHERE project=? AND json_extract(value,'$.resourceId')=?",
+            &[&project_id, &id],
+        )? {
+            // A rejected upload has left the outbox already. Keep this user's
+            // candidate before access teardown drops the conflict cache, but
+            // never turn another member's candidate into private local work.
+            if user.is_string() && conflict["author"] == user {
+                capture(db, p, &conflict["candidate"], &b["paths"])?;
             }
         }
         for table in ["resources", "bindings"] {
