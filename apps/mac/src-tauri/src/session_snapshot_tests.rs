@@ -649,3 +649,51 @@ fn outbox_rows_without_a_readable_source_are_dropped_before_upload() {
     assert_eq!(binding["needsCopy"], true);
     assert_eq!(binding["copyRequest"], Value::Null);
 }
+
+#[test]
+fn dropped_push_row_is_requeued_redacted_by_the_next_scan() {
+    let f = Fixture::new();
+    let session = uuid::Uuid::new_v4();
+    let path = native::claude_home()
+        .unwrap()
+        .join("projects/test")
+        .join(format!("{session}.jsonl"));
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(
+        &path,
+        native::encode(&[
+            json!({"type":"user","sessionId":session,"cwd":f.root,"message":{"role":"user","content":format!("Use {LEAKED}")}}),
+        ]),
+    )
+    .unwrap();
+    indexer::scan(&f.db, &f.project).unwrap();
+    let queued = f.outbox().remove(0);
+    let resource = queued["resource"]["resourceId"].as_str().unwrap();
+    // Recreate a pre-redaction row whose snapshot blob is no longer readable.
+    let mut legacy = queued.clone();
+    legacy["resource"]["title"] = json!(format!("Use {LEAKED}"));
+    legacy["resource"]["files"][0]["hash"] = json!("0".repeat(64));
+    f.db.execute(
+        "UPDATE outbox SET value=? WHERE id=?",
+        rusqlite::params![legacy.to_string(), queued["id"].as_str()],
+    )
+    .unwrap();
+
+    sync::rebuild_unredacted_outbox(&f.db).unwrap();
+    assert!(f.outbox().is_empty());
+    assert_eq!(
+        indexer::binding(&f.db, resource).unwrap()["lastSeenHash"],
+        ""
+    );
+
+    indexer::scan(&f.db, &f.project).unwrap();
+    let requeued = f.outbox();
+    assert_eq!(requeued.len(), 1);
+    assert_ne!(requeued[0]["id"], queued["id"]);
+    assert_eq!(requeued[0]["resource"]["resourceId"], resource);
+    assert_redacted(&requeued[0]["resource"]);
+    assert_eq!(
+        requeued[0]["resource"]["files"],
+        queued["resource"]["files"]
+    );
+}

@@ -505,10 +505,29 @@ pub(crate) fn rebuild_unredacted_outbox(db: &rusqlite::Connection) -> Result<()>
             tx.execute("DELETE FROM outbox WHERE id=?", [id])
                 .map_err(|error| error.to_string())?;
             clear_session_copy(&tx, id)?;
-            if let Some(resource) = value["resourceId"].as_str() {
+            let push = row["path"] == "/v2/sync/push";
+            let resource = if push {
+                value["resource"]["resourceId"].as_str()
+            } else {
+                value["resourceId"].as_str()
+            };
+            if let Some(resource) = resource {
                 let mut binding = indexer::binding(&tx, resource)?;
-                if binding["copyRequest"] == id {
-                    binding["copyRequest"] = Value::Null;
+                let rebind = if push {
+                    // Forget the last queued transcript so the next scan
+                    // re-queues the live file through the redacting path.
+                    // Empty rather than null keeps a teammate-owned session on
+                    // the copy path instead of pushing over their resource.
+                    binding["lastSeenHash"].is_string()
+                } else {
+                    binding["copyRequest"] == id
+                };
+                if rebind {
+                    if push {
+                        binding["lastSeenHash"] = json!("");
+                    } else {
+                        binding["copyRequest"] = Value::Null;
+                    }
                     db::upsert(
                         &tx,
                         "bindings",
