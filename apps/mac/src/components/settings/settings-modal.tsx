@@ -22,6 +22,7 @@ import {
   type SettingsSection,
 } from "./settings-navigation.js";
 import { SettingsGeneral, SettingsFolder } from "./settings-sections.js";
+import { SettingsDanger } from "./settings-danger.js";
 import { SettingsDeviceScreen } from "./settings-devices.js";
 import { SettingsProfile } from "./settings-profile.js";
 import { SettingsMembers } from "./settings-members.js";
@@ -152,6 +153,10 @@ export const SettingsModal = forwardRef<
   const queued = state.outbox.filter(
     (item) => item.project === projectId,
   ).length;
+  const projectMembers = project
+    ? (state.governance?.find((entry) => entry.projectId === project.id)
+        ?.catalog.members?.length ?? null)
+    : null;
   const busy = workspaceBusy || saving;
   const syncMinutes = state.config?.syncMinutes;
   const background = state.background;
@@ -870,6 +875,21 @@ export const SettingsModal = forwardRef<
             {error && <p role="alert">{error}</p>}
             {notice && <p role="status">{notice}</p>}
           </fieldset>
+          {section === "general" &&
+            (project?.role === "owner" ||
+              (state.deletedProjects?.length ?? 0) > 0) && (
+              <SettingsDanger
+                project={
+                  projectUnavailable || project?.role !== "owner"
+                    ? undefined
+                    : project
+                }
+                deletedProjects={state.deletedProjects ?? []}
+                members={projectMembers}
+                busy={busy}
+                run={workspaceRun}
+              />
+            )}
         </div>
       </section>
       {pending !== null && (

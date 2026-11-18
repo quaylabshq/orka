@@ -541,6 +541,43 @@ fn deleted_projects_leave_the_active_list_but_keep_their_row() {
 }
 
 #[test]
+fn snapshot_lists_deleted_owned_projects_until_they_are_purged() {
+    let f = Fixture::new();
+    let id = f.project["id"].as_str().unwrap();
+    crate::projects::merge_catalog(
+        &f.db,
+        &json!([{"id":id,"name":"test","role":"owner","lifecycleRevision":1}]),
+    )
+    .unwrap();
+    f.db.mark_deleted(
+        id,
+        &json!({
+            "deletedAt":"2026-01-01T00:00:00Z",
+            "purgeAfter":"2026-01-31T00:00:00Z",
+            "lifecycleRevision":2
+        }),
+    )
+    .unwrap();
+    let snapshot = crate::commands::snapshot().unwrap();
+    assert!(snapshot["projects"].as_array().unwrap().is_empty());
+    assert_eq!(snapshot["deletedProjects"][0]["id"], id);
+    assert_eq!(
+        snapshot["deletedProjects"][0]["purgeAfter"],
+        "2026-01-31T00:00:00Z"
+    );
+    // Purging detaches the project, so it leaves the recent list too.
+    crate::projects::merge_catalog(
+        &f.db,
+        &json!([{"id":id,"name":"test","deletedAt":"2026-01-01T00:00:00Z","purged":true}]),
+    )
+    .unwrap();
+    assert!(crate::commands::snapshot().unwrap()["deletedProjects"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
 fn a_restored_project_clears_the_errors_its_403_left() {
     let f = Fixture::new();
     let id = f.project["id"].as_str().unwrap();

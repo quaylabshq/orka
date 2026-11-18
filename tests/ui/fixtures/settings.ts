@@ -60,6 +60,14 @@ export async function settingsFixture(
       folderState: "connected" | "reconnect" | "locate";
       removedAt?: string | null;
     }[];
+    deletedProjects?: {
+      id: string;
+      name: string;
+      role?: "owner" | "admin" | "member";
+      deletedAt: string;
+      purgeAfter?: string;
+      lifecycleRevision?: number;
+    }[];
     policyFailure?: "drop" | "offline" | "conflict";
     legacy?: boolean;
     long?: boolean;
@@ -176,6 +184,7 @@ export async function settingsFixture(
             governed: true,
           },
         ];
+    const deletedProjects = (options.deletedProjects ?? []) as any[];
     const state = {
       user,
       profile: "settings-test",
@@ -187,6 +196,7 @@ export async function settingsFixture(
         selfHostedUrl: "https://selfhost.orka",
       },
       projects,
+      deletedProjects,
       resources: [],
       bindings: [],
       conflicts: [],
@@ -564,9 +574,64 @@ export async function settingsFixture(
           if (command === "project_command") {
             if (args.action === "list")
               return { supported: true, projects: structuredClone(projects) };
-            const project = projects.find(
+            const project = (projects.find(
               (project) => project.id === args.input.projectId,
-            )!;
+            ) ??
+              deletedProjects.find(
+                (project) => project.id === args.input.projectId,
+              ))! as any;
+            if (args.action === "delete" || args.action === "purge") {
+              if (options.queued)
+                throw new Error(
+                  "Sync queued changes and finish pending ENV publications before deleting this project",
+                );
+              if (args.input.confirmation !== project.name)
+                throw new Error("Type the project name to confirm deletion");
+              if (args.action === "delete") {
+                projects.splice(
+                  projects.findIndex(
+                    (item) => item.id === args.input.projectId,
+                  ),
+                  1,
+                );
+                deletedProjects.push({
+                  ...project,
+                  deletedAt: "2026-01-01T00:00:00Z",
+                  purgeAfter: "2026-02-01T00:00:00Z",
+                });
+              } else {
+                deletedProjects.splice(
+                  deletedProjects.findIndex(
+                    (item) => item.id === args.input.projectId,
+                  ),
+                  1,
+                );
+              }
+              return {
+                ok: true,
+                purgeAfter:
+                  args.action === "delete" ? "2026-02-01T00:00:00Z" : null,
+              };
+            }
+            if (args.action === "archive") {
+              projects.splice(
+                projects.findIndex((item) => item.id === args.input.projectId),
+                1,
+              );
+              return { ok: true };
+            }
+            if (args.action === "restore") {
+              const index = deletedProjects.findIndex(
+                (item) => item.id === args.input.projectId,
+              );
+              if (index >= 0) {
+                const restored = deletedProjects.splice(index, 1)[0];
+                delete restored.deletedAt;
+                delete restored.purgeAfter;
+                projects.push(restored as (typeof projects)[number]);
+              }
+              return { ok: true };
+            }
             if (args.action === "rename") {
               if (options.failRename && !failedRename) {
                 failedRename = true;
@@ -579,7 +644,7 @@ export async function settingsFixture(
               if (options.failSourceRemoval)
                 throw new Error("Service unavailable. Try again.");
               const source = project.sources.find(
-                (source) => source.id === args.input.sourceId,
+                (source: { id: string }) => source.id === args.input.sourceId,
               )!;
               Object.assign(source, {
                 removedAt: "2026-11-13T00:00:00Z",

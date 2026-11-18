@@ -56,6 +56,10 @@ export interface Project {
   rolePolicies?: RolePolicies | null;
   policyRevision?: number;
   lifecycleRevision?: number;
+  archivedAt?: string | null;
+  deletedAt?: string | null;
+  purgeAfter?: string | null;
+  purged?: boolean;
 }
 export interface Binding {
   resourceId?: string;
@@ -98,6 +102,7 @@ export interface Snapshot {
     selfHostedUrl?: string;
   } | null;
   projects: Project[];
+  deletedProjects?: Project[];
   resources: ProjectResource[];
   bindings: Binding[];
   conflicts: SessionConflict[];
