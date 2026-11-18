@@ -1,5 +1,30 @@
 use super::*;
 
+#[test]
+fn project_removal_clears_only_its_frozen_pending_session_snapshots() {
+    let f = Fixture::new();
+    let id = f.project["id"].as_str().unwrap();
+    db::set(
+        &f.db,
+        "sessionCopy:removed",
+        &json!({"source":{"projectId":id}}),
+    )
+    .unwrap();
+    db::set(
+        &f.db,
+        "sessionCopy:other",
+        &json!({"source":{"projectId":"other"}}),
+    )
+    .unwrap();
+    db::set(&f.db, "env:trust", &json!({"projectId":id})).unwrap();
+    crate::projects::remove_local(&f.db, id).unwrap();
+    assert!(db::get(&f.db, "sessionCopy:removed").unwrap().is_null());
+    assert_eq!(
+        db::get(&f.db, "sessionCopy:other").unwrap()["source"]["projectId"],
+        "other"
+    );
+}
+
 fn session(f: &Fixture, label: &str, revision: i64) -> Value {
     let resource_id = uuid::Uuid::new_v4().to_string();
     let bytes = native::encode(&[
