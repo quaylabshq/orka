@@ -283,7 +283,7 @@ export function SettingsMembers({
               onClick={() => setInvite(true)}
             >
               <UserPlusIcon size={16} />
-              Add Member
+              Invite member
             </Button>
           )
         }
@@ -346,8 +346,8 @@ export function SettingsMembers({
         )}
       </LoadingRegion>
       {(owner || admin) && pendingInvites.length > 0 && (
-        <section aria-label="Pending invitations">
-          <h3>Pending invitations ({pendingInvites.length})</h3>
+        <section aria-label="Pending invites">
+          <h3>Pending invites ({pendingInvites.length})</h3>
           <ul className="settings-group settings-member-list">
             {pendingInvites.map((invite) => (
               <li className="settings-member-row" key={invite.email}>
@@ -396,7 +396,7 @@ export function SettingsMembers({
       <RepositoryRequests project={project} state={state} />
       {invite && (
         <ProjectInviteDialog
-          title="Add Member"
+          title="Invite member"
           projectId={projectId}
           projectName={project.name}
           onClose={() => {

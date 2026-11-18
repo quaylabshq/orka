@@ -44,7 +44,7 @@ export function ProjectInviteDialog({
         setEmailAvailable(false);
         setMode("link");
         setError(
-          "Couldn’t check email delivery. You can still create a joining link.",
+          "Couldn’t check email delivery. You can still create an invite link.",
         );
       });
     return () => {
@@ -68,10 +68,8 @@ export function ProjectInviteDialog({
           },
         );
         if (!result.sent)
-          throw new Error(
-            "Email invitations are unavailable. Use a joining link.",
-          );
-        setMessage(`Invitation sent to ${result.email}.`);
+          throw new Error("Email invites are unavailable. Use an invite link.");
+        setMessage(`Invite sent to ${result.email}.`);
         setEmail("");
       } else {
         let link = joiningLink;
@@ -130,7 +128,7 @@ export function ProjectInviteDialog({
           <p>Invite a teammate to {projectName}.</p>
           {emailAvailable && (
             <SegmentedControl
-              label="Invitation method"
+              label="Invite method"
               value={mode}
               options={[
                 { value: "email", label: "Email" },
@@ -145,7 +143,7 @@ export function ProjectInviteDialog({
             />
           )}
           {emailAvailable === null ? (
-            <p role="status">Checking invitation options…</p>
+            <p role="status">Checking invite options…</p>
           ) : mode === "email" ? (
             <TextField
               label="Email address"
@@ -170,7 +168,7 @@ export function ProjectInviteDialog({
               </p>
               {joiningLink && (
                 <TextField
-                  label="Joining link"
+                  label="Invite link"
                   value={joiningLink}
                   readOnly
                   onFocus={(event) => event.target.select()}
@@ -199,8 +197,8 @@ export function ProjectInviteDialog({
                 ? "Sending…"
                 : "Copying…"
               : mode === "email"
-                ? "Send invitation"
-                : "Copy joining link"}
+                ? "Send invite"
+                : "Copy invite link"}
           </Button>
         </div>
       </form>

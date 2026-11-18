@@ -98,3 +98,39 @@ test("a confirmed missing email does not revive the cached account email", async
   await expect(self.locator("p")).toHaveCount(0);
   await expect(self.getByText("Morgan Taylor", { exact: true })).toBeVisible();
 });
+
+test("Members uses invite wording for the invite action and pending invites", async ({
+  page,
+}) => {
+  const settings = await settingsFixture(page, {
+    pendingInvites: [
+      { email: "teammate@example.com", expiresAt: "2026-11-14T12:00:00Z" },
+    ],
+  });
+  await settings.getByRole("button", { name: "Members", exact: true }).click();
+  const pending = settings.getByRole("region", {
+    name: "Pending invites",
+    exact: true,
+  });
+  await expect(
+    pending.getByRole("heading", { name: "Pending invites (1)", exact: true }),
+  ).toBeVisible();
+  await expect(settings.getByText("Pending invitations")).toHaveCount(0);
+  await expect(
+    settings.getByRole("button", { name: "Add Member", exact: true }),
+  ).toHaveCount(0);
+  await settings
+    .getByRole("button", { name: "Invite member", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog", {
+    name: "Invite member",
+    exact: true,
+  });
+  await expect(dialog).toBeVisible();
+  await expect(
+    dialog.getByRole("button", { name: "Copy invite link", exact: true }),
+  ).toBeVisible();
+  await expect(
+    dialog.getByRole("button", { name: "Copy joining link", exact: true }),
+  ).toHaveCount(0);
+});

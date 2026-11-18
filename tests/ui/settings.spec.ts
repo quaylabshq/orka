@@ -600,13 +600,16 @@ test("members create a join link, promote explicitly, and confirm removal", asyn
     members.getByText("morgan@example.com", { exact: true }),
   ).toBeVisible();
   await expect(members.getByText("You", { exact: true })).toBeVisible();
-  await button(settings, "Add Member").click();
-  const invite = page.getByRole("dialog", { name: "Add Member", exact: true });
+  await button(settings, "Invite member").click();
+  const invite = page.getByRole("dialog", {
+    name: "Invite member",
+    exact: true,
+  });
   await invite
-    .getByRole("button", { name: "Copy joining link", exact: true })
+    .getByRole("button", { name: "Copy invite link", exact: true })
     .click();
   await expect(
-    invite.getByRole("textbox", { name: "Joining link" }),
+    invite.getByRole("textbox", { name: "Invite link" }),
   ).toHaveValue("https://test.orka/join/join-once");
   await invite.getByRole("button", { name: "Done", exact: true }).click();
   await choose(settings, "Role for Jamie Rivera", "Admin");
@@ -1169,7 +1172,7 @@ test("slow loading stays inert, announces once, permits navigation, and ignores 
   const settings = await settingsFixture(page, { delay: 9000 });
   await button(settings, "Members").click();
   await expect(settings.getByRole("status")).toHaveText("Loading members…");
-  await expect(button(settings, "Add Member")).toHaveCount(0);
+  await expect(button(settings, "Invite member")).toHaveCount(0);
   await expect(settings.getByRole("listitem")).toHaveCount(0);
   await expect(settings.locator('[aria-hidden="true"][inert]')).not.toHaveCount(
     0,
@@ -1414,27 +1417,27 @@ test("sign-out clears an uncertain policy operation before the same account retu
 });
 
 for (const width of [1160, 900])
-  test(`email invitation is primary in member settings at ${width}px`, async ({
+  test(`email invite is primary in member settings at ${width}px`, async ({
     page,
   }) => {
     await page.setViewportSize({ width, height: width === 900 ? 640 : 800 });
     const settings = await settingsFixture(page, { emailInvites: true });
     await button(settings, "Members").click();
-    await button(settings, "Add Member").click();
+    await button(settings, "Invite member").click();
     const dialog = page.getByRole("dialog", {
-      name: "Add Member",
+      name: "Invite member",
       exact: true,
     });
     await expect(dialog.getByLabel("Email address")).toBeFocused();
-    await expect(button(dialog, "Send invitation")).toBeDisabled();
+    await expect(button(dialog, "Send invite")).toBeDisabled();
     await dialog.getByLabel("Email address").fill("Person@Example.com");
     expect(
       (await new AxeBuilder({ page }).include('[role="dialog"]').analyze())
         .violations,
     ).toEqual([]);
-    await button(dialog, "Send invitation").click();
+    await button(dialog, "Send invite").click();
     await expect(dialog.getByRole("status")).toContainText(
-      "Invitation sent to person@example.com",
+      "Invite sent to person@example.com",
     );
     const invitations = (await settingsCalls(page)).filter(
       (c) => c.command === "cloud_action" && c.args.action === "invite",
@@ -1443,7 +1446,7 @@ for (const width of [1160, 900])
     expect(invitations[0].args.input.email).toBe("person@example.com");
     await button(dialog, "Done").click();
     const pending = settings.getByRole("region", {
-      name: "Pending invitations",
+      name: "Pending invites",
       exact: true,
     });
     await expect(pending.getByText("person@example.com")).toBeVisible();
@@ -1451,7 +1454,7 @@ for (const width of [1160, 900])
   });
 
 for (const role of ["owner", "admin"] as const)
-  test(`${role} sees pending invitations separately from current members`, async ({
+  test(`${role} sees pending invites separately from current members`, async ({
     page,
   }, info) => {
     await page.setViewportSize({ width: 900, height: 640 });
@@ -1462,7 +1465,7 @@ for (const role of ["owner", "admin"] as const)
     });
     await button(settings, "Members").click();
     const pending = settings.getByRole("region", {
-      name: "Pending invitations",
+      name: "Pending invites",
       exact: true,
     });
     await expect(pending.getByText(email, { exact: true })).toBeVisible();
@@ -1490,9 +1493,7 @@ for (const role of ["owner", "admin"] as const)
     ).toBeVisible();
   });
 
-test("ordinary members do not render invitation recipients", async ({
-  page,
-}) => {
+test("ordinary members do not render invite recipients", async ({ page }) => {
   const settings = await settingsFixture(page, {
     role: "member",
     pendingInvites: [
@@ -1504,9 +1505,9 @@ test("ordinary members do not render invitation recipients", async ({
     settings.getByRole("list").getByText("Jamie Rivera", { exact: true }),
   ).toBeVisible();
   await expect(settings.getByText("private@example.com")).toHaveCount(0);
-  await expect(button(settings, "Add Member")).toHaveCount(0);
+  await expect(button(settings, "Invite member")).toHaveCount(0);
 });
-test("failed email invitation preserves the address and offers a joining link", async ({
+test("failed email invite preserves the address and offers an invite link", async ({
   page,
 }) => {
   const settings = await settingsFixture(page, {
@@ -1514,20 +1515,23 @@ test("failed email invitation preserves the address and offers a joining link", 
     failEmailInvite: true,
   });
   await button(settings, "Members").click();
-  await button(settings, "Add Member").click();
-  const dialog = page.getByRole("dialog", { name: "Add Member", exact: true });
+  await button(settings, "Invite member").click();
+  const dialog = page.getByRole("dialog", {
+    name: "Invite member",
+    exact: true,
+  });
   await dialog.getByLabel("Email address").fill("teammate@example.com");
-  await button(dialog, "Send invitation").click();
+  await button(dialog, "Send invite").click();
   await expect(dialog.getByRole("alert")).toContainText("could not be sent");
   await expect(dialog.getByLabel("Email address")).toHaveValue(
     "teammate@example.com",
   );
   await dialog
-    .getByRole("group", { name: "Invitation method", exact: true })
+    .getByRole("group", { name: "Invite method", exact: true })
     .getByRole("button", { name: "Link", exact: true })
     .click();
-  await button(dialog, "Copy joining link").click();
-  await expect(dialog.getByLabel("Joining link")).toHaveValue(
+  await button(dialog, "Copy invite link").click();
+  await expect(dialog.getByLabel("Invite link")).toHaveValue(
     "https://test.orka/join/join-once",
   );
 });

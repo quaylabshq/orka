@@ -482,16 +482,16 @@ for (const browserInvites of [true, false]) {
       .getByRole("button", { name: "Members", exact: true })
       .click();
     const addMember = settings.getByRole("button", {
-      name: "Add Member",
+      name: "Invite member",
       exact: true,
     });
     await addMember.click();
     const invite = page.getByRole("dialog", {
-      name: "Add Member",
+      name: "Invite member",
       exact: true,
     });
     await invite
-      .getByRole("button", { name: "Copy joining link", exact: true })
+      .getByRole("button", { name: "Copy invite link", exact: true })
       .click();
     await expect
       .poll(() =>

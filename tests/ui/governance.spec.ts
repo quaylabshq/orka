@@ -486,9 +486,7 @@ test("Settings Members opens activity logs, paginates, and returns to Members", 
   const logs = page.getByRole("region", { name: "Activity logs", exact: true });
   await expect(logs).toContainText("Saket Rao approved Mira Shah's request");
   await expect
-    .soft(
-      logs.getByText("Saket Rao revoked a member invitation", { exact: true }),
-    )
+    .soft(logs.getByText("Saket Rao revoked a member invite", { exact: true }))
     .toBeVisible();
   await expect
     .soft(logs.getByText("Mira Shah updated the project", { exact: true }))
