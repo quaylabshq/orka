@@ -2263,6 +2263,7 @@ async fn run_mode(foreground: bool) {
         if !user.is_empty() && !onboarding_active && !onboarding_sync {
             let queued = db::open().and_then(|db| {
                 let now = SyncQueue::now();
+                SyncQueue::recover(&db, now)?;
                 SyncQueue::accept_request(&db, now)?;
                 if reconnect {
                     SyncQueue::enqueue_all(&db, Priority::Local, "network", now)?;
