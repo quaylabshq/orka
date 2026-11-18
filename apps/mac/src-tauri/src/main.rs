@@ -43,6 +43,7 @@ mod settings_lifecycle;
 mod skill_usage;
 mod sources;
 mod sync;
+mod sync_queue;
 mod sync_schedule;
 #[cfg(test)]
 mod tests;

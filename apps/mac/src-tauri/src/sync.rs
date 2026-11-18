@@ -2,7 +2,8 @@ use crate::{
     auth,
     db::{self, Result},
     indexer, native, packages,
-    sync_schedule::{Interval, Schedule, Turn},
+    sync_queue::{Outcome, Priority, SyncQueue, WORKSPACE},
+    sync_schedule::Interval,
 };
 use fs2::FileExt;
 use rusqlite::params;
@@ -1127,7 +1128,7 @@ async fn pull(owner: &str, db: &mut rusqlite::Connection, project: &str, name: &
     Ok(())
 }
 pub async fn once() -> Result<()> {
-    cycle(&Turn::All).await.map(|_| ())
+    cycle().await.map(|_| ())
 }
 pub(crate) async fn onboarding_once(scope: Option<(&str, &str)>) -> Result<()> {
     // The current onboarding job already owns its retry lock.
@@ -1143,10 +1144,10 @@ enum WorkspaceSync {
 }
 
 // Item failures retain retry backoff without reporting a connectivity failure.
-async fn cycle(turn: &Turn) -> Result<bool> {
+async fn cycle() -> Result<bool> {
     let preparation = crate::onboarding::resume_pending_connections().await;
     // Only a service-wide failure should prevent unrelated projects from syncing.
-    workspace_turn(
+    workspace_cycle(
         preparation.or_else(|error| {
             if service_error(&error) {
                 Err(error)
@@ -1157,7 +1158,6 @@ async fn cycle(turn: &Turn) -> Result<bool> {
         None,
         None,
         None,
-        turn,
     )
     .await
     .map(|outcome| match outcome {
@@ -1165,15 +1165,6 @@ async fn cycle(turn: &Turn) -> Result<bool> {
         WorkspaceSync::Yielded => true,
     })
 }
-async fn workspace_cycle(
-    preparation: Result<()>,
-    scope: Option<(&str, &str)>,
-    project_filter: Option<&str>,
-    connection: Option<&crate::plugin_connection::Binding>,
-) -> Result<WorkspaceSync> {
-    workspace_turn(preparation, scope, project_filter, connection, &Turn::All).await
-}
-
 struct SyncSlot {
     _file: fs::File,
 }
@@ -1199,12 +1190,11 @@ impl SyncSlot {
     }
 }
 
-async fn workspace_turn(
+async fn workspace_cycle(
     preparation: Result<()>,
     scope: Option<(&str, &str)>,
     project_filter: Option<&str>,
     connection: Option<&crate::plugin_connection::Binding>,
-    turn: &Turn,
 ) -> Result<WorkspaceSync> {
     let _slot = SyncSlot::acquire(&db::base_root()?).await?;
     let _lock = crate::projects::lock()?;
@@ -1223,14 +1213,12 @@ async fn workspace_turn(
         crate::projects::active(&db, project)?;
     }
     if project_filter.is_none() {
-        if matches!(turn, Turn::All) {
-            db::set(&db, "syncHandledRequest", &db::get(&db, "syncRequest")?)?;
-        }
+        db::set(&db, "syncHandledRequest", &db::get(&db, "syncRequest")?)?;
         let _ = crate::account_profile::flush_pending().await;
     }
     progress(&db, "Preparing sync", None, 0, None)?;
     let result = match preparation {
-        Ok(()) => sync_workspace(&mut db, &owner, project_filter, turn).await,
+        Ok(()) => sync_workspace(&mut db, &owner, project_filter).await,
         Err(error) => Err(error),
     };
     let status_key = project_filter
@@ -1392,7 +1380,6 @@ impl<'a> SyncPass<'a> {
         Ok(self.device.clone().unwrap_or_default())
     }
 
-    #[expect(dead_code, reason = "the per-project sync queue runs this as one job")]
     async fn sync_workspace_global(&mut self) -> Stage {
         if self.prepare().await?.is_break() || self.connect().await?.is_break() {
             return Ok(Break(()));
@@ -1400,7 +1387,6 @@ impl<'a> SyncPass<'a> {
         self.finish().await.map(Continue)
     }
 
-    #[expect(dead_code, reason = "the per-project sync queue runs this as one job")]
     async fn sync_project(&mut self, p: &Value) -> Stage {
         if self.preflight(p)?.is_break()
             || self.authorize(p).await?.is_break()
@@ -1856,16 +1842,12 @@ async fn sync_workspace(
     db: &mut rusqlite::Connection,
     owner: &str,
     project_filter: Option<&str>,
-    turn: &Turn,
 ) -> Result<WorkspaceSync> {
     let mut pass = SyncPass::new(db, owner, project_filter);
     if pass.prepare().await?.is_break() {
         return Ok(WorkspaceSync::Yielded);
     }
-    let in_turn = |project: &Value| {
-        project_filter.is_none_or(|id| project["id"] == id)
-            && turn.includes(project["id"].as_str().unwrap_or(""))
-    };
+    let selected = |project: &Value| project_filter.is_none_or(|id| project["id"] == id);
     let local = db::rows(
         pass.db,
         &format!(
@@ -1875,7 +1857,7 @@ async fn sync_workspace(
         &[],
     )?
     .into_iter()
-    .filter(in_turn)
+    .filter(selected)
     .collect::<Vec<_>>();
     for p in &local {
         if pass.preflight(p)?.is_break() {
@@ -1894,7 +1876,7 @@ async fn sync_workspace(
         &[],
     )?
     .into_iter()
-    .filter(in_turn)
+    .filter(selected)
     .collect::<Vec<_>>();
     for p in &local {
         if pass.authorize(p).await?.is_break() {
@@ -1913,32 +1895,97 @@ async fn sync_workspace(
     }
     pass.finish().await?;
     let db = pass.db;
-    let has_errors: bool = if matches!(turn, Turn::All) {
-        db.query_row("SELECT EXISTS(SELECT 1 FROM errors)", [], |r| r.get(0))
-            .map_err(|e| e.to_string())?
-    } else {
-        // An error in another project should not shorten this turn's interval.
-        let errors = db::rows(
-            db,
-            "SELECT json_object('source', errors.source, 'project', resources.project)
-             FROM errors LEFT JOIN resources ON resources.id=errors.source",
-            &[],
-        )?;
-        local.iter().filter_map(|p| p["id"].as_str()).any(|id| {
-            errors.iter().any(|error| {
-                error["project"] == id
-                    || error["source"] == id
-                    || error["source"].as_str().is_some_and(|source| {
-                        source
-                            .strip_prefix(id)
-                            .is_some_and(|suffix| suffix.starts_with(':'))
-                    })
-            })
-        })
-    };
+    let has_errors: bool = db
+        .query_row("SELECT EXISTS(SELECT 1 FROM errors)", [], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
     Ok(WorkspaceSync::Complete(
         !pass.deferred.is_empty() || has_errors,
     ))
+}
+
+/// Runs ready queue jobs one at a time, releasing the shared sync slot and the
+/// workspace lock between jobs, until none is ready or foreground work waits.
+async fn drain_queue(queue: &mut SyncQueue, interval: &Interval) {
+    let Ok(base) = db::base_root() else { return };
+    loop {
+        let next = db::open().and_then(|db| SyncQueue::next(&db, SyncQueue::now()));
+        let Ok(Some(job)) = next else { return };
+        if job.project == WORKSPACE {
+            // Onboarding takes the workspace lock itself, so it resumes outside a job.
+            let _ = crate::onboarding::resume_pending_connections().await;
+        }
+        let Ok(_slot) = SyncSlot::acquire(&base).await else {
+            return;
+        };
+        if !matches!(queue.run_next(interval, run_job).await, Ok(true)) {
+            return;
+        }
+    }
+}
+
+/// One queue job, in full-scan mode: the workspace-wide steps or one project's.
+async fn run_job(db: &mut rusqlite::Connection, job: &crate::sync_queue::Job) -> Result<Outcome> {
+    let result = sync_job(db, job).await;
+    let previous = db::get(db, "sync")?;
+    let status = match &result {
+        Ok(Outcome::Yielded) => previous,
+        Ok(_) => json!({"online":true,"lastSync":db::now(),"updatedAt":db::now()}),
+        Err(error) => {
+            json!({"online":false,"lastSync":previous["lastSync"],"error":error,"updatedAt":db::now()})
+        }
+    };
+    db::set(db, "sync", &status)?;
+    // Keep the progress label across consecutive jobs instead of flashing it off.
+    let more = SyncQueue::next(db, SyncQueue::now())?.is_some();
+    if !more || crate::projects::foreground_waiting()? {
+        db::set(db, "syncProgress", &Value::Null)?;
+    }
+    if !matches!(result, Ok(Outcome::Yielded)) {
+        let error = result.as_ref().err().map(String::as_str);
+        let _ = crate::onboarding::reconcile_workspace_sync(db, error);
+    }
+    result
+}
+
+async fn sync_job(db: &mut rusqlite::Connection, job: &crate::sync_queue::Job) -> Result<Outcome> {
+    let owner = db::get(db, "user")?
+        .as_str()
+        .ok_or("Sign in required")?
+        .to_string();
+    if job.project == WORKSPACE {
+        let _ = crate::account_profile::flush_pending().await;
+        progress(db, "Preparing sync", None, 0, None)?;
+    }
+    let project = db::rows(
+        db,
+        &format!(
+            "SELECT value FROM projects WHERE id=? AND {}",
+            crate::projects::ACTIVE
+        ),
+        &[&job.project],
+    )?;
+    let mut pass = SyncPass::new(db, &owner, None);
+    let flow = match project.first() {
+        _ if job.project == WORKSPACE => pass.sync_workspace_global().await?,
+        Some(p) => pass.sync_project(p).await?,
+        // Removed or archived since it was queued.
+        None => return Ok(Outcome::Synced),
+    };
+    let errors: bool = pass
+        .db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM errors WHERE source=?1 OR substr(source,1,length(?1)+1)=?1||':' OR source IN (SELECT id FROM resources WHERE project=?1))",
+            [&job.project],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(if flow.is_break() {
+        Outcome::Yielded
+    } else if !pass.deferred.is_empty() || errors {
+        Outcome::Deferred
+    } else {
+        Outcome::Synced
+    })
 }
 
 pub(crate) fn record_result(
@@ -2164,8 +2211,7 @@ async fn run_mode(foreground: bool) {
         return;
     }
     let executable_identity = db::executable_identity().unwrap_or_default();
-    let mut schedule = Schedule::default();
-    let mut last_request = None;
+    let mut queue = SyncQueue::new(SyncQueue::now());
     let mut beat = Instant::now();
     let mut network_poll = Instant::now();
     let mut network = String::new();
@@ -2183,11 +2229,6 @@ async fn run_mode(foreground: bool) {
         }
         let cfg = db::get(&db, "config").unwrap_or(json!({}));
         let interval = Interval::from_config(&cfg);
-        let request = db::get(&db, "syncRequest")
-            .unwrap_or(Value::Null)
-            .as_str()
-            .unwrap_or("")
-            .to_string();
         let user = db::get(&db, "user")
             .unwrap_or(Value::Null)
             .as_str()
@@ -2208,18 +2249,6 @@ async fn run_mode(foreground: bool) {
         } else {
             false
         };
-        let handled = last_request.get_or_insert_with(|| {
-            db::get(&db, "syncHandledRequest")
-                .ok()
-                .and_then(|value| value.as_str().map(str::to_owned))
-                .unwrap_or_default()
-        });
-        let now = Instant::now();
-        let turn = if !user.is_empty() && schedule.observe(&db, now).is_ok() {
-            schedule.turn(now, &interval, request != *handled || reconnect)
-        } else {
-            None
-        };
         db::set(
             &db,
             "daemon",
@@ -2231,10 +2260,18 @@ async fn run_mode(foreground: bool) {
             .and_then(|db| crate::onboarding::snapshot(&db))
             .is_ok_and(|value| value["active"] == true);
         let onboarding_sync = crate::onboarding::sync_running().unwrap_or(false);
-        if let Some(turn) = turn.filter(|_| !onboarding_active && !onboarding_sync) {
-            last_request = Some(request);
-            let result = cycle(&turn).await;
-            schedule.finish(&turn, Instant::now(), &interval, &result);
+        if !user.is_empty() && !onboarding_active && !onboarding_sync {
+            let queued = db::open().and_then(|db| {
+                let now = SyncQueue::now();
+                SyncQueue::accept_request(&db, now)?;
+                if reconnect {
+                    SyncQueue::enqueue_all(&db, Priority::Local, "network", now)?;
+                }
+                queue.enqueue_due(&db, now, &interval)
+            });
+            if queued.is_ok() {
+                drain_queue(&mut queue, &interval).await;
+            }
         }
         if !onboarding_active && !user.is_empty() && Instant::now() >= beat {
             let _ = heartbeat().await;
