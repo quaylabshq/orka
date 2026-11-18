@@ -42,6 +42,16 @@ pub fn snapshot() -> Result<Value> {
         ),
         &[],
     )?;
+    // Archived, deleted, and unreachable projects keep their place in the
+    // sidebar so the reason and the local copy stay visible.
+    let inactive = db::rows(
+        &db,
+        &format!(
+            "SELECT value FROM projects WHERE coalesce(json_extract(value,'$.hidden'),0)=0 AND NOT ({}) ORDER BY json_extract(value,'$.name')",
+            projects::ACTIVE
+        ),
+        &[],
+    )?;
     for project in &mut projects {
         if let Some(sources) = project["sources"].as_array_mut() {
             for source in sources {
@@ -71,7 +81,7 @@ pub fn snapshot() -> Result<Value> {
     Ok(json!({
         "profile":crate::profiles::current(), "onboarding":onboarding, "accountProfile":db::get(&db,"accountProfile")?,
         "user":db::get(&db,"user")?, "config":db::get(&db,"config")?,
-        "projects":projects, "localSkills":local_skills,
+        "projects":projects, "inactive":inactive, "localSkills":local_skills,
         "managedProjects":db::rows(&db,"SELECT json_set(value,'$.pendingChanges',(SELECT count(*) FROM outbox WHERE project=projects.id)+(SELECT count(*) FROM meta WHERE ? AND key LIKE 'env:%:pending:%' AND json_extract(value,'$.sourceRemoval') IS NULL AND json_extract(value,'$.header.manifest.projectId')=projects.id)) FROM projects ORDER BY json_extract(value,'$.name')",&[&crate::env::enabled()])?,
         "resources":resources, "bindings":scoped("bindings")?, "conflicts":scoped("conflicts")?,
         "drafts":scoped("drafts")?,
@@ -737,6 +747,11 @@ pub async fn resume_session(
 #[tauri::command]
 pub fn export_bundle(id: String, path: String) -> Result<()> {
     bundles::export(&db::open()?, &id, &PathBuf::from(path))
+}
+/// Keeps a copy of an inactive project's cached work before it leaves this Mac.
+#[tauri::command]
+pub fn export_project(project_id: String, destination: String) -> Result<()> {
+    bundles::export_project(&db::open()?, &project_id, &PathBuf::from(destination))
 }
 #[tauri::command]
 pub fn import_bundle(

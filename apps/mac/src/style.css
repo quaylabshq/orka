@@ -488,6 +488,23 @@
     outline: 1px solid var(--focus-ring);
     outline-offset: -1px;
   }
+  .project-menu-item-inactive {
+    @apply text-muted;
+    display: grid;
+    grid-template-columns: 16px minmax(0, 1fr) auto;
+    align-items: center;
+    column-gap: 8px;
+    row-gap: 2px;
+  }
+  .project-menu-badge {
+    @apply shrink-0 rounded px-1.5 py-0.5 text-body-2xs;
+    grid-column: 2 / -1;
+    justify-self: start;
+    max-width: 100%;
+    background: var(--metadata-pill-surface);
+    color: var(--text-tertiary);
+    overflow-wrap: anywhere;
+  }
   .project-menu-folder {
     @apply shrink-0 text-secondary;
   }
@@ -2162,6 +2179,36 @@
 }
 .project-menu-item:focus-visible {
   outline-offset: -2px;
+}
+.inactive-project {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.inactive-project-banner {
+  align-items: flex-start;
+  gap: 16px;
+}
+.inactive-project-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.inactive-project-copy strong {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+.inactive-project-copy p {
+  margin: 0;
+  color: var(--text-secondary);
+}
+.inactive-project-actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 8px;
+}
+.inactive-project > .content-message {
+  padding: 24px 28px;
 }
 .sidebar-toggle-icons {
   display: grid;

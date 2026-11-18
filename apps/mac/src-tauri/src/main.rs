@@ -327,6 +327,7 @@ fn main() {
                 commands::session_launch_options,
                 commands::session_handoff_prompt,
                 commands::export_bundle,
+                commands::export_project,
                 commands::import_bundle,
                 global_skills::scan_global_skills,
                 global_skills::add_global_skill,

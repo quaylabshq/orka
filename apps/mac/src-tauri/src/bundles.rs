@@ -6,10 +6,113 @@ use serde_json::{json, Value};
 use std::{
     collections::BTreeSet,
     fs,
-    io::{Read, Write},
+    io::{Read, Seek, Write},
     path::Path,
 };
 use uuid::Uuid;
+
+/// Writes one zip of the project's cached resources and local drafts, so work
+/// left on this Mac survives removing the project. Local folders stay untouched.
+pub fn export_project(db: &rusqlite::Connection, project: &str, path: &Path) -> Result<()> {
+    let saved = db::rows(db, "SELECT value FROM projects WHERE id=?", &[&project])?
+        .into_iter()
+        .next()
+        .ok_or("Project not found")?;
+    let resources = db::rows(
+        db,
+        "SELECT value FROM resources WHERE project=? AND coalesce(json_extract(value,'$.deleted'),0)=0 ORDER BY id",
+        &[&project],
+    )?;
+    let drafts = db::rows(
+        db,
+        "SELECT value FROM drafts WHERE project=? ORDER BY id",
+        &[&project],
+    )?;
+    let header = json!({"version":1,"exportedAt":db::now(),"project":{"id":saved["id"],"name":crate::projects::display_name(&saved),"role":saved["role"]},"resources":resources.len(),"drafts":drafts.len()});
+    let parent = path.parent().ok_or("Missing output parent")?;
+    if !parent.is_dir() {
+        return Err("Choose an existing folder for the export".into());
+    }
+    let mut staged = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
+    {
+        let mut zip = zip::ZipWriter::new(staged.as_file_mut());
+        let options = options();
+        write_json(&mut zip, "project.json", &header, options)?;
+        for r in &resources {
+            let folder = format!(
+                "resources/{}/",
+                r["resourceId"].as_str().ok_or("Missing resource")?
+            );
+            write_json(&mut zip, &format!("{folder}resource.json"), r, options)?;
+            write_blobs(&mut zip, options, r, &folder)?;
+            // A session whose native files are gone still exports its cache.
+            let _ = write_transcript(&mut zip, options, r, &folder);
+        }
+        for draft in &drafts {
+            let folder = format!("drafts/{}/", draft["id"].as_str().ok_or("Missing draft")?);
+            write_json(&mut zip, &format!("{folder}draft.json"), draft, options)?;
+            write_blobs(&mut zip, options, &draft["resource"], &folder)?;
+        }
+        zip.finish().map_err(|e| e.to_string())?;
+    }
+    staged.as_file().sync_all().map_err(|e| e.to_string())?;
+    staged.persist(path).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn options() -> zip::write::SimpleFileOptions {
+    zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated)
+        .unix_permissions(0o644)
+}
+
+fn write_json<W: Write + Seek>(
+    zip: &mut zip::ZipWriter<W>,
+    name: &str,
+    value: &Value,
+    options: zip::write::SimpleFileOptions,
+) -> Result<()> {
+    zip.start_file(name, options).map_err(|e| e.to_string())?;
+    zip.write_all(value.to_string().as_bytes())
+        .map_err(|e| e.to_string())
+}
+
+fn write_blobs<W: Write + Seek>(
+    zip: &mut zip::ZipWriter<W>,
+    options: zip::write::SimpleFileOptions,
+    resource: &Value,
+    prefix: &str,
+) -> Result<()> {
+    let mut seen = BTreeSet::new();
+    for file in resource["files"].as_array().ok_or("Missing files")? {
+        let hash = file["hash"].as_str().ok_or("Missing hash")?;
+        if !seen.insert(hash) {
+            continue;
+        }
+        zip.start_file(format!("{prefix}blobs/{hash}"), options)
+            .map_err(|e| e.to_string())?;
+        zip.write_all(&db::blob_read(hash)?)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn write_transcript<W: Write + Seek>(
+    zip: &mut zip::ZipWriter<W>,
+    options: zip::write::SimpleFileOptions,
+    resource: &Value,
+    prefix: &str,
+) -> Result<()> {
+    if resource["kind"] != "session" {
+        return Ok(());
+    }
+    let records = crate::history::resource_records(resource)?;
+    zip.start_file(format!("{prefix}transcript.md"), options)
+        .map_err(|e| e.to_string())?;
+    zip.write_all(native::transcript(&records).as_bytes())
+        .map_err(|e| e.to_string())
+}
+
 pub fn export(db: &rusqlite::Connection, id: &str, path: &Path) -> Result<()> {
     let r = crate::local_resources::resource(db, id)?;
     let r = crate::session_forks::current_resource(db, &r)?;
@@ -25,35 +128,14 @@ pub fn export(db: &rusqlite::Connection, id: &str, path: &Path) -> Result<()> {
     let mut staged = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
     {
         let mut zip = zip::ZipWriter::new(staged.as_file_mut());
-        let options = zip::write::SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Deflated)
-            .unix_permissions(0o644);
+        let options = options();
         let mut manifest = json!({"version":2,"origin":{"projectId":r["projectId"],"resourceId":r["resourceId"],"governed":project["governed"]==true},"resource":{"resourceId":r["resourceId"],"kind":r["kind"],"source":r["source"],"logicalPath":r["logicalPath"],"title":r["title"],"files":r["files"],"contextSources":r["contextSources"].as_array().cloned().unwrap_or_default(),"deleted":false}});
         if r["sourceId"].is_string() {
             manifest["resource"]["sourceId"] = r["sourceId"].clone();
         }
-        zip.start_file("manifest.json", options)
-            .map_err(|e| e.to_string())?;
-        zip.write_all(manifest.to_string().as_bytes())
-            .map_err(|e| e.to_string())?;
-        let mut seen = BTreeSet::new();
-        for f in r["files"].as_array().ok_or("Missing files")? {
-            let hash = f["hash"].as_str().ok_or("Missing hash")?;
-            if !seen.insert(hash) {
-                continue;
-            }
-            zip.start_file(format!("blobs/{hash}"), options)
-                .map_err(|e| e.to_string())?;
-            zip.write_all(&db::blob_read(hash)?)
-                .map_err(|e| e.to_string())?;
-        }
-        if r["kind"] == "session" {
-            let records = crate::history::resource_records(&r)?;
-            zip.start_file("transcript.md", options)
-                .map_err(|e| e.to_string())?;
-            zip.write_all(native::transcript(&records).as_bytes())
-                .map_err(|e| e.to_string())?;
-        }
+        write_json(&mut zip, "manifest.json", &manifest, options)?;
+        write_blobs(&mut zip, options, &r, "")?;
+        write_transcript(&mut zip, options, &r, "")?;
         zip.finish().map_err(|e| e.to_string())?;
     }
     staged.as_file().sync_all().map_err(|e| e.to_string())?;
