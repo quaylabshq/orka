@@ -858,7 +858,7 @@ function WorkspaceApp({
                       await refreshQueue();
                     },
                     {
-                      successTitle: "Sync cancelled",
+                      successTitle: "Cancellation requested",
                       kind: "queued",
                       errorTitle: "Couldn’t cancel sync",
                     },

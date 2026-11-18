@@ -990,11 +990,11 @@ pub(crate) fn progress(
     completed: usize,
     total: Option<usize>,
 ) -> Result<()> {
-    db::set(
-        db,
-        "syncProgress",
-        &json!({"label":label,"detail":detail,"completed":completed,"total":total}),
-    )
+    let mut value = json!({"label":label,"detail":detail,"completed":completed,"total":total});
+    if let Some(project) = SyncQueue::progress_project(db)? {
+        value["projectId"] = json!(project);
+    }
+    db::set(db, "syncProgress", &value)
 }
 
 pub struct Summary {
@@ -1202,6 +1202,7 @@ async fn workspace_cycle(
         connection.check_current()?;
     }
     let mut db = db::open()?;
+    SyncQueue::clear_progress_scope(&db)?;
     let user = db::get(&db, "user")?;
     let owner = user.as_str().ok_or("Sign in required")?.to_string();
     if let Some((expected, service)) = scope {
@@ -1982,7 +1983,8 @@ async fn run_job(db: &mut rusqlite::Connection, job: &crate::sync_queue::Job) ->
         }
     };
     db::set(db, "sync", &status)?;
-    // Keep the progress label across consecutive jobs instead of flashing it off.
+    // Stop showing progress before giving up the workspace lock. Settlement
+    // also invalidates claim-bound progress before the next job starts.
     let more = SyncQueue::next(db, SyncQueue::now())?.is_some();
     if !more || crate::projects::foreground_waiting()? {
         db::set(db, "syncProgress", &Value::Null)?;

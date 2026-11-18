@@ -1,4 +1,10 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { Snapshot, SyncQueueEntry } from "../types.js";
 import type { ProjectAttention } from "./sync-attention.js";
@@ -18,7 +24,7 @@ const state: Snapshot = {
   activity: [],
   outbox: [],
   errors: [],
-  sync: { online: true },
+  sync: { online: true, lastSync: "2026-11-19T00:00:00Z" },
   daemon: { running: true },
   devices: [],
   deviceId: "device",
@@ -47,11 +53,16 @@ const entry = (
   ...extra,
 });
 
-function show(queue: SyncQueueEntry[], onCancel = vi.fn()) {
-  render(
+function menu(
+  queue: SyncQueueEntry[],
+  snapshot = state,
+  onCancel = vi.fn(),
+  review: ProjectAttention = attention,
+) {
+  return (
     <SyncMenu
-      state={state}
-      attention={attention}
+      state={snapshot}
+      attention={review}
       busy={false}
       open
       queue={queue}
@@ -61,9 +72,17 @@ function show(queue: SyncQueueEntry[], onCancel = vi.fn()) {
       onSettings={vi.fn()}
       onConnect={vi.fn()}
       onOpen={vi.fn()}
-    />,
+    />
   );
-  return onCancel;
+}
+
+function row(project: string) {
+  const rows = Array.from(
+    document.querySelectorAll<HTMLElement>(".sync-queue-row"),
+  );
+  const result = rows.find((element) => element.textContent?.includes(project));
+  expect(result, `Queue row for ${project}`).toBeTruthy();
+  return result!;
 }
 
 beforeEach(() => {
@@ -82,51 +101,190 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-test("each queued project shows its own state", () => {
-  const notBefore = new Date();
-  notBefore.setHours(14, 35, 0, 0);
-  show([
-    entry("one", { state: "running" }),
-    entry("two"),
-    entry("three", {
-      state: "waiting",
-      attempts: 2,
-      notBefore: notBefore.toISOString(),
-    }),
-  ]);
-  expect(screen.getByText("Orka")).toBeTruthy();
-  expect(screen.getByText("Syncing")).toBeTruthy();
-  expect(screen.getByText("Docs")).toBeTruthy();
-  expect(screen.getByText("Queued")).toBeTruthy();
-  expect(screen.getByText("Site")).toBeTruthy();
-  const label = notBefore.toLocaleTimeString([], {
-    hour: "numeric",
-    minute: "2-digit",
-  });
-  expect(screen.getByText(`Retrying at ${label}`)).toBeTruthy();
+test("the panel identifies its scope and keeps an idle queue compact", () => {
+  render(menu([]));
+  expect(screen.getByText("All projects")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Sync now" })).toBeTruthy();
+  expect(document.querySelector(".sync-queue-row")).toBeNull();
+  expect(screen.queryByRole("progressbar")).toBeNull();
 });
 
-test("Cancel calls the command's project and a waiting job offers none", () => {
-  const onCancel = show([
-    entry("one", { state: "running" }),
-    entry("two"),
-    entry("three", {
-      state: "waiting",
-      attempts: 1,
-      notBefore: new Date().toISOString(),
+test("active project progress belongs to its row above the waiting projects", () => {
+  render(
+    menu([entry("one", { state: "running" }), entry("two")], {
+      ...state,
+      syncProgress: {
+        projectId: "one",
+        label: "Uploading changes",
+        detail: "Orka · AGENTS.md",
+        completed: 2,
+        total: 8,
+      },
     }),
-  ]);
-  fireEvent.click(screen.getByRole("button", { name: "Cancel sync for Docs" }));
-  expect(onCancel).toHaveBeenCalledWith("two");
+  );
+  const active = row("Orka");
+  expect(active.closest(".sync-menu-progress")).toBeTruthy();
   expect(
-    screen.queryByRole("button", { name: "Cancel sync for Site" }),
-  ).toBeNull();
-  expect(
-    screen.getByRole("button", { name: "Cancel sync for Orka" }),
+    within(active).getByRole("button", { name: "Cancel sync for Orka" }),
   ).toBeTruthy();
+  expect(document.querySelector(".sync-menu-progress")?.textContent).toContain(
+    "Uploading changes",
+  );
+  expect(document.querySelector(".sync-menu-progress")?.textContent).toContain(
+    "AGENTS.md",
+  );
+  const bar = screen.getByRole("progressbar", { name: "Uploading changes" });
+  expect(bar.getAttribute("aria-valuenow")).toBe("2");
+  expect(bar.getAttribute("aria-valuemax")).toBe("8");
+  expect(row("Docs").closest(".sync-menu-feed")).toBeTruthy();
+  expect(document.querySelectorAll(".sync-queue-row")).toHaveLength(2);
 });
 
-test("an idle queue adds nothing to the panel", () => {
-  show([]);
-  expect(screen.queryByText("Queue")).toBeNull();
+test("waiting retries have a relative label, an exact retry time and Cancel", () => {
+  const at = new Date(Date.now() + 120_000);
+  const onCancel = vi.fn();
+  render(
+    menu(
+      [
+        entry("three", {
+          state: "waiting",
+          attempts: 2,
+          notBefore: at.toISOString(),
+        }),
+      ],
+      state,
+      onCancel,
+    ),
+  );
+  const waiting = row("Site");
+  expect(waiting.textContent).toContain("Waiting to retry");
+  expect(waiting.textContent).toMatch(/in 2 min/);
+  expect(
+    Array.from(waiting.querySelectorAll("[title]")).some((element) =>
+      element.getAttribute("title")?.includes(at.toLocaleString()),
+    ),
+  ).toBe(true);
+  fireEvent.click(
+    within(waiting).getByRole("button", { name: "Cancel sync for Site" }),
+  );
+  expect(onCancel).toHaveBeenCalledExactlyOnceWith("three");
+});
+
+test("Cancel targets each running or queued project's identity", () => {
+  const onCancel = vi.fn();
+  render(
+    menu([entry("one", { state: "running" }), entry("two")], state, onCancel),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Cancel sync for Docs" }));
+  fireEvent.click(screen.getByRole("button", { name: "Cancel sync for Orka" }));
+  expect(onCancel.mock.calls).toEqual([["two"], ["one"]]);
+});
+
+test("a cancelled active project stays visible as stopping until its worker settles", () => {
+  const onCancel = vi.fn();
+  const view = render(
+    menu([entry("one", { state: "running" }), entry("two")], state, onCancel),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Cancel sync for Orka" }));
+  view.rerender(
+    menu(
+      [entry("one", { state: "running", cancelRequested: true }), entry("two")],
+      state,
+      onCancel,
+    ),
+  );
+  const stopping = row("Orka");
+  expect(stopping.textContent).toContain("Stopping");
+  const stop = within(stopping).getByRole("button");
+  expect(stop.hasAttribute("disabled")).toBe(true);
+  fireEvent.click(stop);
+  expect(onCancel).toHaveBeenCalledExactlyOnceWith("one");
+  view.rerender(menu([entry("two")], state, onCancel));
+  expect(document.querySelector(".sync-menu-progress")).toBeNull();
+  expect(document.querySelectorAll(".sync-queue-row")).toHaveLength(1);
+  expect(row("Docs")).toBeTruthy();
+});
+
+test("a stale phase from a different project is not attributed to the active one", () => {
+  render(
+    menu([entry("one", { state: "running" })], {
+      ...state,
+      syncProgress: {
+        projectId: "two",
+        label: "Downloading updates",
+        detail: "Docs-only private phase",
+        completed: 4,
+        total: 5,
+      },
+    }),
+  );
+  expect(row("Orka")).toBeTruthy();
+  expect(screen.queryByText("Docs-only private phase")).toBeNull();
+  expect(
+    screen.queryByRole("progressbar", { name: "Downloading updates" }),
+  ).toBeNull();
+});
+
+test("legacy and workspace progress remains readable without a project identity", () => {
+  render(
+    menu([], {
+      ...state,
+      syncProgress: {
+        label: "Connecting to sync service",
+        detail: "Refreshing devices",
+        completed: 0,
+        total: null,
+      },
+    }),
+  );
+  expect(document.querySelector(".sync-menu-progress")?.textContent).toContain(
+    "Connecting to sync service",
+  );
+  expect(document.querySelector(".sync-menu-progress")?.textContent).toContain(
+    "Refreshing devices",
+  );
+  expect(screen.queryByRole("progressbar")).toBeNull();
+});
+
+test("project activity precedes attention and technical diagnostics stay collapsed", () => {
+  render(
+    menu([entry("two")], state, vi.fn(), {
+      ...attention,
+      items: [
+        {
+          key: "file",
+          title: "A changed file",
+          messages: ["Review this file"],
+          paths: [],
+          requests: [],
+          conflicts: [],
+          uploads: [],
+        },
+      ],
+      accountIssues: [
+        {
+          source: "history:unattributed:fixture",
+          error: "Some local history is unavailable",
+        },
+      ],
+    }),
+  );
+  const heading = screen.getByRole("heading", { name: /attention/i });
+  expect(
+    Boolean(
+      row("Docs").compareDocumentPosition(heading) &
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    ),
+  ).toBe(true);
+  const details = document.querySelector(
+    "[aria-label='Account diagnostics'] details",
+  );
+  expect(details).toBeTruthy();
+  expect(details!.hasAttribute("open")).toBe(false);
+  expect(
+    Boolean(
+      heading.compareDocumentPosition(details!) &
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    ),
+  ).toBe(true);
 });

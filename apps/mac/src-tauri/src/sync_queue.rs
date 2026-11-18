@@ -8,10 +8,12 @@ use crate::{
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, sync::LazyLock, time::Duration};
 
 pub(crate) const WORKSPACE: &str = "*";
 const OUTAGE: &str = "syncOutage";
+const PROGRESS_CLAIM: &str = "syncProgressClaim";
+static PROGRESS_OWNER: LazyLock<String> = LazyLock::new(|| uuid::Uuid::new_v4().to_string());
 
 /// A cancel is written to the shared database, so it reaches whichever process
 /// runs the job. Each claim has an identity independent of pending requests,
@@ -214,6 +216,9 @@ impl SyncQueue {
     /// Only the one worker claims jobs, and it calls this between jobs.
     pub(crate) fn recover(db: &Connection, now: i64) -> Result<()> {
         let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
+        if !db::get(&tx, PROGRESS_CLAIM)?.is_null() {
+            Self::clear_progress_scope(&tx)?;
+        }
         // A cancelled run must not restart after a crash. A newer request has
         // lowered not_before and is retained independently of that old run.
         sql(tx.execute(
@@ -275,10 +280,32 @@ impl SyncQueue {
 
     /// Drops the claim and any cancel that reached it: the job is over.
     fn clear(db: &Connection, project: &str) -> Result<()> {
+        if db::get(db, PROGRESS_CLAIM)?["project"] == project {
+            Self::clear_progress_scope(db)?;
+        }
         sql(db.execute(
             "DELETE FROM meta WHERE key=?1 OR key=?2",
             params![claim_key(project), cancel_key(project)],
         ))
+    }
+
+    /// Progress belongs to an exact project job, not to whichever row the app
+    /// happens to render next. Foreground/legacy cycles explicitly clear this
+    /// context, and another process cannot use an abandoned worker's context.
+    pub(crate) fn progress_project(db: &Connection) -> Result<Option<String>> {
+        let context = db::get(db, PROGRESS_CLAIM)?;
+        let Some(project) = context["project"].as_str().filter(|id| *id != WORKSPACE) else {
+            return Ok(None);
+        };
+        Ok((context["owner"] == PROGRESS_OWNER.as_str()
+            && context["claim"].is_string()
+            && context["claim"] == db::get(db, &claim_key(project))?)
+        .then(|| project.to_string()))
+    }
+
+    pub(crate) fn clear_progress_scope(db: &Connection) -> Result<()> {
+        db::set(db, "syncProgress", &Value::Null)?;
+        sql(db.execute("DELETE FROM meta WHERE key=?", [PROGRESS_CLAIM]))
     }
 
     /// Test hook: marks a project as cancelled when no job is running.
@@ -331,7 +358,10 @@ impl SyncQueue {
         let mut query = db
             .prepare(
                 "SELECT project,reason,attempts,not_before,EXISTS(
-                 SELECT 1 FROM meta WHERE key='syncClaim:'||project AND json_type(value)='text') FROM sync_queue
+                 SELECT 1 FROM meta WHERE key='syncClaim:'||project AND json_type(value)='text'),EXISTS(
+                 SELECT 1 FROM meta claim JOIN meta cancel ON cancel.value=claim.value
+                 WHERE claim.key='syncClaim:'||project AND cancel.key='syncCancel:'||project
+                 AND json_type(claim.value)='text') FROM sync_queue
                  WHERE project<>?1 ORDER BY priority DESC,requested_at,project",
             )
             .map_err(|e| e.to_string())?;
@@ -343,26 +373,33 @@ impl SyncQueue {
                     row.get::<_, u32>(2)?,
                     row.get::<_, i64>(3)?,
                     row.get::<_, bool>(4)?,
+                    row.get::<_, bool>(5)?,
                 ))
             })
             .and_then(|rows| rows.collect::<rusqlite::Result<Vec<_>>>())
             .map_err(|e| e.to_string())?;
         let states = jobs
             .into_iter()
-            .map(|(project, reason, attempts, not_before, running)| {
-                let waiting = !running && attempts > 0 && not_before > now;
-                let state = if running {
-                    "running"
-                } else if waiting {
-                    "waiting"
-                } else {
-                    "queued"
-                };
-                json!({
-                    "projectId":project, "state":state, "reason":reason, "attempts":attempts,
-                    "notBefore": if waiting { iso(not_before) } else { None },
-                })
-            })
+            .map(
+                |(project, reason, attempts, not_before, running, cancel_requested)| {
+                    let waiting = !running && attempts > 0 && not_before > now;
+                    let state = if running {
+                        "running"
+                    } else if waiting {
+                        "waiting"
+                    } else {
+                        "queued"
+                    };
+                    let mut entry = json!({
+                        "projectId":project, "state":state, "reason":reason, "attempts":attempts,
+                        "notBefore": if waiting { iso(not_before) } else { None },
+                    });
+                    if cancel_requested {
+                        entry["cancelRequested"] = json!(true);
+                    }
+                    entry
+                },
+            )
             .collect();
         Ok(Value::Array(states))
     }
@@ -411,14 +448,17 @@ impl SyncQueue {
             .map_err(|e| e.to_string())?;
         let job = Self::next(&tx, now)?;
         if let Some(job) = &job {
+            let claim = json!(uuid::Uuid::new_v4().to_string());
             sql(tx.execute(
                 "UPDATE sync_queue SET not_before=?1 WHERE project=?2",
                 params![RUNNING, job.project],
             ))?;
+            db::set(&tx, &claim_key(&job.project), &claim)?;
+            db::set(&tx, "syncProgress", &Value::Null)?;
             db::set(
                 &tx,
-                &claim_key(&job.project),
-                &json!(uuid::Uuid::new_v4().to_string()),
+                PROGRESS_CLAIM,
+                &json!({"project":job.project,"claim":claim,"owner":PROGRESS_OWNER.as_str()}),
             )?;
         }
         tx.commit().map_err(|e| e.to_string())?;
@@ -562,6 +602,140 @@ mod tests {
 
     fn interval() -> Interval {
         Interval::from_config(&json!({"syncMinutes": 15}))
+    }
+
+    #[test]
+    fn cancellation_pending_is_visible_until_the_claim_settles() {
+        let (root, db) = queue_db(&["a"]);
+        let app = db::open_at(root.path()).unwrap();
+        let mut queue = SyncQueue::new(0);
+        SyncQueue::enqueue(&db, "a", Priority::Timer, "timer", 0).unwrap();
+        let job = SyncQueue::claim(&db, 0).unwrap().unwrap();
+        assert!(SyncQueue::states(&app, 0).unwrap()[0]["cancelRequested"].is_null());
+        // A merged request does not hide the claim, including across processes'
+        // separate database connections while the current request finishes.
+        SyncQueue::enqueue(&app, "a", Priority::Local, "indexer", 1).unwrap();
+        SyncQueue::cancel(&app, "a").unwrap();
+        let state = SyncQueue::states(&db, 2).unwrap();
+        assert_eq!(state[0]["state"], "running");
+        assert_eq!(state[0]["cancelRequested"], true);
+        // Fresh work is retained, but it does not erase the old run's stopping
+        // acknowledgement. It becomes queued only after that run settles.
+        SyncQueue::enqueue(&app, "a", Priority::Local, "new change", 2).unwrap();
+        assert_eq!(
+            SyncQueue::states(&app, 2).unwrap()[0]["cancelRequested"],
+            true
+        );
+        queue
+            .settle(&db, job, &Ok(Outcome::Cancelled), 3, &interval())
+            .unwrap();
+        let state = SyncQueue::states(&app, 3).unwrap();
+        assert_eq!(state[0]["state"], "queued");
+        assert!(state[0]["cancelRequested"].is_null());
+        SyncQueue::claim(&db, 3).unwrap().unwrap();
+        assert!(SyncQueue::states(&app, 3).unwrap()[0]["cancelRequested"].is_null());
+    }
+
+    #[test]
+    fn progress_follows_the_claimed_project_and_never_the_previous_job() {
+        let (_root, db) = queue_db(&["a", "b"]);
+        let mut queue = SyncQueue::new(0);
+        crate::sync::progress(&db, "Foreground discovery", None, 0, None).unwrap();
+        assert!(db::get(&db, "syncProgress").unwrap()["projectId"].is_null());
+        SyncQueue::enqueue(&db, "a", Priority::Local, "local", 0).unwrap();
+        SyncQueue::enqueue(&db, "b", Priority::Local, "local", 1).unwrap();
+        for (now, project) in [(0, "a"), (2, "b")] {
+            let job = SyncQueue::claim(&db, now).unwrap().unwrap();
+            assert_eq!(job.project, project);
+            assert!(db::get(&db, "syncProgress").unwrap().is_null());
+            crate::sync::progress(&db, "Uploading changes", Some("file"), 2, Some(4)).unwrap();
+            let progress = db::get(&db, "syncProgress").unwrap();
+            assert_eq!(progress["projectId"], project);
+            assert_eq!(progress["completed"], 2);
+            queue
+                .settle(&db, job, &Ok(Outcome::Synced), now + 1, &interval())
+                .unwrap();
+            assert!(db::get(&db, "syncProgress").unwrap().is_null());
+            assert_eq!(SyncQueue::progress_project(&db).unwrap(), None);
+        }
+        SyncQueue::enqueue(&db, WORKSPACE, Priority::Local, "workspace", 4).unwrap();
+        SyncQueue::claim(&db, 4).unwrap().unwrap();
+        crate::sync::progress(&db, "Connecting to sync service", None, 0, None).unwrap();
+        assert_eq!(
+            db::get(&db, "syncProgress").unwrap(),
+            json!({"label":"Connecting to sync service","detail":null,"completed":0,"total":null})
+        );
+    }
+
+    #[test]
+    fn recovery_clears_abandoned_progress_and_retains_post_cancel_requests() {
+        let (root, db) = queue_db(&["a"]);
+        SyncQueue::enqueue(&db, "a", Priority::Timer, "timer", 0).unwrap();
+        SyncQueue::claim(&db, 0).unwrap().unwrap();
+        crate::sync::progress(&db, "Uploading changes", None, 0, Some(2)).unwrap();
+        let mut context = db::get(&db, PROGRESS_CLAIM).unwrap();
+        context["owner"] = json!(uuid::Uuid::new_v4().to_string());
+        db::set(&db, PROGRESS_CLAIM, &context).unwrap();
+        // Another process's stale context can never tag foreground writes.
+        assert_eq!(SyncQueue::progress_project(&db).unwrap(), None);
+        SyncQueue::cancel(&db, "a").unwrap();
+        SyncQueue::enqueue(&db, "a", Priority::Local, "new change", 1).unwrap();
+        drop(db);
+
+        let db = db::open_at(root.path()).unwrap();
+        SyncQueue::recover(&db, 2).unwrap();
+        assert!(db::get(&db, "syncProgress").unwrap().is_null());
+        assert_eq!(SyncQueue::progress_project(&db).unwrap(), None);
+        assert_eq!(SyncQueue::states(&db, 2).unwrap()[0]["state"], "queued");
+        assert!(SyncQueue::states(&db, 2).unwrap()[0]["cancelRequested"].is_null());
+        SyncQueue::claim(&db, 2).unwrap().unwrap();
+        crate::sync::progress(&db, "Checking local files", None, 0, None).unwrap();
+        assert_eq!(db::get(&db, "syncProgress").unwrap()["projectId"], "a");
+    }
+
+    #[tokio::test]
+    async fn legacy_workspace_entry_does_not_inherit_an_abandoned_project_scope() {
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("ORKA_TEST_HOME", home.path());
+        let db = db::open().unwrap();
+        SyncQueue::enqueue(&db, "a", Priority::Timer, "timer", 0).unwrap();
+        SyncQueue::claim(&db, 0).unwrap().unwrap();
+        crate::sync::progress(&db, "Uploading changes", None, 0, None).unwrap();
+        assert_eq!(db::get(&db, "syncProgress").unwrap()["projectId"], "a");
+        // Simulate entering the legacy path after that worker died. No sign-in
+        // is present: cleanup still happens before the legacy cycle validates it.
+        assert_eq!(
+            crate::sync::onboarding_once(None).await.unwrap_err(),
+            "Sign in required"
+        );
+        assert!(db::get(&db, "syncProgress").unwrap().is_null());
+        assert_eq!(SyncQueue::progress_project(&db).unwrap(), None);
+        crate::sync::progress(&db, "Foreground discovery", None, 0, None).unwrap();
+        assert!(db::get(&db, "syncProgress").unwrap()["projectId"].is_null());
+    }
+
+    #[tokio::test]
+    async fn a_legacy_cycle_clears_an_abandoned_queue_progress_scope() {
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("ORKA_TEST_HOME", home.path());
+        let db = db::open().unwrap();
+        SyncQueue::enqueue(&db, "a", Priority::Local, "local", 0).unwrap();
+        SyncQueue::claim(&db, 0).unwrap().unwrap();
+        crate::sync::progress(&db, "Uploading changes", None, 0, Some(2)).unwrap();
+        assert_eq!(
+            SyncQueue::progress_project(&db).unwrap().as_deref(),
+            Some("a")
+        );
+        // A prior worker left its SQLite markers behind. Legacy sync acquires
+        // the workspace lock before clearing context, even when login is absent.
+        assert_eq!(
+            crate::sync::onboarding_once(None).await.unwrap_err(),
+            "Sign in required"
+        );
+        assert_eq!(SyncQueue::progress_project(&db).unwrap(), None);
+        assert!(db::get(&db, "syncProgress").unwrap().is_null());
+        crate::sync::progress(&db, "Foreground discovery", None, 0, None).unwrap();
+        assert!(db::get(&db, "syncProgress").unwrap()["projectId"].is_null());
     }
 
     #[test]
