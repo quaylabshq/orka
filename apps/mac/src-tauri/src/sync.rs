@@ -990,11 +990,11 @@ pub(crate) fn progress(
     completed: usize,
     total: Option<usize>,
 ) -> Result<()> {
-    db::set(
-        db,
-        "syncProgress",
-        &json!({"label":label,"detail":detail,"completed":completed,"total":total}),
-    )
+    let mut value = json!({"label":label,"detail":detail,"completed":completed,"total":total});
+    if let Some(project) = SyncQueue::progress_project(db)? {
+        value["projectId"] = json!(project);
+    }
+    db::set(db, "syncProgress", &value)
 }
 
 pub struct Summary {
@@ -1202,6 +1202,7 @@ async fn workspace_cycle(
         connection.check_current()?;
     }
     let mut db = db::open()?;
+    SyncQueue::clear_progress_scope(&db)?;
     let user = db::get(&db, "user")?;
     let owner = user.as_str().ok_or("Sign in required")?.to_string();
     if let Some((expected, service)) = scope {
@@ -1331,6 +1332,16 @@ fn preflight_project(db: &rusqlite::Connection, project: &Value, retry_only: boo
 /// workspace lock to a waiting foreground operation.
 type Stage = Result<ControlFlow<()>>;
 
+/// A stage boundary. A cancelled project's job stops here, between requests and
+/// transactions, so nothing is cut in half and nothing already sent is undone.
+fn boundary(db: &rusqlite::Connection, project: &str) -> Stage {
+    Ok(if SyncQueue::cancelled(db, project)? {
+        Break(())
+    } else {
+        Continue(())
+    })
+}
+
 /// How much a project's sync does. A plugin retry only resends what is already
 /// queued: it validates sources without scanning and prepares no new sharing.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1388,16 +1399,23 @@ impl<'a> SyncPass<'a> {
     }
 
     async fn sync_project(&mut self, p: &Value) -> Stage {
-        if self.prepare_project(p)?.is_break() || self.preflight(p)?.is_break() {
+        let project = p["id"].as_str().ok_or("Missing project")?;
+        if boundary(self.db, project)?.is_break()
+            || self.prepare_project(p)?.is_break()
+            || boundary(self.db, project)?.is_break()
+            || self.preflight(p)?.is_break()
+            || boundary(self.db, project)?.is_break()
+        {
             return Ok(Break(()));
         }
-        let project = p["id"].as_str().ok_or("Missing project")?;
-        // The scan can discover a teammate's continued session. Prepare its
-        // copy before this job drains uploads, without waiting for a workspace job.
+        // Include continuations discovered by this scan in the same project job.
         self.prepare_copies(Some(project))?;
-        if self.authorize(p).await?.is_break()
+        if boundary(self.db, project)?.is_break()
+            || self.authorize(p).await?.is_break()
+            || boundary(self.db, project)?.is_break()
             || self.drain_outbox(p).await?.is_break()
             || self.pull_project(p).await?.is_break()
+            || boundary(self.db, project)?.is_break()
         {
             return Ok(Break(()));
         }
@@ -1587,7 +1605,7 @@ impl<'a> SyncPass<'a> {
         );
         let uploads = outbox.batch(&queued);
         for (index, q) in uploads.iter().enumerate() {
-            if crate::projects::foreground_waiting()? {
+            if crate::projects::foreground_waiting()? || SyncQueue::cancelled(db, project)? {
                 return Ok(Break(()));
             }
             let project_name = crate::projects::display_name(p);
@@ -1719,6 +1737,9 @@ impl<'a> SyncPass<'a> {
 
     /// Rescans one project, pulls its changes and applies them on this Mac.
     async fn pull_project(&mut self, p: &Value) -> Stage {
+        if boundary(&*self.db, p["id"].as_str().unwrap_or(""))?.is_break() {
+            return Ok(Break(()));
+        }
         let db = &mut *self.db;
         let owner = self.owner;
         let retry_only = self.mode == ProjectMode::RetryOnly;
@@ -1780,7 +1801,7 @@ impl<'a> SyncPass<'a> {
             &[&project],
         )?;
         for (index, r) in resources.iter().enumerate() {
-            if crate::projects::foreground_waiting()? {
+            if crate::projects::foreground_waiting()? || SyncQueue::cancelled(db, project)? {
                 return Ok(Break(()));
             }
             let detail = format!(
@@ -1946,21 +1967,29 @@ async fn drain_queue(queue: &mut SyncQueue, interval: &Interval) {
 /// One queue job, in full-scan mode: the workspace-wide steps or one project's.
 async fn run_job(db: &mut rusqlite::Connection, job: &crate::sync_queue::Job) -> Result<Outcome> {
     let result = sync_job(db, job).await;
+    // A request already in flight may fail after Cancel was pressed. Its error
+    // must not turn the cancelled run into another retry or connectivity error.
+    let result = if SyncQueue::cancelled(db, &job.project)? {
+        Ok(Outcome::Cancelled)
+    } else {
+        result
+    };
     let previous = db::get(db, "sync")?;
     let status = match &result {
-        Ok(Outcome::Yielded) => previous,
+        Ok(Outcome::Yielded | Outcome::Cancelled) => previous,
         Ok(_) => json!({"online":true,"lastSync":db::now(),"updatedAt":db::now()}),
         Err(error) => {
             json!({"online":false,"lastSync":previous["lastSync"],"error":error,"updatedAt":db::now()})
         }
     };
     db::set(db, "sync", &status)?;
-    // Keep the progress label across consecutive jobs instead of flashing it off.
+    // Stop showing progress before giving up the workspace lock. Settlement
+    // also invalidates claim-bound progress before the next job starts.
     let more = SyncQueue::next(db, SyncQueue::now())?.is_some();
     if !more || crate::projects::foreground_waiting()? {
         db::set(db, "syncProgress", &Value::Null)?;
     }
-    if !matches!(result, Ok(Outcome::Yielded)) {
+    if !matches!(result, Ok(Outcome::Yielded | Outcome::Cancelled)) {
         let error = result.as_ref().err().map(String::as_str);
         let _ = crate::onboarding::reconcile_workspace_sync(db, error);
     }
@@ -1999,7 +2028,9 @@ async fn sync_job(db: &mut rusqlite::Connection, job: &crate::sync_queue::Job) -
             |r| r.get(0),
         )
         .map_err(|e| e.to_string())?;
-    Ok(if flow.is_break() {
+    Ok(if SyncQueue::cancelled(pass.db, &job.project)? {
+        Outcome::Cancelled
+    } else if flow.is_break() {
         Outcome::Yielded
     } else if !pass.deferred.is_empty() || errors {
         Outcome::Deferred
@@ -2307,6 +2338,39 @@ mod queue_tests {
     use super::*;
 
     #[tokio::test]
+    async fn a_cancelled_job_does_not_retry_a_late_job_error() {
+        for requested_again in [false, true] {
+            let home = tempfile::tempdir().unwrap();
+            std::env::set_var("ORKA_TEST_HOME", home.path());
+            let db = db::open().unwrap();
+            let previous = json!({"online":true,"lastSync":"2026-11-19T00:00:00Z"});
+            db::set(&db, "sync", &previous).unwrap();
+            let project = uuid::Uuid::new_v4().to_string();
+            SyncQueue::request(&db, &project, Priority::User, "sync now").unwrap();
+            let app = db::open().unwrap();
+            let mut queue = SyncQueue::new(SyncQueue::now());
+            assert!(queue
+                .run_next(&Interval::from_config(&json!({})), async |db, job| {
+                    SyncQueue::cancel(&app, &project)?;
+                    if requested_again {
+                        SyncQueue::request(&app, &project, Priority::Local, "new change")?;
+                    }
+                    // No signed-in user: sync_job returns an error before its
+                    // final cancellation check, just as a failed request can.
+                    run_job(db, job).await
+                })
+                .await
+                .unwrap());
+            assert_eq!(db::get(&db, "sync").unwrap(), previous);
+            let pending = SyncQueue::next(&db, SyncQueue::now()).unwrap();
+            assert_eq!(pending.is_some(), requested_again);
+            if let Some(job) = pending {
+                assert_eq!(job.project, project);
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn another_profile_waits_for_the_shared_sync_slot() {
         let base = tempfile::tempdir().unwrap();
         let first = SyncSlot::acquire(base.path()).await.unwrap();
@@ -2482,6 +2546,45 @@ mod queue_tests {
         assert_eq!(next[0]["sequence"], 101);
         assert_eq!(next[1]["sequence"], 1);
         assert_eq!(select_uploads(&queue, 1000)[0]["sequence"], 1);
+    }
+
+    #[test]
+    fn only_a_cancelled_project_stops_at_a_stage_boundary() {
+        let (_root, db) = outbox_db(&[]);
+        let project = uuid::Uuid::new_v4().to_string();
+        assert!(boundary(&db, &project).unwrap().is_continue());
+        SyncQueue::mark_cancelled(&db, &project).unwrap();
+        assert!(boundary(&db, &project).unwrap().is_break());
+        assert!(boundary(&db, &uuid::Uuid::new_v4().to_string())
+            .unwrap()
+            .is_continue());
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_job_stops_before_its_next_request_and_keeps_the_outbox() {
+        let (_root, db) = outbox_db(&[]);
+        let project = uuid::Uuid::new_v4().to_string();
+        db.execute(
+            "INSERT INTO projects VALUES(?,?)",
+            params![project, json!({"id": project}).to_string()],
+        )
+        .unwrap();
+        db::set(&db, "user", &json!(uuid::Uuid::new_v4().to_string())).unwrap();
+        let mut db = db;
+        enqueue(&db, &project, "memory");
+        enqueue(&db, &project, "skill");
+        SyncQueue::request(&db, &project, Priority::User, "sync now").unwrap();
+        let job = SyncQueue::next(&db, i64::MAX - 1).unwrap().unwrap();
+        SyncQueue::mark_cancelled(&db, &project).unwrap();
+        let outcome = sync_job(&mut db, &job).await;
+        assert!(matches!(outcome, Ok(Outcome::Cancelled)), "{outcome:?}");
+        // Nothing already sent is rolled back and nothing unsent is dropped.
+        assert_eq!(
+            db::rows(&db, "SELECT value FROM outbox", &[])
+                .unwrap()
+                .len(),
+            2
+        );
     }
 
     fn outbox_db(projects: &[&str]) -> (tempfile::TempDir, rusqlite::Connection) {
