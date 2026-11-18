@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { settingsFixture } from "./fixtures/settings.js";
 
-test("invitation modes stay grouped and link rules appear once after copying", async ({
+test("invite modes stay grouped and link rules appear once after copying", async ({
   page,
 }) => {
   await page.addInitScript(() => {
@@ -12,11 +12,14 @@ test("invitation modes stay grouped and link rules appear once after copying", a
   const settings = await settingsFixture(page, { emailInvites: true });
   await settings.getByRole("button", { name: "Members", exact: true }).click();
   await settings
-    .getByRole("button", { name: "Add Member", exact: true })
+    .getByRole("button", { name: "Invite member", exact: true })
     .click();
-  const dialog = page.getByRole("dialog", { name: "Add Member", exact: true });
+  const dialog = page.getByRole("dialog", {
+    name: "Invite member",
+    exact: true,
+  });
   const modes = dialog.getByRole("group", {
-    name: "Invitation method",
+    name: "Invite method",
     exact: true,
   });
   await expect(
@@ -27,7 +30,7 @@ test("invitation modes stay grouped and link rules appear once after copying", a
     .fill("teammate@example.com");
   await modes.getByRole("button", { name: "Link", exact: true }).click();
   await dialog
-    .getByRole("button", { name: "Copy joining link", exact: true })
+    .getByRole("button", { name: "Copy invite link", exact: true })
     .click();
   await expect(dialog.getByRole("status")).toHaveText("Link copied.");
   await expect(dialog.getByText(/24 hours/)).toHaveCount(1);

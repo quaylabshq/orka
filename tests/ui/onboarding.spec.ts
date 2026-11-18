@@ -1172,7 +1172,7 @@ test("profile, projects, sync, background choice, and fresh one-use invites reac
     .first()
     .click();
   await page
-    .getByRole("button", { name: "Copy joining link", exact: true })
+    .getByRole("button", { name: "Copy invite link", exact: true })
     .click();
   await expect(page.getByRole("status")).toContainText("Link copied.");
   await page.getByRole("button", { name: "Done", exact: true }).click();
@@ -1560,10 +1560,10 @@ test("email invites are primary during onboarding", async ({ page }) => {
   await expect(dialog.getByLabel("Email address")).toBeVisible();
   await dialog.getByLabel("Email address").fill("teammate@example.com");
   await dialog
-    .getByRole("button", { name: "Send invitation", exact: true })
+    .getByRole("button", { name: "Send invite", exact: true })
     .click();
   await expect(dialog.getByRole("status")).toContainText(
-    "Invitation sent to teammate@example.com",
+    "Invite sent to teammate@example.com",
   );
   expect(
     (await calls(page)).filter((call) => call.args.action === "invite"),
@@ -1577,7 +1577,7 @@ test("email invites are primary during onboarding", async ({ page }) => {
   ).toBeEnabled();
 });
 
-test("pending invitation blocks closing and duplicate submissions", async ({
+test("pending invite blocks closing and duplicate submissions", async ({
   page,
 }) => {
   await fixture(page, {
@@ -1590,7 +1590,7 @@ test("pending invitation blocks closing and duplicate submissions", async ({
     .click();
   const dialog = page.getByRole("dialog", { name: "Invite member" });
   const copy = dialog.getByRole("button", {
-    name: "Copy joining link",
+    name: "Copy invite link",
     exact: true,
   });
   await copy.click();
@@ -1621,14 +1621,14 @@ test("clipboard failure retries the same invite instead of creating another", as
     .click();
   const dialog = page.getByRole("dialog", { name: "Invite member" });
   await dialog
-    .getByRole("button", { name: "Copy joining link", exact: true })
+    .getByRole("button", { name: "Copy invite link", exact: true })
     .click();
   await expect(dialog.getByRole("alert")).toContainText("Couldn’t copy");
-  await expect(dialog.getByLabel("Joining link")).toHaveValue(
+  await expect(dialog.getByLabel("Invite link")).toHaveValue(
     "https://cloud.example.test/join/token-1",
   );
   await dialog
-    .getByRole("button", { name: "Copy joining link", exact: true })
+    .getByRole("button", { name: "Copy invite link", exact: true })
     .click();
   await expect(dialog.getByRole("status")).toContainText("Link copied.");
   expect(

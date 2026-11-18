@@ -52,9 +52,9 @@ function description(
     case "project.source_removed":
       return `${actor} removed a source folder from the project`;
     case "invite.created":
-      return `${actor} created a member invitation`;
+      return `${actor} created a member invite`;
     case "invite.revoked":
-      return `${actor} revoked a member invitation`;
+      return `${actor} revoked a member invite`;
     case "access.granted":
       return `${actor} updated access for ${subject}`;
     case "env.replaced":

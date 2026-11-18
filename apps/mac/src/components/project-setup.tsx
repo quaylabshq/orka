@@ -16,6 +16,8 @@ import { ProjectSharingChoices } from "./project-sharing.js";
 import { SegmentedControl } from "./segmented-control.js";
 import type { ProjectSharing } from "../types.js";
 import { SourceFolders, type useSourceFolders } from "./source-folders.js";
+import { joinErrorMessage } from "./project-invite.js";
+import type { InviteDialog } from "./use-invite-preview.js";
 
 export type ProjectSetupMode = "create" | "join";
 
@@ -31,6 +33,7 @@ export function ProjectSetupDialog({
   run,
   sharing,
   onSharingChange,
+  invite,
   inviteService,
   serviceMismatch = false,
   onSwitchService,
@@ -52,12 +55,15 @@ export function ProjectSetupDialog({
   run: (action: () => Promise<unknown>) => void;
   sharing: ProjectSharing;
   onSharingChange: (value: ProjectSharing) => void;
+  invite?: InviteDialog;
   inviteService?: string;
   serviceMismatch?: boolean;
   onSwitchService?: () => void;
 }) {
   const creating = mode === "create";
-  const title = creating ? "Create project" : "Join project";
+  const action = creating ? "Create project" : "Join project";
+  const title = creating ? action : (invite?.title ?? action);
+  const problem = error || invite?.error || "";
   return (
     <Overlay
       open
@@ -76,7 +82,7 @@ export function ProjectSetupDialog({
         }}
       >
         <div className="create-project-heading">
-          <h2>{title}</h2>
+          <h2 title={title}>{title}</h2>
           <IconButton
             icon={XIcon}
             variant="tertiary"
@@ -129,19 +135,24 @@ export function ProjectSetupDialog({
               )}
             </>
           ) : (
-            <TextField
-              label="Invite link or token"
-              icon={LogInIcon}
-              autoFocus
-              required
-              maxLength={2048}
-              placeholder="https://…/join/…"
-              autoComplete="off"
-              spellCheck={false}
-              value={value}
-              disabled={busy}
-              onChange={(event) => onChange(event.target.value)}
-            />
+            <>
+              <TextField
+                label="Invite link or token"
+                icon={LogInIcon}
+                autoFocus
+                required
+                maxLength={2048}
+                placeholder="https://…/join/…"
+                autoComplete="off"
+                spellCheck={false}
+                value={value}
+                disabled={busy}
+                onChange={(event) => onChange(event.target.value)}
+              />
+              {invite?.expires && (
+                <p className="create-project-source-hint">{invite.expires}</p>
+              )}
+            </>
           )}
           {!creating && inviteService && (
             <div className="project-invite-service" role="status">
@@ -168,10 +179,10 @@ export function ProjectSetupDialog({
             disabled={busy}
             onChange={onSharingChange}
           />
-          {error && (
+          {problem && (
             <div className="setup-error" role="alert">
               <TriangleAlertIcon size={16} aria-hidden="true" />
-              <span>{error}</span>
+              <span>{creating ? problem : joinErrorMessage(problem)}</span>
             </div>
           )}
         </div>
@@ -182,9 +193,11 @@ export function ProjectSetupDialog({
           <Button
             type="submit"
             variant="primary"
-            disabled={busy || !value.trim() || serviceMismatch}
+            disabled={
+              busy || !value.trim() || serviceMismatch || invite?.unavailable
+            }
           >
-            {busy ? (creating ? "Creating…" : "Joining…") : title}
+            {busy ? (creating ? "Creating…" : "Joining…") : action}
           </Button>
         </div>
       </form>

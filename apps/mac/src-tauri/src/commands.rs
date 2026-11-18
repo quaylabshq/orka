@@ -305,12 +305,7 @@ pub(crate) async fn cloud_action_scoped(
             }
         }
     }
-    let path = match action.as_str() {
-        "create" => "/v2/projects",
-        "invite" => "/v2/invites",
-        "join" => "/v2/join",
-        _ => return Err("Unknown project action".into()),
-    };
+    let path = project_endpoint(&action)?;
     let mut r = sync::api("POST", path, Some(&request)).await?;
     if let Some(sharing) = sharing {
         let id = r["id"].as_str().ok_or("Missing project")?;
@@ -352,6 +347,89 @@ pub(crate) async fn cloud_action_scoped(
     Ok(r)
 }
 
+fn project_endpoint(action: &str) -> Result<&'static str> {
+    Ok(match action {
+        "create" => "/v2/projects",
+        "invite" => "/v2/invites",
+        "revoke-invite" => "/v2/invites/revoke",
+        "preview-invite" => "/v2/invites/preview",
+        "join" => "/v2/join",
+        _ => return Err("Unknown project action".into()),
+    })
+}
+
+#[derive(serde::Serialize)]
+#[serde(tag = "status", rename_all = "camelCase")]
+pub enum InvitePreview {
+    Available {
+        #[serde(rename = "projectName")]
+        project_name: String,
+        #[serde(rename = "expiresAt")]
+        expires_at: String,
+    },
+    Unavailable,
+    Unsupported,
+}
+
+impl InvitePreview {
+    pub async fn fetch(token: &str, service: Option<String>) -> Result<Self> {
+        if !INVITE_TOKEN.is_match(token) {
+            return Err("Paste a valid Orka invite link or token.".into());
+        }
+        let service = match service {
+            Some(service) => service,
+            None => db::get(&db::open()?, "config")?["apiUrl"]
+                .as_str()
+                .ok_or("Configure the service")?
+                .to_string(),
+        };
+        let url = db::validate_url(&service)?;
+        let sent = {
+            reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(15))
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .map_err(|error| error.to_string())?
+                .post(format!(
+                    "{}{}",
+                    url.as_str().trim_end_matches('/'),
+                    project_endpoint("preview-invite")?
+                ))
+                .json(&json!({"token": token}))
+                .send()
+                .await
+        };
+        let Ok(response) = sent else {
+            return Ok(Self::Unsupported);
+        };
+        let status = response.status().as_u16();
+        let body: Value = response.json().await.unwrap_or(Value::Null);
+        Ok(match status {
+            200 => Self::Available {
+                project_name: body["projectName"]
+                    .as_str()
+                    .ok_or("Unreadable invite preview")?
+                    .into(),
+                expires_at: body["expiresAt"]
+                    .as_str()
+                    .ok_or("Unreadable invite preview")?
+                    .into(),
+            },
+            410 => Self::Unavailable,
+            _ => Self::Unsupported,
+        })
+    }
+}
+
+static INVITE_TOKEN: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"^[a-f0-9]{48}$").unwrap());
+
+#[tauri::command]
+pub async fn invite_preview(token: String, service_url: Option<String>) -> Result<Value> {
+    let preview = InvitePreview::fetch(&token, service_url).await?;
+    serde_json::to_value(preview).map_err(|error| error.to_string())
+}
+
 fn validate_invite_service(expected: &Value, current: &Value) -> Result<()> {
     let expected = db::validate_url(expected.as_str().ok_or("Invalid invite service")?)?;
     let current = db::validate_url(current.as_str().ok_or("Configure the service")?)?;
@@ -366,6 +444,66 @@ fn validate_invite_service(expected: &Value, current: &Value) -> Result<()> {
 #[cfg(test)]
 mod invite_tests {
     use super::*;
+    use std::io::{Read, Write};
+
+    fn serve(status: u16, body: &'static str) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut request = [0; 4096];
+            let _ = stream.read(&mut request);
+            let _ = write!(
+                stream,
+                "HTTP/1.1 {status} Preview\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+        });
+        format!("http://127.0.0.1:{port}")
+    }
+
+    #[test]
+    fn preview_reports_the_project_or_one_of_two_fallbacks() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let token = "ab".repeat(24);
+        for (status, body, expected) in [
+            (
+                200,
+                r#"{"projectName":"Acme","expiresAt":"2027-01-02T03:04:05.000Z"}"#,
+                json!({"status":"available","projectName":"Acme","expiresAt":"2027-01-02T03:04:05.000Z"}),
+            ),
+            (
+                410,
+                r#"{"error":"This invite is no longer valid. Ask the project owner for a new invite."}"#,
+                json!({"status":"unavailable"}),
+            ),
+            (
+                404,
+                r#"{"error":"Not found"}"#,
+                json!({"status":"unsupported"}),
+            ),
+        ] {
+            let service = serve(status, body);
+            let preview = runtime
+                .block_on(invite_preview(token.clone(), Some(service)))
+                .unwrap();
+            assert_eq!(preview, expected);
+        }
+        assert_eq!(
+            runtime
+                .block_on(invite_preview(
+                    token.clone(),
+                    Some("http://127.0.0.1:1".into())
+                ))
+                .unwrap(),
+            json!({"status":"unsupported"})
+        );
+        assert!(runtime
+            .block_on(invite_preview("short".into(), None))
+            .is_err());
+    }
 
     #[test]
     fn invites_are_bound_to_the_selected_service() {

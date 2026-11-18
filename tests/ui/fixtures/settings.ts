@@ -15,6 +15,10 @@ export async function settingsFixture(
     emailInvites?: boolean;
     pendingInvites?: { email: string; expiresAt: string }[];
     failEmailInvite?: boolean;
+    /** Rejection for email invites, as the Tauri command reports it ("429: ..."). */
+    emailInviteError?: string;
+    /** Simulates a service without POST /v2/invites/revoke. */
+    revokeMissing?: boolean;
     update?: UpdateStatus;
     updateError?: string;
     updateDelay?: number;
@@ -545,6 +549,7 @@ export async function settingsFixture(
               throw new Error(
                 "Invitation email could not be sent. Try again or use a joining link.",
               );
+            if (options.emailInviteError) throw options.emailInviteError;
             catalog.pendingInvites = [
               ...(catalog.pendingInvites ?? []).filter(
                 (invite) => invite.email !== args.input.email,
@@ -555,6 +560,13 @@ export async function settingsFixture(
               },
             ];
             return { sent: true, email: args.input.email };
+          }
+          if (command === "cloud_action" && args.action === "revoke-invite") {
+            if (options.revokeMissing) throw "404: Not found";
+            catalog.pendingInvites = (catalog.pendingInvites ?? []).filter(
+              (invite) => invite.email !== args.input.email,
+            );
+            return { email: args.input.email, revoked: 1 };
           }
           if (command === "cloud_action" && args.action === "invite")
             return {
