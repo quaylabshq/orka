@@ -10,6 +10,8 @@ static SERIAL: Mutex<()> = Mutex::new(());
 mod attention_tests;
 #[path = "context_sharing_tests.rs"]
 mod context_sharing_tests;
+#[path = "sync_request_tests.rs"]
+mod sync_request_tests;
 mod doctor_tests {
     use super::*;
     use crate::doctor::Doctor;
@@ -1139,6 +1141,15 @@ fn zip_round_trip_preserves_complete_skill_package() {
     f.db.execute("DELETE FROM outbox", []).unwrap();
     bundles::import(&f.db, f.project["id"].as_str().unwrap(), &zip).unwrap();
     assert_eq!(f.outbox()[0]["resource"]["files"], resource["files"]);
+    assert_eq!(
+        db::rows(
+            &f.db,
+            "SELECT json_object('project',project,'priority',priority,'reason',reason) FROM sync_queue",
+            &[]
+        )
+        .unwrap(),
+        [json!({"project":f.project["id"],"priority":2,"reason":"import"})]
+    );
 }
 #[test]
 fn delayed_receipts_cannot_replay_obsolete_events() {

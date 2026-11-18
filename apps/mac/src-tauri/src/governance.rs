@@ -1,6 +1,7 @@
 use crate::{
     db::{self, Result},
     indexer, memory_context, packages, projects, sync,
+    sync_queue::{Priority, SyncQueue},
 };
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
@@ -905,7 +906,7 @@ pub async fn governance_command(action: String, input: Value) -> Result<Value> {
             | "policy-operation"
             | "migration-preview"
     ) {
-        db::set(&db, "syncRequest", &json!(Uuid::new_v4().to_string()))?;
+        SyncQueue::request(&db, project_id, Priority::User, "governance")?;
     }
     Ok(result)
 }

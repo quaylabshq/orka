@@ -1,6 +1,7 @@
 use crate::{
     db::{self, Result},
     governance, indexer, projects, sources, sync,
+    sync_queue::{Priority, SyncQueue},
 };
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
@@ -163,7 +164,12 @@ pub fn queue(db: &Connection, project: &Value, input: &Value) -> Result<Value> {
         params![id, project["id"].as_str(), QUEUE_PATH, change.to_string()],
     )
     .map_err(|e| e.to_string())?;
-    db::set(&tx, "syncRequest", &json!(Uuid::new_v4().to_string()))?;
+    SyncQueue::request(
+        &tx,
+        project["id"].as_str().ok_or("Missing project")?,
+        Priority::User,
+        "share",
+    )?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(receipt)
 }

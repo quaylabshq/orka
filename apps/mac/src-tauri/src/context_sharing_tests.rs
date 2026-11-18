@@ -129,6 +129,15 @@ fn removed_sources_keep_deferred_context_private_without_blocking_other_saved_sn
             "offline but registered sources retain durable publication"
         );
         assert_eq!(queued(&f)["value"]["resource"]["sourceId"], active);
+        assert_eq!(
+            db::rows(
+                &f.db,
+                "SELECT json_object('project',project,'priority',priority) FROM sync_queue",
+                &[]
+            )
+            .unwrap(),
+            [json!({"project":project["id"],"priority":1})]
+        );
     }
 }
 
@@ -221,17 +230,19 @@ fn enabled_context_shares_for_owners_publishers_and_suggesters_without_repeated_
             "{mode}"
         );
         let initial = f.outbox();
-        let request = db::get(&f.db, "syncRequest").unwrap();
+        // Clearing the queue first means a rescan can only add a job if it saw a change.
+        f.db.execute("DELETE FROM sync_queue", []).unwrap();
         indexer::scan(&f.db, &f.project).unwrap();
         assert_eq!(
             f.outbox(),
             initial,
             "{mode} must retain exact retry identities"
         );
-        assert_eq!(
-            db::get(&f.db, "syncRequest").unwrap(),
-            request,
-            "unchanged scans must not trigger endless sync"
+        assert!(
+            db::rows(&f.db, "SELECT project FROM sync_queue", &[])
+                .unwrap()
+                .is_empty(),
+            "{mode} must not queue unchanged scans"
         );
         governance::localize_outbox(&f.db, &f.project).unwrap();
         assert_eq!(f.outbox(), initial);

@@ -482,10 +482,20 @@ fn attention_retry_is_scoped_to_the_selected_active_project() {
         .block_on(commands::retry_uploads(Some("missing".into())))
         .is_err());
     runtime.block_on(commands::retry_uploads(None)).unwrap();
-    assert_ne!(
+    // Retrying every project queues it at user priority instead of writing the flag.
+    assert_eq!(
         db::get(&f.db, "syncRequest").unwrap(),
         "unrelated account request"
     );
+    let queued = db::rows(
+        &f.db,
+        "SELECT json_object('project',project,'priority',priority) FROM sync_queue",
+        &[],
+    )
+    .unwrap();
+    assert!(queued
+        .iter()
+        .any(|job| job["project"] == f.project["id"] && job["priority"] == 2));
     assert_eq!(
         db::get(&f.db, "syncHandledRequest").unwrap(),
         "previous account request"

@@ -20,10 +20,6 @@ const RUNNING: i64 = i64::MAX;
 pub(crate) enum Priority {
     Timer = 0,
     Local = 1,
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "Sync now, retry and governance request it next")
-    )]
     User = 2,
 }
 
@@ -148,6 +144,21 @@ impl SyncQueue {
             Self::enqueue(&tx, &project, priority, reason, now)?;
         }
         tx.commit().map_err(|e| e.to_string())
+    }
+
+    /// Queues the workspace steps and every active project, now.
+    pub(crate) fn request_all(db: &Connection, priority: Priority, reason: &str) -> Result<()> {
+        Self::enqueue_all(db, priority, reason, Self::now())
+    }
+
+    /// Queues one project, or `WORKSPACE`, for a change that just happened.
+    pub(crate) fn request(
+        db: &Connection,
+        project: &str,
+        priority: Priority,
+        reason: &str,
+    ) -> Result<()> {
+        Self::enqueue(db, project, priority, reason, Self::now())
     }
 
     /// A changed `syncRequest` still means "sync everything for local changes".
@@ -549,6 +560,36 @@ mod tests {
         assert!(rows(&db).iter().all(|job| job.project != "a"));
         queue.enqueue_due(&db, due, &interval).unwrap();
         assert!(rows(&db).iter().any(|job| job.project == "a"));
+    }
+
+    #[test]
+    fn a_project_request_queues_only_that_project() {
+        let (_root, db) = queue_db(&["a", "b"]);
+        SyncQueue::request(&db, "a", Priority::User, "sync now").unwrap();
+        let jobs = rows(&db);
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(
+            (
+                jobs[0].project.as_str(),
+                jobs[0].priority,
+                jobs[0].reason.as_str()
+            ),
+            ("a", 2, "sync now")
+        );
+        assert!(db::get(&db, "syncRequest").unwrap().is_null());
+    }
+
+    #[test]
+    fn sync_now_queues_the_workspace_and_every_project_at_user_priority() {
+        let (_root, db) = queue_db(&["a", "b"]);
+        SyncQueue::request_all(&db, Priority::User, "sync now").unwrap();
+        let jobs = rows(&db);
+        let projects: Vec<_> = jobs.iter().map(|job| job.project.as_str()).collect();
+        assert_eq!(projects, [WORKSPACE, "a", "b"]);
+        assert!(jobs
+            .iter()
+            .all(|job| job.priority == 2 && job.reason == "sync now"));
+        assert!(jobs.iter().all(|job| job.not_before == job.requested_at));
     }
 
     #[test]

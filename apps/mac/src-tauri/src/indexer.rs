@@ -1,6 +1,7 @@
 use crate::{
     db::{self, Result},
     history, memory_context, native, packages, plans,
+    sync_queue::{Priority, SyncQueue},
 };
 use rusqlite::params;
 use serde_json::{json, Value};
@@ -449,7 +450,7 @@ fn collect(
     {
         b["needsCopy"] = json!(true);
         db::upsert(db, "bindings", &id, project_id, &b)?;
-        db::set(db, "syncRequest", &json!(Uuid::new_v4().to_string()))?;
+        SyncQueue::request(db, project_id, Priority::Local, "indexer")?;
         return Ok(());
     }
     let deleted = files.as_array().is_none_or(|a| a.is_empty());
