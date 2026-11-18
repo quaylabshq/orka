@@ -579,6 +579,27 @@ fn a_restored_project_clears_the_errors_its_403_left() {
     // The 403 row sends again; other errors keep their own meaning.
     assert_eq!(queued("refused"), None);
     assert_eq!(queued("offline"), Some("503: Service unavailable".into()));
+    // A project that comes back archived can still not send, so its 403 stays.
+    f.db.execute(
+        "UPDATE outbox SET error='403: project_deleted: Project is deleted' WHERE id='refused'",
+        [],
+    )
+    .unwrap();
+    delete();
+    crate::projects::merge_catalog(&f.db,&json!([{"id":id,"name":"test","role":"member","archivedAt":"2026-01-02T00:00:00Z","lifecycleRevision":2}])).unwrap();
+    assert!(crate::projects::active(&f.db, id).is_err());
+    assert_eq!(
+        queued("refused"),
+        Some("403: project_deleted: Project is deleted".into())
+    );
+    // Leaving the archive clears it then.
+    crate::projects::merge_catalog(
+        &f.db,
+        &json!([{"id":id,"name":"test","role":"member","archivedAt":null,"lifecycleRevision":3}]),
+    )
+    .unwrap();
+    crate::projects::active(&f.db, id).unwrap();
+    assert_eq!(queued("refused"), None);
 }
 
 #[test]

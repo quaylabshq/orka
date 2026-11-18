@@ -248,8 +248,12 @@ pub fn merge_catalog(db: &Connection, remote: &Value) -> Result<()> {
             project["sharing"] = json!(Sharing::default());
         }
         db::upsert(&tx, "projects", id, id, &project)?;
-        // A restored project sends again what its 403 stopped.
-        if !old["deletedAt"].is_null() || !old["archivedAt"].is_null() {
+        // A project that is active again sends what its 403 stopped. One that is
+        // still archived or deleted waits until it can send.
+        if (!old["deletedAt"].is_null() || !old["archivedAt"].is_null())
+            && project["deletedAt"].is_null()
+            && project["archivedAt"].is_null()
+        {
             tx.execute(
                 "UPDATE outbox SET error=NULL WHERE project=? AND error LIKE '403:%'",
                 [id],

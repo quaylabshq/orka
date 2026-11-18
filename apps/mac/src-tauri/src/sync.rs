@@ -2152,11 +2152,19 @@ fn select_uploads(queued: &[Value], cursor: i64) -> Vec<&Value> {
 pub(crate) struct SyncError<'a>(&'a str);
 
 impl<'a> SyncError<'a> {
-    /// Formats a rejected response. The code stays a leading token so a project
-    /// that is archived or deleted can be told apart from a caller's error.
+    /// The codes that close a project to this Mac. Other endpoints send codes
+    /// too, so only these keep the extra token in the recorded message.
+    const ACCESS: [&'static str; 3] = ["project_archived", "project_deleted", "not_member"];
+
+    /// Formats a rejected response. An access code stays a leading token so a
+    /// project that is archived or deleted can be told apart from a caller's
+    /// error; every other code keeps the plain `"<status>: <message>"` shape.
     fn message(status: u16, body: &Value, fallback: &str) -> String {
         let message = body["error"].as_str().unwrap_or(fallback);
-        match body["code"].as_str() {
+        match body["code"]
+            .as_str()
+            .filter(|code| Self::ACCESS.contains(code))
+        {
             Some(code) => format!("{status}: {code}: {message}"),
             None => format!("{status}: {message}"),
         }
@@ -2173,9 +2181,7 @@ impl<'a> SyncError<'a> {
     fn access(&self) -> Option<&'a str> {
         let (_, rest) = self.0.split_once(": ")?;
         let (code, _) = rest.split_once(": ")?;
-        ["project_archived", "project_deleted", "not_member"]
-            .into_iter()
-            .find(|known| *known == code)
+        Self::ACCESS.into_iter().find(|known| *known == code)
     }
 
     /// Work for an archived or deleted project is held, not failed: a restore
@@ -2384,6 +2390,16 @@ mod queue_tests {
         let older = SyncError::message(403, &json!({"error":"Forbidden"}), "Rejected");
         assert_eq!(older, "403: Forbidden");
         assert!(terminal_error(&older));
+        // Other endpoints send codes too; they keep the plain message shape that
+        // the UI already parses.
+        let other = SyncError::message(
+            409,
+            &json!({"error":"Already invited","code":"already_member"}),
+            "Rejected",
+        );
+        assert_eq!(other, "409: Already invited");
+        assert_eq!(SyncError(&other).access(), None);
+        assert!(!SyncError(&other).holds());
     }
 
     #[test]
