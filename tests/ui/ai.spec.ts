@@ -128,6 +128,7 @@ for (const noProject of [false, true]) {
       await expect(sections.getByRole("button")).toHaveText([
         "Profile",
         "Devices",
+        "Projects",
         "Sync & startup",
         "Connectors",
         "Updates",
@@ -135,7 +136,7 @@ for (const noProject of [false, true]) {
         "Members",
         "Permissions",
       ]);
-      for (const name of ["Devices", "Sync & startup", "Profile"]) {
+      for (const name of ["Devices", "Projects", "Sync & startup", "Profile"]) {
         await sections.getByRole("button", { name, exact: true }).click();
         await expect(
           dialog.getByRole("heading", { name, exact: true }),
