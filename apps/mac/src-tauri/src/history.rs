@@ -627,6 +627,31 @@ pub fn session_files(tool: &str, path: &Path, scope: Option<&Path>) -> Result<Ve
     ])
 }
 
+/// Rebuild a stored session snapshot through the same record redaction used
+/// for new snapshots, preserving the frozen revision rather than the live file.
+pub fn redacted_files(source: &Value, files: &Value) -> Result<Vec<Value>> {
+    let resource = json!({"source":source,"files":files});
+    if source == "codex" {
+        let mut history = History::resource(&resource)?;
+        for rollout in &mut history.rollouts {
+            rollout
+                .records
+                .iter_mut()
+                .for_each(crate::session_redaction::SessionRedactor::redact);
+        }
+        history.rebase_offsets();
+        return history.files();
+    }
+    let mut records = resource_records(&resource)?;
+    records
+        .iter_mut()
+        .for_each(crate::session_redaction::SessionRedactor::redact);
+    let bytes = native::encode(&records);
+    Ok(vec![
+        json!({"path":"session.jsonl","hash":db::blob(&bytes)?,"size":bytes.len(),"executable":false}),
+    ])
+}
+
 pub fn resource_records(resource: &Value) -> Result<Vec<Value>> {
     if resource["source"] == "codex" {
         return Ok(History::resource(resource)?.records());

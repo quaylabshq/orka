@@ -115,6 +115,7 @@ export function SessionDetail({
         label: "Session",
         className: "resource-detail--session session-view",
         resource,
+        file: view.file,
         menuActions,
         title,
         status: (resource.fork || sharingStatus(resource)) && (

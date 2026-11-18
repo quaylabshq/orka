@@ -30,6 +30,15 @@ static JSON_STRING: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 impl SessionRedactor {
+    pub(crate) fn check_upload(bytes: &[u8]) -> crate::db::Result<()> {
+        let text = std::str::from_utf8(bytes)
+            .map_err(|_| "422: Session upload blocked because the snapshot is not UTF-8")?;
+        if text != Self::text(text) {
+            return Err("422: Session upload blocked because the snapshot still contains a recognized secret".into());
+        }
+        Ok(())
+    }
+
     pub(crate) fn redact(value: &mut Value) {
         match value {
             Value::String(text) => *text = Self::text(text),

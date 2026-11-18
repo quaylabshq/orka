@@ -170,7 +170,7 @@ export function resourceViewMenuActions(
   session: boolean,
 ): ItemMenuAction[] {
   const items: ItemMenuAction[] = [];
-  if (view.changes)
+  if (!session && view.changes)
     items.push({
       id: "show-content",
       label: "Show content",
@@ -189,10 +189,9 @@ export function resourceViewMenuActions(
 /** Actions not listed here open, copy or locate the item. */
 const actionGroups: Record<string, string> = {
   share: "share",
-  "review-incoming": "share",
-  "review-outgoing": "share",
-  "review-instructions": "share",
-  export: "share",
+  "review-incoming": "review",
+  "review-outgoing": "review",
+  "review-instructions": "review",
   delete: "remove",
 };
 
@@ -321,8 +320,9 @@ function ResourceMenuTarget({
           "Link copied",
         ),
     });
+  const secondary: ItemMenuAction[] = [];
   if (connected) {
-    items.push({
+    secondary.push({
       id: "reveal",
       icon: FolderIcon,
       label: "Show in Finder",
@@ -333,7 +333,7 @@ function ResourceMenuTarget({
           { errorTitle: "Couldn’t show this item in Finder" },
         ),
     });
-    items.push({
+    secondary.push({
       id: "path",
       icon: CopyIcon,
       label: "Copy local path",
@@ -368,14 +368,14 @@ function ResourceMenuTarget({
       onSelect: () => context.request("share", resource),
     });
   if (review.incoming)
-    items.push({
+    secondary.push({
       id: "review-incoming",
       icon: EyeIcon,
       label: "Review local update…",
       onSelect: () => context.onReview(resource, "incoming"),
     });
   if (review.outgoing)
-    items.push({
+    secondary.push({
       id: "review-outgoing",
       icon: EyeIcon,
       label: "Review local edits…",
@@ -387,14 +387,14 @@ function ResourceMenuTarget({
     project.governed &&
     resource.logicalPath.startsWith("instructions/")
   )
-    items.push({
+    secondary.push({
       id: "review-instructions",
       icon: EyeIcon,
       label: "Review local update…",
       onSelect: () => context.onReview(resource, "incoming"),
     });
   if (resource.kind !== "memory")
-    items.push({
+    secondary.unshift({
       id: "export",
       icon: DownloadIcon,
       label:
@@ -404,9 +404,31 @@ function ResourceMenuTarget({
       disabled: context.busy,
       onSelect: () => void actions.exportZip(),
     });
-  items.push(...extraActions);
+  const configureAction = (item: ItemMenuAction): ItemMenuAction => ({
+    ...item,
+    group: actionGroups[item.id] ?? "item",
+    restoreFocus: ![
+      "open",
+      "compare",
+      "launch",
+      "share",
+      "delete",
+      "review-incoming",
+      "review-outgoing",
+      "review-instructions",
+    ].includes(item.id),
+  });
+  const primary = [...items.map(configureAction), ...extraActions];
+  if (secondary.length)
+    primary.push({
+      id: "more",
+      label: "More actions",
+      group: "more",
+      children: secondary.map(configureAction),
+      onSelect: () => {},
+    });
   if (canDeleteSharedResource(resource, project, context.state))
-    items.push({
+    primary.push({
       id: "delete",
       icon: TrashIcon,
       label:
@@ -414,27 +436,12 @@ function ResourceMenuTarget({
           ? "Remove from history…"
           : `Delete shared ${resource.kind}…`,
       danger: true,
+      group: "remove",
+      restoreFocus: false,
       disabled: context.busy,
       onSelect: () => context.request("delete", resource),
     });
-  return children(
-    items.map((item) => ({
-      ...item,
-      group: extraActions.includes(item)
-        ? item.group
-        : (actionGroups[item.id] ?? "item"),
-      restoreFocus: ![
-        "open",
-        "compare",
-        "launch",
-        "share",
-        "delete",
-        "review-incoming",
-        "review-outgoing",
-        "review-instructions",
-      ].includes(item.id),
-    })),
-  );
+  return children(primary);
 }
 
 export function ResourceItemMenu({

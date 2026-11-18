@@ -199,15 +199,12 @@ pub fn deletion_complete(resource: &Value, binding: &Value) -> Result<bool> {
 }
 
 pub async fn upload(owner: &str, project: &str, resource: &Value) -> Result<()> {
-    let files = resource["files"]
-        .as_array()
-        .ok_or("Local upload: missing files")?;
-    match sync::upload(owner, project, files).await {
+    match sync::upload(owner, project, resource).await {
         Err(original) if original.starts_with("Local upload: ") => {
             let mut resource = resource.clone();
             resource["projectId"] = json!(project);
             match sync::download(owner, &resource).await {
-                Ok(()) => sync::upload(owner, project, files).await,
+                Ok(()) => sync::upload(owner, project, &resource).await,
                 Err(error) if sync::service_error(&error) => Err(error),
                 Err(error) => Err(format!("{original}; cloud repair unavailable: {error}")),
             }
