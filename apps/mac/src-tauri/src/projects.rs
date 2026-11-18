@@ -1,6 +1,8 @@
 use crate::{
     db::{self, Result},
-    env, sync,
+    env,
+    governance::DetachProject,
+    sync,
 };
 use fs2::FileExt;
 use rusqlite::Connection;
@@ -86,6 +88,51 @@ pub fn require_sharing(db: &Connection, id: &str, kind: &str) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+/// Local project lifecycle work shared by the command and its tests.
+pub(crate) trait ProjectLifecycle {
+    /// Work that has not reached the service yet; deleting with it would lose
+    /// the only copy. The same check guards source removal.
+    fn queued_changes(&self, project: &str) -> Result<bool>;
+    /// Records a server soft delete without touching the local copy, so a
+    /// restore keeps its folders and queue.
+    fn mark_deleted(&self, project: &str, receipt: &Value) -> Result<()>;
+    /// Detaches the project, then removes its local state. The user's files
+    /// stay on disk.
+    fn purge_local(&self, project: &str) -> Result<()>;
+}
+
+impl ProjectLifecycle for Connection {
+    fn queued_changes(&self, project: &str) -> Result<bool> {
+        self.query_row(
+            "SELECT EXISTS(SELECT 1 FROM outbox WHERE project=?1 UNION ALL SELECT 1 FROM meta WHERE key LIKE 'env:%:pending:%' AND json_extract(value,'$.header.manifest.projectId')=?1 AND json_extract(value,'$.sourceRemoval') IS NULL)",
+            [project],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())
+    }
+
+    fn mark_deleted(&self, project: &str, receipt: &Value) -> Result<()> {
+        let Some(mut saved) = db::rows(self, "SELECT value FROM projects WHERE id=?", &[&project])?
+            .into_iter()
+            .next()
+        else {
+            return Ok(());
+        };
+        for key in ["deletedAt", "purgeAfter"] {
+            if !receipt[key].is_null() {
+                saved[key] = receipt[key].clone();
+            }
+        }
+        saved["lifecycleRevision"] = receipt["lifecycleRevision"].clone();
+        db::upsert(self, "projects", project, project, &saved)
+    }
+
+    fn purge_local(&self, project: &str) -> Result<()> {
+        self.detach_project(project)?;
+        remove_local(self, project)
+    }
 }
 
 pub fn queued_kind<'a>(path: &str, input: &'a Value) -> &'a str {
@@ -182,7 +229,7 @@ pub fn merge_catalog(db: &Connection, remote: &Value) -> Result<()> {
     let remote = remote.as_array().ok_or("Invalid project list")?;
     let tx = rusqlite::Transaction::new_unchecked(db, rusqlite::TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
-    let mut governed_removals = Vec::new();
+    let mut detached = Vec::new();
     let mut revoked = false;
     for item in remote {
         let id = item["id"].as_str().ok_or("Missing project")?;
@@ -205,6 +252,9 @@ pub fn merge_catalog(db: &Connection, remote: &Value) -> Result<()> {
                 project["sharing"] = json!(Sharing::default());
             }
             db::upsert(&tx, "projects", id, id, &project)?;
+            if item["purged"] == true {
+                detached.push(id.to_string());
+            }
             continue;
         }
         if item["lifecycleRevision"].as_u64().unwrap_or(0)
@@ -263,34 +313,23 @@ pub fn merge_catalog(db: &Connection, remote: &Value) -> Result<()> {
     }
     for mut project in db::rows(&tx, "SELECT value FROM projects", &[])? {
         if !remote.iter().any(|p| p["id"] == project["id"]) {
-            if project["governed"] == true {
-                governed_removals
-                    .push(project["id"].as_str().ok_or("Missing project")?.to_string());
+            let id = project["id"].as_str().ok_or("Missing project")?.to_string();
+            if project["detachedAt"].is_null() {
+                detached.push(id.clone());
             }
             revoked |= project["revoked"] != true;
             project["revoked"] = json!(true);
-            db::upsert(
-                &tx,
-                "projects",
-                project["id"].as_str().ok_or("Missing project")?,
-                "",
-                &project,
-            )?;
+            db::upsert(&tx, "projects", &id, "", &project)?;
         }
     }
     tx.commit().map_err(|e| e.to_string())?;
     if revoked {
         env::clear();
     }
-    // Retrying revoked projects also recovers a crash after the catalog commit.
-    for id in governed_removals {
-        crate::governance::reset(db, &id, &json!([]))?;
-        db.execute("DELETE FROM cursors WHERE project=?", [&id])
-            .map_err(|e| e.to_string())?;
-        for prefix in ["governance", "requests", "policyRevision", "presence"] {
-            db.execute("DELETE FROM meta WHERE key=?", [format!("{prefix}:{id}")])
-                .map_err(|e| e.to_string())?;
-        }
+    // Detaching after the commit keeps the catalog write atomic. Retrying also
+    // recovers a crash between the commit and the local draft capture.
+    for id in detached {
+        db.detach_project(&id)?;
     }
     Ok(())
 }
@@ -371,14 +410,7 @@ pub async fn project_command(action: String, input: Value) -> Result<Value> {
             }
             let source_id = input["sourceId"].as_str().ok_or("Choose a source folder")?;
             uuid::Uuid::parse_str(source_id).map_err(|_| "Invalid source folder")?;
-            let pending: bool = db
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM outbox WHERE project=?1 UNION ALL SELECT 1 FROM meta WHERE key LIKE 'env:%:pending:%' AND json_extract(value,'$.header.manifest.projectId')=?1 AND json_extract(value,'$.sourceRemoval') IS NULL)",
-                    [id],
-                    |row| row.get(0),
-                )
-                .map_err(|e| e.to_string())?;
-            if pending {
+            if db.queued_changes(id)? {
                 return Err("Sync queued changes and finish pending ENV publications before removing a source folder".into());
             }
             if sync::api_as(&owner, "GET", "/v2/projects/capabilities", None).await?
@@ -445,7 +477,7 @@ pub async fn project_command(action: String, input: Value) -> Result<Value> {
             project["hidden"] = json!(false);
             db::upsert(&db, "projects", id, id, &project)?;
         }
-        "archive" | "restore" | "delete" | "rename" => {
+        "archive" | "restore" | "delete" | "purge" | "rename" => {
             if action == "rename" {
                 active(&db, id)?;
                 if sync::api_as(&owner, "GET", "/v2/projects/capabilities", None).await?["rename"]
@@ -453,6 +485,9 @@ pub async fn project_command(action: String, input: Value) -> Result<Value> {
                 {
                     return Err("This service does not support shared project renaming. Update the server and try again.".into());
                 }
+            }
+            if matches!(action.as_str(), "delete" | "purge") && db.queued_changes(id)? {
+                return Err("Sync queued changes and finish pending ENV publications before deleting this project".into());
             }
             let mut request = input.clone();
             request["action"] = json!(action);
@@ -462,9 +497,12 @@ pub async fn project_command(action: String, input: Value) -> Result<Value> {
                 env::clear();
             }
             if action == "delete" {
-                remove_local(&db, id)?;
-            }
-            if let Some(mut project) =
+                // The service keeps the project recoverable; the local copy
+                // stays too, and the next catalog merge leaves it inactive.
+                db.mark_deleted(id, &receipt)?;
+            } else if action == "purge" {
+                db.purge_local(id)?;
+            } else if let Some(mut project) =
                 db::rows(&db, "SELECT value FROM projects WHERE id=?", &[&id])?
                     .into_iter()
                     .next()
@@ -475,9 +513,7 @@ pub async fn project_command(action: String, input: Value) -> Result<Value> {
                 {
                     return Ok(json!({"ok":true}));
                 }
-                if action == "delete" {
-                    project["revoked"] = json!(true);
-                } else if action == "rename" {
+                if action == "rename" {
                     project["name"] = receipt["name"].clone();
                 } else {
                     project["archivedAt"] = if action == "archive" {

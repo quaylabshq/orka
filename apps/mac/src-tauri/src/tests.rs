@@ -1,4 +1,6 @@
-use crate::{bundles, db, history::History, indexer, native, packages, sync};
+use crate::{
+    bundles, db, history::History, indexer, native, packages, projects::ProjectLifecycle, sync,
+};
 use serde_json::{json, Value};
 use std::{
     fs,
@@ -600,6 +602,85 @@ fn a_restored_project_clears_the_errors_its_403_left() {
     .unwrap();
     crate::projects::active(&f.db, id).unwrap();
     assert_eq!(queued("refused"), None);
+}
+
+#[test]
+fn deleting_a_project_with_queued_changes_is_refused() {
+    let f = Fixture::new();
+    let id = f.project["id"].as_str().unwrap();
+    f.db.execute(
+        "INSERT INTO outbox VALUES('queued',?,'/test','{}',NULL)",
+        [id],
+    )
+    .unwrap();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    for action in ["delete", "purge"] {
+        let error = runtime
+            .block_on(crate::projects::project_command(
+                action.into(),
+                json!({"projectId":id,"expectedRevision":0,"confirmation":"test"}),
+            ))
+            .unwrap_err();
+        assert!(
+            error.contains("before deleting this project"),
+            "{action}: {error}"
+        );
+    }
+    assert_eq!(f.outbox().len(), 1);
+}
+
+#[test]
+fn deleting_a_project_keeps_its_local_copy_for_a_restore() {
+    let f = Fixture::new();
+    let id = f.project["id"].as_str().unwrap();
+    let file = f.root.join("CLAUDE.md");
+    fs::write(&file, "Keep my local work\n").unwrap();
+    indexer::scan(&f.db, &f.project).unwrap();
+    assert!(!f.outbox().is_empty());
+    f.db.mark_deleted(
+        id,
+        &json!({
+            "deletedAt":"2026-01-01T00:00:00Z",
+            "purgeAfter":"2026-01-31T00:00:00Z",
+            "lifecycleRevision":4
+        }),
+    )
+    .unwrap();
+    let saved = db::rows(&f.db, "SELECT value FROM projects WHERE id=?", &[&id])
+        .unwrap()
+        .remove(0);
+    assert_eq!(saved["deletedAt"], "2026-01-01T00:00:00Z");
+    assert_eq!(saved["purgeAfter"], "2026-01-31T00:00:00Z");
+    assert_eq!(saved["lifecycleRevision"], 4);
+    assert!(saved["revoked"].is_null() && saved["hidden"].is_null());
+    assert_eq!(saved["path"], f.project["path"]);
+    assert!(crate::projects::active(&f.db, id).is_err());
+    assert!(!f.resources().is_empty());
+    assert!(!f.outbox().is_empty());
+    assert_eq!(fs::read_to_string(file).unwrap(), "Keep my local work\n");
+}
+
+#[test]
+fn purging_a_project_detaches_it_then_removes_its_local_state() {
+    let f = Fixture::new();
+    let id = f.project["id"].as_str().unwrap();
+    let file = f.root.join("CLAUDE.md");
+    fs::write(&file, "Keep my local work\n").unwrap();
+    indexer::scan(&f.db, &f.project).unwrap();
+    assert!(!f.outbox().is_empty());
+    f.db.purge_local(id).unwrap();
+    let saved = db::rows(&f.db, "SELECT value FROM projects WHERE id=?", &[&id])
+        .unwrap()
+        .remove(0);
+    assert_eq!(saved["revoked"], true);
+    assert!(saved["detachedAt"].is_string());
+    assert_eq!(saved["hidden"], true);
+    assert!(saved["path"].is_null());
+    assert!(f.outbox().is_empty());
+    assert!(f.resources().is_empty());
+    let drafts = db::rows(&f.db, "SELECT value FROM drafts", &[]).unwrap();
+    assert!(!drafts.is_empty());
+    assert_eq!(fs::read_to_string(file).unwrap(), "Keep my local work\n");
 }
 
 #[test]
