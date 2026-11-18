@@ -230,14 +230,7 @@ async fn review(input: Value) -> Result<Value> {
         .as_str()
         .ok_or("Configure a service first")?;
     let supported = crate::auth::capabilities(service.into()).await?["onboarding"] == 1;
-    let catalog = sync::api_at(
-        owner,
-        service,
-        "GET",
-        "/v2/projects?includeArchived=true",
-        None,
-    )
-    .await?;
+    let catalog = sync::api_at(owner, service, "GET", crate::projects::CATALOG_PATH, None).await?;
     let _lock = crate::projects::wait_for_lock(std::time::Duration::from_secs(5))?;
     ensure_scope(&db, (owner, service))?;
     crate::projects::merge_catalog(&db, &catalog)?;
@@ -391,14 +384,8 @@ async fn connect(input: Value, expected: Option<(&str, &str)>) -> Result<Value> 
     };
     // Refresh membership before connecting to an existing project.
     if input["existingId"].is_string() {
-        let catalog = sync::api_at(
-            owner,
-            service,
-            "GET",
-            "/v2/projects?includeArchived=true",
-            None,
-        )
-        .await?;
+        let catalog =
+            sync::api_at(owner, service, "GET", crate::projects::CATALOG_PATH, None).await?;
         let _lock = crate::projects::lock()?;
         ensure_scope(&db, scope)?;
         crate::projects::merge_catalog(&db, &catalog)?;

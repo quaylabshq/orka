@@ -14,6 +14,14 @@ use std::{
 };
 
 pub const ACTIVE: &str = "coalesce(json_extract(value,'$.revoked'),0)=0 AND coalesce(json_extract(value,'$.hidden'),0)=0 AND json_extract(value,'$.archivedAt') IS NULL AND json_extract(value,'$.deletedAt') IS NULL";
+pub const CATALOG_PATH: &str = "/v2/projects?includeArchived=true&projectLifecycle=1";
+
+pub(crate) fn require_soft_delete(capabilities: &Value) -> Result<()> {
+    if capabilities["softDelete"] != 1 {
+        return Err("This service does not support recoverable project deletion. Update the server and try again.".into());
+    }
+    Ok(())
+}
 
 pub fn display_name(project: &Value) -> Option<&str> {
     if project["role"] == "owner" {
@@ -120,10 +128,16 @@ impl ProjectLifecycle for Connection {
         else {
             return Ok(());
         };
-        for key in ["deletedAt", "purgeAfter"] {
-            if !receipt[key].is_null() {
-                saved[key] = receipt[key].clone();
-            }
+        // The successful, capability-checked action is enough to stop local
+        // work even with a soft-delete service that predates dated receipts.
+        saved["deletedAt"] = receipt["deletedAt"]
+            .as_str()
+            .map_or_else(|| json!(db::now()), |at| json!(at));
+        saved["archivedAt"] = receipt["archivedAt"]
+            .as_str()
+            .map_or_else(|| saved["deletedAt"].clone(), |at| json!(at));
+        if receipt["purgeAfter"].is_string() {
+            saved["purgeAfter"] = receipt["purgeAfter"].clone();
         }
         saved["lifecycleRevision"] = receipt["lifecycleRevision"].clone();
         db::upsert(self, "projects", project, project, &saved)
@@ -218,7 +232,7 @@ pub fn active(db: &Connection, id: &str) -> Result<()> {
         == 0
     {
         return Err(
-            "Project is removed, archived, or unavailable. Restore it in Manage projects first."
+            "Project is removed, archived, or unavailable. Restore it in Settings → Projects first."
                 .into(),
         );
     }
@@ -237,15 +251,43 @@ pub fn merge_catalog(db: &Connection, remote: &Value) -> Result<()> {
             .into_iter()
             .next()
             .unwrap_or(json!({}));
-        if !item["deletedAt"].is_null() {
-            // A deleted project arrives as a reduced row, without its sources or
-            // lifecycle revision. Keep the local copy so a restore keeps its
-            // folders, and record only the deletion markers.
+        // Purging is terminal. A catalog fetched before the purge must not
+        // reattach a project after its tombstone has already been applied.
+        if old["purged"] == true && item["purged"] != true {
+            continue;
+        }
+        if item["purged"] != true
+            && item["lifecycleRevision"]
+                .as_u64()
+                .is_some_and(|revision| revision < old["lifecycleRevision"].as_u64().unwrap_or(0))
+        {
+            continue;
+        }
+        if !item["deletedAt"].is_null() && item["role"] != "owner" {
+            // Members receive a reduced row; owners receive their complete
+            // catalog entry and use the normal merge below. Keep local source
+            // bindings while recording authoritative lifecycle/membership data.
             let mut project = old.clone();
             project["id"] = item["id"].clone();
-            for key in ["name", "deletedAt", "purgeAfter", "purged"] {
+            for key in [
+                "name",
+                "deletedAt",
+                "purgeAfter",
+                "purged",
+                "role",
+                "lifecycleRevision",
+            ] {
                 if !item[key].is_null() {
                     project[key] = item[key].clone();
+                }
+            }
+            if item["purged"] != true {
+                // A listed, unpurged row establishes current membership even
+                // if this Mac previously observed an access removal.
+                project["revoked"] = Value::Null;
+                project["detachedAt"] = Value::Null;
+                if project["role"].is_null() || project["role"] == "owner" {
+                    project["role"] = json!("member");
                 }
             }
             if old["id"].is_null() {
@@ -255,11 +297,6 @@ pub fn merge_catalog(db: &Connection, remote: &Value) -> Result<()> {
             if item["purged"] == true {
                 detached.push(id.to_string());
             }
-            continue;
-        }
-        if item["lifecycleRevision"].as_u64().unwrap_or(0)
-            < old["lifecycleRevision"].as_u64().unwrap_or(0)
-        {
             continue;
         }
         let mut project = item.clone();
@@ -384,10 +421,13 @@ pub async fn project_command(action: String, input: Value) -> Result<Value> {
         .as_str()
         .ok_or("Sign in first")?
         .to_string();
+    if action == "capabilities" {
+        return sync::api_as(&owner, "GET", "/v2/projects/capabilities", None).await;
+    }
     if action == "list" {
         let capable =
             sync::api_as(&owner, "GET", "/v2/projects/capabilities", None).await?["lifecycle"] == 1;
-        let list = sync::api_as(&owner, "GET", "/v2/projects?includeArchived=true", None).await?;
+        let list = sync::api_as(&owner, "GET", CATALOG_PATH, None).await?;
         let _lock = lock()?;
         merge_catalog(&db, &list)?;
         return Ok(
@@ -446,9 +486,7 @@ pub async fn project_command(action: String, input: Value) -> Result<Value> {
                 .map_err(|e| e.to_string())?;
                 tx.commit().map_err(|e| e.to_string())?;
             }
-            if let Ok(remote) =
-                sync::api_as(&owner, "GET", "/v2/projects?includeArchived=true", None).await
-            {
+            if let Ok(remote) = sync::api_as(&owner, "GET", CATALOG_PATH, None).await {
                 merge_catalog(&db, &remote)?;
             }
             env::clear();
@@ -489,6 +527,11 @@ pub async fn project_command(action: String, input: Value) -> Result<Value> {
             if matches!(action.as_str(), "delete" | "purge") && db.queued_changes(id)? {
                 return Err("Sync queued changes and finish pending ENV publications before deleting this project".into());
             }
+            if matches!(action.as_str(), "delete" | "purge") {
+                require_soft_delete(
+                    &sync::api_as(&owner, "GET", "/v2/projects/capabilities", None).await?,
+                )?;
+            }
             let mut request = input.clone();
             request["action"] = json!(action);
             let receipt =
@@ -516,11 +559,21 @@ pub async fn project_command(action: String, input: Value) -> Result<Value> {
                 if action == "rename" {
                     project["name"] = receipt["name"].clone();
                 } else {
-                    project["archivedAt"] = if action == "archive" {
-                        json!(db::now())
-                    } else {
-                        Value::Null
-                    };
+                    project["archivedAt"] =
+                        receipt.get("archivedAt").cloned().unwrap_or_else(|| {
+                            if action == "archive" {
+                                json!(db::now())
+                            } else {
+                                Value::Null
+                            }
+                        });
+                    if action == "restore" {
+                        project["deletedAt"] = Value::Null;
+                        project["purgeAfter"] = Value::Null;
+                        project["hidden"] = json!(false);
+                        project["revoked"] = json!(false);
+                        project["detachedAt"] = Value::Null;
+                    }
                 }
                 project["lifecycleRevision"] = receipt["lifecycleRevision"].clone();
                 db::upsert(&db, "projects", id, id, &project)?;
