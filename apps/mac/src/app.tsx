@@ -640,7 +640,12 @@ function WorkspaceApp({
       tab === "plan" ||
       tab === "session") ? (
       <RequestAccess
-        key={`${project}:${tab}`}
+        key={JSON.stringify([
+          project,
+          tab,
+          selectedProject.governed,
+          selectedProject.role,
+        ])}
         project={selectedProject}
         kind={tab}
         state={state}

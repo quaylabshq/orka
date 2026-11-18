@@ -25,8 +25,12 @@ export function RequestAccess({
   onRefresh: () => Promise<void>;
   className?: string;
 }) {
-  const [access, setAccess] = useState<AccessMode[] | null>(null);
-  const [roleBased, setRoleBased] = useState(Boolean(project.rolePolicies));
+  const { id: projectId, governed, role, policyRevision } = project;
+  const usesRolePolicies = Boolean(project.rolePolicies);
+  const [permissions, setPermissions] = useState<{
+    modes: AccessMode[];
+    roleBased: boolean;
+  } | null>(null);
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<"read" | "suggest" | "publish">("read");
   const [requestId, setRequestId] = useState(() => crypto.randomUUID());
@@ -49,42 +53,47 @@ export function RequestAccess({
       request.requestedClass === kind,
   );
   useEffect(() => {
-    if (!project.governed || project.role === "owner") return;
+    if (!governed || role === "owner") return;
     let active = true;
-    setRoleBased(Boolean(project.rolePolicies));
-    setAccess(null);
-    const load = governanceCall<GovernanceCatalog>("catalog", {
-      projectId: project.id,
-    }).then((value) => {
-      if (active) setRoleBased(Boolean(value.rolePolicies));
-      return category.classes.map((key) => value.access[key].mode);
-    });
-    void load
-      .then((value) => {
-        if (active) setAccess(value);
-      })
-      .catch(() => {
-        if (active) setAccess(["hidden"]);
-      });
+    let retryTimer: number | undefined;
+    const load = async () => {
+      try {
+        const catalog = await governanceCall<GovernanceCatalog>("catalog", {
+          projectId,
+        });
+        if (active)
+          setPermissions({
+            modes: category.classes.map((key) => catalog.access[key].mode),
+            roleBased: Boolean(catalog.rolePolicies),
+          });
+      } catch {
+        if (!active) return;
+        if (usesRolePolicies) {
+          // A failed check gives us no new information about the role.
+          retryTimer = window.setTimeout(() => void load(), 5000);
+          return;
+        }
+        // Legacy projects still offer a request when the first check fails.
+        setPermissions(
+          (current) => current ?? { modes: ["hidden"], roleBased: false },
+        );
+      }
+    };
+    void load();
     return () => {
       active = false;
+      window.clearTimeout(retryTimer);
     };
-  }, [
-    project.id,
-    project.governed,
-    project.role,
-    project.policyRevision,
-    project.rolePolicies,
-    category,
-  ]);
+  }, [projectId, governed, role, policyRevision, usesRolePolicies, category]);
   if (
-    !project.governed ||
-    project.role === "owner" ||
-    access?.every((value) => value === "publish")
+    !governed ||
+    role === "owner" ||
+    !permissions ||
+    permissions.modes.every((value) => value === "publish")
   )
     return null;
-  const needsRead = access?.some((value) => value === "hidden");
-  if (roleBased)
+  const needsRead = permissions.modes.some((value) => value === "hidden");
+  if (permissions.roleBased)
     return (
       <p className={className}>
         The project Owner manages access for your role.
@@ -106,7 +115,7 @@ export function RequestAccess({
       >
         {pending || sent
           ? "Access requested"
-          : needsRead || !access
+          : needsRead
             ? "Request access"
             : "Request editing access"}
       </Button>

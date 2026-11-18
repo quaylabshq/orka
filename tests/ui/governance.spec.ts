@@ -2,6 +2,7 @@ import { test, expect, type Page } from "@playwright/test";
 import type { FileManifestEntry } from "../../apps/mac/src/components/diff-model.js";
 import {
   defaultProjectRules,
+  defaultRolePolicies,
   type ClassRule,
   type ProjectRules,
 } from "@portable/protocol";
@@ -32,8 +33,9 @@ async function fixture(
   } = {},
 ) {
   await page.addInitScript(
-    ({ rules, governed, removed, mode, envData, review }) => {
-      const isMember = mode === "member" || mode === "restricted";
+    ({ rules, governed, removed, mode, envData, review, defaultRoles }) => {
+      const roleBased = mode === "role-policy-skills";
+      const isMember = mode === "member" || mode === "restricted" || roleBased;
       const instructions = mode === "instructions";
       const file = instructions ? "CLAUDE.md" : "SKILL.md";
       const resource = {
@@ -76,6 +78,8 @@ async function fixture(
         path: "/synthetic/project",
         role: isMember ? "member" : "owner",
         governed,
+        policyRevision: roleBased ? 1 : undefined,
+        rolePolicies: roleBased ? defaultRoles : undefined,
         sharing: {
           memory: true,
           skill: true,
@@ -112,11 +116,20 @@ async function fixture(
         owner: !isMember,
         governed,
         policyRevision: governed ? 1 : 0,
+        rolePolicies: project.rolePolicies,
         policy: rules,
         access: Object.fromEntries(
           Object.entries(rules).map(([key, rule]) => [
             key,
-            { ...rule, mode: mode === "restricted" ? "hidden" : rule.mode },
+            {
+              ...rule,
+              mode:
+                mode === "restricted"
+                  ? "hidden"
+                  : roleBased && key === "skill"
+                    ? "publish"
+                    : rule.mode,
+            },
           ]),
         ),
         members: [
@@ -167,6 +180,8 @@ async function fixture(
             : [request]),
         ],
       };
+      const pendingSkillCatalog: { finish: () => void; fail: () => void }[] =
+        [];
       const calls: { command: string; args: Record<string, unknown> }[] = [];
       Object.assign(window, {
         governanceCalls: calls,
@@ -174,6 +189,15 @@ async function fixture(
         pendingEnvLink: null,
         governanceBump: () => {
           catalog.policyRevision++;
+        },
+        skillCatalog: {
+          finish: () => pendingSkillCatalog.shift()?.finish(),
+          fail: () => pendingSkillCatalog.shift()?.fail(),
+          restrict: () => {
+            project.policyRevision = ++catalog.policyRevision;
+            defaultRoles.member.skill = "read";
+            catalog.access.skill.mode = "read";
+          },
         },
         isTauri: true,
         __TAURI_EVENT_PLUGIN_INTERNALS__: { unregisterListener: () => {} },
@@ -199,10 +223,16 @@ async function fixture(
                           path: "/synthetic/second",
                         },
                       ]
-                    : [project],
+                    : [roleBased ? structuredClone(project) : project],
                 resources: mode === "restricted" ? [] : [resource],
                 governance: [
-                  { projectId: "project", catalog: { access: catalog.access } },
+                  {
+                    projectId: "project",
+                    catalog: {
+                      access: catalog.access,
+                      members: roleBased ? catalog.members : undefined,
+                    },
+                  },
                 ],
                 bindings: [
                   {
@@ -224,6 +254,8 @@ async function fixture(
               };
             if (command === "sync_progress")
               return { user: "owner", progress: null };
+            if (command === "project_skill_usage")
+              return { counts: {}, partial: false };
             calls.push({ command, args });
             if (command === "profile_events") {
               const w = window as any;
@@ -287,6 +319,13 @@ async function fixture(
                     next: envData && !args.input?.before ? "next-page" : null,
                   };
                 case "catalog":
+                  if (roleBased)
+                    await new Promise<void>((resolve, reject) => {
+                      pendingSkillCatalog.push({
+                        finish: resolve,
+                        fail: () => reject(new Error("Network unavailable")),
+                      });
+                    });
                   if (mode === "held-catalog")
                     await new Promise<void>((resolve) => {
                       ((window as any).finishMemberLoads ??= []).push(resolve);
@@ -445,9 +484,18 @@ async function fixture(
         },
       });
     },
-    { rules: savedProjectRules, governed, removed, mode, envData, review },
+    {
+      rules: savedProjectRules,
+      governed,
+      removed,
+      mode,
+      envData,
+      review,
+      defaultRoles: defaultRolePolicies,
+    },
   );
   await page.goto("/");
+  if (mode === "role-policy-skills") return;
   await page.getByRole("button", { name: "Settings", exact: true }).click();
   await page.getByRole("button", { name: "Members", exact: true }).click();
   await page.getByRole("button", { name: /Review pending requests/ }).click();
@@ -965,6 +1013,66 @@ test("request approval sends the exact reviewed hash and reports stale proposals
       decision: "approve",
     },
   ]);
+});
+
+test("Skills waits for confirmed role access without moving cards on workspace polls", async ({
+  page,
+}) => {
+  await page.clock.install();
+  await fixture(page, true, false, "role-policy-skills");
+  await page.getByRole("button", { name: /^Skills\b/ }).click();
+
+  const notice = page.getByText(
+    "The project Owner manages access for your role.",
+    { exact: true },
+  );
+  const toolbar = page.getByRole("group", { name: "skills tools" });
+  const card = page.getByRole("button", { name: /^Sample skill\b/ });
+  const positions = async () => [
+    (await toolbar.boundingBox())?.y,
+    (await card.boundingBox())?.y,
+  ];
+  const catalog = async (operation: "finish" | "fail" | "restrict") => {
+    await page.evaluate((operation) => {
+      const { skillCatalog } = window as unknown as {
+        skillCatalog: Record<typeof operation, () => void>;
+      };
+      skillCatalog[operation]();
+    }, operation);
+  };
+
+  await expect.poll(() => calls(page, "catalog")).toHaveLength(1);
+  await expect(card).toBeVisible();
+  const initialPositions = await positions();
+  expect(await notice.count()).toBe(0);
+  await catalog("fail");
+  await page.clock.runFor(5_100);
+  await expect.poll(() => calls(page, "catalog")).toHaveLength(2);
+  expect(await notice.count()).toBe(0);
+  expect(await positions()).toEqual(initialPositions);
+  await catalog("finish");
+  await page.clock.runFor(6_100);
+  expect(await notice.count()).toBe(0);
+  expect(await positions()).toEqual(initialPositions);
+  expect(await calls(page, "catalog")).toHaveLength(2);
+
+  await catalog("restrict");
+  await page.clock.runFor(3_100);
+  await expect.poll(() => calls(page, "catalog")).toHaveLength(3);
+  expect(await notice.count()).toBe(0);
+  await catalog("finish");
+  await expect(notice).toBeVisible();
+  const restrictedPositions = await positions();
+  await catalog("restrict");
+  await page.clock.runFor(3_100);
+  await expect.poll(() => calls(page, "catalog")).toHaveLength(4);
+  await expect(notice).toBeVisible();
+  expect(await positions()).toEqual(restrictedPositions);
+  await catalog("finish");
+  await page.clock.runFor(6_100);
+  await expect(notice).toBeVisible();
+  expect(await positions()).toEqual(restrictedPositions);
+  expect(await calls(page, "catalog")).toHaveLength(4);
 });
 
 test("access requests start from resource pages and do not appear in management", async ({
