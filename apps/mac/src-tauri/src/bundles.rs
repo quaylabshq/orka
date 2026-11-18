@@ -1,6 +1,7 @@
 use crate::{
     db::{self, Result},
     indexer, native, packages,
+    sync_queue::{Priority, SyncQueue},
 };
 use serde_json::{json, Value};
 use std::{
@@ -250,6 +251,6 @@ pub fn import_into_source(
     let b = indexer::binding(db, &id)?;
     let value = json!({"version":2,"id":Uuid::new_v4().to_string(),"projectId":project,"deviceId":db::device(db)?,"baseRevision":b["base"]["revision"].as_u64().unwrap_or(0),"resource":r});
     indexer::queue(db, project, "/v2/sync/push", &value)?;
-    db::set(db, "syncRequest", &json!(Uuid::new_v4().to_string()))?;
+    SyncQueue::request(db, project, Priority::User, "import")?;
     Ok(id)
 }

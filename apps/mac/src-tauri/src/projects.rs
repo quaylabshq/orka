@@ -1,6 +1,7 @@
 use crate::{
     db::{self, Result},
     env, sync,
+    sync_queue::{Priority, SyncQueue},
 };
 use fs2::FileExt;
 use rusqlite::Connection;
@@ -463,6 +464,6 @@ pub async fn project_command(action: String, input: Value) -> Result<Value> {
         }
         _ => return Err("Unknown project action".into()),
     }
-    crate::commands::sync_now()?;
+    SyncQueue::request(&db, id, Priority::User, "project")?;
     Ok(json!({"ok":true}))
 }

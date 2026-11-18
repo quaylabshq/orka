@@ -2,6 +2,7 @@ use crate::{
     auth, bundles,
     db::{self, Result},
     indexer, native, packages, projects, session_presentation, sync,
+    sync_queue::{Priority, SyncQueue, WORKSPACE},
 };
 use serde_json::{json, Value};
 use std::{
@@ -146,15 +147,16 @@ pub fn configure(config: Value) -> Result<()> {
         auth::cancel()?;
     }
     db::set(&db, "config", &next)?;
-    sync_now()
+    SyncQueue::request(&db, WORKSPACE, Priority::User, "service")
 }
 #[tauri::command]
 pub fn switch_service(config: Value) -> Result<()> {
     let next = service_config(&config)?;
     let _lock = projects::lock()?;
     auth::sign_out()?;
-    db::set(&db::open()?, "config", &next)?;
-    sync_now()
+    let db = db::open()?;
+    db::set(&db, "config", &next)?;
+    SyncQueue::request(&db, WORKSPACE, Priority::User, "service")
 }
 #[tauri::command]
 pub fn open_legal_link(document: String) -> Result<()> {
@@ -237,11 +239,15 @@ pub fn sign_out() -> Result<()> {
 }
 #[tauri::command]
 pub fn sync_now() -> Result<()> {
-    db::set(
-        &db::open()?,
-        "syncRequest",
-        &json!(Uuid::new_v4().to_string()),
-    )
+    SyncQueue::request_all(&db::open()?, Priority::User, "sync now")
+}
+#[tauri::command]
+pub fn cancel_sync(project_id: String) -> Result<()> {
+    SyncQueue::cancel(&db::open()?, &project_id)
+}
+#[tauri::command]
+pub fn sync_queue_state() -> Result<Value> {
+    SyncQueue::states(&db::open()?, SyncQueue::now())
 }
 #[tauri::command]
 pub async fn cloud_action(action: String, input: Value) -> Result<Value> {
@@ -324,6 +330,7 @@ pub(crate) async fn cloud_action_scoped(
             project["sources"] = json!([]);
         }
         db::upsert(&db, "projects", id, id, &project)?;
+        SyncQueue::request(&db, id, Priority::User, "project")?;
         // Creation has succeeded. A catalog outage must not lose consent or ask
         // the user to create the same project again; sync will refresh it later.
         if let Ok(list) = sync::api("GET", "/v2/projects?includeArchived=true", None).await {
@@ -345,9 +352,6 @@ pub(crate) async fn cloud_action_scoped(
         {
             r["repositorySetup"] = json!(true);
         }
-    }
-    if adding {
-        sync_now()?;
     }
     Ok(r)
 }
@@ -425,7 +429,7 @@ pub fn connect_project(id: String, path: String) -> Result<()> {
     p["folderIdentity"] = json!(indexer::folder_identity(&root)?);
     p["path"] = json!(root);
     db::upsert(&db, "projects", &id, &id, &p)?;
-    sync_now()?;
+    SyncQueue::request(&db, &id, Priority::User, "project")?;
     Ok(())
 }
 #[tauri::command]
@@ -670,7 +674,7 @@ pub fn session_action(
         json!({"version":2,"id":Uuid::new_v4().to_string(),"projectId":project,"deviceId":db::device(&db)?,"resourceId":id,"expectedRevision":r["revision"],"conflictId":c,"action":action,"selected":selected})
     } else if action == "copy" {
         sync::queue_session_snapshot(&db, &r, &db::device(&db)?)?;
-        return sync_now();
+        return SyncQueue::request(&db, project, Priority::User, "session");
     } else if action == "delete" {
         let mut resource = r.clone();
         for key in [
@@ -699,7 +703,7 @@ pub fn session_action(
         "/v2/sync/push"
     };
     indexer::queue(&db, project, endpoint, &input)?;
-    sync_now()
+    SyncQueue::request(&db, project, Priority::User, "session")
 }
 #[tauri::command]
 pub async fn session_launch_options(
@@ -806,7 +810,7 @@ pub async fn retry_uploads(project_id: Option<String>) -> Result<()> {
         .await
         .map_err(|error| error.to_string())?
     } else {
-        sync_now()
+        SyncQueue::request_all(&db::open()?, Priority::User, "retry")
     }
 }
 #[tauri::command]

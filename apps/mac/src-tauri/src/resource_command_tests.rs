@@ -247,6 +247,15 @@ fn shared_deletion_freezes_exact_payload_and_preserves_local_sources_and_sharing
         let receipt = json!({"conflict":false,"event":{"resource":deleted,"conflicts":[]}});
         let result = actions::complete_delete(&f.db, &input, &frozen, &receipt).unwrap();
         assert_eq!(result["status"], "deleted");
+        assert_eq!(
+            db::rows(
+                &f.db,
+                "SELECT json_object('project',project,'priority',priority,'reason',reason) FROM sync_queue",
+                &[]
+            )
+            .unwrap(),
+            [json!({"project":f.project["id"],"priority":2,"reason":"delete"})]
+        );
         assert_eq!(result["automaticSharingChanged"], false);
         assert_eq!(
             actions::delete_request(&f.db, &f.project, &input).unwrap()["result"],

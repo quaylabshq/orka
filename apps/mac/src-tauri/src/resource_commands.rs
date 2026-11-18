@@ -1,6 +1,7 @@
 use crate::{
     db::{self, Result},
     governance, indexer, packages, projects, sources, sync,
+    sync_queue::{Priority, SyncQueue},
 };
 use rusqlite::Connection;
 use serde_json::{json, Value};
@@ -419,7 +420,12 @@ pub(crate) fn complete_delete(
         ),
         &saved,
     )?;
-    db::set(&tx, "syncRequest", &json!(Uuid::new_v4().to_string()))?;
+    SyncQueue::request(
+        &tx,
+        input["projectId"].as_str().ok_or("Missing project")?,
+        Priority::User,
+        "delete",
+    )?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(result)
 }

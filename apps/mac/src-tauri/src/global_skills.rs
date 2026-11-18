@@ -1,6 +1,7 @@
 use crate::{
     db::{self, Result},
     governance, indexer, native, packages, projects,
+    sync_queue::{Priority, SyncQueue},
 };
 use rusqlite::Connection;
 use serde::Serialize;
@@ -229,7 +230,12 @@ fn install(db: &Connection, project: &Value, skill: &GlobalSkill) -> Result<Valu
         }
     } else {
         indexer::scan(db, project)?;
-        db::set(db, "syncRequest", &json!(uuid::Uuid::new_v4().to_string()))?;
+        SyncQueue::request(
+            db,
+            project["id"].as_str().ok_or("Missing project")?,
+            Priority::Local,
+            "skill",
+        )?;
         "queued"
     };
     Ok(json!({"resourceId":id,"status":status}))

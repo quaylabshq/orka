@@ -194,6 +194,8 @@ function WorkspaceApp({
     act,
     run,
     refresh,
+    refreshQueue,
+    queue,
     refreshError,
     errorFeedback,
     actionNotice,
@@ -848,6 +850,20 @@ function WorkspaceApp({
                 canConnect={Boolean(selectedProject)}
                 state={state}
                 attention={attention}
+                queue={queue}
+                onCancel={(projectId) =>
+                  void act(
+                    async () => {
+                      await invoke("cancel_sync", { projectId });
+                      await refreshQueue();
+                    },
+                    {
+                      successTitle: "Cancellation requested",
+                      kind: "queued",
+                      errorTitle: "Couldn’t cancel sync",
+                    },
+                  )
+                }
                 onReview={() => leaveSettings(() => openManagement("requests"))}
                 busy={busy}
                 actionError={error || refreshError}
