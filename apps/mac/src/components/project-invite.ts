@@ -27,7 +27,7 @@ const expiredMessage =
   "This invite has expired. Ask the project owner for a new invite.";
 const usedMessage =
   "This invite was already used or is no longer valid. Ask the project owner for a new invite.";
-const expiredOrUsedMessage =
+export const inviteExpiredOrUsedMessage =
   "This invite has expired or was already used. Ask the project owner for a new invite.";
 const archivedMessage =
   "This project is archived, so its invites no longer work.";
@@ -59,9 +59,22 @@ export function joinErrorMessage(error: unknown): string {
   if (/^This invite was already used\b/.test(message)) return usedMessage;
   // Servers before invite states shipped one message for both outcomes.
   if (/^Invite expired or already used\b/.test(message))
-    return expiredOrUsedMessage;
+    return inviteExpiredOrUsedMessage;
   if (/^This project is archived\b/.test(message)) return archivedMessage;
   return message;
+}
+
+export function inviteExpiry(expiresAt: string): string {
+  const at = Date.parse(expiresAt);
+  if (!Number.isFinite(at)) return "";
+  const minutes = Math.round((at - Date.now()) / 60_000);
+  if (minutes < 1) return "Expires in less than a minute.";
+  if (minutes < 60)
+    return `Expires in ${minutes} minute${minutes === 1 ? "" : "s"}.`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `Expires in ${hours} hour${hours === 1 ? "" : "s"}.`;
+  const days = Math.round(hours / 24);
+  return `Expires in ${days} day${days === 1 ? "" : "s"}.`;
 }
 
 export function parseProjectInvite(value: string): {
