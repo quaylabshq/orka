@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { Project } from "../../types.js";
 import { ActivityIndicator } from "../activity-indicator.js";
@@ -8,26 +8,35 @@ import { TextField } from "../text-field.js";
 
 const errorText = (error: unknown) => String(error).replace(/^Error:\s*/, "");
 
-/** The service keeps a deleted project for 30 days unless its receipt says otherwise. */
+/** Format only an authoritative deadline returned by the service. */
 export function restorableUntil(value?: string | null) {
-  const fallback = Date.now() + 30 * 24 * 60 * 60 * 1000;
-  const date = value ? new Date(value) : new Date(fallback);
-  return new Intl.DateTimeFormat(undefined, { dateStyle: "long" }).format(
-    Number.isNaN(date.getTime()) ? new Date(fallback) : date,
-  );
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? null
+    : new Intl.DateTimeFormat(undefined, { dateStyle: "long" }).format(date);
 }
+
+type ProjectCapabilities = {
+  softDelete?: number;
+  projectRestoreWindowDays?: number;
+};
 
 type Dialog = { kind: "delete" | "purge"; project: Project };
 
 export function SettingsDanger({
   project,
-  deletedProjects,
+  deletedProjects = [],
+  archivedProjects = [],
+  serviceUrl,
   members,
   busy,
   run,
 }: {
   project?: Project;
-  deletedProjects: Project[];
+  deletedProjects?: Project[];
+  archivedProjects?: Project[];
+  serviceUrl?: string;
   members: number | null;
   busy: boolean;
   run: (action: () => Promise<unknown>) => Promise<unknown>;
@@ -40,6 +49,40 @@ export function SettingsDanger({
   const [notice, setNotice] = useState("");
   const [working, setWorking] = useState(false);
   const disabled = busy || working;
+  const [capabilities, setCapabilities] = useState<ProjectCapabilities | null>(
+    null,
+  );
+  const [capabilityError, setCapabilityError] = useState("");
+  const [capabilityAttempt, setCapabilityAttempt] = useState(0);
+  useEffect(() => {
+    let active = true;
+    setCapabilities(null);
+    setCapabilityError("");
+    void invoke<ProjectCapabilities>("project_command", {
+      action: "capabilities",
+      input: {},
+    }).then(
+      (value) => {
+        if (active) setCapabilities(value);
+      },
+      () => {
+        if (active)
+          setCapabilityError("Could not check project deletion support.");
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [serviceUrl, capabilityAttempt]);
+  const supportsDelete = capabilities?.softDelete === 1;
+  const days = capabilities?.projectRestoreWindowDays;
+  const restoreWindow =
+    typeof days === "number" && Number.isSafeInteger(days) && days > 0
+      ? `${days} ${days === 1 ? "day" : "days"}`
+      : null;
+  const restorePromise = restoreWindow
+    ? `This service keeps deleted projects for ${restoreWindow}.`
+    : "It can be restored during this service’s restore window.";
 
   const open = (kind: Dialog["kind"], target: Project) => {
     setDialog({ kind, project: target });
@@ -82,7 +125,13 @@ export function SettingsDanger({
   };
 
   const submit = async () => {
-    if (!dialog || typed.trim() !== dialog.project.name || disabled) return;
+    if (
+      !dialog ||
+      typed.trim() !== dialog.project.name ||
+      disabled ||
+      !supportsDelete
+    )
+      return;
     const target = dialog;
     setDialogError("");
     setWorking(true);
@@ -108,7 +157,10 @@ export function SettingsDanger({
   };
 
   const matches = Boolean(
-    dialog && typed.trim() === dialog.project.name && !disabled,
+    dialog &&
+    typed.trim() === dialog.project.name &&
+    !disabled &&
+    supportsDelete,
   );
   const count = Math.max(1, memberCount ?? 1);
   const title =
@@ -151,17 +203,51 @@ export function SettingsDanger({
           <div className="settings-row">
             <div>
               <h3>Delete project</h3>
-              <p>Remove it for all members. It can be restored for 30 days.</p>
+              <p>
+                Remove it for all members.{" "}
+                {capabilities === null
+                  ? "Checking deletion support…"
+                  : supportsDelete
+                    ? restorePromise
+                    : "Update this service to use recoverable project deletion."}
+              </p>
             </div>
             <Button
               size="sm"
               className="management-danger"
-              disabled={disabled}
+              disabled={disabled || !supportsDelete}
               onClick={() => open("delete", project)}
             >
               Delete project
             </Button>
           </div>
+        </section>
+      )}
+      {archivedProjects.length > 0 && (
+        <section className="settings-danger" aria-label="Archived projects">
+          <div className="settings-danger-heading">
+            <h3>Archived projects</h3>
+            <p>Projects you own with sync paused for all members.</p>
+          </div>
+          <ul className="settings-group settings-deleted-list">
+            {archivedProjects.map((item) => (
+              <li className="settings-deleted-row" key={item.id}>
+                <div className="settings-project-summary">
+                  <strong title={item.name}>{item.name}</strong>
+                  <p>Archived</p>
+                </div>
+                <div className="settings-inline-actions">
+                  <Button
+                    size="sm"
+                    disabled={disabled}
+                    onClick={() => void lifecycle(item, "restore")}
+                  >
+                    Restore
+                  </Button>
+                </div>
+              </li>
+            ))}
+          </ul>
         </section>
       )}
       {deletedProjects.length > 0 && (
@@ -173,9 +259,13 @@ export function SettingsDanger({
           <ul className="settings-group settings-deleted-list">
             {deletedProjects.map((item) => (
               <li className="settings-deleted-row" key={item.id}>
-                <div>
-                  <strong>{item.name}</strong>
-                  <p>Restorable until {restorableUntil(item.purgeAfter)}</p>
+                <div className="settings-project-summary">
+                  <strong title={item.name}>{item.name}</strong>
+                  <p>
+                    {restorableUntil(item.purgeAfter)
+                      ? `Restorable until ${restorableUntil(item.purgeAfter)}`
+                      : "Restore deadline unavailable."}
+                  </p>
                 </div>
                 <div className="settings-inline-actions">
                   <Button
@@ -188,7 +278,7 @@ export function SettingsDanger({
                   <Button
                     size="sm"
                     className="management-danger"
-                    disabled={disabled}
+                    disabled={disabled || !supportsDelete}
                     onClick={() => open("purge", item)}
                   >
                     Delete now
@@ -198,6 +288,18 @@ export function SettingsDanger({
             ))}
           </ul>
         </section>
+      )}
+      {capabilityError && (
+        <p role="alert">
+          {capabilityError}{" "}
+          <Button
+            size="sm"
+            disabled={disabled}
+            onClick={() => setCapabilityAttempt((attempt) => attempt + 1)}
+          >
+            Retry
+          </Button>
+        </p>
       )}
       {sectionError && <p role="alert">{sectionError}</p>}
       {notice && <p role="status">{notice}</p>}
@@ -216,8 +318,7 @@ export function SettingsDanger({
               {memberCount === null
                 ? "Counting who will lose access."
                 : `The ${count} ${count === 1 ? "member" : "members"} of this project will lose access.`}{" "}
-              It can be restored until{" "}
-              {restorableUntil(dialog.project.purgeAfter)}.
+              {restorePromise}
             </p>
           ) : (
             <p>

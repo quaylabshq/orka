@@ -103,6 +103,7 @@ export interface Snapshot {
   } | null;
   projects: Project[];
   deletedProjects?: Project[];
+  archivedProjects?: Project[];
   resources: ProjectResource[];
   bindings: Binding[];
   conflicts: SessionConflict[];

@@ -68,6 +68,14 @@ export async function settingsFixture(
       purgeAfter?: string;
       lifecycleRevision?: number;
     }[];
+    archivedProjects?: {
+      id: string;
+      name: string;
+      role?: "owner" | "admin" | "member";
+      archivedAt: string;
+      lifecycleRevision?: number;
+    }[];
+    projectRestoreWindowDays?: number;
     policyFailure?: "drop" | "offline" | "conflict";
     legacy?: boolean;
     long?: boolean;
@@ -185,6 +193,7 @@ export async function settingsFixture(
           },
         ];
     const deletedProjects = (options.deletedProjects ?? []) as any[];
+    const archivedProjects = (options.archivedProjects ?? []) as any[];
     const state = {
       user,
       profile: "settings-test",
@@ -197,6 +206,7 @@ export async function settingsFixture(
       },
       projects,
       deletedProjects,
+      archivedProjects,
       resources: [],
       bindings: [],
       conflicts: [],
@@ -572,12 +582,21 @@ export async function settingsFixture(
               url: "https://test.orka/join/join-once",
             };
           if (command === "project_command") {
+            if (args.action === "capabilities")
+              return {
+                softDelete: options.olderService ? 0 : 1,
+                projectRestoreWindowDays:
+                  options.projectRestoreWindowDays ?? 30,
+              };
             if (args.action === "list")
               return { supported: true, projects: structuredClone(projects) };
             const project = (projects.find(
               (project) => project.id === args.input.projectId,
             ) ??
               deletedProjects.find(
+                (project) => project.id === args.input.projectId,
+              ) ??
+              archivedProjects.find(
                 (project) => project.id === args.input.projectId,
               ))! as any;
             if (args.action === "delete" || args.action === "purge") {
@@ -614,6 +633,11 @@ export async function settingsFixture(
               };
             }
             if (args.action === "archive") {
+              archivedProjects.push({
+                ...project,
+                archivedAt: "2026-01-01T00:00:00Z",
+                lifecycleRevision: (project.lifecycleRevision ?? 0) + 1,
+              });
               projects.splice(
                 projects.findIndex((item) => item.id === args.input.projectId),
                 1,
@@ -621,13 +645,19 @@ export async function settingsFixture(
               return { ok: true };
             }
             if (args.action === "restore") {
-              const index = deletedProjects.findIndex(
+              const bucket = deletedProjects.some(
+                (item) => item.id === args.input.projectId,
+              )
+                ? deletedProjects
+                : archivedProjects;
+              const index = bucket.findIndex(
                 (item) => item.id === args.input.projectId,
               );
               if (index >= 0) {
-                const restored = deletedProjects.splice(index, 1)[0];
+                const restored = bucket.splice(index, 1)[0];
                 delete restored.deletedAt;
                 delete restored.purgeAfter;
+                delete restored.archivedAt;
                 projects.push(restored as (typeof projects)[number]);
               }
               return { ok: true };

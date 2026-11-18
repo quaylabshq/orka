@@ -53,7 +53,12 @@ pub fn snapshot() -> Result<Value> {
     }
     let deleted_projects = db::rows(
         &db,
-        "SELECT value FROM projects WHERE coalesce(json_extract(value,'$.revoked'),0)=0 AND coalesce(json_extract(value,'$.hidden'),0)=0 AND json_extract(value,'$.role')='owner' AND json_extract(value,'$.deletedAt') IS NOT NULL AND coalesce(json_extract(value,'$.purged'),0)=0 AND json_extract(value,'$.detachedAt') IS NULL ORDER BY json_extract(value,'$.name')",
+        "SELECT value FROM projects WHERE coalesce(json_extract(value,'$.revoked'),0)=0 AND json_extract(value,'$.role')='owner' AND json_extract(value,'$.deletedAt') IS NOT NULL AND coalesce(json_extract(value,'$.purged'),0)=0 AND json_extract(value,'$.detachedAt') IS NULL ORDER BY json_extract(value,'$.name')",
+        &[],
+    )?;
+    let archived_projects = db::rows(
+        &db,
+        "SELECT value FROM projects WHERE coalesce(json_extract(value,'$.revoked'),0)=0 AND json_extract(value,'$.role')='owner' AND json_extract(value,'$.archivedAt') IS NOT NULL AND json_extract(value,'$.deletedAt') IS NULL AND coalesce(json_extract(value,'$.purged'),0)=0 AND json_extract(value,'$.detachedAt') IS NULL ORDER BY json_extract(value,'$.name')",
         &[],
     )?;
     let mut local_skills = Vec::new();
@@ -76,7 +81,7 @@ pub fn snapshot() -> Result<Value> {
     Ok(json!({
         "profile":crate::profiles::current(), "onboarding":onboarding, "accountProfile":db::get(&db,"accountProfile")?,
         "user":db::get(&db,"user")?, "config":db::get(&db,"config")?,
-        "projects":projects, "deletedProjects":deleted_projects, "localSkills":local_skills,
+        "projects":projects, "deletedProjects":deleted_projects, "archivedProjects":archived_projects, "localSkills":local_skills,
         "managedProjects":db::rows(&db,"SELECT json_set(value,'$.pendingChanges',(SELECT count(*) FROM outbox WHERE project=projects.id)+(SELECT count(*) FROM meta WHERE ? AND key LIKE 'env:%:pending:%' AND json_extract(value,'$.sourceRemoval') IS NULL AND json_extract(value,'$.header.manifest.projectId')=projects.id)) FROM projects ORDER BY json_extract(value,'$.name')",&[&crate::env::enabled()])?,
         "resources":resources, "bindings":scoped("bindings")?, "conflicts":scoped("conflicts")?,
         "drafts":scoped("drafts")?,

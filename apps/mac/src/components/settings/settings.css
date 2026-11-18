@@ -449,6 +449,12 @@
   .settings-deleted-row {
     @apply flex min-w-0 items-center justify-between gap-4 px-4 py-3;
   }
+  .settings-project-summary {
+    @apply min-w-0 flex-1;
+  }
+  .settings-deleted-row > .settings-inline-actions {
+    @apply shrink-0;
+  }
   .settings-deleted-row + .settings-deleted-row {
     @apply border-t border-line;
   }
