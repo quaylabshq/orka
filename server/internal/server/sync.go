@@ -16,6 +16,9 @@ func (s *Store) beginChange(q *Queries, user string, input Object) (int64, Objec
 	s.checkDevice(q, user, text(input["deviceId"]))
 	prior := q.One("select request_hash,payload from orka.receipts where project_id=$1 and author=$2 and id=$3", project, user, input["id"])
 	if prior != nil {
+		if !q.Require(!flag(field(prior["payload"], "sessionUploadCancelled")), 409, "Session upload request was cancelled") {
+			return 0, nil
+		}
 		if !q.Require(text(prior["request_hash"]) == Hash(input), 409, "Retry ID reused with different content") {
 			return 0, nil
 		}
@@ -29,6 +32,36 @@ func (s *Store) beginChange(q *Queries, user string, input Object) (int64, Objec
 	}
 	return number(locked["revision"]) + 1, nil
 }
+
+// Recover the immutable ACK without resending an old snapshot. Cancellation
+// shares publication's project lock, so a delayed original cannot commit after
+// the client has been told it is safe to replace the request with a fresh ID.
+func (s *Store) reconcileSessionUpload(q *Queries, user string, input Object) Object {
+	project := text(input["projectId"])
+	q.One("select id from orka.projects where id=$1 for update", project)
+	s.member(q, user, project)
+	s.checkDevice(q, user, text(input["deviceId"]))
+	prior := q.One("select payload from orka.receipts where project_id=$1 and author=$2 and id=$3", project, user, input["id"])
+	if prior != nil {
+		receipt := clone(object(prior["payload"]))
+		if flag(receipt["sessionUploadCancelled"]) {
+			return Object{"status": "cancelled"}
+		}
+		if !q.Require(field(field(receipt["event"], "resource"), "kind") == "session", 409, "Request is not a session upload") {
+			return nil
+		}
+		event := s.visibleEvent(q, user, project, object(receipt["event"]))
+		if !q.Require(event != nil, 403, "Receipt access denied") {
+			return nil
+		}
+		receipt["event"] = event
+		return Object{"status": "accepted", "receipt": receipt}
+	}
+	tombstone := Object{"sessionUploadCancelled": true}
+	q.Exec("insert into orka.receipts values($1,$2,$3,$4,$5)", project, user, input["id"], Hash(tombstone), tombstone)
+	return Object{"status": "cancelled"}
+}
+
 func (s *Store) conflicts(q *Queries, project, id string) []any {
 	result := []any{}
 	for _, row := range q.Rows("select payload from orka.conflicts where project_id=$1 and resource_id=$2 and not resolved order by id", project, id) {

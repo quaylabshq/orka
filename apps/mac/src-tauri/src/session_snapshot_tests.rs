@@ -551,13 +551,21 @@ fn assert_redacted(snapshot: &Value) {
     }
 }
 
-fn outbox_ids(f: &Fixture) -> Vec<Value> {
+fn outbox_order(f: &Fixture) -> Vec<Value> {
     db::rows(
         &f.db,
-        "SELECT json_quote(id) FROM outbox ORDER BY rowid",
+        "SELECT json_quote(rowid) FROM outbox ORDER BY rowid",
         &[],
     )
     .unwrap()
+}
+
+fn cancelled_outbox_replacement(f: &Fixture, id: &Value) -> bool {
+    let mut row = db::rows(&f.db,
+        "SELECT json_object('id',id,'project',project,'path',path,'value',json(value),'error',error) FROM outbox WHERE id=?",
+        &[&id.as_str().unwrap()]).unwrap().remove(0);
+    // The HTTP path invokes this only after the server has cancelled the old ID.
+    sync::replace_redacted_outbox(&f.db, &mut row).unwrap()
 }
 
 #[test]
@@ -583,25 +591,50 @@ fn outbox_rows_from_before_redaction_are_rebuilt_once_in_queue_order() {
             &db::blob_read(source["files"][0]["hash"].as_str().unwrap()).unwrap()
         )
         .is_err());
-        let order = outbox_ids(&f);
+        let order = outbox_order(&f);
 
         sync::rebuild_unredacted_outbox(&f.db).unwrap();
 
-        // Rewritten in place: the older copy still precedes the later push.
-        assert_eq!(outbox_ids(&f), order);
+        // A 422 does not prove an earlier attempt was never accepted. Preserve
+        // both original bodies and IDs until the server reconciles them.
+        assert_eq!(f.outbox(), vec![copy.clone(), push.clone()]);
+        assert_eq!(outbox_order(&f), order);
+        let original_state = db::get(
+            &f.db,
+            &format!("sessionCopy:{}", copy["id"].as_str().unwrap()),
+        )
+        .unwrap();
+        assert_eq!(original_state["source"], source);
+        assert!(cancelled_outbox_replacement(&f, &copy["id"]));
+        assert!(cancelled_outbox_replacement(&f, &push["id"]));
+        assert_eq!(outbox_order(&f), order);
         let rows = f.outbox();
+        assert_ne!(rows[0]["id"], copy["id"]);
+        assert_ne!(rows[1]["id"], push["id"]);
+        assert_eq!(
+            indexer::binding(&f.db, source["resourceId"].as_str().unwrap()).unwrap()["copyRequest"],
+            rows[0]["id"]
+        );
+        assert_eq!(
+            db::get(
+                &f.db,
+                &format!("sessionCopy:{}", copy["id"].as_str().unwrap())
+            )
+            .unwrap(),
+            Value::Null
+        );
         assert_redacted(&rows[0]["sourceSnapshot"]);
         assert_redacted(&rows[1]["resource"]);
         assert_eq!(rows[0]["expectedRevision"], copy["expectedRevision"]);
         assert_eq!(rows[1]["baseRevision"], 7);
         let state = db::get(
             &f.db,
-            &format!("sessionCopy:{}", copy["id"].as_str().unwrap()),
+            &format!("sessionCopy:{}", rows[0]["id"].as_str().unwrap()),
         )
         .unwrap();
         assert_redacted(&state["source"]);
         assert_eq!(state["source"]["files"], rows[0]["sourceSnapshot"]["files"]);
-        assert_eq!(state["negotiate"], true);
+        assert_eq!(state["negotiate"], false);
         if provider == "codex" {
             History::resource(&rows[0]["sourceSnapshot"]).unwrap();
         }
@@ -609,9 +642,11 @@ fn outbox_rows_from_before_redaction_are_rebuilt_once_in_queue_order() {
         assert_eq!(errors, vec![Value::Null, Value::Null]);
 
         // A row that still looks unredacted is left alone once the pass has run.
+        let mut raw = copy.clone();
+        raw["id"] = rows[0]["id"].clone();
         f.db.execute(
             "UPDATE outbox SET value=? WHERE id=?",
-            rusqlite::params![copy.to_string(), copy["id"].as_str()],
+            rusqlite::params![raw.to_string(), rows[0]["id"].as_str()],
         )
         .unwrap();
         let before = f.outbox();
@@ -634,6 +669,8 @@ fn outbox_rows_without_a_readable_source_are_dropped_before_upload() {
     );
 
     sync::rebuild_unredacted_outbox(&f.db).unwrap();
+    assert_eq!(f.outbox(), vec![copy.clone()]);
+    assert!(!cancelled_outbox_replacement(&f, &copy["id"]));
 
     assert!(f.outbox().is_empty());
     assert_eq!(
@@ -680,6 +717,8 @@ fn dropped_push_row_is_requeued_redacted_by_the_next_scan() {
     .unwrap();
 
     sync::rebuild_unredacted_outbox(&f.db).unwrap();
+    assert_eq!(f.outbox(), vec![legacy]);
+    assert!(!cancelled_outbox_replacement(&f, &queued["id"]));
     assert!(f.outbox().is_empty());
     assert_eq!(
         indexer::binding(&f.db, resource).unwrap()["lastSeenHash"],
@@ -696,4 +735,44 @@ fn dropped_push_row_is_requeued_redacted_by_the_next_scan() {
         requeued[0]["resource"]["files"],
         queued["resource"]["files"]
     );
+}
+
+#[test]
+fn legacy_copy_stays_frozen_until_reconciled_then_rebuilds_with_a_new_identity() {
+    let f = Fixture::new();
+    let (_, binding) = leaked_session(&f, "claude");
+    let queued = sync::queue_session_copy(&f.db, &binding, "device").unwrap();
+    let legacy = sync::prepare_session_copy(&f.db, &queued, false).unwrap();
+    sync::rebuild_unredacted_outbox(&f.db).unwrap();
+    assert_eq!(f.outbox(), vec![legacy.clone()]);
+    let reopened = db::open().unwrap();
+    assert_eq!(
+        sync::prepare_session_copy(&reopened, &legacy, true).unwrap(),
+        legacy
+    );
+    assert!(cancelled_outbox_replacement(&f, &legacy["id"]));
+    let replacement = f.outbox().remove(0);
+    assert_ne!(replacement["id"], legacy["id"]);
+    assert_redacted(&replacement["sourceSnapshot"]);
+    assert_eq!(replacement["expectedRevision"], legacy["expectedRevision"]);
+}
+
+#[test]
+fn previously_rebuilt_request_is_reconciled_before_its_first_retry() {
+    let f = Fixture::new();
+    let (source, _, _) = cached_session(&f, "claude");
+    let queued = sync::queue_session_snapshot(&f.db, &source, "device").unwrap();
+    // A previous candidate may have rewritten this safe body under an already
+    // accepted ID, without attempting it yet or recording the resulting 409.
+    db::set(&f.db, "sessionOutboxRedacted", &json!(true)).unwrap();
+    sync::rebuild_unredacted_outbox(&f.db).unwrap();
+    assert_eq!(f.outbox(), vec![queued.clone()]);
+    let staged = db::get(
+        &f.db,
+        &format!("sessionOutboxRedaction:{}", queued["id"].as_str().unwrap()),
+    )
+    .unwrap();
+    assert_eq!(staged["value"], queued);
+    assert!(cancelled_outbox_replacement(&f, &queued["id"]));
+    assert_ne!(f.outbox()[0]["id"], queued["id"]);
 }
