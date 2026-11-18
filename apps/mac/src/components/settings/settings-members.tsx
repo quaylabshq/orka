@@ -228,19 +228,22 @@ export function SettingsMembers({
     } | null>(null),
     [revoking, setRevoking] = useState(""),
     [revokeUnsupported, setRevokeUnsupported] = useState(false);
-  // The service stores no delivery status, so a 503 send is remembered only
-  // while this view is open. Reopening Members shows the invite as Pending.
-  const [undelivered, setUndelivered] = useState<ReadonlySet<string>>(
-    new Set(),
+  // A 503 can mean the provider accepted the email without confirming it.
+  // This uncertainty is local to this view; reopening Members shows Pending.
+  const [unconfirmedDelivery, setUnconfirmedDelivery] = useState<
+    ReadonlySet<string>
+  >(new Set());
+  const markDeliveryUnconfirmed = useCallback(
+    (email: string, unconfirmed: boolean) => {
+      setUnconfirmedDelivery((current) => {
+        const next = new Set(current);
+        if (unconfirmed) next.add(email);
+        else next.delete(email);
+        return next;
+      });
+    },
+    [],
   );
-  const markDelivery = useCallback((email: string, delivered: boolean) => {
-    setUndelivered((current) => {
-      const next = new Set(current);
-      if (delivered) next.delete(email);
-      else next.add(email);
-      return next;
-    });
-  }, []);
   const active = useRef(true),
     locked = useRef(false);
   useEffect(() => {
@@ -302,9 +305,9 @@ export function SettingsMembers({
             action: "invite",
             input: { projectId, email },
           });
-          markDelivery(email, true);
+          markDeliveryUnconfirmed(email, false);
         } catch (error) {
-          if (/^503:/.test(String(error))) markDelivery(email, false);
+          if (/^503:/.test(String(error))) markDeliveryUnconfirmed(email, true);
           throw error;
         }
       },
@@ -319,7 +322,7 @@ export function SettingsMembers({
             action: "revoke-invite",
             input: { projectId, email },
           });
-          markDelivery(email, true);
+          markDeliveryUnconfirmed(email, false);
         } catch (error) {
           if (!/^404:/.test(String(error))) throw error;
           setRevokeUnsupported(true);
@@ -445,8 +448,8 @@ export function SettingsMembers({
                       <div className="settings-identity-name">
                         <strong title={invite.email}>{invite.email}</strong>
                         <span className="settings-device-label">
-                          {undelivered.has(invite.email)
-                            ? "Not delivered"
+                          {unconfirmedDelivery.has(invite.email)
+                            ? "Delivery unconfirmed"
                             : "Pending"}
                         </span>
                       </div>
@@ -500,7 +503,9 @@ export function SettingsMembers({
           title="Invite member"
           projectId={projectId}
           projectName={project.name}
-          onDelivery={markDelivery}
+          onDelivery={(email, confirmed) =>
+            markDeliveryUnconfirmed(email, !confirmed)
+          }
           onClose={() => {
             setInvite(false);
             void query.refresh();
