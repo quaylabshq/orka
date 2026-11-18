@@ -35,12 +35,23 @@ const renderDanger = (
   options: {
     project?: Project;
     deletedProjects?: Project[];
+    archivedProjects?: Project[];
+    softDelete?: number;
+    projectRestoreWindowDays?: number;
     members?: number | null;
     command?: (name: string, args: unknown) => Promise<unknown>;
   } = {},
 ) => {
   vi.mocked(invoke).mockImplementation(async (name, args) => {
     if (options.command) return options.command(name, args);
+    if (
+      name === "project_command" &&
+      (args as { action?: string })?.action === "capabilities"
+    )
+      return {
+        softDelete: options.softDelete ?? 1,
+        projectRestoreWindowDays: options.projectRestoreWindowDays ?? 7,
+      };
     if (name === "governance_command")
       return {
         members: Array.from({ length: options.members ?? 0 }, (_, id) => ({
@@ -53,6 +64,7 @@ const renderDanger = (
     <SettingsDanger
       project={options.project}
       deletedProjects={options.deletedProjects ?? []}
+      archivedProjects={options.archivedProjects ?? []}
       members={options.members ?? null}
       busy={false}
       run={run}
@@ -63,7 +75,13 @@ const renderDanger = (
 const openDelete = async (members = 3) => {
   renderDanger({ project, members });
   const danger = screen.getByRole("region", { name: "Danger zone" });
-  within(danger).getByRole("button", { name: "Delete project" }).click();
+  const deleting = within(danger).getByRole("button", {
+    name: "Delete project",
+  });
+  await waitFor(() =>
+    expect((deleting as HTMLButtonElement).disabled).toBe(false),
+  );
+  deleting.click();
   const dialog = await screen.findByRole("dialog");
   await screen.findByText(new RegExp(`The ${members} members`));
   return {
@@ -75,10 +93,10 @@ const openDelete = async (members = 3) => {
 
 afterEach(cleanup);
 
-test("delete requires the exact project name and shows the restore date", async () => {
+test("delete requires the exact project name and uses the server restore policy", async () => {
   const { dialog, field, confirm } = await openDelete();
   expect(dialog.textContent).toContain(
-    `It can be restored until ${restorableUntil()}.`,
+    "This service keeps deleted projects for 7 days.",
   );
   expect((confirm as HTMLButtonElement).disabled).toBe(true);
   fireEvent.change(field, { target: { value: "Orka" } });
@@ -110,6 +128,7 @@ test("members can leave without typing the name", async () => {
   within(danger).getByRole("button", { name: "Leave project" }).click();
   const dialog = await screen.findByRole("dialog");
   expect(dialog.textContent).toContain("lose access");
+  expect(dialog.textContent).toContain("on all your devices");
   expect(dialog.textContent).toContain("other members stay");
   expect(within(dialog).queryByRole("textbox")).toBeNull();
   within(dialog).getByRole("button", { name: "Leave project" }).click();
@@ -205,6 +224,38 @@ test("recently deleted projects restore from the owner list", async () => {
         projectId: "deleted",
         requestId: expect.any(String),
         expectedRevision: 6,
+      },
+    }),
+  );
+});
+
+test("an older service cannot offer recoverable deletion", async () => {
+  renderDanger({ project, softDelete: 0 });
+  await screen.findByText(/Update this service/);
+  const deleting = screen.getByRole("button", { name: "Delete project" });
+  expect((deleting as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(deleting);
+  expect(screen.queryByRole("dialog")).toBeNull();
+});
+
+test("missing deadlines never fabricate a restore date", () => {
+  expect(restorableUntil()).toBeNull();
+  expect(restorableUntil("invalid")).toBeNull();
+});
+
+test("archived owner projects can be restored without an active project", async () => {
+  renderDanger({
+    archivedProjects: [{ ...project, archivedAt: "2026-01-01T00:00:00Z" }],
+  });
+  const region = screen.getByRole("region", { name: "Archived projects" });
+  fireEvent.click(within(region).getByRole("button", { name: "Restore" }));
+  await waitFor(() =>
+    expect(invoke).toHaveBeenCalledWith("project_command", {
+      action: "restore",
+      input: {
+        projectId: "project",
+        requestId: expect.any(String),
+        expectedRevision: 4,
       },
     }),
   );

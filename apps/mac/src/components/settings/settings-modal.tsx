@@ -875,20 +875,34 @@ export const SettingsModal = forwardRef<
             {error && <p role="alert">{error}</p>}
             {notice && <p role="status">{notice}</p>}
           </fieldset>
-          {section === "general" &&
-            (project || (state.deletedProjects?.length ?? 0) > 0) && (
+          {section === "general" && project && !projectUnavailable && (
+            <SettingsDanger
+              project={project}
+              serviceUrl={state.config?.apiUrl}
+              members={projectMembers}
+              busy={busy}
+              run={workspaceRun}
+            />
+          )}
+          {section === "projects" && (
+            <>
+              <SettingsHeading
+                title="Projects"
+                description="Restore archived and recently deleted projects you own."
+              />
+              {(state.archivedProjects?.length ?? 0) +
+                (state.deletedProjects?.length ?? 0) ===
+                0 && <p>No archived or recently deleted projects.</p>}
               <SettingsDanger
-                project={projectUnavailable ? undefined : project}
-                deletedProjects={
-                  project && project.role !== "owner"
-                    ? []
-                    : (state.deletedProjects ?? [])
-                }
-                members={projectMembers}
+                archivedProjects={state.archivedProjects ?? []}
+                deletedProjects={state.deletedProjects ?? []}
+                serviceUrl={state.config?.apiUrl}
+                members={null}
                 busy={busy}
                 run={workspaceRun}
               />
-            )}
+            </>
+          )}
         </div>
       </section>
       {pending !== null && (

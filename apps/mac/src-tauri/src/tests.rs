@@ -541,6 +541,26 @@ fn deleted_projects_leave_the_active_list_but_keep_their_row() {
 }
 
 #[test]
+fn snapshot_lists_archived_owned_projects_even_when_hidden() {
+    let f = Fixture::new();
+    let id = f.project["id"].as_str().unwrap();
+    let mut project = f.project.clone();
+    project["role"] = json!("owner");
+    project["archivedAt"] = json!("2026-01-01T00:00:00Z");
+    project["hidden"] = json!(true);
+    db::upsert(&f.db, "projects", id, id, &project).unwrap();
+    let state = crate::commands::snapshot().unwrap();
+    assert!(state["projects"].as_array().unwrap().is_empty());
+    assert_eq!(state["archivedProjects"][0]["id"], id);
+    project["role"] = json!("member");
+    db::upsert(&f.db, "projects", id, id, &project).unwrap();
+    assert!(crate::commands::snapshot().unwrap()["archivedProjects"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
 fn snapshot_lists_deleted_owned_projects_until_they_are_purged() {
     let f = Fixture::new();
     let id = f.project["id"].as_str().unwrap();

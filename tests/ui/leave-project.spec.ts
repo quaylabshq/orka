@@ -27,6 +27,8 @@ test("a member sees Leave project and can confirm it without typing", async ({
     exact: true,
   });
   await expect(dialog).toContainText("lose access");
+  await expect(dialog).toContainText("on all your devices");
+  await expect(dialog).not.toContainText("on this Mac");
   await expect(dialog).toContainText("other members stay");
   await expect(dialog.getByRole("textbox")).toHaveCount(0);
   await mkdir("/tmp/orka-briefs", { recursive: true });

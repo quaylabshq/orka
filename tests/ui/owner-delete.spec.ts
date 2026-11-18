@@ -21,17 +21,12 @@ test("owner sees the danger zone and confirms project deletion by name", async (
     name: "Danger zone",
     exact: true,
   });
+  await settings.getByRole("button", { name: "Projects", exact: true }).click();
   const recent = settings.getByRole("region", {
     name: "Recently deleted",
     exact: true,
   });
-  await expect(danger).toContainText("Danger zone");
-  await expect(
-    danger.getByRole("button", { name: "Archive project", exact: true }),
-  ).toBeVisible();
-  await expect(
-    danger.getByRole("button", { name: "Delete project", exact: true }),
-  ).toBeVisible();
+
   await expect(recent.getByText("Old project", { exact: true })).toBeVisible();
   await expect(recent).toContainText("Restorable until");
   await recent.scrollIntoViewIfNeeded();
@@ -41,6 +36,10 @@ test("owner sees the danger zone and confirms project deletion by name", async (
     animations: "disabled",
   });
 
+  await settings.getByRole("button", { name: "General", exact: true }).click();
+  await expect(
+    danger.getByRole("button", { name: "Archive project", exact: true }),
+  ).toBeVisible();
   await danger
     .getByRole("button", { name: "Delete project", exact: true })
     .click();
@@ -49,7 +48,9 @@ test("owner sees the danger zone and confirms project deletion by name", async (
     exact: true,
   });
   await expect(dialog).toContainText("The 3 members of this project");
-  await expect(dialog).toContainText("It can be restored until");
+  await expect(dialog).toContainText(
+    "This service keeps deleted projects for 30 days.",
+  );
   const field = dialog.getByRole("textbox", {
     name: "Project name",
     exact: true,
@@ -103,4 +104,100 @@ test("a refused delete keeps its message in the open dialog", async ({
   await expect(dialog).toBeVisible();
   await dialog.getByRole("button", { name: "Stay", exact: true }).click();
   await expect(dialog).toHaveCount(0);
+});
+
+test("owner can archive and restore through the account Projects section", async ({
+  page,
+}) => {
+  const settings = await settingsFixture(page);
+  await settings
+    .getByRole("button", { name: "Archive project", exact: true })
+    .click();
+  await settings.getByRole("button", { name: "Projects", exact: true }).click();
+  const archived = settings.getByRole("region", { name: "Archived projects" });
+  await expect(archived).toContainText("Orka");
+  await archived.getByRole("button", { name: "Restore", exact: true }).click();
+  await expect(archived).toHaveCount(0);
+  await settings.getByRole("button", { name: "General", exact: true }).click();
+  await expect(
+    settings.getByRole("button", { name: "Archive project", exact: true }),
+  ).toBeVisible();
+});
+
+test("account recovery remains reachable without active projects", async ({
+  page,
+}) => {
+  const settings = await settingsFixture(page, {
+    noProjects: true,
+    deletedProjects: [
+      {
+        id: "owned",
+        name: "Owned project",
+        role: "owner",
+        deletedAt: "2026-01-01T00:00:00Z",
+        purgeAfter: "2026-12-31T00:00:00Z",
+        lifecycleRevision: 2,
+      },
+    ],
+  });
+  const projects = settings.getByRole("button", {
+    name: "Projects",
+    exact: true,
+  });
+  await expect(projects).toBeEnabled();
+  await projects.click();
+  const recent = settings.getByRole("region", { name: "Recently deleted" });
+  await expect(recent).toContainText("Owned project");
+  await recent.getByRole("button", { name: "Restore", exact: true }).click();
+  await expect(recent).toHaveCount(0);
+});
+
+test("account recovery is independent of selected project role and fits long names", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 900, height: 640 });
+  const settings = await settingsFixture(page, {
+    role: "member",
+    deletedProjects: [
+      {
+        id: "owned",
+        name: "A".repeat(100),
+        role: "owner",
+        deletedAt: "2026-01-01T00:00:00Z",
+        purgeAfter: "2026-12-31T00:00:00Z",
+        lifecycleRevision: 2,
+      },
+    ],
+  });
+  await settings.getByRole("button", { name: "Projects", exact: true }).click();
+  const recent = settings.getByRole("region", { name: "Recently deleted" });
+  const restore = recent.getByRole("button", { name: "Restore", exact: true });
+  const purge = recent.getByRole("button", { name: "Delete now", exact: true });
+  await expect(restore).toBeInViewport();
+  await expect(purge).toBeInViewport();
+  const bounds = await recent.boundingBox();
+  for (const button of [restore, purge]) {
+    const box = await button.boundingBox();
+    expect(box!.x + box!.width).toBeLessThanOrEqual(bounds!.x + bounds!.width);
+  }
+});
+
+test("delete uses configured restore policy and old services cannot delete", async ({
+  page,
+}) => {
+  let settings = await settingsFixture(page, { projectRestoreWindowDays: 1 });
+  await settings
+    .getByRole("button", { name: "Delete project", exact: true })
+    .click();
+  await expect(page.getByRole("dialog")).toContainText(
+    "This service keeps deleted projects for 1 day.",
+  );
+  await page.keyboard.press("Escape");
+  settings = await settingsFixture(page, { olderService: true });
+  await expect(
+    settings.getByRole("button", { name: "Delete project", exact: true }),
+  ).toBeDisabled();
+  await expect(settings).toContainText(
+    "Update this service to use recoverable project deletion.",
+  );
 });
