@@ -1966,6 +1966,13 @@ async fn drain_queue(queue: &mut SyncQueue, interval: &Interval) {
 /// One queue job, in full-scan mode: the workspace-wide steps or one project's.
 async fn run_job(db: &mut rusqlite::Connection, job: &crate::sync_queue::Job) -> Result<Outcome> {
     let result = sync_job(db, job).await;
+    // A request already in flight may fail after Cancel was pressed. Its error
+    // must not turn the cancelled run into another retry or connectivity error.
+    let result = if SyncQueue::cancelled(db, &job.project)? {
+        Ok(Outcome::Cancelled)
+    } else {
+        result
+    };
     let previous = db::get(db, "sync")?;
     let status = match &result {
         Ok(Outcome::Yielded | Outcome::Cancelled) => previous,
@@ -2327,6 +2334,39 @@ async fn run_mode(foreground: bool) {
 #[cfg(test)]
 mod queue_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_cancelled_job_does_not_retry_a_late_job_error() {
+        for requested_again in [false, true] {
+            let home = tempfile::tempdir().unwrap();
+            std::env::set_var("ORKA_TEST_HOME", home.path());
+            let db = db::open().unwrap();
+            let previous = json!({"online":true,"lastSync":"2026-11-19T00:00:00Z"});
+            db::set(&db, "sync", &previous).unwrap();
+            let project = uuid::Uuid::new_v4().to_string();
+            SyncQueue::request(&db, &project, Priority::User, "sync now").unwrap();
+            let app = db::open().unwrap();
+            let mut queue = SyncQueue::new(SyncQueue::now());
+            assert!(queue
+                .run_next(&Interval::from_config(&json!({})), async |db, job| {
+                    SyncQueue::cancel(&app, &project)?;
+                    if requested_again {
+                        SyncQueue::request(&app, &project, Priority::Local, "new change")?;
+                    }
+                    // No signed-in user: sync_job returns an error before its
+                    // final cancellation check, just as a failed request can.
+                    run_job(db, job).await
+                })
+                .await
+                .unwrap());
+            assert_eq!(db::get(&db, "sync").unwrap(), previous);
+            let pending = SyncQueue::next(&db, SyncQueue::now()).unwrap();
+            assert_eq!(pending.is_some(), requested_again);
+            if let Some(job) = pending {
+                assert_eq!(job.project, project);
+            }
+        }
+    }
 
     #[tokio::test]
     async fn another_profile_waits_for_the_shared_sync_slot() {
