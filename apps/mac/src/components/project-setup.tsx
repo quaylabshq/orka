@@ -82,7 +82,7 @@ export function ProjectSetupDialog({
         }}
       >
         <div className="create-project-heading">
-          <h2>{title}</h2>
+          <h2 title={title}>{title}</h2>
           <IconButton
             icon={XIcon}
             variant="tertiary"

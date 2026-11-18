@@ -70,7 +70,10 @@ export function useProjectSetup(
       // Partial input is validated when the form is submitted.
     }
   }
-  const invitePreview = useInvitePreview(inviteToken, inviteService ?? "");
+  const invitePreview = useInvitePreview(
+    inviteToken,
+    inviteService ?? apiUrl ?? "",
+  );
   const serviceMismatch = Boolean(
     inviteService && apiUrl && !sameServiceUrl(inviteService, apiUrl),
   );
