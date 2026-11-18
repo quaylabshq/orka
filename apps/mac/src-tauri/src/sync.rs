@@ -2,7 +2,8 @@ use crate::{
     auth,
     db::{self, Result},
     indexer, native, packages,
-    sync_schedule::{Interval, Schedule, Turn},
+    sync_queue::{Outcome, Priority, SyncQueue, WORKSPACE},
+    sync_schedule::Interval,
 };
 use fs2::FileExt;
 use rusqlite::params;
@@ -93,10 +94,10 @@ pub(crate) async fn api_at(
         )
     })?;
     if !status.is_success() {
-        return Err(format!(
-            "{}: {}",
+        return Err(SyncError::message(
             status.as_u16(),
-            value["error"].as_str().unwrap_or("Service unavailable")
+            &value,
+            "Service unavailable",
         ));
     }
     Ok(value)
@@ -126,10 +127,9 @@ pub(crate) async fn upload(owner: &str, project: &str, files: &[Value]) -> Resul
             .await
             .map_err(|_| "Blob upload failed; retry retained")?;
         if !response.status().is_success() {
-            return Err(format!(
-                "{}: Blob upload rejected",
-                response.status().as_u16()
-            ));
+            let status = response.status().as_u16();
+            let body = response.json().await.unwrap_or(Value::Null);
+            return Err(SyncError::message(status, &body, "Blob upload rejected"));
         }
     }
     Ok(())
@@ -989,11 +989,11 @@ pub(crate) fn progress(
     completed: usize,
     total: Option<usize>,
 ) -> Result<()> {
-    db::set(
-        db,
-        "syncProgress",
-        &json!({"label":label,"detail":detail,"completed":completed,"total":total}),
-    )
+    let mut value = json!({"label":label,"detail":detail,"completed":completed,"total":total});
+    if let Some(project) = SyncQueue::progress_project(db)? {
+        value["projectId"] = json!(project);
+    }
+    db::set(db, "syncProgress", &value)
 }
 
 pub struct Summary {
@@ -1127,7 +1127,7 @@ async fn pull(owner: &str, db: &mut rusqlite::Connection, project: &str, name: &
     Ok(())
 }
 pub async fn once() -> Result<()> {
-    cycle(&Turn::All).await.map(|_| ())
+    cycle().await.map(|_| ())
 }
 pub(crate) async fn onboarding_once(scope: Option<(&str, &str)>) -> Result<()> {
     // The current onboarding job already owns its retry lock.
@@ -1143,10 +1143,10 @@ enum WorkspaceSync {
 }
 
 // Item failures retain retry backoff without reporting a connectivity failure.
-async fn cycle(turn: &Turn) -> Result<bool> {
+async fn cycle() -> Result<bool> {
     let preparation = crate::onboarding::resume_pending_connections().await;
     // Only a service-wide failure should prevent unrelated projects from syncing.
-    workspace_turn(
+    workspace_cycle(
         preparation.or_else(|error| {
             if service_error(&error) {
                 Err(error)
@@ -1157,7 +1157,6 @@ async fn cycle(turn: &Turn) -> Result<bool> {
         None,
         None,
         None,
-        turn,
     )
     .await
     .map(|outcome| match outcome {
@@ -1165,15 +1164,6 @@ async fn cycle(turn: &Turn) -> Result<bool> {
         WorkspaceSync::Yielded => true,
     })
 }
-async fn workspace_cycle(
-    preparation: Result<()>,
-    scope: Option<(&str, &str)>,
-    project_filter: Option<&str>,
-    connection: Option<&crate::plugin_connection::Binding>,
-) -> Result<WorkspaceSync> {
-    workspace_turn(preparation, scope, project_filter, connection, &Turn::All).await
-}
-
 struct SyncSlot {
     _file: fs::File,
 }
@@ -1199,12 +1189,11 @@ impl SyncSlot {
     }
 }
 
-async fn workspace_turn(
+async fn workspace_cycle(
     preparation: Result<()>,
     scope: Option<(&str, &str)>,
     project_filter: Option<&str>,
     connection: Option<&crate::plugin_connection::Binding>,
-    turn: &Turn,
 ) -> Result<WorkspaceSync> {
     let _slot = SyncSlot::acquire(&db::base_root()?).await?;
     let _lock = crate::projects::lock()?;
@@ -1212,6 +1201,7 @@ async fn workspace_turn(
         connection.check_current()?;
     }
     let mut db = db::open()?;
+    SyncQueue::clear_progress_scope(&db)?;
     let user = db::get(&db, "user")?;
     let owner = user.as_str().ok_or("Sign in required")?.to_string();
     if let Some((expected, service)) = scope {
@@ -1223,14 +1213,12 @@ async fn workspace_turn(
         crate::projects::active(&db, project)?;
     }
     if project_filter.is_none() {
-        if matches!(turn, Turn::All) {
-            db::set(&db, "syncHandledRequest", &db::get(&db, "syncRequest")?)?;
-        }
+        db::set(&db, "syncHandledRequest", &db::get(&db, "syncRequest")?)?;
         let _ = crate::account_profile::flush_pending().await;
     }
     progress(&db, "Preparing sync", None, 0, None)?;
     let result = match preparation {
-        Ok(()) => sync_workspace(&mut db, &owner, project_filter, turn).await,
+        Ok(()) => sync_workspace(&mut db, &owner, project_filter).await,
         Err(error) => Err(error),
     };
     let status_key = project_filter
@@ -1343,6 +1331,16 @@ fn preflight_project(db: &rusqlite::Connection, project: &Value, retry_only: boo
 /// workspace lock to a waiting foreground operation.
 type Stage = Result<ControlFlow<()>>;
 
+/// A stage boundary. A cancelled project's job stops here, between requests and
+/// transactions, so nothing is cut in half and nothing already sent is undone.
+fn boundary(db: &rusqlite::Connection, project: &str) -> Stage {
+    Ok(if SyncQueue::cancelled(db, project)? {
+        Break(())
+    } else {
+        Continue(())
+    })
+}
+
 /// How much a project's sync does. A plugin retry only resends what is already
 /// queued: it validates sources without scanning and prepares no new sharing.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1361,6 +1359,7 @@ struct SyncPass<'a> {
     mode: ProjectMode,
     device: Option<String>,
     blocked: HashSet<String>,
+    held: HashSet<String>,
     deferred: HashSet<Value>,
 }
 
@@ -1381,6 +1380,7 @@ impl<'a> SyncPass<'a> {
             },
             device: None,
             blocked: HashSet::new(),
+            held: HashSet::new(),
             deferred: HashSet::new(),
         }
     }
@@ -1392,7 +1392,6 @@ impl<'a> SyncPass<'a> {
         Ok(self.device.clone().unwrap_or_default())
     }
 
-    #[expect(dead_code, reason = "the per-project sync queue runs this as one job")]
     async fn sync_workspace_global(&mut self) -> Stage {
         if self.prepare().await?.is_break() || self.connect().await?.is_break() {
             return Ok(Break(()));
@@ -1400,15 +1399,40 @@ impl<'a> SyncPass<'a> {
         self.finish().await.map(Continue)
     }
 
-    #[expect(dead_code, reason = "the per-project sync queue runs this as one job")]
     async fn sync_project(&mut self, p: &Value) -> Stage {
-        if self.preflight(p)?.is_break()
-            || self.authorize(p).await?.is_break()
-            || self.drain_outbox(p).await?.is_break()
+        let project = p["id"].as_str().ok_or("Missing project")?;
+        if boundary(self.db, project)?.is_break()
+            || self.prepare_project(p)?.is_break()
+            || boundary(self.db, project)?.is_break()
+            || self.preflight(p)?.is_break()
+            || boundary(self.db, project)?.is_break()
         {
             return Ok(Break(()));
         }
-        self.pull_project(p).await
+        // Include continuations discovered by this scan in the same project job.
+        self.prepare_copies(Some(project))?;
+        if boundary(self.db, project)?.is_break()
+            || self.authorize(p).await?.is_break()
+            || boundary(self.db, project)?.is_break()
+            || self.drain_outbox(p).await?.is_break()
+            || self.pull_project(p).await?.is_break()
+            || boundary(self.db, project)?.is_break()
+        {
+            return Ok(Break(()));
+        }
+        crate::codex_skills::retry_project(self.db, project)?;
+        Ok(Continue(()))
+    }
+
+    fn prepare_project(&mut self, project: &Value) -> Stage {
+        if crate::projects::foreground_waiting()? {
+            return Ok(Break(()));
+        }
+        for source in crate::sources::views(project) {
+            crate::repair::project_state(self.db, &source)?;
+        }
+        packages::recover_project_installations(self.db, project)?;
+        Ok(Continue(()))
     }
 
     /// Repairs local state and queues pending session copies before any project syncs.
@@ -1421,32 +1445,33 @@ impl<'a> SyncPass<'a> {
         if let Some(id) = project_filter {
             let project = crate::governance::project(db, id)?;
             crate::governance::block_legacy_retry(db, &project)?;
-            for source in crate::sources::views(&project) {
-                crate::repair::project_state(db, &source)?;
+            if self.prepare_project(&project)?.is_break() {
+                return Ok(Break(()));
             }
-            packages::recover_project_installations(db, &project)?;
         } else {
             crate::repair::workspace(db)?;
             packages::recover_installations(db)?;
         }
+        self.prepare_copies(project_filter)?;
+        if project_filter.is_none() {
+            crate::history::clear_missing_session_errors(self.db)?;
+        }
+        Ok(Continue(()))
+    }
+
+    fn prepare_copies(&mut self, project_filter: Option<&str>) -> Result<()> {
         let device = self.device()?;
         let db = &mut *self.db;
         for binding in db::rows(
             db,
-            &format!("SELECT value FROM bindings WHERE json_extract(value,'$.needsCopy')=1 AND project IN (SELECT id FROM projects WHERE {})",crate::projects::ACTIVE),
-            &[],
+            &format!("SELECT value FROM bindings WHERE json_extract(value,'$.needsCopy')=1 AND (?1 IS NULL OR project=?1) AND project IN (SELECT id FROM projects WHERE {})",crate::projects::ACTIVE),
+            &[&project_filter],
         )? {
-            if project_filter.is_some_and(|id| binding["base"]["projectId"] != id) {
-                continue;
-            }
             if binding["copyRequest"].is_null() {
                 queue_session_copy(db, &binding, &device)?;
             }
         }
-        if project_filter.is_none() {
-            crate::history::clear_missing_session_errors(db)?;
-        }
-        Ok(Continue(()))
+        Ok(())
     }
 
     /// Scans (or, for a retry, validates) one project's local files.
@@ -1506,7 +1531,6 @@ impl<'a> SyncPass<'a> {
         let db = &mut *self.db;
         let owner = self.owner;
         let retry_only = self.mode == ProjectMode::RetryOnly;
-        let blocked_projects = &mut self.blocked;
         if crate::projects::foreground_waiting()? {
             return Ok(Break(()));
         }
@@ -1514,11 +1538,6 @@ impl<'a> SyncPass<'a> {
             let id = p["id"].as_str().ok_or("Missing project")?;
             let result: Result<()> = async {
                 let local = crate::governance::project(db, id)?;
-                if !retry_only {
-                    crate::governance::localize_outbox(db, &local)?;
-                } else {
-                    crate::governance::block_legacy_retry(db, &local)?;
-                }
                 let catalog = api_as(
                     owner,
                     "POST",
@@ -1527,6 +1546,13 @@ impl<'a> SyncPass<'a> {
                 )
                 .await?;
                 db::set(db, &format!("governance:{id}"), &catalog)?;
+                // A lifecycle refusal must leave queued work unchanged. Only
+                // prepare legacy knowledge after current access is confirmed.
+                if !retry_only {
+                    crate::governance::localize_outbox(db, &local)?;
+                } else {
+                    crate::governance::block_legacy_retry(db, &local)?;
+                }
                 if !retry_only {
                     crate::context_sharing::approve_own_pending(db, owner, &local, &catalog)
                         .await?;
@@ -1534,14 +1560,27 @@ impl<'a> SyncPass<'a> {
                 Ok(())
             }
             .await;
-            if result.as_ref().is_err_and(|e| service_error(e)) {
-                return result.map(Continue);
-            }
-            if result.is_err() {
-                blocked_projects.insert(id.to_string());
-            }
-            record_result(db, &format!("{id}:permissions"), result)?;
+            return self.record_authorization(id, result);
         }
+        Ok(Continue(()))
+    }
+
+    fn record_authorization(&mut self, project: &str, result: Result<()>) -> Stage {
+        if result.as_ref().is_err_and(|e| service_error(e)) {
+            return result.map(Continue);
+        }
+        let result = if result.as_ref().is_err_and(|error| SyncError(error).holds()) {
+            // The catalog may have changed since the workspace refresh. Preserve
+            // pending work and wait quietly for the project to become active.
+            self.held.insert(project.to_string());
+            Ok(())
+        } else {
+            if result.is_err() {
+                self.blocked.insert(project.to_string());
+            }
+            result
+        };
+        record_result(self.db, &format!("{project}:permissions"), result)?;
         Ok(Continue(()))
     }
 
@@ -1551,8 +1590,9 @@ impl<'a> SyncPass<'a> {
         let db = &mut *self.db;
         let owner = self.owner;
         let deferred = &mut self.deferred;
+        let held = &mut self.held;
         let project = p["id"].as_str().ok_or("Missing project")?;
-        if self.blocked.contains(project) {
+        if self.blocked.contains(project) || held.contains(project) {
             return Ok(Continue(()));
         }
         let mut outbox = ProjectOutbox::open(db, project)?;
@@ -1581,7 +1621,7 @@ impl<'a> SyncPass<'a> {
         );
         let uploads = outbox.batch(&queued);
         for (index, q) in uploads.iter().enumerate() {
-            if crate::projects::foreground_waiting()? {
+            if crate::projects::foreground_waiting()? || SyncQueue::cancelled(db, project)? {
                 return Ok(Break(()));
             }
             let project_name = crate::projects::display_name(p);
@@ -1685,11 +1725,12 @@ impl<'a> SyncPass<'a> {
                         outbox.advance(db, &q["sequence"])?;
                         continue;
                     }
-                    db.execute(
-                        "UPDATE outbox SET error=? WHERE id=?",
-                        params![error, q["id"].as_str()],
-                    )
-                    .map_err(|e| e.to_string())?;
+                    if outbox.fail(db, q, &error)? {
+                        // Archived or deleted: keep the row for a restore and let
+                        // the project's job back off without an error.
+                        held.insert(project.to_string());
+                        return Ok(Continue(()));
+                    }
                     if consolidation_pending(q, &error) || error.starts_with("Local upload: ") {
                         deferred.insert(q["id"].clone());
                     } else if terminal_error(&error) {
@@ -1713,13 +1754,18 @@ impl<'a> SyncPass<'a> {
 
     /// Rescans one project, pulls its changes and applies them on this Mac.
     async fn pull_project(&mut self, p: &Value) -> Stage {
+        if boundary(&*self.db, p["id"].as_str().unwrap_or(""))?.is_break() {
+            return Ok(Break(()));
+        }
         let db = &mut *self.db;
         let owner = self.owner;
         let retry_only = self.mode == ProjectMode::RetryOnly;
         if crate::projects::foreground_waiting()? {
             return Ok(Break(()));
         }
-        if self.blocked.contains(p["id"].as_str().unwrap_or("")) {
+        if self.blocked.contains(p["id"].as_str().unwrap_or(""))
+            || self.held.contains(p["id"].as_str().unwrap_or(""))
+        {
             return Ok(Continue(()));
         }
         progress(
@@ -1748,6 +1794,11 @@ impl<'a> SyncPass<'a> {
             crate::projects::display_name(p).unwrap_or("Project"),
         )
         .await;
+        if result.as_ref().is_err_and(|error| SyncError(error).holds()) {
+            // Archived or deleted: hold the project's next attempt quietly.
+            self.held.insert(project.to_string());
+            return Ok(Continue(()));
+        }
         if result.as_ref().is_err_and(|e| service_error(e)) {
             return result.map(Continue);
         }
@@ -1774,7 +1825,7 @@ impl<'a> SyncPass<'a> {
             &[&project],
         )?;
         for (index, r) in resources.iter().enumerate() {
-            if crate::projects::foreground_waiting()? {
+            if crate::projects::foreground_waiting()? || SyncQueue::cancelled(db, project)? {
                 return Ok(Break(()));
             }
             let detail = format!(
@@ -1856,16 +1907,16 @@ async fn sync_workspace(
     db: &mut rusqlite::Connection,
     owner: &str,
     project_filter: Option<&str>,
-    turn: &Turn,
 ) -> Result<WorkspaceSync> {
     let mut pass = SyncPass::new(db, owner, project_filter);
     if pass.prepare().await?.is_break() {
         return Ok(WorkspaceSync::Yielded);
     }
-    let in_turn = |project: &Value| {
-        project_filter.is_none_or(|id| project["id"] == id)
-            && turn.includes(project["id"].as_str().unwrap_or(""))
-    };
+    let selected = |project: &Value| project_filter.is_none_or(|id| project["id"] == id);
+    // Refresh the catalog before scanning, so a project that was archived or
+    // deleted meanwhile is not scanned one more time. A failed connection keeps
+    // its error for the end, because local work must not wait for the network.
+    let connected = pass.connect().await;
     let local = db::rows(
         pass.db,
         &format!(
@@ -1875,27 +1926,16 @@ async fn sync_workspace(
         &[],
     )?
     .into_iter()
-    .filter(in_turn)
+    .filter(selected)
     .collect::<Vec<_>>();
     for p in &local {
         if pass.preflight(p)?.is_break() {
             return Ok(WorkspaceSync::Yielded);
         }
     }
-    if pass.connect().await?.is_break() {
+    if connected?.is_break() {
         return Ok(WorkspaceSync::Yielded);
     }
-    let local = db::rows(
-        pass.db,
-        &format!(
-            "SELECT value FROM projects WHERE {}",
-            crate::projects::ACTIVE
-        ),
-        &[],
-    )?
-    .into_iter()
-    .filter(in_turn)
-    .collect::<Vec<_>>();
     for p in &local {
         if pass.authorize(p).await?.is_break() {
             return Ok(WorkspaceSync::Yielded);
@@ -1913,32 +1953,107 @@ async fn sync_workspace(
     }
     pass.finish().await?;
     let db = pass.db;
-    let has_errors: bool = if matches!(turn, Turn::All) {
-        db.query_row("SELECT EXISTS(SELECT 1 FROM errors)", [], |r| r.get(0))
-            .map_err(|e| e.to_string())?
-    } else {
-        // An error in another project should not shorten this turn's interval.
-        let errors = db::rows(
-            db,
-            "SELECT json_object('source', errors.source, 'project', resources.project)
-             FROM errors LEFT JOIN resources ON resources.id=errors.source",
-            &[],
-        )?;
-        local.iter().filter_map(|p| p["id"].as_str()).any(|id| {
-            errors.iter().any(|error| {
-                error["project"] == id
-                    || error["source"] == id
-                    || error["source"].as_str().is_some_and(|source| {
-                        source
-                            .strip_prefix(id)
-                            .is_some_and(|suffix| suffix.starts_with(':'))
-                    })
-            })
-        })
-    };
+    let has_errors: bool = db
+        .query_row("SELECT EXISTS(SELECT 1 FROM errors)", [], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
     Ok(WorkspaceSync::Complete(
-        !pass.deferred.is_empty() || has_errors,
+        !pass.deferred.is_empty() || !pass.held.is_empty() || has_errors,
     ))
+}
+
+/// Runs ready queue jobs one at a time, releasing the shared sync slot and the
+/// workspace lock between jobs, until none is ready or foreground work waits.
+async fn drain_queue(queue: &mut SyncQueue, interval: &Interval) {
+    let Ok(base) = db::base_root() else { return };
+    loop {
+        let next = db::open().and_then(|db| SyncQueue::next(&db, SyncQueue::now()));
+        let Ok(Some(job)) = next else { return };
+        if job.project == WORKSPACE {
+            // Onboarding takes the workspace lock itself, so it resumes outside a job.
+            let _ = crate::onboarding::resume_pending_connections().await;
+        }
+        let Ok(_slot) = SyncSlot::acquire(&base).await else {
+            return;
+        };
+        if !matches!(queue.run_next(interval, run_job).await, Ok(true)) {
+            return;
+        }
+    }
+}
+
+/// One queue job, in full-scan mode: the workspace-wide steps or one project's.
+async fn run_job(db: &mut rusqlite::Connection, job: &crate::sync_queue::Job) -> Result<Outcome> {
+    let result = sync_job(db, job).await;
+    // A request already in flight may fail after Cancel was pressed. Its error
+    // must not turn the cancelled run into another retry or connectivity error.
+    let result = if SyncQueue::cancelled(db, &job.project)? {
+        Ok(Outcome::Cancelled)
+    } else {
+        result
+    };
+    let previous = db::get(db, "sync")?;
+    let status = match &result {
+        Ok(Outcome::Yielded | Outcome::Cancelled) => previous,
+        Ok(_) => json!({"online":true,"lastSync":db::now(),"updatedAt":db::now()}),
+        Err(error) => {
+            json!({"online":false,"lastSync":previous["lastSync"],"error":error,"updatedAt":db::now()})
+        }
+    };
+    db::set(db, "sync", &status)?;
+    // Stop showing progress before giving up the workspace lock. Settlement
+    // also invalidates claim-bound progress before the next job starts.
+    let more = SyncQueue::next(db, SyncQueue::now())?.is_some();
+    if !more || crate::projects::foreground_waiting()? {
+        db::set(db, "syncProgress", &Value::Null)?;
+    }
+    if !matches!(result, Ok(Outcome::Yielded | Outcome::Cancelled)) {
+        let error = result.as_ref().err().map(String::as_str);
+        let _ = crate::onboarding::reconcile_workspace_sync(db, error);
+    }
+    result
+}
+
+async fn sync_job(db: &mut rusqlite::Connection, job: &crate::sync_queue::Job) -> Result<Outcome> {
+    let owner = db::get(db, "user")?
+        .as_str()
+        .ok_or("Sign in required")?
+        .to_string();
+    if job.project == WORKSPACE {
+        let _ = crate::account_profile::flush_pending().await;
+        progress(db, "Preparing sync", None, 0, None)?;
+    }
+    let project = db::rows(
+        db,
+        &format!(
+            "SELECT value FROM projects WHERE id=? AND {}",
+            crate::projects::ACTIVE
+        ),
+        &[&job.project],
+    )?;
+    let mut pass = SyncPass::new(db, &owner, None);
+    let flow = match project.first() {
+        _ if job.project == WORKSPACE => pass.sync_workspace_global().await?,
+        Some(p) => pass.sync_project(p).await?,
+        // Removed or archived since it was queued.
+        None => return Ok(Outcome::Synced),
+    };
+    let errors: bool = pass
+        .db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM errors WHERE source=?1 OR substr(source,1,length(?1)+1)=?1||':' OR source IN (SELECT id FROM resources WHERE project=?1))",
+            [&job.project],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(if SyncQueue::cancelled(pass.db, &job.project)? {
+        Outcome::Cancelled
+    } else if flow.is_break() {
+        Outcome::Yielded
+    } else if !pass.deferred.is_empty() || !pass.held.is_empty() || errors {
+        Outcome::Deferred
+    } else {
+        Outcome::Synced
+    })
 }
 
 pub(crate) fn record_result(
@@ -2062,6 +2177,18 @@ impl<'p> ProjectOutbox<'p> {
         self.cursor = sequence.as_i64().unwrap_or(self.cursor);
         db::set(db, &self.cursor_key, sequence)
     }
+
+    /// Records a failed send. An archived or deleted project keeps its row with
+    /// no error, so a restore sends it again; every other failure is recorded.
+    fn fail(&self, db: &rusqlite::Connection, queued: &Value, error: &str) -> Result<bool> {
+        let held = SyncError(error).holds();
+        db.execute(
+            "UPDATE outbox SET error=? WHERE id=?",
+            params![(!held).then_some(error), queued["id"].as_str()],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(held)
+    }
 }
 
 fn select_uploads(queued: &[Value], cursor: i64) -> Vec<&Value> {
@@ -2085,12 +2212,97 @@ fn select_uploads(queued: &[Value], cursor: i64) -> Vec<&Value> {
     uploads
 }
 
-pub fn terminal_error(error: &str) -> bool {
-    let code = error
-        .split_once(':')
-        .and_then(|(s, _)| s.parse::<u16>().ok());
-    matches!(code, Some(400..=499)) && !matches!(code, Some(401 | 408 | 429))
+/// A failed response as the outbox records it: `"<status>: <message>"`, with the
+/// server's access `code` between the two when the response carries one.
+pub(crate) struct SyncError<'a>(&'a str);
+
+impl<'a> SyncError<'a> {
+    /// The codes that close a project to this Mac. Other endpoints send codes
+    /// too, so only these keep the extra token in the recorded message.
+    const ACCESS: [&'static str; 3] = ["project_archived", "project_deleted", "not_member"];
+
+    /// Formats a rejected response. An access code stays a leading token so a
+    /// project that is archived or deleted can be told apart from a caller's
+    /// error; every other code keeps the plain `"<status>: <message>"` shape.
+    fn message(status: u16, body: &Value, fallback: &str) -> String {
+        let message = body["error"].as_str().unwrap_or(fallback);
+        match body["code"]
+            .as_str()
+            .filter(|code| Self::ACCESS.contains(code))
+        {
+            Some(code) => format!("{status}: {code}: {message}"),
+            None => format!("{status}: {message}"),
+        }
+    }
+
+    fn status(&self) -> Option<u16> {
+        self.0
+            .split_once(':')
+            .and_then(|(status, _)| status.parse().ok())
+    }
+
+    /// The server's access code, when it reports one. Older servers send none,
+    /// so only the status and the message decide.
+    fn access(&self) -> Option<&'a str> {
+        let (_, rest) = self.0.split_once(": ")?;
+        let (code, _) = rest.split_once(": ")?;
+        Self::ACCESS.into_iter().find(|known| *known == code)
+    }
+
+    /// Work for an archived or deleted project is held, not failed: a restore
+    /// within the window sends it again.
+    fn holds(&self) -> bool {
+        matches!(self.access(), Some("project_archived" | "project_deleted"))
+    }
+
+    fn terminal(&self) -> bool {
+        matches!(self.status(), Some(400..=499)) && !matches!(self.status(), Some(401 | 408 | 429))
+    }
 }
+
+pub fn terminal_error(error: &str) -> bool {
+    SyncError(error).terminal()
+}
+
+/// The presence heartbeat: one post per active project, each one independent.
+struct Presence;
+
+impl Presence {
+    /// Every active project's presence body, with the sessions open on this Mac.
+    fn bodies(db: &rusqlite::Connection) -> Result<Vec<Value>> {
+        let device = db::device(db)?;
+        let mut bodies = Vec::new();
+        for p in db::rows(
+            db,
+            &format!(
+                "SELECT value FROM projects WHERE {}",
+                crate::projects::ACTIVE
+            ),
+            &[],
+        )? {
+            let project = p["id"].as_str().ok_or("Missing project")?;
+            let mut ids = Vec::new();
+            if crate::projects::sharing_allowed(&p, "session") {
+                for b in db::rows(db,"SELECT value FROM bindings WHERE project=? AND json_extract(value,'$.base.kind')='session'",&[&project])? {if let Some(id) = b["nativeId"].as_str() {if native::active(db,id,b["base"]["source"].as_str().unwrap_or("")){ids.push(b["base"]["resourceId"].clone());}}}
+            }
+            bodies.push(json!({"projectId":project,"deviceId":device,"sessions":ids}));
+        }
+        Ok(bodies)
+    }
+
+    /// Posts each body in turn. One project's failure says nothing about the
+    /// others, so presence moves on instead of stopping the heartbeat.
+    async fn send(bodies: Vec<Value>, post: impl AsyncFn(Value) -> Result<()>) -> Result<()> {
+        for body in bodies {
+            if crate::projects::foreground_waiting()? {
+                break;
+            }
+            let _ = post(body).await;
+        }
+        Ok(())
+    }
+}
+
 async fn heartbeat() -> Result<()> {
     if crate::projects::foreground_waiting()? {
         return Ok(());
@@ -2099,31 +2311,13 @@ async fn heartbeat() -> Result<()> {
     let db = db::open()?;
     let user = db::get(&db, "user")?;
     let owner = user.as_str().ok_or("Sign in required")?;
-    for p in db::rows(
-        &db,
-        &format!(
-            "SELECT value FROM projects WHERE {}",
-            crate::projects::ACTIVE
-        ),
-        &[],
-    )? {
-        if crate::projects::foreground_waiting()? {
-            return Ok(());
-        }
-        let project = p["id"].as_str().ok_or("Missing project")?;
-        let mut ids = Vec::new();
-        if crate::projects::sharing_allowed(&p, "session") {
-            for b in db::rows(&db,"SELECT value FROM bindings WHERE project=? AND json_extract(value,'$.base.kind')='session'",&[&project])?{if let Some(id)=b["nativeId"].as_str(){if native::active(&db,id,b["base"]["source"].as_str().unwrap_or("")){ids.push(b["base"]["resourceId"].clone());}}}
-        }
-        api_as(
-            owner,
-            "POST",
-            "/v2/presence",
-            Some(&json!({"projectId":project,"deviceId":db::device(&db)?,"sessions":ids})),
-        )
-        .await?;
-    }
-    Ok(())
+    let bodies = Presence::bodies(&db)?;
+    Presence::send(bodies, async |body| {
+        api_as(owner, "POST", "/v2/presence", Some(&body))
+            .await
+            .map(|_| ())
+    })
+    .await
 }
 pub(crate) fn foreground_enabled(db: &rusqlite::Connection) -> Result<bool> {
     let enabled = db::get(db, "background")?.as_bool().unwrap_or_else(|| {
@@ -2164,8 +2358,7 @@ async fn run_mode(foreground: bool) {
         return;
     }
     let executable_identity = db::executable_identity().unwrap_or_default();
-    let mut schedule = Schedule::default();
-    let mut last_request = None;
+    let mut queue = SyncQueue::new(SyncQueue::now());
     let mut beat = Instant::now();
     let mut network_poll = Instant::now();
     let mut network = String::new();
@@ -2183,11 +2376,6 @@ async fn run_mode(foreground: bool) {
         }
         let cfg = db::get(&db, "config").unwrap_or(json!({}));
         let interval = Interval::from_config(&cfg);
-        let request = db::get(&db, "syncRequest")
-            .unwrap_or(Value::Null)
-            .as_str()
-            .unwrap_or("")
-            .to_string();
         let user = db::get(&db, "user")
             .unwrap_or(Value::Null)
             .as_str()
@@ -2208,18 +2396,6 @@ async fn run_mode(foreground: bool) {
         } else {
             false
         };
-        let handled = last_request.get_or_insert_with(|| {
-            db::get(&db, "syncHandledRequest")
-                .ok()
-                .and_then(|value| value.as_str().map(str::to_owned))
-                .unwrap_or_default()
-        });
-        let now = Instant::now();
-        let turn = if !user.is_empty() && schedule.observe(&db, now).is_ok() {
-            schedule.turn(now, &interval, request != *handled || reconnect)
-        } else {
-            None
-        };
         db::set(
             &db,
             "daemon",
@@ -2231,10 +2407,19 @@ async fn run_mode(foreground: bool) {
             .and_then(|db| crate::onboarding::snapshot(&db))
             .is_ok_and(|value| value["active"] == true);
         let onboarding_sync = crate::onboarding::sync_running().unwrap_or(false);
-        if let Some(turn) = turn.filter(|_| !onboarding_active && !onboarding_sync) {
-            last_request = Some(request);
-            let result = cycle(&turn).await;
-            schedule.finish(&turn, Instant::now(), &interval, &result);
+        if !user.is_empty() && !onboarding_active && !onboarding_sync {
+            let queued = db::open().and_then(|db| {
+                let now = SyncQueue::now();
+                SyncQueue::recover(&db, now)?;
+                SyncQueue::accept_request(&db, now)?;
+                if reconnect {
+                    SyncQueue::enqueue_all(&db, Priority::Local, "network", now)?;
+                }
+                queue.enqueue_due(&db, now, &interval)
+            });
+            if queued.is_ok() {
+                drain_queue(&mut queue, &interval).await;
+            }
         }
         if !onboarding_active && !user.is_empty() && Instant::now() >= beat {
             let _ = heartbeat().await;
@@ -2247,6 +2432,200 @@ async fn run_mode(foreground: bool) {
 #[cfg(test)]
 mod queue_tests {
     use super::*;
+
+    #[test]
+    fn archived_and_deleted_projects_hold_while_a_member_error_stays_terminal() {
+        for code in ["project_archived", "project_deleted"] {
+            let error = format!("403: {code}: Project is unavailable");
+            assert!(SyncError(&error).holds(), "{error}");
+            assert!(terminal_error(&error), "{error}");
+        }
+        for error in ["403: not_member: Not a member", "403: Forbidden"] {
+            assert!(!SyncError(error).holds(), "{error}");
+            assert!(terminal_error(error), "{error}");
+        }
+        // A service message that happens to look like a code is not one.
+        assert!(!SyncError("403: Project: deleted").holds());
+        // The formatted message keeps the status parsers working.
+        let reply = json!({"error":"Project is deleted","code":"project_deleted"});
+        let error = SyncError::message(403, &reply, "Service unavailable");
+        assert_eq!(error, "403: project_deleted: Project is deleted");
+        assert_eq!(SyncError(&error).status(), Some(403));
+        assert!(!service_error(&error));
+        let older = SyncError::message(403, &json!({"error":"Forbidden"}), "Rejected");
+        assert_eq!(older, "403: Forbidden");
+        assert!(terminal_error(&older));
+        // Other endpoints send codes too; they keep the plain message shape that
+        // the UI already parses.
+        let other = SyncError::message(
+            409,
+            &json!({"error":"Already invited","code":"already_member"}),
+            "Rejected",
+        );
+        assert_eq!(other, "409: Already invited");
+        assert_eq!(SyncError(&other).access(), None);
+        assert!(!SyncError(&other).holds());
+    }
+
+    #[tokio::test]
+    async fn governance_lifecycle_refusals_hold_pending_work_without_permission_errors() {
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("ORKA_TEST_HOME", home.path());
+        db::open().unwrap();
+        for code in ["project_archived", "project_deleted"] {
+            let (_root, mut db) = outbox_db(&["a"]);
+            enqueue(&db, "a", "memory");
+            let before = db::rows(&db, "SELECT value FROM outbox", &[]).unwrap();
+            record_result(
+                &db,
+                "a:permissions",
+                Err("403: stale permission error".into()),
+            )
+            .unwrap();
+            let mut pass = SyncPass::new(&mut db, "owner", None);
+            let error = format!("403: {code}: Project is unavailable");
+            assert!(pass
+                .record_authorization("a", Err(error))
+                .unwrap()
+                .is_continue());
+            assert!(pass.held.contains("a"));
+            assert!(!pass.blocked.contains("a"));
+            let project = json!({"id":"a"});
+            // No service configuration is available: these stages must skip the
+            // held project before trying any upload or pull.
+            assert!(pass.drain_outbox(&project).await.unwrap().is_continue());
+            assert!(pass.pull_project(&project).await.unwrap().is_continue());
+            assert_eq!(
+                db::rows(pass.db, "SELECT value FROM outbox", &[]).unwrap(),
+                before
+            );
+            assert!(
+                db::rows(pass.db, "SELECT json_quote(error) FROM errors", &[])
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+    }
+
+    #[test]
+    fn governance_member_refusals_and_outages_keep_their_existing_behavior() {
+        for error in ["403: not_member: Not a member", "403: Forbidden"] {
+            let (_root, mut db) = outbox_db(&["a"]);
+            let mut pass = SyncPass::new(&mut db, "owner", None);
+            assert!(pass
+                .record_authorization("a", Err(error.into()))
+                .unwrap()
+                .is_continue());
+            assert!(pass.blocked.contains("a"));
+            assert!(!pass.held.contains("a"));
+            assert_eq!(
+                db::rows(pass.db, "SELECT json_quote(error) FROM errors", &[]).unwrap(),
+                [json!(error)]
+            );
+            assert!(pass
+                .record_authorization("a", Ok(()))
+                .unwrap()
+                .is_continue());
+            assert!(
+                db::rows(pass.db, "SELECT json_quote(error) FROM errors", &[])
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        let (_root, mut db) = outbox_db(&["a"]);
+        let mut pass = SyncPass::new(&mut db, "owner", None);
+        assert_eq!(
+            pass.record_authorization("a", Err("503: Service unavailable".into()))
+                .unwrap_err(),
+            "503: Service unavailable"
+        );
+        assert!(pass.held.is_empty());
+        assert!(pass.blocked.is_empty());
+    }
+
+    #[test]
+    fn held_rows_keep_no_error_so_a_restore_sends_them_again() {
+        let (_root, db) = outbox_db(&["a"]);
+        enqueue(&db, "a", "memory");
+        let outbox = ProjectOutbox::open(&db, "a").unwrap();
+        let row = outbox.queued(&db).unwrap().remove(0);
+        let saved = || {
+            db.query_row("SELECT error FROM outbox", [], |r| {
+                r.get::<_, Option<String>>(0)
+            })
+            .unwrap()
+        };
+        for code in ["project_archived", "project_deleted"] {
+            db.execute("UPDATE outbox SET error='403: project_deleted: stale'", [])
+                .unwrap();
+            let error = format!("403: {code}: Project is unavailable");
+            assert!(outbox.fail(&db, &row, &error).unwrap(), "{error}");
+            // Held, not failed: the row stays queued for a restore.
+            assert_eq!(saved(), None);
+            assert_eq!(outbox.queued(&db).unwrap().len(), 1);
+        }
+        // A member-only refusal keeps today's terminal behaviour.
+        let error = "403: not_member: Not a member";
+        assert!(!outbox.fail(&db, &row, error).unwrap());
+        assert_eq!(saved().as_deref(), Some(error));
+        assert!(outbox.queued(&db).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_presence_heartbeat_continues_past_a_project_error() {
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("ORKA_TEST_HOME", home.path());
+        db::open().unwrap();
+        let bodies = ["a", "b", "c"]
+            .into_iter()
+            .map(|id| json!({"projectId":id}))
+            .collect();
+        let seen = std::sync::Mutex::new(Vec::new());
+        Presence::send(bodies, async |body| {
+            let id = body["projectId"].as_str().unwrap().to_string();
+            seen.lock().unwrap().push(id.clone());
+            if id == "a" {
+                return Err("403: project_deleted: Project is deleted".into());
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+        assert_eq!(*seen.lock().unwrap(), ["a", "b", "c"]);
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_job_does_not_retry_a_late_job_error() {
+        for requested_again in [false, true] {
+            let home = tempfile::tempdir().unwrap();
+            std::env::set_var("ORKA_TEST_HOME", home.path());
+            let db = db::open().unwrap();
+            let previous = json!({"online":true,"lastSync":"2026-11-19T00:00:00Z"});
+            db::set(&db, "sync", &previous).unwrap();
+            let project = uuid::Uuid::new_v4().to_string();
+            SyncQueue::request(&db, &project, Priority::User, "sync now").unwrap();
+            let app = db::open().unwrap();
+            let mut queue = SyncQueue::new(SyncQueue::now());
+            assert!(queue
+                .run_next(&Interval::from_config(&json!({})), async |db, job| {
+                    SyncQueue::cancel(&app, &project)?;
+                    if requested_again {
+                        SyncQueue::request(&app, &project, Priority::Local, "new change")?;
+                    }
+                    // No signed-in user: sync_job returns an error before its
+                    // final cancellation check, just as a failed request can.
+                    run_job(db, job).await
+                })
+                .await
+                .unwrap());
+            assert_eq!(db::get(&db, "sync").unwrap(), previous);
+            let pending = SyncQueue::next(&db, SyncQueue::now()).unwrap();
+            assert_eq!(pending.is_some(), requested_again);
+            if let Some(job) = pending {
+                assert_eq!(job.project, project);
+            }
+        }
+    }
 
     #[tokio::test]
     async fn another_profile_waits_for_the_shared_sync_slot() {
@@ -2263,6 +2642,89 @@ mod queue_tests {
             .await
             .unwrap()
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn project_jobs_prepare_new_session_copies_without_preparing_other_projects() {
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("ORKA_TEST_HOME", home.path());
+        std::env::set_var("CODEX_HOME", home.path().join(".codex"));
+        std::env::set_var("CLAUDE_CONFIG_DIR", home.path().join(".claude"));
+        let root = home.path().join("project");
+        fs::create_dir(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let mut db = db::open().unwrap();
+        let owner = uuid::Uuid::new_v4().to_string();
+        db::set(&db, "user", &json!(owner)).unwrap();
+        let project = json!({"id":uuid::Uuid::new_v4().to_string(),"name":"Project","path":root});
+        let project_id = project["id"].as_str().unwrap();
+        db::upsert(&db, "projects", project_id, "", &project).unwrap();
+
+        let native_id = uuid::Uuid::new_v4().to_string();
+        let resource = uuid::Uuid::new_v4().to_string();
+        let directory = native::claude_home().unwrap().join("projects/test");
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join(format!("{native_id}.jsonl"));
+        let bytes = native::encode(&[
+            json!({"type":"user","cwd":root,"sessionId":native_id,"version":"2.1.286","message":{"role":"user","content":"A teammate session continued here"}}),
+        ]);
+        fs::write(&path, &bytes).unwrap();
+        let base = json!({"resourceId":resource,"projectId":project_id,"owner":uuid::Uuid::new_v4().to_string(),"revision":1,"kind":"session","source":"claude","logicalPath":format!("claude/{native_id}"),"title":"Peer session","deleted":false,"files":[{"path":"session.jsonl","hash":db::blob(&bytes).unwrap(),"size":bytes.len(),"executable":false}]});
+        let binding = json!({"nativeId":native_id,"paths":[path],"lastSeenHash":"before-the-local-edit","base":base});
+        db::upsert(&db, "bindings", &resource, project_id, &binding).unwrap();
+
+        // An unrelated project has an unavailable copy source. It must neither
+        // block this project nor acquire a request as a side effect of its job.
+        let other_project = uuid::Uuid::new_v4().to_string();
+        let other_resource = uuid::Uuid::new_v4().to_string();
+        db::upsert(
+            &db,
+            "projects",
+            &other_project,
+            "",
+            &json!({"id":other_project}),
+        )
+        .unwrap();
+        let other = json!({"needsCopy":true,"base":{"resourceId":other_resource,"projectId":other_project,"revision":0}});
+        db::upsert(&db, "bindings", &other_resource, &other_project, &other).unwrap();
+
+        let mut pass = SyncPass::new(&mut db, &owner, None);
+        // No service is configured: the first network attempt fails, after
+        // preparation has durably frozen this project's copy for retry.
+        assert_eq!(
+            pass.sync_project(&project).await.unwrap_err(),
+            "Configure the service"
+        );
+        let copy = indexer::binding(pass.db, &resource).unwrap();
+        assert_eq!(copy["needsCopy"], true);
+        assert!(copy["copyRequest"].is_string());
+        let queued = db::rows(
+            pass.db,
+            "SELECT json_object('project',project,'path',path,'value',json(value)) FROM outbox",
+            &[],
+        )
+        .unwrap();
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0]["project"], project_id);
+        assert_eq!(queued[0]["path"], "/v2/sessions/copy");
+        assert_eq!(queued[0]["value"]["id"], copy["copyRequest"]);
+        assert_eq!(queued[0]["value"]["expectedRevision"], 1);
+        assert!(indexer::binding(pass.db, &other_resource).unwrap()["copyRequest"].is_null());
+
+        assert_eq!(
+            pass.sync_project(&project).await.unwrap_err(),
+            "Configure the service"
+        );
+        assert_eq!(
+            indexer::binding(pass.db, &resource).unwrap()["copyRequest"],
+            copy["copyRequest"]
+        );
+        assert_eq!(
+            db::rows(pass.db, "SELECT value FROM outbox", &[])
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     fn queued(sequence: i64, resource: &str) -> Value {
@@ -2341,6 +2803,45 @@ mod queue_tests {
         assert_eq!(next[0]["sequence"], 101);
         assert_eq!(next[1]["sequence"], 1);
         assert_eq!(select_uploads(&queue, 1000)[0]["sequence"], 1);
+    }
+
+    #[test]
+    fn only_a_cancelled_project_stops_at_a_stage_boundary() {
+        let (_root, db) = outbox_db(&[]);
+        let project = uuid::Uuid::new_v4().to_string();
+        assert!(boundary(&db, &project).unwrap().is_continue());
+        SyncQueue::mark_cancelled(&db, &project).unwrap();
+        assert!(boundary(&db, &project).unwrap().is_break());
+        assert!(boundary(&db, &uuid::Uuid::new_v4().to_string())
+            .unwrap()
+            .is_continue());
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_job_stops_before_its_next_request_and_keeps_the_outbox() {
+        let (_root, db) = outbox_db(&[]);
+        let project = uuid::Uuid::new_v4().to_string();
+        db.execute(
+            "INSERT INTO projects VALUES(?,?)",
+            params![project, json!({"id": project}).to_string()],
+        )
+        .unwrap();
+        db::set(&db, "user", &json!(uuid::Uuid::new_v4().to_string())).unwrap();
+        let mut db = db;
+        enqueue(&db, &project, "memory");
+        enqueue(&db, &project, "skill");
+        SyncQueue::request(&db, &project, Priority::User, "sync now").unwrap();
+        let job = SyncQueue::next(&db, i64::MAX - 1).unwrap().unwrap();
+        SyncQueue::mark_cancelled(&db, &project).unwrap();
+        let outcome = sync_job(&mut db, &job).await;
+        assert!(matches!(outcome, Ok(Outcome::Cancelled)), "{outcome:?}");
+        // Nothing already sent is rolled back and nothing unsent is dropped.
+        assert_eq!(
+            db::rows(&db, "SELECT value FROM outbox", &[])
+                .unwrap()
+                .len(),
+            2
+        );
     }
 
     fn outbox_db(projects: &[&str]) -> (tempfile::TempDir, rusqlite::Connection) {

@@ -576,47 +576,43 @@
     transform-origin: var(--radix-popover-content-transform-origin);
   }
   .sync-menu-heading {
-    @apply flex shrink-0 items-center gap-1 border-b border-line px-4 py-3;
+    @apply flex shrink-0 items-center gap-1 px-4 pb-2 pt-3;
+  }
+  .sync-menu-heading-copy {
+    @apply mr-auto flex min-w-0 items-baseline gap-2;
   }
   .sync-menu-heading h2 {
-    @apply m-0 mr-auto text-label-sm;
+    @apply m-0 text-label-sm;
+  }
+  .sync-menu-heading-copy > span {
+    @apply text-body-xs text-muted;
   }
   .sync-menu-status {
-    @apply shrink-0 border-b border-line px-4 pb-4 pt-3;
+    @apply flex shrink-0 items-center justify-between gap-3 px-4 pb-4 pt-2;
   }
-  .sync-menu-status > div:first-child {
-    @apply flex items-center gap-2 text-sm;
-  }
-  .sync-menu-status strong {
-    @apply font-medium;
-  }
-  .sync-menu-status .dot.connected {
-    background: var(--status-connected);
-    border-color: var(--status-connected);
-  }
-  .sync-menu-status p {
-    @apply mb-3 mt-1 text-xs text-muted;
+  .sync-menu-status > strong {
+    @apply text-body-sm font-medium;
   }
   .sync-menu-actions {
-    @apply flex flex-wrap gap-2;
+    @apply flex shrink-0 flex-wrap gap-2;
   }
   .sync-menu-feed {
-    @apply min-h-0 flex-1 overflow-y-auto px-4 pb-4;
+    @apply min-h-0 flex-1 overflow-y-auto border-t border-line px-4;
   }
   .sync-menu-progress {
-    @apply shrink-0 border-t border-line px-4 py-3;
+    @apply shrink-0 px-4 pb-4 pt-1;
   }
   .sync-menu-progress-status {
-    @apply flex items-start gap-2 text-secondary;
+    @apply mt-2 flex items-start gap-2 text-secondary;
   }
   .sync-menu-progress-copy {
     @apply min-w-0 flex-1;
   }
   .sync-menu-progress-copy strong {
-    @apply block text-label-xs text-foreground;
+    @apply block text-body-xs text-secondary;
   }
   .sync-menu-progress-copy p {
-    @apply m-0 mt-1 line-clamp-2 text-body-xs text-secondary;
+    @apply m-0 mt-1 line-clamp-2 text-body-xs text-muted;
     overflow-wrap: anywhere;
   }
   .sync-menu-progress-count {
@@ -634,7 +630,16 @@
     animation: sync-activity-spin 1.2s linear infinite;
   }
   .sync-menu-feed h3 {
-    @apply mb-2 mt-4 text-label-xs text-muted;
+    @apply mb-2 mt-0 text-label-xs text-muted;
+  }
+  .sync-menu-feed .sync-menu-attention-heading {
+    @apply mb-0 pt-3 text-foreground;
+  }
+  .sync-menu-queue {
+    @apply border-b border-line py-3;
+  }
+  .sync-menu-queue:last-child {
+    @apply border-0;
   }
   .sync-menu-notification {
     @apply flex flex-col items-start gap-2 border-b border-line py-3 text-xs;
@@ -670,6 +675,37 @@
   }
   .sync-menu-notification small {
     @apply text-xs text-muted;
+  }
+  .sync-queue-row {
+    @apply grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 py-2;
+  }
+  .sync-queue-row[data-active] {
+    @apply py-0;
+  }
+  .sync-queue-project {
+    @apply min-w-0;
+  }
+  .sync-queue-project strong {
+    @apply block truncate text-body-sm font-medium text-foreground;
+  }
+  .sync-queue-project small {
+    @apply mt-1 block truncate text-body-xs text-secondary;
+  }
+  .sync-queue-action {
+    @apply min-w-20 shrink-0;
+  }
+  .sync-menu-health {
+    @apply flex shrink-0 items-center justify-between gap-3 border-t border-line px-4 py-3 text-body-xs text-muted;
+  }
+  .sync-menu-health > span {
+    @apply flex shrink-0 items-center gap-2;
+  }
+  .sync-menu-health > time {
+    @apply min-w-0 truncate text-right;
+  }
+  .sync-menu-health .dot.connected {
+    background: var(--status-connected);
+    border-color: var(--status-connected);
   }
   .navigation-action {
     @apply relative z-10 inline-flex h-9 w-full shrink-0 items-center justify-start gap-2 overflow-hidden rounded-lg bg-transparent px-2.5 py-2 text-label-sm text-muted;

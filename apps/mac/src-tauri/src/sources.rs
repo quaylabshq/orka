@@ -1,6 +1,7 @@
 use crate::{
     db::{self, Result},
     indexer, native, projects, sync,
+    sync_queue::{Priority, SyncQueue},
 };
 use serde_json::{json, Value};
 use std::{
@@ -441,7 +442,7 @@ pub(crate) async fn connect_sources(
         .remove("folderIdentity");
     db::upsert(&db, "projects", &id, &id, &project)?;
     db::set(&db, &pending_key, &Value::Null)?;
-    crate::commands::sync_now()
+    SyncQueue::request(&db, &id, Priority::User, "project")
 }
 
 #[tauri::command]

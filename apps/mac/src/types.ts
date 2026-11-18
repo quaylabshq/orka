@@ -69,10 +69,21 @@ export interface Binding {
 }
 export type ServiceMode = "cloud" | "self-hosted";
 export interface SyncProgress {
+  /** Present only for progress produced by this project's active queue claim. */
+  projectId?: string;
   label: string;
   detail?: string | null;
   completed?: number;
   total?: number | null;
+}
+/** One queued project from `sync_queue_state`; the workspace `*` row is not sent. */
+export interface SyncQueueEntry {
+  projectId: string;
+  state: "queued" | "running" | "waiting";
+  reason: string;
+  attempts: number;
+  notBefore: string | null;
+  cancelRequested?: boolean;
 }
 export interface Snapshot {
   onboarding?: import("./components/onboarding/model.js").OnboardingInfo;

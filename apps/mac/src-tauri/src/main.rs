@@ -43,6 +43,7 @@ mod settings_lifecycle;
 mod skill_usage;
 mod sources;
 mod sync;
+mod sync_queue;
 mod sync_schedule;
 #[cfg(test)]
 mod tests;
@@ -309,6 +310,8 @@ fn main() {
                 commands::retry_sign_in_storage,
                 commands::sign_out,
                 commands::sync_now,
+                commands::cancel_sync,
+                commands::sync_queue_state,
                 commands::sync_progress,
                 commands::cloud_action,
                 commands::connect_project,

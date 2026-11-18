@@ -227,6 +227,15 @@ fn global_skills_add_preserves_assets_modes_and_global_originals_in_both_project
     let id = scan(&f)["skills"][0]["id"].as_str().unwrap().to_string();
     let result = global_skills::add(&f.db, &f.project, &id).unwrap();
     assert_eq!(result["status"], "queued");
+    let jobs = db::rows(
+        &f.db,
+        "SELECT json_object('project',project,'priority',priority) FROM sync_queue",
+        &[],
+    )
+    .unwrap();
+    assert_eq!(jobs.len(), 1, "{jobs:?}");
+    assert_eq!(jobs[0]["project"], f.project["id"]);
+    assert_eq!(jobs[0]["priority"], 1, "{jobs:?}");
     for folder in [".agents/skills/example", ".claude/skills/example"] {
         assert_eq!(packages::directory(&f.root.join(folder)).unwrap(), before);
     }
