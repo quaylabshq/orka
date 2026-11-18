@@ -7,9 +7,11 @@ use crate::{
     sync_schedule::{jitter, Interval},
 };
 use rusqlite::{params, Connection, OptionalExtension};
+use serde_json::json;
 use std::{collections::HashMap, time::Duration};
 
 pub(crate) const WORKSPACE: &str = "*";
+const OUTAGE: &str = "syncOutage";
 
 /// The `not_before` of a job while it runs, so it is not picked again. A request
 /// that arrives meanwhile merges in and lowers it, which tells the worker to
@@ -63,7 +65,12 @@ fn outage(error: &str) -> bool {
     let code = error
         .split_once(':')
         .and_then(|(code, _)| code.parse::<u16>().ok());
-    error == "Cloud unavailable; local work stays queued" || matches!(code, Some(408 | 500..=599))
+    matches!(
+        error,
+        "Cloud unavailable; local work stays queued"
+            | "Blob upload failed; retry retained"
+            | "Blob download failed"
+    ) || matches!(code, Some(408 | 500..=599))
 }
 
 fn sql(result: rusqlite::Result<usize>) -> Result<()> {
@@ -84,7 +91,8 @@ impl SyncQueue {
     }
 
     /// Adds a request, or merges it into the project's queued job. The higher
-    /// priority and the earlier `not_before` win, so a request never delays a job.
+    /// priority and the earlier eligible `not_before` win. Automatic requests
+    /// respect a service outage; an explicit user request may bypass it.
     pub(crate) fn enqueue(
         db: &Connection,
         project: &str,
@@ -107,7 +115,12 @@ impl SyncQueue {
 
     fn merge(db: &Connection, job: &Job) -> Result<()> {
         db.execute(
-            "INSERT INTO sync_queue VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(project) DO UPDATE SET
+            // Read the service hold inside the UPSERT: a request racing with
+            // outage settlement must not reopen work from an earlier read.
+            "INSERT INTO sync_queue VALUES(?1,?2,?3,?4,
+             CASE WHEN ?2<2 THEN max(?5,coalesce(json_extract((SELECT value FROM meta WHERE key=?7),'$.notBefore'),?5)) ELSE ?5 END,
+             max(?6,coalesce(json_extract((SELECT value FROM meta WHERE key=?7),'$.attempts'),0)))
+             ON CONFLICT(project) DO UPDATE SET
              reason=CASE WHEN excluded.priority>priority THEN excluded.reason ELSE reason END,
              priority=max(priority,excluded.priority),
              requested_at=min(requested_at,excluded.requested_at),
@@ -119,7 +132,8 @@ impl SyncQueue {
                 job.reason,
                 job.requested_at,
                 job.not_before,
-                job.attempts
+                job.attempts,
+                OUTAGE
             ],
         )
         .map(|_| ())
@@ -268,6 +282,11 @@ impl SyncQueue {
                     "UPDATE sync_queue SET attempts=0 WHERE project=?",
                     [project],
                 ))?;
+                // A skipped/archived project can finish without a request. A
+                // successful workspace job has actually reached the service.
+                if project == WORKSPACE {
+                    sql(tx.execute("DELETE FROM meta WHERE key=?", [OUTAGE]))?;
+                }
                 tx.commit().map_err(|e| e.to_string())?;
                 self.synced.insert(job.project, now);
                 Ok(())
@@ -286,6 +305,11 @@ impl SyncQueue {
                     params![project, attempts, not_before],
                 ))?;
                 if result.as_ref().is_err_and(|error| outage(error)) {
+                    db::set(
+                        &tx,
+                        OUTAGE,
+                        &json!({"notBefore":not_before,"attempts":attempts}),
+                    )?;
                     sql(tx.execute(
                         "UPDATE sync_queue SET attempts=max(attempts,?1), not_before=?2
                          WHERE not_before<?2",
@@ -490,6 +514,157 @@ mod tests {
         let forbidden = Err("403: Forbidden".into());
         queue.settle(&db, job, &forbidden, now, &interval).unwrap();
         assert_eq!(SyncQueue::next(&db, now).unwrap().unwrap().project, "b");
+    }
+
+    #[test]
+    fn outage_holds_new_and_merged_automatic_requests_from_another_connection() {
+        let (root, db) = queue_db(&["a", "b"]);
+        let mut queue = SyncQueue::new(0);
+        let interval = interval();
+        SyncQueue::enqueue(&db, "a", Priority::Local, "local", 0).unwrap();
+        let job = SyncQueue::claim(&db, 0).unwrap().unwrap();
+        queue
+            .settle(
+                &db,
+                job,
+                &Err("503: Service unavailable".into()),
+                0,
+                &interval,
+            )
+            .unwrap();
+        let held_until = rows(&db)[0].not_before;
+        let other = db::open_at(root.path()).unwrap();
+        SyncQueue::enqueue(&other, "a", Priority::Local, "indexer", 1).unwrap();
+        SyncQueue::enqueue(&other, "b", Priority::Local, "share", 2).unwrap();
+        assert!(rows(&db)
+            .iter()
+            .all(|job| job.not_before == held_until && job.attempts == 1));
+        assert_eq!(SyncQueue::next(&db, held_until - 1).unwrap(), None);
+
+        // An explicit retry is immediate, but a failing probe advances the
+        // shared outage backoff instead of starting over for this new project.
+        SyncQueue::enqueue(&other, "b", Priority::User, "sync now", 3).unwrap();
+        let job = SyncQueue::claim(&db, 3).unwrap().unwrap();
+        assert_eq!((job.project.as_str(), job.attempts), ("b", 1));
+        queue
+            .settle(
+                &db,
+                job,
+                &Err("503: Service unavailable".into()),
+                3,
+                &interval,
+            )
+            .unwrap();
+        assert!(rows(&db)
+            .iter()
+            .all(|job| job.not_before >= 60_003 && job.attempts == 2));
+    }
+
+    #[test]
+    fn blob_transport_failures_hold_existing_and_new_background_work() {
+        for error in ["Blob upload failed; retry retained", "Blob download failed"] {
+            let (_root, db) = queue_db(&[]);
+            let mut queue = SyncQueue::new(0);
+            let interval = interval();
+            for project in ["a", "b"] {
+                SyncQueue::enqueue(&db, project, Priority::Local, "local", 0).unwrap();
+            }
+            let job = SyncQueue::claim(&db, 0).unwrap().unwrap();
+            queue
+                .settle(&db, job, &Err(error.into()), 0, &interval)
+                .unwrap();
+            let held_until = rows(&db)[0].not_before;
+            SyncQueue::enqueue(&db, "c", Priority::Local, "indexer", 1).unwrap();
+            let jobs = rows(&db);
+            assert_eq!(jobs.len(), 3);
+            assert!(
+                jobs.iter()
+                    .all(|job| job.not_before == held_until && job.attempts == 1),
+                "{error}: {jobs:?}"
+            );
+            assert_eq!(SyncQueue::next(&db, held_until - 1).unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn authentication_and_rate_limit_failures_keep_per_project_backoff() {
+        for error in ["401: Sign in required", "429: Rate limited"] {
+            let (_root, db) = queue_db(&[]);
+            let mut queue = SyncQueue::new(0);
+            let interval = interval();
+            for project in ["a", "b"] {
+                SyncQueue::enqueue(&db, project, Priority::Local, "local", 0).unwrap();
+            }
+            let job = SyncQueue::claim(&db, 0).unwrap().unwrap();
+            queue
+                .settle(&db, job, &Err(error.into()), 0, &interval)
+                .unwrap();
+            SyncQueue::enqueue(&db, "c", Priority::Local, "indexer", 1).unwrap();
+            assert!(db::get(&db, OUTAGE).unwrap().is_null(), "{error}");
+            let jobs = rows(&db);
+            assert!(jobs[0].not_before >= 30_000, "{error}: {jobs:?}");
+            assert_eq!((jobs[1].not_before, jobs[2].not_before), (0, 1));
+            assert_eq!(SyncQueue::next(&db, 0).unwrap().unwrap().project, "b");
+        }
+    }
+
+    #[test]
+    fn outage_holds_newly_due_timers_and_survives_a_worker_restart() {
+        let (root, db) = queue_db(&["a", "b"]);
+        let mut queue = SyncQueue::new(-20 * MINUTE);
+        let interval = interval();
+        SyncQueue::enqueue(&db, "a", Priority::Local, "local", 0).unwrap();
+        let job = SyncQueue::claim(&db, 0).unwrap().unwrap();
+        queue
+            .settle(
+                &db,
+                job,
+                &Err("Cloud unavailable; local work stays queued".into()),
+                0,
+                &interval,
+            )
+            .unwrap();
+        let held_until = rows(&db)[0].not_before;
+        queue.enqueue_due(&db, 1, &interval).unwrap();
+        assert_eq!(rows(&db).len(), 3, "workspace and both projects are queued");
+        assert_eq!(SyncQueue::next(&db, held_until - 1).unwrap(), None);
+        drop(db);
+
+        let db = db::open_at(root.path()).unwrap();
+        SyncQueue::recover(&db, 2).unwrap();
+        SyncQueue::enqueue(&db, "new-project", Priority::Local, "indexer", 2).unwrap();
+        assert!(rows(&db)
+            .iter()
+            .all(|job| job.not_before == held_until && job.attempts == 1));
+        assert_eq!(SyncQueue::next(&db, held_until - 1).unwrap(), None);
+        assert!(SyncQueue::next(&db, held_until).unwrap().is_some());
+    }
+
+    #[test]
+    fn a_successful_workspace_probe_clears_the_service_hold() {
+        let (_root, db) = queue_db(&[]);
+        let mut queue = SyncQueue::new(0);
+        let interval = interval();
+        SyncQueue::enqueue(&db, "a", Priority::Local, "local", 0).unwrap();
+        let job = SyncQueue::claim(&db, 0).unwrap().unwrap();
+        queue
+            .settle(
+                &db,
+                job,
+                &Err("503: Service unavailable".into()),
+                0,
+                &interval,
+            )
+            .unwrap();
+        SyncQueue::enqueue(&db, WORKSPACE, Priority::User, "sync now", 1).unwrap();
+        let job = SyncQueue::claim(&db, 1).unwrap().unwrap();
+        queue
+            .settle(&db, job, &Ok(Outcome::Synced), 2, &interval)
+            .unwrap();
+        assert!(db::get(&db, OUTAGE).unwrap().is_null());
+        SyncQueue::enqueue(&db, "b", Priority::Local, "indexer", 3).unwrap();
+        let job = SyncQueue::next(&db, 3).unwrap().unwrap();
+        assert_eq!((job.project.as_str(), job.attempts), ("b", 0));
     }
 
     #[test]
