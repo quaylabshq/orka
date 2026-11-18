@@ -5,6 +5,7 @@ import {
   fireEvent,
   render,
   screen,
+  within,
 } from "@testing-library/react";
 import React from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -101,8 +102,6 @@ test("menus without icons or groups render as before", async () => {
   expect(entries).toEqual(["- One", "|", "- Two"]);
 });
 
-/** PR 5 for #64 restructures the resource menu and removes this exception. */
-const OVER_CAP = new Set(["resource menu"]);
 const fn = vi.fn();
 
 const resource = {
@@ -136,30 +135,30 @@ const state = {
   ],
 } as never;
 
-const worstCaseMenus: [string, React.ReactElement, string][] = [
-  [
-    "resource menu",
-    <ResourceMenuProvider
-      resources={[resource]}
-      scope="test"
-      state={state}
-      busy={false}
-      act={fn}
-      onOpen={fn}
-      onReview={fn}
-      onNotice={fn}
-      onError={fn}
-      onRefresh={fn}
+const resourceMenu = (
+  <ResourceMenuProvider
+    resources={[resource]}
+    scope="test"
+    state={state}
+    busy={false}
+    act={fn}
+    onOpen={fn}
+    onReview={fn}
+    onNotice={fn}
+    onError={fn}
+    onRefresh={fn}
+  >
+    <ResourceItemMenu
+      resource={resource}
+      extraActions={[action("Show Markdown")]}
     >
-      <ResourceItemMenu
-        resource={resource}
-        extraActions={[action("Show Markdown")]}
-      >
-        {() => <button type="button">Item</button>}
-      </ResourceItemMenu>
-    </ResourceMenuProvider>,
-    "Item",
-  ],
+      {() => <button type="button">Item</button>}
+    </ResourceItemMenu>
+  </ResourceMenuProvider>
+);
+
+const worstCaseMenus: [string, React.ReactElement, string][] = [
+  ["resource menu", resourceMenu, "Item"],
   [
     "member menu",
     <MemberRows
@@ -181,7 +180,36 @@ test.each(worstCaseMenus)(
   async (name, element, target) => {
     const { menu } = await open(element, target);
     const count = menu.querySelectorAll(":scope > [role=menuitem]").length;
-    if (OVER_CAP.has(name)) expect(count).toBeGreaterThan(ITEM_MENU_CAP);
-    else expect(count).toBeLessThanOrEqual(ITEM_MENU_CAP);
+    expect(count, name).toBeLessThanOrEqual(ITEM_MENU_CAP);
   },
 );
+
+test("a shared skill keeps everyday actions and deletion at the top level", async () => {
+  const { menu, entries } = await open(resourceMenu);
+  expect(entries).toEqual([
+    "svg Open",
+    "svg Open in editor",
+    "svg Copy file content",
+    "svg Compare with previous revision",
+    "svg Copy link",
+    "span Show Markdown",
+    "|",
+    "span More actions",
+    "|",
+    "svg Delete shared skill…",
+  ]);
+  const more = within(menu).getByRole("menuitem", { name: "More actions" });
+  fireEvent.keyDown(more, { key: "ArrowRight" });
+  const submenu = await screen.findByRole("menu", { name: "More actions" });
+  expect(
+    within(submenu)
+      .getAllByRole("menuitem")
+      .map((item) => item.textContent),
+  ).toEqual([
+    "Export ZIP…",
+    "Show in Finder",
+    "Copy local path",
+    "Review local update…",
+    "Review local edits…",
+  ]);
+});

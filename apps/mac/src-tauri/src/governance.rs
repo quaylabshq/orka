@@ -401,8 +401,8 @@ fn preserve_queued(db: &Connection, project: &Value, queued: &Value, paths: &Val
         if let Some(snapshot) = snapshot {
             capture(db, project, &snapshot, paths)?;
         }
-        sync::clear_session_copy(db, queued["id"].as_str().ok_or("Missing request ID")?)?;
     }
+    sync::clear_session_copy(db, queued["id"].as_str().ok_or("Missing request ID")?)?;
     Ok(())
 }
 
@@ -903,7 +903,7 @@ pub async fn governance_command(action: String, input: Value) -> Result<Value> {
             if draft["submission"].is_null() {draft["submission"]=json!({"version":2,"id":draft["requestId"],"projectId":project_id,"deviceId":db::device(&db)?,"baseRevision":base,"resource":clean});db::upsert(&db,"drafts",id,project_id,&draft)?;}
             let request=draft["submission"].clone();
             let owner=db::get(&db,"user")?;
-            sync::upload(owner.as_str().ok_or("Sign in required")?,project_id,clean["files"].as_array().ok_or("Missing files")?).await?;
+            sync::upload(owner.as_str().ok_or("Sign in required")?,project_id,&request["resource"]).await?;
             let accepted=remote("submit",&json!({"projectId":project_id,"change":request})).await?;
             draft["status"]=json!("proposed");draft["request"]=accepted.clone();db::upsert(&db,"drafts",id,project_id,&draft)?;
             return Ok(accepted);

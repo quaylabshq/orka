@@ -63,6 +63,8 @@ try {
             "tests/shutdown.integration.ts",
             "tests/cloud.integration.ts",
             "tests/session-latest.integration.ts",
+            "tests/session-reconcile.integration.ts",
+            "tests/session-outbox-native.integration.ts",
             "tests/session-latest-native.integration.ts",
             "tests/session-retention.integration.ts",
             "tests/resource-deletion.integration.ts",
