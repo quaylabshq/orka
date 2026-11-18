@@ -7,27 +7,20 @@ use crate::{
     sync_schedule::{jitter, Interval},
 };
 use rusqlite::{params, Connection, OptionalExtension};
-use std::{
-    collections::{HashMap, HashSet},
-    sync::{LazyLock, Mutex, MutexGuard},
-    time::Duration,
-};
+use serde_json::json;
+use std::{collections::HashMap, time::Duration};
 
 pub(crate) const WORKSPACE: &str = "*";
 
-/// Projects whose running job the user cancelled, and the job this process is
-/// running. A queued job is deleted from the queue instead; this only holds a
-/// job already running, and the worker checks it at a stage boundary rather
-/// than inside a request.
-static CANCELLED: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
-static RUNNING_JOB: LazyLock<Mutex<Option<String>>> = LazyLock::new(|| Mutex::new(None));
-
-fn cancelled_projects() -> MutexGuard<'static, HashSet<String>> {
-    CANCELLED.lock().unwrap_or_else(|e| e.into_inner())
+/// A cancel is written to the shared database, so it reaches whichever process
+/// runs the job. The claim time alongside it keeps a marker for an earlier job
+/// from stopping a later one.
+fn cancel_key(project: &str) -> String {
+    format!("syncCancel:{project}")
 }
 
-fn running_job() -> MutexGuard<'static, Option<String>> {
-    RUNNING_JOB.lock().unwrap_or_else(|e| e.into_inner())
+fn claim_key(project: &str) -> String {
+    format!("syncClaim:{project}")
 }
 
 /// The `not_before` of a job while it runs, so it is not picked again. A request
@@ -233,37 +226,58 @@ impl SyncQueue {
     }
 
     /// Whether the project's running job should stop at its next stage boundary.
-    pub(crate) fn cancelled(project: &str) -> bool {
-        cancelled_projects().contains(project)
+    /// A marker older than the claim was written for an earlier job and is
+    /// ignored; the tie goes to the cancel.
+    pub(crate) fn cancelled(db: &Connection, project: &str) -> Result<bool> {
+        let claimed = db::get(db, &claim_key(project))?.as_i64();
+        let cancelled = db::get(db, &cancel_key(project))?.as_i64();
+        Ok(matches!((claimed, cancelled), (Some(claimed), Some(cancelled)) if cancelled >= claimed))
     }
 
-    fn uncancel(project: &str) {
-        cancelled_projects().remove(project);
+    /// Drops the claim and any cancel that reached it: the job is over.
+    fn clear(db: &Connection, project: &str) -> Result<()> {
+        sql(db.execute(
+            "DELETE FROM meta WHERE key=?1 OR key=?2",
+            params![claim_key(project), cancel_key(project)],
+        ))
     }
 
-    /// Test hook: flags a project's job without running one.
+    /// Test hook: marks a project as cancelled when no job is running.
     #[cfg(test)]
-    pub(crate) fn mark_cancelled(project: &str) {
-        cancelled_projects().insert(project.into());
+    pub(crate) fn mark_cancelled(db: &Connection, project: &str) -> Result<()> {
+        db::set(db, &claim_key(project), &json!(0))?;
+        db::set(db, &cancel_key(project), &json!(0))
     }
 
-    /// Removes the project's queued job, or stops the job this process is
-    /// running for it at the next stage boundary. The account-wide `*` steps
-    /// cannot be cancelled.
+    /// Removes the project's queued job, or signals its running job, in
+    /// whichever process runs it, to stop at the next stage boundary. The
+    /// account-wide `*` steps cannot be cancelled.
     pub(crate) fn cancel(db: &Connection, project: &str) -> Result<()> {
         if project == WORKSPACE {
             return Err("The workspace sync cannot be cancelled".into());
         }
-        sql(db.execute(
+        let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
+        sql(tx.execute(
             "DELETE FROM sync_queue WHERE project=?1 AND not_before<>?2",
             params![project, RUNNING],
         ))?;
-        // Only the job running now is flagged, so a request after the cancel
-        // queues normally. The worker clears the flag when the job settles.
-        if running_job().as_deref() == Some(project) {
-            cancelled_projects().insert(project.into());
+        // Only a job running now is signalled, so a request after the cancel
+        // queues normally. The worker clears the marker when the job settles.
+        if Self::running(&tx, project)? {
+            db::set(&tx, &cancel_key(project), &json!(Self::now()))?;
+        } else {
+            sql(tx.execute("DELETE FROM meta WHERE key=?", [cancel_key(project)]))?;
         }
-        Ok(())
+        tx.commit().map_err(|e| e.to_string())
+    }
+
+    fn running(db: &Connection, project: &str) -> Result<bool> {
+        db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sync_queue WHERE project=?1 AND not_before=?2)",
+            params![project, RUNNING],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())
     }
 
     fn queued(db: &Connection, project: &str) -> Result<bool> {
@@ -299,15 +313,19 @@ impl SyncQueue {
     }
 
     /// Marks the most urgent ready job as running. Its row stays queued until
-    /// the job finishes, so a crash leaves it to run again.
+    /// the job finishes, so a crash leaves it to run again. The claim time is
+    /// written with it, so a cancel from another process can be dated.
     fn claim(db: &Connection, now: i64) -> Result<Option<Job>> {
-        let job = Self::next(db, now)?;
+        let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
+        let job = Self::next(&tx, now)?;
         if let Some(job) = &job {
-            sql(db.execute(
+            sql(tx.execute(
                 "UPDATE sync_queue SET not_before=?1 WHERE project=?2",
                 params![RUNNING, job.project],
             ))?;
+            db::set(&tx, &claim_key(&job.project), &json!(now))?;
         }
+        tx.commit().map_err(|e| e.to_string())?;
         Ok(job)
     }
 
@@ -326,8 +344,9 @@ impl SyncQueue {
         interval: &Interval,
     ) -> Result<()> {
         let project = &job.project;
-        // The job is over, so a flag for it must not reach a later request.
-        Self::uncancel(project);
+        // The job is over, so its claim and any cancel for it must not reach a
+        // later request.
+        Self::clear(db, project)?;
         match result {
             Ok(Outcome::Synced | Outcome::Cancelled) => {
                 let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
@@ -388,10 +407,7 @@ impl SyncQueue {
         let Some(job) = Self::claim(&db, Self::now())? else {
             return Ok(false);
         };
-        *running_job() = Some(job.project.clone());
         let result = run(&mut db, &job).await;
-        // The job is over, so a cancel from here on must not reach a later one.
-        *running_job() = None;
         self.settle(&db, job, &result, Self::now(), interval)?;
         Ok(true)
     }
@@ -687,7 +703,9 @@ mod tests {
         let jobs = rows(&db);
         assert_eq!(jobs.len(), 1, "{jobs:?}");
         assert_eq!(jobs[0].project, "b");
-        assert!(!SyncQueue::cancelled("a"));
+        // A queued cancel leaves no marker behind for the next job.
+        assert!(db::get(&db, &cancel_key("a")).unwrap().is_null());
+        assert!(!SyncQueue::cancelled(&db, "a").unwrap());
         SyncQueue::request(&db, "a", Priority::User, "sync now").unwrap();
         let job = SyncQueue::claim(&db, i64::MAX - 1).unwrap().unwrap();
         assert_eq!((job.project.as_str(), job.attempts), ("a", 0));
@@ -720,13 +738,15 @@ mod tests {
                 assert_eq!((job.project.as_str(), job.attempts), ("a", 2));
                 SyncQueue::cancel(db, "a").unwrap();
                 // The next stage boundary stops it; the job was not resynced.
-                assert!(SyncQueue::cancelled("a"));
+                assert!(SyncQueue::cancelled(db, "a").unwrap());
                 Ok(Outcome::Cancelled)
             })
             .await;
         assert!(ran.unwrap());
         assert!(rows(&db).is_empty());
-        assert!(!SyncQueue::cancelled("a"));
+        // Settling drops the claim and the cancel for it.
+        assert!(db::get(&db, &claim_key("a")).unwrap().is_null());
+        assert!(!SyncQueue::cancelled(&db, "a").unwrap());
         // No backoff is waiting, and the timer still counts from the last sync,
         // so the project is due at its usual offset rather than a full interval.
         assert_eq!(SyncQueue::next(&db, i64::MAX - 1).unwrap(), None);
@@ -749,6 +769,7 @@ mod tests {
         queue
             .settle(&db, job, &Ok(Outcome::Cancelled), 10, &interval)
             .unwrap();
+        assert!(!SyncQueue::cancelled(&db, "a").unwrap());
         SyncQueue::request(&db, "a", Priority::User, "sync now").unwrap();
         let queued = SyncQueue::claim(&db, i64::MAX - 1).unwrap().unwrap();
         assert_eq!((queued.project.as_str(), queued.attempts), ("a", 0));
@@ -762,7 +783,59 @@ mod tests {
         let error = SyncQueue::cancel(&db, WORKSPACE).unwrap_err();
         assert!(error.contains("cannot be cancelled"), "{error}");
         assert_eq!(rows(&db).len(), 2);
-        assert!(!SyncQueue::cancelled(WORKSPACE));
+        assert!(!SyncQueue::cancelled(&db, WORKSPACE).unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_cancel_from_another_connection_stops_the_running_job() {
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("ORKA_TEST_HOME", home.path());
+        let db = db::open().unwrap();
+        db.execute(
+            "INSERT INTO projects VALUES(?,?)",
+            params!["a", json!({"id":"a"}).to_string()],
+        )
+        .unwrap();
+        // The background agent holds this job; the app presses Cancel through
+        // its own connection to the same database.
+        let other = db::open().unwrap();
+        let mut queue = SyncQueue::new(0);
+        let interval = interval();
+        let failed = Job {
+            project: "a".into(),
+            priority: 0,
+            reason: "timer".into(),
+            requested_at: 0,
+            not_before: 0,
+            attempts: 2,
+        };
+        SyncQueue::merge(&db, &failed).unwrap();
+        let ran = queue
+            .run_next(&interval, async |db, job| {
+                assert_eq!(job.project, "a");
+                SyncQueue::cancel(&other, "a").unwrap();
+                assert!(SyncQueue::cancelled(db, "a").unwrap());
+                Ok(Outcome::Cancelled)
+            })
+            .await;
+        assert!(ran.unwrap());
+        assert!(rows(&db).iter().all(|job| job.project != "a"));
+        assert!(!SyncQueue::cancelled(&db, "a").unwrap());
+    }
+
+    #[test]
+    fn a_cancel_older_than_the_claim_does_not_stop_a_later_job() {
+        let (_root, db) = queue_db(&["a"]);
+        // A marker left behind by an earlier job.
+        db::set(&db, &cancel_key("a"), &json!(100)).unwrap();
+        SyncQueue::enqueue(&db, "a", Priority::Timer, "timer", 0).unwrap();
+        SyncQueue::claim(&db, 200).unwrap().unwrap();
+        assert!(!SyncQueue::cancelled(&db, "a").unwrap());
+        // A cancel in the same millisecond as the claim still stops the job.
+        db::set(&db, &cancel_key("a"), &json!(200)).unwrap();
+        assert!(SyncQueue::cancelled(&db, "a").unwrap());
+        SyncQueue::cancel(&db, "a").unwrap();
+        assert!(SyncQueue::cancelled(&db, "a").unwrap());
     }
 
     #[tokio::test]

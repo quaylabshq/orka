@@ -1333,8 +1333,8 @@ type Stage = Result<ControlFlow<()>>;
 
 /// A stage boundary. A cancelled project's job stops here, between requests and
 /// transactions, so nothing is cut in half and nothing already sent is undone.
-fn boundary(project: &str) -> Stage {
-    Ok(if SyncQueue::cancelled(project) {
+fn boundary(db: &rusqlite::Connection, project: &str) -> Stage {
+    Ok(if SyncQueue::cancelled(db, project)? {
         Break(())
     } else {
         Continue(())
@@ -1399,11 +1399,11 @@ impl<'a> SyncPass<'a> {
 
     async fn sync_project(&mut self, p: &Value) -> Stage {
         let project = p["id"].as_str().unwrap_or("");
-        if boundary(project)?.is_break()
+        if boundary(self.db, project)?.is_break()
             || self.preflight(p)?.is_break()
-            || boundary(project)?.is_break()
+            || boundary(self.db, project)?.is_break()
             || self.authorize(p).await?.is_break()
-            || boundary(project)?.is_break()
+            || boundary(self.db, project)?.is_break()
             || self.drain_outbox(p).await?.is_break()
         {
             return Ok(Break(()));
@@ -1581,7 +1581,7 @@ impl<'a> SyncPass<'a> {
         );
         let uploads = outbox.batch(&queued);
         for (index, q) in uploads.iter().enumerate() {
-            if crate::projects::foreground_waiting()? || SyncQueue::cancelled(project) {
+            if crate::projects::foreground_waiting()? || SyncQueue::cancelled(db, project)? {
                 return Ok(Break(()));
             }
             let project_name = crate::projects::display_name(p);
@@ -1713,7 +1713,7 @@ impl<'a> SyncPass<'a> {
 
     /// Rescans one project, pulls its changes and applies them on this Mac.
     async fn pull_project(&mut self, p: &Value) -> Stage {
-        if boundary(p["id"].as_str().unwrap_or(""))?.is_break() {
+        if boundary(&*self.db, p["id"].as_str().unwrap_or(""))?.is_break() {
             return Ok(Break(()));
         }
         let db = &mut *self.db;
@@ -1777,7 +1777,7 @@ impl<'a> SyncPass<'a> {
             &[&project],
         )?;
         for (index, r) in resources.iter().enumerate() {
-            if crate::projects::foreground_waiting()? || SyncQueue::cancelled(project) {
+            if crate::projects::foreground_waiting()? || SyncQueue::cancelled(db, project)? {
                 return Ok(Break(()));
             }
             let detail = format!(
@@ -1996,7 +1996,7 @@ async fn sync_job(db: &mut rusqlite::Connection, job: &crate::sync_queue::Job) -
             |r| r.get(0),
         )
         .map_err(|e| e.to_string())?;
-    Ok(if SyncQueue::cancelled(&job.project) {
+    Ok(if SyncQueue::cancelled(pass.db, &job.project)? {
         Outcome::Cancelled
     } else if flow.is_break() {
         Outcome::Yielded
@@ -2402,11 +2402,12 @@ mod queue_tests {
 
     #[test]
     fn only_a_cancelled_project_stops_at_a_stage_boundary() {
+        let (_root, db) = outbox_db(&[]);
         let project = uuid::Uuid::new_v4().to_string();
-        assert!(boundary(&project).unwrap().is_continue());
-        SyncQueue::mark_cancelled(&project);
-        assert!(boundary(&project).unwrap().is_break());
-        assert!(boundary(&uuid::Uuid::new_v4().to_string())
+        assert!(boundary(&db, &project).unwrap().is_continue());
+        SyncQueue::mark_cancelled(&db, &project).unwrap();
+        assert!(boundary(&db, &project).unwrap().is_break());
+        assert!(boundary(&db, &uuid::Uuid::new_v4().to_string())
             .unwrap()
             .is_continue());
     }
@@ -2426,7 +2427,7 @@ mod queue_tests {
         enqueue(&db, &project, "skill");
         SyncQueue::request(&db, &project, Priority::User, "sync now").unwrap();
         let job = SyncQueue::next(&db, i64::MAX - 1).unwrap().unwrap();
-        SyncQueue::mark_cancelled(&project);
+        SyncQueue::mark_cancelled(&db, &project).unwrap();
         let outcome = sync_job(&mut db, &job).await;
         assert!(matches!(outcome, Ok(Outcome::Cancelled)), "{outcome:?}");
         // Nothing already sent is rolled back and nothing unsent is dropped.
