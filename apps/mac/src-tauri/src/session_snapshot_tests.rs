@@ -525,3 +525,127 @@ fn session_copy_conflict_resolution_still_adopts_the_selected_copy() {
         db::blob_read(source["files"][0]["hash"].as_str().unwrap()).unwrap()
     );
 }
+
+const LEAKED: &str = "sk-abcdefghijklmnopqrstuvwx";
+
+/// A session queued before redaction existed: secret in both title and transcript.
+fn leaked_session(f: &Fixture, provider: &str) -> (Value, Value) {
+    let (mut source, mut binding, _) = cached_session(f, provider);
+    let bytes = db::blob_read(source["files"][0]["hash"].as_str().unwrap()).unwrap();
+    let bytes = String::from_utf8(bytes)
+        .unwrap()
+        .replace("Complete cached conversation", &format!("Use {LEAKED}"));
+    source["title"] = json!(format!("Use {LEAKED}"));
+    source["files"][0]["hash"] = json!(db::blob(bytes.as_bytes()).unwrap());
+    source["files"][0]["size"] = json!(bytes.len());
+    binding["base"] = source.clone();
+    (source, binding)
+}
+
+fn assert_redacted(snapshot: &Value) {
+    assert!(!snapshot["title"].as_str().unwrap().contains(LEAKED));
+    for file in snapshot["files"].as_array().unwrap() {
+        let bytes = db::blob_read(file["hash"].as_str().unwrap()).unwrap();
+        crate::session_redaction::SessionRedactor::check_upload(&bytes).unwrap();
+        assert_eq!(file["size"], bytes.len());
+    }
+}
+
+fn outbox_ids(f: &Fixture) -> Vec<Value> {
+    db::rows(
+        &f.db,
+        "SELECT json_quote(id) FROM outbox ORDER BY rowid",
+        &[],
+    )
+    .unwrap()
+}
+
+#[test]
+fn outbox_rows_from_before_redaction_are_rebuilt_once_in_queue_order() {
+    for provider in ["claude", "codex"] {
+        let f = Fixture::new();
+        let (source, binding) = leaked_session(&f, provider);
+        let copy = sync::queue_session_copy(&f.db, &binding, "device").unwrap();
+        let push = json!({"version":2,"id":uuid::Uuid::new_v4().to_string(),"projectId":f.project["id"],"deviceId":"device","baseRevision":7,"resource":copy["sourceSnapshot"]});
+        indexer::queue(
+            &f.db,
+            f.project["id"].as_str().unwrap(),
+            "/v2/sync/push",
+            &push,
+        )
+        .unwrap();
+        f.db.execute(
+            "UPDATE outbox SET error='422: Session upload blocked because the snapshot still contains a recognized secret' WHERE id=?",
+            [copy["id"].as_str()],
+        )
+        .unwrap();
+        assert!(crate::session_redaction::SessionRedactor::check_upload(
+            &db::blob_read(source["files"][0]["hash"].as_str().unwrap()).unwrap()
+        )
+        .is_err());
+        let order = outbox_ids(&f);
+
+        sync::rebuild_unredacted_outbox(&f.db).unwrap();
+
+        // Rewritten in place: the older copy still precedes the later push.
+        assert_eq!(outbox_ids(&f), order);
+        let rows = f.outbox();
+        assert_redacted(&rows[0]["sourceSnapshot"]);
+        assert_redacted(&rows[1]["resource"]);
+        assert_eq!(rows[0]["expectedRevision"], copy["expectedRevision"]);
+        assert_eq!(rows[1]["baseRevision"], 7);
+        let state = db::get(
+            &f.db,
+            &format!("sessionCopy:{}", copy["id"].as_str().unwrap()),
+        )
+        .unwrap();
+        assert_redacted(&state["source"]);
+        assert_eq!(state["source"]["files"], rows[0]["sourceSnapshot"]["files"]);
+        assert_eq!(state["negotiate"], true);
+        if provider == "codex" {
+            History::resource(&rows[0]["sourceSnapshot"]).unwrap();
+        }
+        let errors = db::rows(&f.db, "SELECT json_quote(error) FROM outbox", &[]).unwrap();
+        assert_eq!(errors, vec![Value::Null, Value::Null]);
+
+        // A row that still looks unredacted is left alone once the pass has run.
+        f.db.execute(
+            "UPDATE outbox SET value=? WHERE id=?",
+            rusqlite::params![copy.to_string(), copy["id"].as_str()],
+        )
+        .unwrap();
+        let before = f.outbox();
+        sync::rebuild_unredacted_outbox(&f.db).unwrap();
+        assert_eq!(f.outbox(), before);
+    }
+}
+
+#[test]
+fn outbox_rows_without_a_readable_source_are_dropped_before_upload() {
+    let f = Fixture::new();
+    let (mut source, mut binding) = leaked_session(&f, "claude");
+    source["files"][0]["hash"] = json!("0".repeat(64));
+    binding["base"] = source.clone();
+    let copy = sync::queue_session_copy(&f.db, &binding, "device").unwrap();
+    let id = source["resourceId"].as_str().unwrap();
+    assert_eq!(
+        indexer::binding(&f.db, id).unwrap()["copyRequest"],
+        copy["id"]
+    );
+
+    sync::rebuild_unredacted_outbox(&f.db).unwrap();
+
+    assert!(f.outbox().is_empty());
+    assert_eq!(
+        db::get(
+            &f.db,
+            &format!("sessionCopy:{}", copy["id"].as_str().unwrap())
+        )
+        .unwrap(),
+        Value::Null
+    );
+    // The binding still needs a copy, so the next sync queues a fresh request.
+    let binding = indexer::binding(&f.db, id).unwrap();
+    assert_eq!(binding["needsCopy"], true);
+    assert_eq!(binding["copyRequest"], Value::Null);
+}

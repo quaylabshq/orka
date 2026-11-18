@@ -443,6 +443,103 @@ pub(crate) fn replace_unavailable_session_copy(
     Ok(true)
 }
 
+/// Meta flag recording that outbox rows queued before session redaction have
+/// been rebuilt. Rows queued afterwards always come from the redacting path.
+const OUTBOX_REDACTION_KEY: &str = "sessionOutboxRedacted";
+
+fn redact_session_snapshot(snapshot: &mut Value) -> Result<()> {
+    if snapshot["kind"] != "session" {
+        return Ok(());
+    }
+    if let Some(title) = snapshot["title"].as_str() {
+        snapshot["title"] = json!(crate::session_redaction::SessionRedactor::text(title));
+    }
+    if snapshot["files"]
+        .as_array()
+        .is_some_and(|files| !files.is_empty())
+    {
+        snapshot["files"] = json!(crate::history::redacted_files(
+            &snapshot["source"],
+            &snapshot["files"]
+        )?);
+    }
+    Ok(())
+}
+
+/// Rebuild, once, every queued session snapshot frozen before redaction existed.
+/// Rows are rewritten in place so a resource's queue order is unchanged. A row
+/// whose local snapshot can no longer be read is dropped rather than sent.
+pub(crate) fn rebuild_unredacted_outbox(db: &rusqlite::Connection) -> Result<()> {
+    if db::get(db, OUTBOX_REDACTION_KEY)? == true {
+        return Ok(());
+    }
+    let tx = db
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
+    let rows = db::rows(
+        &tx,
+        "SELECT json_object('id',id,'path',path,'value',json(value),'error',error) FROM outbox WHERE path IN ('/v2/sessions/copy','/v2/sync/push') ORDER BY rowid",
+        &[],
+    )?;
+    for row in rows {
+        let id = row["id"].as_str().ok_or("Missing request ID")?;
+        let mut value = row["value"].clone();
+        let key = copy_state_key(id);
+        let mut state = db::get(&tx, &key)?;
+        let rebuilt = if row["path"] == "/v2/sessions/copy" {
+            (|| {
+                if value["sourceSnapshot"].is_object() {
+                    redact_session_snapshot(&mut value["sourceSnapshot"])?;
+                }
+                if state["source"].is_object() {
+                    redact_session_snapshot(&mut state["source"])?;
+                }
+                Ok::<_, String>(())
+            })()
+        } else {
+            value
+                .get_mut("resource")
+                .map_or(Ok(()), redact_session_snapshot)
+        };
+        if rebuilt.is_err() {
+            tx.execute("DELETE FROM outbox WHERE id=?", [id])
+                .map_err(|error| error.to_string())?;
+            clear_session_copy(&tx, id)?;
+            if let Some(resource) = value["resourceId"].as_str() {
+                let mut binding = indexer::binding(&tx, resource)?;
+                if binding["copyRequest"] == id {
+                    binding["copyRequest"] = Value::Null;
+                    db::upsert(
+                        &tx,
+                        "bindings",
+                        resource,
+                        value["projectId"].as_str().ok_or("Missing project")?,
+                        &binding,
+                    )?;
+                }
+            }
+            continue;
+        }
+        if value != row["value"] {
+            // A redaction block from before the rebuild no longer applies.
+            let blocked = row["error"]
+                .as_str()
+                .is_some_and(|error| error.starts_with("422: Session upload blocked"));
+            tx.execute(
+                "UPDATE outbox SET value=?, error=CASE WHEN ? THEN NULL ELSE error END WHERE id=?",
+                params![value.to_string(), blocked, id],
+            )
+            .map_err(|error| error.to_string())?;
+        }
+        if state["source"].is_object() {
+            db::set(&tx, &key, &state)?;
+        }
+    }
+    db::set(&tx, OUTBOX_REDACTION_KEY, &json!(true))?;
+    tx.commit().map_err(|error| error.to_string())?;
+    Ok(())
+}
+
 pub(crate) fn acknowledge_session(
     db: &rusqlite::Connection,
     project: &str,
@@ -1329,6 +1426,7 @@ async fn sync_workspace(
         crate::repair::workspace(db)?;
         packages::recover_installations(db)?;
     }
+    rebuild_unredacted_outbox(db)?;
     let device = db::device(db)?;
     for binding in db::rows(
         db,
