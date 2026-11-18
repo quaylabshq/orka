@@ -10,7 +10,7 @@ import {
   type ProjectCall,
 } from "./project-permissions.js";
 
-function description(entry: ManagementLog) {
+function description(entry: ManagementLog): string {
   const actor = displayText(entry.actorName),
     subject = displayText(entry.subjectName ?? "a member");
   const category =
@@ -48,10 +48,14 @@ function description(entry: ManagementLog) {
       return `${actor} removed a source folder from the project`;
     case "invite.created":
       return `${actor} created a member invitation`;
+    case "invite.revoked":
+      return `${actor} revoked a member invitation`;
     case "access.granted":
       return `${actor} updated access for ${subject}`;
     case "env.replaced":
       return `${actor} replaced an ENV set`;
+    default:
+      return `${actor} updated the project`;
   }
 }
 export function ProjectLogs({ call }: { call: ProjectCall }) {
