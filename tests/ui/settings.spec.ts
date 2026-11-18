@@ -1476,7 +1476,9 @@ for (const role of ["owner", "admin"] as const)
       "2026-11-14T12:00:00Z",
     );
     await expect(pending.getByRole("combobox")).toHaveCount(0);
-    await expect(pending.getByRole("button")).toHaveCount(0);
+    await expect(pending.getByRole("button")).toHaveAccessibleName(
+      "Actions for invite to " + email,
+    );
     expect(
       (await new AxeBuilder({ page }).include(".settings-panel").analyze())
         .violations,

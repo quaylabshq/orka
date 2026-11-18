@@ -308,6 +308,7 @@ pub(crate) async fn cloud_action_scoped(
     let path = match action.as_str() {
         "create" => "/v2/projects",
         "invite" => "/v2/invites",
+        "revoke-invite" => "/v2/invites/revoke",
         "join" => "/v2/join",
         _ => return Err("Unknown project action".into()),
     };
