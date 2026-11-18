@@ -94,10 +94,10 @@ pub(crate) async fn api_at(
         )
     })?;
     if !status.is_success() {
-        return Err(format!(
-            "{}: {}",
+        return Err(SyncError::message(
             status.as_u16(),
-            value["error"].as_str().unwrap_or("Service unavailable")
+            &value,
+            "Service unavailable",
         ));
     }
     Ok(value)
@@ -127,10 +127,9 @@ pub(crate) async fn upload(owner: &str, project: &str, files: &[Value]) -> Resul
             .await
             .map_err(|_| "Blob upload failed; retry retained")?;
         if !response.status().is_success() {
-            return Err(format!(
-                "{}: Blob upload rejected",
-                response.status().as_u16()
-            ));
+            let status = response.status().as_u16();
+            let body = response.json().await.unwrap_or(Value::Null);
+            return Err(SyncError::message(status, &body, "Blob upload rejected"));
         }
     }
     Ok(())
@@ -1360,6 +1359,7 @@ struct SyncPass<'a> {
     mode: ProjectMode,
     device: Option<String>,
     blocked: HashSet<String>,
+    held: HashSet<String>,
     deferred: HashSet<Value>,
 }
 
@@ -1380,6 +1380,7 @@ impl<'a> SyncPass<'a> {
             },
             device: None,
             blocked: HashSet::new(),
+            held: HashSet::new(),
             deferred: HashSet::new(),
         }
     }
@@ -1530,7 +1531,6 @@ impl<'a> SyncPass<'a> {
         let db = &mut *self.db;
         let owner = self.owner;
         let retry_only = self.mode == ProjectMode::RetryOnly;
-        let blocked_projects = &mut self.blocked;
         if crate::projects::foreground_waiting()? {
             return Ok(Break(()));
         }
@@ -1538,11 +1538,6 @@ impl<'a> SyncPass<'a> {
             let id = p["id"].as_str().ok_or("Missing project")?;
             let result: Result<()> = async {
                 let local = crate::governance::project(db, id)?;
-                if !retry_only {
-                    crate::governance::localize_outbox(db, &local)?;
-                } else {
-                    crate::governance::block_legacy_retry(db, &local)?;
-                }
                 let catalog = api_as(
                     owner,
                     "POST",
@@ -1551,6 +1546,13 @@ impl<'a> SyncPass<'a> {
                 )
                 .await?;
                 db::set(db, &format!("governance:{id}"), &catalog)?;
+                // A lifecycle refusal must leave queued work unchanged. Only
+                // prepare legacy knowledge after current access is confirmed.
+                if !retry_only {
+                    crate::governance::localize_outbox(db, &local)?;
+                } else {
+                    crate::governance::block_legacy_retry(db, &local)?;
+                }
                 if !retry_only {
                     crate::context_sharing::approve_own_pending(db, owner, &local, &catalog)
                         .await?;
@@ -1558,14 +1560,27 @@ impl<'a> SyncPass<'a> {
                 Ok(())
             }
             .await;
-            if result.as_ref().is_err_and(|e| service_error(e)) {
-                return result.map(Continue);
-            }
-            if result.is_err() {
-                blocked_projects.insert(id.to_string());
-            }
-            record_result(db, &format!("{id}:permissions"), result)?;
+            return self.record_authorization(id, result);
         }
+        Ok(Continue(()))
+    }
+
+    fn record_authorization(&mut self, project: &str, result: Result<()>) -> Stage {
+        if result.as_ref().is_err_and(|e| service_error(e)) {
+            return result.map(Continue);
+        }
+        let result = if result.as_ref().is_err_and(|error| SyncError(error).holds()) {
+            // The catalog may have changed since the workspace refresh. Preserve
+            // pending work and wait quietly for the project to become active.
+            self.held.insert(project.to_string());
+            Ok(())
+        } else {
+            if result.is_err() {
+                self.blocked.insert(project.to_string());
+            }
+            result
+        };
+        record_result(self.db, &format!("{project}:permissions"), result)?;
         Ok(Continue(()))
     }
 
@@ -1575,8 +1590,9 @@ impl<'a> SyncPass<'a> {
         let db = &mut *self.db;
         let owner = self.owner;
         let deferred = &mut self.deferred;
+        let held = &mut self.held;
         let project = p["id"].as_str().ok_or("Missing project")?;
-        if self.blocked.contains(project) {
+        if self.blocked.contains(project) || held.contains(project) {
             return Ok(Continue(()));
         }
         let mut outbox = ProjectOutbox::open(db, project)?;
@@ -1709,11 +1725,12 @@ impl<'a> SyncPass<'a> {
                         outbox.advance(db, &q["sequence"])?;
                         continue;
                     }
-                    db.execute(
-                        "UPDATE outbox SET error=? WHERE id=?",
-                        params![error, q["id"].as_str()],
-                    )
-                    .map_err(|e| e.to_string())?;
+                    if outbox.fail(db, q, &error)? {
+                        // Archived or deleted: keep the row for a restore and let
+                        // the project's job back off without an error.
+                        held.insert(project.to_string());
+                        return Ok(Continue(()));
+                    }
                     if consolidation_pending(q, &error) || error.starts_with("Local upload: ") {
                         deferred.insert(q["id"].clone());
                     } else if terminal_error(&error) {
@@ -1746,7 +1763,9 @@ impl<'a> SyncPass<'a> {
         if crate::projects::foreground_waiting()? {
             return Ok(Break(()));
         }
-        if self.blocked.contains(p["id"].as_str().unwrap_or("")) {
+        if self.blocked.contains(p["id"].as_str().unwrap_or(""))
+            || self.held.contains(p["id"].as_str().unwrap_or(""))
+        {
             return Ok(Continue(()));
         }
         progress(
@@ -1775,6 +1794,11 @@ impl<'a> SyncPass<'a> {
             crate::projects::display_name(p).unwrap_or("Project"),
         )
         .await;
+        if result.as_ref().is_err_and(|error| SyncError(error).holds()) {
+            // Archived or deleted: hold the project's next attempt quietly.
+            self.held.insert(project.to_string());
+            return Ok(Continue(()));
+        }
         if result.as_ref().is_err_and(|e| service_error(e)) {
             return result.map(Continue);
         }
@@ -1889,6 +1913,10 @@ async fn sync_workspace(
         return Ok(WorkspaceSync::Yielded);
     }
     let selected = |project: &Value| project_filter.is_none_or(|id| project["id"] == id);
+    // Refresh the catalog before scanning, so a project that was archived or
+    // deleted meanwhile is not scanned one more time. A failed connection keeps
+    // its error for the end, because local work must not wait for the network.
+    let connected = pass.connect().await;
     let local = db::rows(
         pass.db,
         &format!(
@@ -1905,20 +1933,9 @@ async fn sync_workspace(
             return Ok(WorkspaceSync::Yielded);
         }
     }
-    if pass.connect().await?.is_break() {
+    if connected?.is_break() {
         return Ok(WorkspaceSync::Yielded);
     }
-    let local = db::rows(
-        pass.db,
-        &format!(
-            "SELECT value FROM projects WHERE {}",
-            crate::projects::ACTIVE
-        ),
-        &[],
-    )?
-    .into_iter()
-    .filter(selected)
-    .collect::<Vec<_>>();
     for p in &local {
         if pass.authorize(p).await?.is_break() {
             return Ok(WorkspaceSync::Yielded);
@@ -1940,7 +1957,7 @@ async fn sync_workspace(
         .query_row("SELECT EXISTS(SELECT 1 FROM errors)", [], |r| r.get(0))
         .map_err(|e| e.to_string())?;
     Ok(WorkspaceSync::Complete(
-        !pass.deferred.is_empty() || has_errors,
+        !pass.deferred.is_empty() || !pass.held.is_empty() || has_errors,
     ))
 }
 
@@ -2032,7 +2049,7 @@ async fn sync_job(db: &mut rusqlite::Connection, job: &crate::sync_queue::Job) -
         Outcome::Cancelled
     } else if flow.is_break() {
         Outcome::Yielded
-    } else if !pass.deferred.is_empty() || errors {
+    } else if !pass.deferred.is_empty() || !pass.held.is_empty() || errors {
         Outcome::Deferred
     } else {
         Outcome::Synced
@@ -2160,6 +2177,18 @@ impl<'p> ProjectOutbox<'p> {
         self.cursor = sequence.as_i64().unwrap_or(self.cursor);
         db::set(db, &self.cursor_key, sequence)
     }
+
+    /// Records a failed send. An archived or deleted project keeps its row with
+    /// no error, so a restore sends it again; every other failure is recorded.
+    fn fail(&self, db: &rusqlite::Connection, queued: &Value, error: &str) -> Result<bool> {
+        let held = SyncError(error).holds();
+        db.execute(
+            "UPDATE outbox SET error=? WHERE id=?",
+            params![(!held).then_some(error), queued["id"].as_str()],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(held)
+    }
 }
 
 fn select_uploads(queued: &[Value], cursor: i64) -> Vec<&Value> {
@@ -2183,12 +2212,97 @@ fn select_uploads(queued: &[Value], cursor: i64) -> Vec<&Value> {
     uploads
 }
 
-pub fn terminal_error(error: &str) -> bool {
-    let code = error
-        .split_once(':')
-        .and_then(|(s, _)| s.parse::<u16>().ok());
-    matches!(code, Some(400..=499)) && !matches!(code, Some(401 | 408 | 429))
+/// A failed response as the outbox records it: `"<status>: <message>"`, with the
+/// server's access `code` between the two when the response carries one.
+pub(crate) struct SyncError<'a>(&'a str);
+
+impl<'a> SyncError<'a> {
+    /// The codes that close a project to this Mac. Other endpoints send codes
+    /// too, so only these keep the extra token in the recorded message.
+    const ACCESS: [&'static str; 3] = ["project_archived", "project_deleted", "not_member"];
+
+    /// Formats a rejected response. An access code stays a leading token so a
+    /// project that is archived or deleted can be told apart from a caller's
+    /// error; every other code keeps the plain `"<status>: <message>"` shape.
+    fn message(status: u16, body: &Value, fallback: &str) -> String {
+        let message = body["error"].as_str().unwrap_or(fallback);
+        match body["code"]
+            .as_str()
+            .filter(|code| Self::ACCESS.contains(code))
+        {
+            Some(code) => format!("{status}: {code}: {message}"),
+            None => format!("{status}: {message}"),
+        }
+    }
+
+    fn status(&self) -> Option<u16> {
+        self.0
+            .split_once(':')
+            .and_then(|(status, _)| status.parse().ok())
+    }
+
+    /// The server's access code, when it reports one. Older servers send none,
+    /// so only the status and the message decide.
+    fn access(&self) -> Option<&'a str> {
+        let (_, rest) = self.0.split_once(": ")?;
+        let (code, _) = rest.split_once(": ")?;
+        Self::ACCESS.into_iter().find(|known| *known == code)
+    }
+
+    /// Work for an archived or deleted project is held, not failed: a restore
+    /// within the window sends it again.
+    fn holds(&self) -> bool {
+        matches!(self.access(), Some("project_archived" | "project_deleted"))
+    }
+
+    fn terminal(&self) -> bool {
+        matches!(self.status(), Some(400..=499)) && !matches!(self.status(), Some(401 | 408 | 429))
+    }
 }
+
+pub fn terminal_error(error: &str) -> bool {
+    SyncError(error).terminal()
+}
+
+/// The presence heartbeat: one post per active project, each one independent.
+struct Presence;
+
+impl Presence {
+    /// Every active project's presence body, with the sessions open on this Mac.
+    fn bodies(db: &rusqlite::Connection) -> Result<Vec<Value>> {
+        let device = db::device(db)?;
+        let mut bodies = Vec::new();
+        for p in db::rows(
+            db,
+            &format!(
+                "SELECT value FROM projects WHERE {}",
+                crate::projects::ACTIVE
+            ),
+            &[],
+        )? {
+            let project = p["id"].as_str().ok_or("Missing project")?;
+            let mut ids = Vec::new();
+            if crate::projects::sharing_allowed(&p, "session") {
+                for b in db::rows(db,"SELECT value FROM bindings WHERE project=? AND json_extract(value,'$.base.kind')='session'",&[&project])? {if let Some(id) = b["nativeId"].as_str() {if native::active(db,id,b["base"]["source"].as_str().unwrap_or("")){ids.push(b["base"]["resourceId"].clone());}}}
+            }
+            bodies.push(json!({"projectId":project,"deviceId":device,"sessions":ids}));
+        }
+        Ok(bodies)
+    }
+
+    /// Posts each body in turn. One project's failure says nothing about the
+    /// others, so presence moves on instead of stopping the heartbeat.
+    async fn send(bodies: Vec<Value>, post: impl AsyncFn(Value) -> Result<()>) -> Result<()> {
+        for body in bodies {
+            if crate::projects::foreground_waiting()? {
+                break;
+            }
+            let _ = post(body).await;
+        }
+        Ok(())
+    }
+}
+
 async fn heartbeat() -> Result<()> {
     if crate::projects::foreground_waiting()? {
         return Ok(());
@@ -2197,31 +2311,13 @@ async fn heartbeat() -> Result<()> {
     let db = db::open()?;
     let user = db::get(&db, "user")?;
     let owner = user.as_str().ok_or("Sign in required")?;
-    for p in db::rows(
-        &db,
-        &format!(
-            "SELECT value FROM projects WHERE {}",
-            crate::projects::ACTIVE
-        ),
-        &[],
-    )? {
-        if crate::projects::foreground_waiting()? {
-            return Ok(());
-        }
-        let project = p["id"].as_str().ok_or("Missing project")?;
-        let mut ids = Vec::new();
-        if crate::projects::sharing_allowed(&p, "session") {
-            for b in db::rows(&db,"SELECT value FROM bindings WHERE project=? AND json_extract(value,'$.base.kind')='session'",&[&project])?{if let Some(id)=b["nativeId"].as_str(){if native::active(&db,id,b["base"]["source"].as_str().unwrap_or("")){ids.push(b["base"]["resourceId"].clone());}}}
-        }
-        api_as(
-            owner,
-            "POST",
-            "/v2/presence",
-            Some(&json!({"projectId":project,"deviceId":db::device(&db)?,"sessions":ids})),
-        )
-        .await?;
-    }
-    Ok(())
+    let bodies = Presence::bodies(&db)?;
+    Presence::send(bodies, async |body| {
+        api_as(owner, "POST", "/v2/presence", Some(&body))
+            .await
+            .map(|_| ())
+    })
+    .await
 }
 pub(crate) fn foreground_enabled(db: &rusqlite::Connection) -> Result<bool> {
     let enabled = db::get(db, "background")?.as_bool().unwrap_or_else(|| {
@@ -2336,6 +2432,167 @@ async fn run_mode(foreground: bool) {
 #[cfg(test)]
 mod queue_tests {
     use super::*;
+
+    #[test]
+    fn archived_and_deleted_projects_hold_while_a_member_error_stays_terminal() {
+        for code in ["project_archived", "project_deleted"] {
+            let error = format!("403: {code}: Project is unavailable");
+            assert!(SyncError(&error).holds(), "{error}");
+            assert!(terminal_error(&error), "{error}");
+        }
+        for error in ["403: not_member: Not a member", "403: Forbidden"] {
+            assert!(!SyncError(error).holds(), "{error}");
+            assert!(terminal_error(error), "{error}");
+        }
+        // A service message that happens to look like a code is not one.
+        assert!(!SyncError("403: Project: deleted").holds());
+        // The formatted message keeps the status parsers working.
+        let reply = json!({"error":"Project is deleted","code":"project_deleted"});
+        let error = SyncError::message(403, &reply, "Service unavailable");
+        assert_eq!(error, "403: project_deleted: Project is deleted");
+        assert_eq!(SyncError(&error).status(), Some(403));
+        assert!(!service_error(&error));
+        let older = SyncError::message(403, &json!({"error":"Forbidden"}), "Rejected");
+        assert_eq!(older, "403: Forbidden");
+        assert!(terminal_error(&older));
+        // Other endpoints send codes too; they keep the plain message shape that
+        // the UI already parses.
+        let other = SyncError::message(
+            409,
+            &json!({"error":"Already invited","code":"already_member"}),
+            "Rejected",
+        );
+        assert_eq!(other, "409: Already invited");
+        assert_eq!(SyncError(&other).access(), None);
+        assert!(!SyncError(&other).holds());
+    }
+
+    #[tokio::test]
+    async fn governance_lifecycle_refusals_hold_pending_work_without_permission_errors() {
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("ORKA_TEST_HOME", home.path());
+        db::open().unwrap();
+        for code in ["project_archived", "project_deleted"] {
+            let (_root, mut db) = outbox_db(&["a"]);
+            enqueue(&db, "a", "memory");
+            let before = db::rows(&db, "SELECT value FROM outbox", &[]).unwrap();
+            record_result(
+                &db,
+                "a:permissions",
+                Err("403: stale permission error".into()),
+            )
+            .unwrap();
+            let mut pass = SyncPass::new(&mut db, "owner", None);
+            let error = format!("403: {code}: Project is unavailable");
+            assert!(pass
+                .record_authorization("a", Err(error))
+                .unwrap()
+                .is_continue());
+            assert!(pass.held.contains("a"));
+            assert!(!pass.blocked.contains("a"));
+            let project = json!({"id":"a"});
+            // No service configuration is available: these stages must skip the
+            // held project before trying any upload or pull.
+            assert!(pass.drain_outbox(&project).await.unwrap().is_continue());
+            assert!(pass.pull_project(&project).await.unwrap().is_continue());
+            assert_eq!(
+                db::rows(pass.db, "SELECT value FROM outbox", &[]).unwrap(),
+                before
+            );
+            assert!(
+                db::rows(pass.db, "SELECT json_quote(error) FROM errors", &[])
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+    }
+
+    #[test]
+    fn governance_member_refusals_and_outages_keep_their_existing_behavior() {
+        for error in ["403: not_member: Not a member", "403: Forbidden"] {
+            let (_root, mut db) = outbox_db(&["a"]);
+            let mut pass = SyncPass::new(&mut db, "owner", None);
+            assert!(pass
+                .record_authorization("a", Err(error.into()))
+                .unwrap()
+                .is_continue());
+            assert!(pass.blocked.contains("a"));
+            assert!(!pass.held.contains("a"));
+            assert_eq!(
+                db::rows(pass.db, "SELECT json_quote(error) FROM errors", &[]).unwrap(),
+                [json!(error)]
+            );
+            assert!(pass
+                .record_authorization("a", Ok(()))
+                .unwrap()
+                .is_continue());
+            assert!(
+                db::rows(pass.db, "SELECT json_quote(error) FROM errors", &[])
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        let (_root, mut db) = outbox_db(&["a"]);
+        let mut pass = SyncPass::new(&mut db, "owner", None);
+        assert_eq!(
+            pass.record_authorization("a", Err("503: Service unavailable".into()))
+                .unwrap_err(),
+            "503: Service unavailable"
+        );
+        assert!(pass.held.is_empty());
+        assert!(pass.blocked.is_empty());
+    }
+
+    #[test]
+    fn held_rows_keep_no_error_so_a_restore_sends_them_again() {
+        let (_root, db) = outbox_db(&["a"]);
+        enqueue(&db, "a", "memory");
+        let outbox = ProjectOutbox::open(&db, "a").unwrap();
+        let row = outbox.queued(&db).unwrap().remove(0);
+        let saved = || {
+            db.query_row("SELECT error FROM outbox", [], |r| {
+                r.get::<_, Option<String>>(0)
+            })
+            .unwrap()
+        };
+        for code in ["project_archived", "project_deleted"] {
+            db.execute("UPDATE outbox SET error='403: project_deleted: stale'", [])
+                .unwrap();
+            let error = format!("403: {code}: Project is unavailable");
+            assert!(outbox.fail(&db, &row, &error).unwrap(), "{error}");
+            // Held, not failed: the row stays queued for a restore.
+            assert_eq!(saved(), None);
+            assert_eq!(outbox.queued(&db).unwrap().len(), 1);
+        }
+        // A member-only refusal keeps today's terminal behaviour.
+        let error = "403: not_member: Not a member";
+        assert!(!outbox.fail(&db, &row, error).unwrap());
+        assert_eq!(saved().as_deref(), Some(error));
+        assert!(outbox.queued(&db).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_presence_heartbeat_continues_past_a_project_error() {
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("ORKA_TEST_HOME", home.path());
+        db::open().unwrap();
+        let bodies = ["a", "b", "c"]
+            .into_iter()
+            .map(|id| json!({"projectId":id}))
+            .collect();
+        let seen = std::sync::Mutex::new(Vec::new());
+        Presence::send(bodies, async |body| {
+            let id = body["projectId"].as_str().unwrap().to_string();
+            seen.lock().unwrap().push(id.clone());
+            if id == "a" {
+                return Err("403: project_deleted: Project is deleted".into());
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+        assert_eq!(*seen.lock().unwrap(), ["a", "b", "c"]);
+    }
 
     #[tokio::test]
     async fn a_cancelled_job_does_not_retry_a_late_job_error() {

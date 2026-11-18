@@ -494,6 +494,117 @@ fn archived_projects_keep_their_mapping_but_are_excluded_from_active_work() {
 }
 
 #[test]
+fn deleted_projects_leave_the_active_list_but_keep_their_row() {
+    let f = Fixture::new();
+    let id = f.project["id"].as_str().unwrap();
+    crate::projects::merge_catalog(
+        &f.db,
+        &json!([{"id":id,"name":"test","role":"member","lifecycleRevision":3}]),
+    )
+    .unwrap();
+    // A member sees a deleted project as {id, name, deletedAt, purgeAfter}.
+    crate::projects::merge_catalog(&f.db,&json!([{"id":id,"name":"test","deletedAt":"2026-01-01T00:00:00Z","purgeAfter":"2026-01-31T00:00:00Z"}])).unwrap();
+    let saved = db::rows(&f.db, "SELECT value FROM projects WHERE id=?", &[&id])
+        .unwrap()
+        .remove(0);
+    assert_eq!(saved["deletedAt"], "2026-01-01T00:00:00Z");
+    assert_eq!(saved["purgeAfter"], "2026-01-31T00:00:00Z");
+    // Its row, folders and lifecycle stay for a restore; it is not revoked.
+    assert!(saved["revoked"].is_null());
+    assert_eq!(saved["path"], f.project["path"]);
+    assert_eq!(saved["lifecycleRevision"], 3);
+    assert!(crate::projects::active(&f.db, id).is_err());
+    // A purged project keeps only its identity and deletion.
+    crate::projects::merge_catalog(
+        &f.db,
+        &json!([{"id":id,"deletedAt":"2026-01-01T00:00:00Z","purged":true}]),
+    )
+    .unwrap();
+    let saved = db::rows(&f.db, "SELECT value FROM projects WHERE id=?", &[&id])
+        .unwrap()
+        .remove(0);
+    assert_eq!(saved["purged"], true);
+    assert_eq!(saved["name"], "test");
+    assert!(crate::projects::active(&f.db, id).is_err());
+    // A restored project is active again and forgets the purge.
+    crate::projects::merge_catalog(
+        &f.db,
+        &json!([{"id":id,"name":"test","role":"member","lifecycleRevision":4}]),
+    )
+    .unwrap();
+    let saved = db::rows(&f.db, "SELECT value FROM projects WHERE id=?", &[&id])
+        .unwrap()
+        .remove(0);
+    assert!(saved["deletedAt"].is_null() && saved["purged"].is_null());
+    assert_eq!(saved["path"], f.project["path"]);
+    crate::projects::active(&f.db, id).unwrap();
+}
+
+#[test]
+fn a_restored_project_clears_the_errors_its_403_left() {
+    let f = Fixture::new();
+    let id = f.project["id"].as_str().unwrap();
+    let delete = || {
+        crate::projects::merge_catalog(&f.db,&json!([{"id":id,"deletedAt":"2026-01-01T00:00:00Z","purgeAfter":"2026-01-31T00:00:00Z"}])).unwrap()
+    };
+    let restore = |revision: i64| {
+        crate::projects::merge_catalog(
+            &f.db,
+            &json!([{"id":id,"name":"test","role":"member","lifecycleRevision":revision}]),
+        )
+        .unwrap()
+    };
+    let queued = |row: &str| {
+        f.db.query_row("SELECT error FROM outbox WHERE id=?", [row], |r| {
+            r.get::<_, Option<String>>(0)
+        })
+        .unwrap()
+    };
+    for (id, error) in [
+        ("refused", "403: project_deleted: Project is deleted"),
+        ("offline", "503: Service unavailable"),
+    ] {
+        f.db.execute(
+            "INSERT INTO outbox VALUES(?,?,'/v2/sync/push','{}',?)",
+            rusqlite::params![id, f.project["id"].as_str(), error],
+        )
+        .unwrap();
+    }
+    delete();
+    assert!(crate::projects::active(&f.db, id).is_err());
+    assert_eq!(
+        queued("refused"),
+        Some("403: project_deleted: Project is deleted".into())
+    );
+    restore(1);
+    crate::projects::active(&f.db, id).unwrap();
+    // The 403 row sends again; other errors keep their own meaning.
+    assert_eq!(queued("refused"), None);
+    assert_eq!(queued("offline"), Some("503: Service unavailable".into()));
+    // A project that comes back archived can still not send, so its 403 stays.
+    f.db.execute(
+        "UPDATE outbox SET error='403: project_deleted: Project is deleted' WHERE id='refused'",
+        [],
+    )
+    .unwrap();
+    delete();
+    crate::projects::merge_catalog(&f.db,&json!([{"id":id,"name":"test","role":"member","archivedAt":"2026-01-02T00:00:00Z","lifecycleRevision":2}])).unwrap();
+    assert!(crate::projects::active(&f.db, id).is_err());
+    assert_eq!(
+        queued("refused"),
+        Some("403: project_deleted: Project is deleted".into())
+    );
+    // Leaving the archive clears it then.
+    crate::projects::merge_catalog(
+        &f.db,
+        &json!([{"id":id,"name":"test","role":"member","archivedAt":null,"lifecycleRevision":3}]),
+    )
+    .unwrap();
+    crate::projects::active(&f.db, id).unwrap();
+    assert_eq!(queued("refused"), None);
+}
+
+#[test]
 fn project_owner_names_use_the_shared_name_and_members_keep_their_override() {
     let mut project = json!({"role":"owner","name":"Shared name","localName":"Old personal name"});
     assert_eq!(crate::projects::display_name(&project), Some("Shared name"));
