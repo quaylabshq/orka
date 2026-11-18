@@ -4,9 +4,10 @@ export type InactiveReason = "archived" | "deleted" | "purged" | "removed";
 
 /** Why a project stopped syncing, or null when it is active. */
 export function inactiveReason(project: Project): InactiveReason | null {
-  if (project.deletedAt) return project.purged ? "purged" : "deleted";
-  if (project.archivedAt) return "archived";
+  if (project.purged) return "purged";
   if (project.revoked || project.detachedAt) return "removed";
+  if (project.deletedAt) return "deleted";
+  if (project.archivedAt) return "archived";
   return null;
 }
 
@@ -62,10 +63,7 @@ export function inactiveMessage(project: Project): string {
   }
 }
 
-/** Removal warning: a restore cannot recreate drafts kept only on this Mac. */
-export function removalWarning(project: Project): string {
-  const reason = inactiveReason(project);
-  return reason === "archived" || reason === "deleted"
-    ? "Removing it here deletes its cached files and local drafts on this Mac. A later restore won’t bring those drafts back."
-    : "Removing it here deletes its cached files on this Mac. Your project folders stay on disk.";
+/** Local removal clears the reading cache and queue, while retaining drafts. */
+export function removalWarning(): string {
+  return "Export first to keep pending changes and private content. Removing this project clears its cached files and pending changes on this Mac. Saved local drafts and your project folders stay on disk.";
 }

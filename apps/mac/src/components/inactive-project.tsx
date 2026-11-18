@@ -68,7 +68,7 @@ export function InactiveProject({
           <Button
             size="sm"
             variant="tertiary"
-            disabled={busy}
+            disabled={busy || exporting}
             onClick={() => setConfirming(true)}
           >
             Remove from this Mac
@@ -83,38 +83,40 @@ export function InactiveProject({
       <p className="content-message">
         Nothing here syncs until this project is active again.
       </p>
-      <Overlay
-        open={confirming}
-        title="Remove from this Mac?"
-        className="settings-confirm"
-        onClose={() => {
-          if (!busy) setConfirming(false);
-        }}
-      >
-        <h2>Remove this project?</h2>
-        <p>{removalWarning(project)}</p>
-        <div className="settings-confirm-actions">
-          <Button disabled={busy} onClick={() => setConfirming(false)}>
-            Keep it
-          </Button>
-          <Button
-            variant="primary"
-            disabled={busy}
-            onClick={() => {
-              void run(
-                () =>
-                  invoke("project_command", {
-                    action: "remove",
-                    input: { projectId: project.id },
-                  }),
-                { successTitle: "Project removed from this Mac" },
-              ).then(() => setConfirming(false));
-            }}
-          >
-            Remove
-          </Button>
-        </div>
-      </Overlay>
+      {confirming && (
+        <Overlay
+          open
+          title="Remove from this Mac?"
+          className="settings-confirm"
+          onClose={() => {
+            if (!busy) setConfirming(false);
+          }}
+        >
+          <h2>Remove this project?</h2>
+          <p>{removalWarning()}</p>
+          <div className="settings-confirm-actions">
+            <Button disabled={busy} onClick={() => setConfirming(false)}>
+              Keep it
+            </Button>
+            <Button
+              variant="primary"
+              disabled={busy}
+              onClick={() => {
+                void run(
+                  () =>
+                    invoke("project_command", {
+                      action: "remove",
+                      input: { projectId: project.id },
+                    }),
+                  { successTitle: "Project removed from this Mac" },
+                ).then(() => setConfirming(false));
+              }}
+            >
+              Remove
+            </Button>
+          </div>
+        </Overlay>
+      )}
     </section>
   );
 }

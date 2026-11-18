@@ -1,6 +1,6 @@
 use crate::{
     db::{self, Result},
-    indexer, native, packages,
+    indexer, native, packages, sync,
 };
 use serde_json::{json, Value};
 use std::{
@@ -11,9 +11,12 @@ use std::{
 };
 use uuid::Uuid;
 
-/// Writes one zip of the project's cached resources and local drafts, so work
-/// left on this Mac survives removing the project. Local folders stay untouched.
+/// Writes the accepted, private and pending snapshots separately. A queued edit
+/// can be newer than both reading catalogs, and every version remains recoverable
+/// without changing a retry identity or touching the user's files.
 pub fn export_project(db: &rusqlite::Connection, project: &str, path: &Path) -> Result<()> {
+    let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
+    let db = &tx;
     let saved = db::rows(db, "SELECT value FROM projects WHERE id=?", &[&project])?
         .into_iter()
         .next()
@@ -28,7 +31,22 @@ pub fn export_project(db: &rusqlite::Connection, project: &str, path: &Path) -> 
         "SELECT value FROM drafts WHERE project=? ORDER BY id",
         &[&project],
     )?;
-    let header = json!({"version":1,"exportedAt":db::now(),"project":{"id":saved["id"],"name":crate::projects::display_name(&saved),"role":saved["role"]},"resources":resources.len(),"drafts":drafts.len()});
+    let mut local = Vec::new();
+    for kind in ["memory", "session", "plan"] {
+        local.extend(
+            crate::local_resources::cached_catalog(db, &saved, kind)?["resources"]
+                .as_array()
+                .ok_or("Invalid local resource catalog")?
+                .iter()
+                .cloned(),
+        );
+    }
+    let pending = db::rows(
+        db,
+        "SELECT json_object('id',id,'path',path,'value',json(value)) FROM outbox WHERE project=? ORDER BY rowid",
+        &[&project],
+    )?;
+    let header = json!({"version":1,"exportedAt":db::now(),"project":{"id":saved["id"],"name":crate::projects::display_name(&saved),"role":saved["role"]},"resources":resources.len(),"localResources":local.len(),"drafts":drafts.len(),"pendingChanges":pending.len()});
     let parent = path.parent().ok_or("Missing output parent")?;
     if !parent.is_dir() {
         return Err("Choose an existing folder for the export".into());
@@ -43,20 +61,55 @@ pub fn export_project(db: &rusqlite::Connection, project: &str, path: &Path) -> 
                 "resources/{}/",
                 r["resourceId"].as_str().ok_or("Missing resource")?
             );
-            write_json(&mut zip, &format!("{folder}resource.json"), r, options)?;
-            write_blobs(&mut zip, options, r, &folder)?;
-            // A session whose native files are gone still exports its cache.
-            let _ = write_transcript(&mut zip, options, r, &folder);
+            write_project_resource(&mut zip, options, r, &folder)?;
+        }
+        for r in &local {
+            let folder = format!(
+                "local-resources/{}/",
+                r["resourceId"].as_str().ok_or("Missing resource")?
+            );
+            write_project_resource(&mut zip, options, r, &folder)?;
         }
         for draft in &drafts {
             let folder = format!("drafts/{}/", draft["id"].as_str().ok_or("Missing draft")?);
             write_json(&mut zip, &format!("{folder}draft.json"), draft, options)?;
             write_blobs(&mut zip, options, &draft["resource"], &folder)?;
         }
+        for change in &pending {
+            let folder = format!(
+                "pending/{}/",
+                change["id"].as_str().ok_or("Missing request ID")?
+            );
+            write_json(&mut zip, &format!("{folder}request.json"), change, options)?;
+            let resource = if change["path"] == "/v2/sessions/copy" {
+                sync::queued_session_snapshot(db, &change["value"])?.ok_or(
+                    "The queued session snapshot is unavailable; keep this project on this Mac",
+                )?
+            } else if change["value"]["resource"]["files"].is_array() {
+                change["value"]["resource"].clone()
+            } else {
+                continue;
+            };
+            write_project_resource(&mut zip, options, &resource, &folder)?;
+        }
         zip.finish().map_err(|e| e.to_string())?;
     }
     staged.as_file().sync_all().map_err(|e| e.to_string())?;
     staged.persist(path).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn write_project_resource<W: Write + Seek>(
+    zip: &mut zip::ZipWriter<W>,
+    options: zip::write::SimpleFileOptions,
+    resource: &Value,
+    folder: &str,
+) -> Result<()> {
+    write_json(zip, &format!("{folder}resource.json"), resource, options)?;
+    write_blobs(zip, options, resource, folder)?;
+    // Original native histories may be unavailable; the cached manifest and
+    // bytes are still exported even if a readable transcript cannot be built.
+    let _ = write_transcript(zip, options, resource, folder);
     Ok(())
 }
 

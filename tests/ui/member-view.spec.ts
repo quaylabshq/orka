@@ -91,3 +91,36 @@ test("an inactive project explains the pause and offers export and removal", asy
     page.getByRole("heading", { name: "Home", exact: true }),
   ).toBeVisible();
 });
+
+test("cancelling local removal returns focus at the minimum viewport", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 900, height: 640 });
+  await memberViewFixture(page);
+  const projects = await openPicker(page);
+  await projects
+    .getByRole("option")
+    .filter({ hasText: "Deleted notes" })
+    .click();
+  const banner = page.locator(".inactive-project-banner");
+  const remove = banner.getByRole("button", {
+    name: "Remove from this Mac",
+    exact: true,
+  });
+  await expect(
+    banner.getByRole("button", { name: "Export", exact: true }),
+  ).toBeInViewport();
+  await expect(remove).toBeInViewport();
+  await remove.focus();
+  await page.keyboard.press("Enter");
+  const dialog = page.getByRole("dialog", {
+    name: "Remove from this Mac?",
+    exact: true,
+  });
+  await expect(
+    dialog.getByRole("button", { name: "Keep it", exact: true }),
+  ).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(remove).toBeFocused();
+});

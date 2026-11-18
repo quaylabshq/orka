@@ -68,6 +68,17 @@ test("each inactive state gets its own sidebar badge", () => {
   expect(inactiveMessage(project({ revoked: true }))).toContain(
     "Access to this project was removed",
   );
+  for (const previous of [archived, deleted]) {
+    expect(inactiveBadge({ ...previous, revoked: true })).toBe(
+      "Access removed",
+    );
+    expect(
+      inactiveMessage({ ...previous, detachedAt: "2026-02-01T00:00:00Z" }),
+    ).toContain("Access to this project was removed");
+  }
+  expect(inactiveBadge({ ...deleted, purged: true, revoked: true })).toBe(
+    "Deleted",
+  );
 });
 
 test("export writes the project to the path the user picks", async () => {
@@ -90,15 +101,18 @@ test("export writes the project to the path the user picks", async () => {
   expect(mocks.invoke).toHaveBeenCalledTimes(1);
 });
 
-test("removing from this Mac warns that drafts do not survive a restore", async () => {
+test("removing from this Mac explains export and retained local drafts", async () => {
   mocks.invoke.mockResolvedValue({ ok: true });
   const run = renderBanner(archived);
   fireEvent.click(screen.getByRole("button", { name: "Remove from this Mac" }));
   expect(
     screen.getByRole("heading", { name: "Remove this project?" }),
   ).toBeTruthy();
-  expect(screen.getByText(removalWarning(archived))).toBeTruthy();
-  expect(removalWarning(archived)).toContain("local drafts");
+  expect(screen.getByText(removalWarning())).toBeTruthy();
+  expect(removalWarning()).toContain("Export first");
+  expect(removalWarning()).toContain(
+    "Saved local drafts and your project folders stay on disk",
+  );
   fireEvent.click(screen.getByRole("button", { name: "Remove" }));
   await waitFor(() => expect(run).toHaveBeenCalledTimes(1));
   expect(mocks.invoke).toHaveBeenCalledWith("project_command", {
