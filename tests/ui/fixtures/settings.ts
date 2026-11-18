@@ -613,6 +613,17 @@ export async function settingsFixture(
                   args.action === "delete" ? "2026-02-01T00:00:00Z" : null,
               };
             }
+            if (args.action === "leave") {
+              if (options.queued)
+                throw new Error(
+                  "Sync queued changes and finish pending ENV publications before leaving this project",
+                );
+              Object.assign(project, {
+                revoked: true,
+                detachedAt: "2026-01-01T00:00:00Z",
+              });
+              return { ok: true };
+            }
             if (args.action === "archive") {
               projects.splice(
                 projects.findIndex((item) => item.id === args.input.projectId),

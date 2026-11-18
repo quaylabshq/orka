@@ -101,6 +101,8 @@ pub(crate) trait ProjectLifecycle {
     /// Detaches the project, then removes its local state. The user's files
     /// stay on disk.
     fn purge_local(&self, project: &str) -> Result<()>;
+    /// Ends this Mac's access but keeps the local copy as an inactive project.
+    fn leave(&self, project: &str) -> Result<()>;
 }
 
 impl ProjectLifecycle for Connection {
@@ -132,6 +134,10 @@ impl ProjectLifecycle for Connection {
     fn purge_local(&self, project: &str) -> Result<()> {
         self.detach_project(project)?;
         remove_local(self, project)
+    }
+
+    fn leave(&self, project: &str) -> Result<()> {
+        self.detach_project(project)
     }
 }
 
@@ -476,6 +482,24 @@ pub async fn project_command(action: String, input: Value) -> Result<Value> {
             }
             project["hidden"] = json!(false);
             db::upsert(&db, "projects", id, id, &project)?;
+        }
+        "leave" => {
+            active(&db, id)?;
+            if db.queued_changes(id)? {
+                return Err("Sync queued changes and finish pending ENV publications before leaving this project".into());
+            }
+            let expected = input["expectedPolicyRevision"]
+                .as_u64()
+                .ok_or("Refresh the project's membership and try again")?;
+            sync::api_as(
+                &owner,
+                "POST",
+                "/v2/governance/action",
+                Some(&json!({"action":"leave-project","input":{"projectId":id,"expectedPolicyRevision":expected}})),
+            )
+            .await?;
+            db.leave(id)?;
+            env::clear();
         }
         "archive" | "restore" | "delete" | "purge" | "rename" => {
             if action == "rename" {

@@ -17,7 +17,7 @@ export function restorableUntil(value?: string | null) {
   );
 }
 
-type Dialog = { kind: "delete" | "purge"; project: Project };
+type Dialog = { kind: "delete" | "purge" | "leave"; project: Project };
 
 export function SettingsDanger({
   project,
@@ -35,6 +35,7 @@ export function SettingsDanger({
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [typed, setTyped] = useState("");
   const [memberCount, setMemberCount] = useState<number | null>(null);
+  const [policyRevision, setPolicyRevision] = useState(0);
   const [dialogError, setDialogError] = useState("");
   const [sectionError, setSectionError] = useState("");
   const [notice, setNotice] = useState("");
@@ -46,16 +47,21 @@ export function SettingsDanger({
     setTyped("");
     setDialogError("");
     setMemberCount(kind === "delete" ? (members ?? null) : null);
-    if (kind !== "delete") return;
-    void invoke<{ members?: unknown[] }>("governance_command", {
-      action: "catalog",
-      input: { projectId: target.id },
-    })
+    setPolicyRevision(target.policyRevision ?? 0);
+    if (kind === "purge") return;
+    void invoke<{ members?: unknown[]; policyRevision?: number }>(
+      "governance_command",
+      { action: "catalog", input: { projectId: target.id } },
+    )
       .then((catalog) => {
-        if (Array.isArray(catalog.members))
+        if (kind === "delete" && Array.isArray(catalog.members))
           setMemberCount(catalog.members.length);
+        if (kind === "leave" && typeof catalog.policyRevision === "number")
+          setPolicyRevision(catalog.policyRevision);
       })
-      .catch(() => setMemberCount((count) => count ?? 1));
+      .catch(() => {
+        if (kind === "delete") setMemberCount((count) => count ?? 1);
+      });
   };
 
   const lifecycle = async (target: Project, action: "archive" | "restore") => {
@@ -82,39 +88,60 @@ export function SettingsDanger({
   };
 
   const submit = async () => {
-    if (!dialog || typed.trim() !== dialog.project.name || disabled) return;
+    if (!dialog || disabled) return;
+    const leaving = dialog.kind === "leave";
+    if (!leaving && typed.trim() !== dialog.project.name) return;
     const target = dialog;
     setDialogError("");
     setWorking(true);
     try {
       await run(() =>
         invoke("project_command", {
-          action: target.kind === "delete" ? "delete" : "purge",
-          input: {
-            projectId: target.project.id,
-            requestId: crypto.randomUUID(),
-            expectedRevision: target.project.lifecycleRevision ?? 0,
-            confirmation: typed.trim(),
-          },
+          action: leaving
+            ? "leave"
+            : target.kind === "delete"
+              ? "delete"
+              : "purge",
+          input: leaving
+            ? {
+                projectId: target.project.id,
+                expectedPolicyRevision: policyRevision,
+              }
+            : {
+                projectId: target.project.id,
+                requestId: crypto.randomUUID(),
+                expectedRevision: target.project.lifecycleRevision ?? 0,
+                confirmation: typed.trim(),
+              },
         }),
       );
       setDialog(null);
       setTyped("");
+      if (leaving) setNotice("You left the project.");
     } catch (error) {
-      setDialogError(errorText(error));
+      const message = errorText(error);
+      setDialogError(
+        leaving && message.includes("Transfer ownership before leaving")
+          ? `${message} Transfer ownership to another member from Members first.`
+          : message,
+      );
     } finally {
       setWorking(false);
     }
   };
 
   const matches = Boolean(
-    dialog && typed.trim() === dialog.project.name && !disabled,
+    dialog &&
+    !disabled &&
+    (dialog.kind === "leave" || typed.trim() === dialog.project.name),
   );
   const count = Math.max(1, memberCount ?? 1);
   const title =
-    dialog?.kind === "purge"
-      ? "Delete project permanently?"
-      : "Delete project?";
+    dialog?.kind === "leave"
+      ? "Leave project?"
+      : dialog?.kind === "purge"
+        ? "Delete project permanently?"
+        : "Delete project?";
 
   return (
     <>
@@ -122,46 +149,74 @@ export function SettingsDanger({
         <section className="settings-danger" aria-label="Danger zone">
           <div className="settings-danger-heading">
             <h3>Danger zone</h3>
-            <p>Changes here affect every member of this project.</p>
+            <p>
+              {project.role === "owner"
+                ? "Changes here affect every member of this project."
+                : "Changes here affect your access to this project."}
+            </p>
           </div>
-          <div className="settings-row">
-            <div>
-              <h3>
-                {project.archivedAt ? "Restore project" : "Archive project"}
-              </h3>
-              <p>
-                {project.archivedAt
-                  ? "Return this project to the workspace and resume its sync."
-                  : "Hide this project from the workspace and pause its sync."}
-              </p>
+          {project.role === "owner" ? (
+            <>
+              <div className="settings-row">
+                <div>
+                  <h3>
+                    {project.archivedAt ? "Restore project" : "Archive project"}
+                  </h3>
+                  <p>
+                    {project.archivedAt
+                      ? "Return this project to the workspace and resume its sync."
+                      : "Hide this project from the workspace and pause its sync."}
+                  </p>
+                </div>
+                <Button
+                  size="sm"
+                  disabled={disabled}
+                  onClick={() =>
+                    void lifecycle(
+                      project,
+                      project.archivedAt ? "restore" : "archive",
+                    )
+                  }
+                >
+                  {project.archivedAt ? "Restore project" : "Archive project"}
+                </Button>
+              </div>
+              <div className="settings-row">
+                <div>
+                  <h3>Delete project</h3>
+                  <p>
+                    Remove it for all members. It can be restored for 30 days.
+                  </p>
+                </div>
+                <Button
+                  size="sm"
+                  className="management-danger"
+                  disabled={disabled}
+                  onClick={() => open("delete", project)}
+                >
+                  Delete project
+                </Button>
+              </div>
+            </>
+          ) : (
+            <div className="settings-row">
+              <div>
+                <h3>Leave project</h3>
+                <p>
+                  Lose access to this project on this Mac. The project and its
+                  other members stay as they are.
+                </p>
+              </div>
+              <Button
+                size="sm"
+                className="management-danger"
+                disabled={disabled}
+                onClick={() => open("leave", project)}
+              >
+                Leave project
+              </Button>
             </div>
-            <Button
-              size="sm"
-              disabled={disabled}
-              onClick={() =>
-                void lifecycle(
-                  project,
-                  project.archivedAt ? "restore" : "archive",
-                )
-              }
-            >
-              {project.archivedAt ? "Restore project" : "Archive project"}
-            </Button>
-          </div>
-          <div className="settings-row">
-            <div>
-              <h3>Delete project</h3>
-              <p>Remove it for all members. It can be restored for 30 days.</p>
-            </div>
-            <Button
-              size="sm"
-              className="management-danger"
-              disabled={disabled}
-              onClick={() => open("delete", project)}
-            >
-              Delete project
-            </Button>
-          </div>
+          )}
         </section>
       )}
       {deletedProjects.length > 0 && (
@@ -211,7 +266,13 @@ export function SettingsDanger({
           }}
         >
           <h2>{title}</h2>
-          {dialog.kind === "delete" ? (
+          {dialog.kind === "leave" ? (
+            <p>
+              Leave “{dialog.project.name}”? You’ll lose access to its shared
+              content on this Mac. The project and its other members stay as
+              they are.
+            </p>
+          ) : dialog.kind === "delete" ? (
             <p>
               {memberCount === null
                 ? "Counting who will lose access."
@@ -224,17 +285,19 @@ export function SettingsDanger({
               Delete “{dialog.project.name}” permanently? This can’t be undone.
             </p>
           )}
-          <TextField
-            label="Project name"
-            autoFocus
-            value={typed}
-            disabled={working}
-            hint={`Type ${dialog.project.name} to confirm.`}
-            onChange={(event) => {
-              setTyped(event.target.value);
-              setDialogError("");
-            }}
-          />
+          {dialog.kind !== "leave" && (
+            <TextField
+              label="Project name"
+              autoFocus
+              value={typed}
+              disabled={working}
+              hint={`Type ${dialog.project.name} to confirm.`}
+              onChange={(event) => {
+                setTyped(event.target.value);
+                setDialogError("");
+              }}
+            />
+          )}
           {dialogError && <p role="alert">{dialogError}</p>}
           <div className="settings-confirm-actions">
             <Button disabled={working} onClick={() => setDialog(null)}>
@@ -247,7 +310,11 @@ export function SettingsDanger({
               onClick={() => void submit()}
             >
               {working && <ActivityIndicator />}
-              {dialog.kind === "delete" ? "Delete project" : "Delete now"}
+              {dialog.kind === "leave"
+                ? "Leave project"
+                : dialog.kind === "delete"
+                  ? "Delete project"
+                  : "Delete now"}
             </Button>
           </div>
         </Overlay>

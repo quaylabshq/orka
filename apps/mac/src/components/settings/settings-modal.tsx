@@ -876,15 +876,14 @@ export const SettingsModal = forwardRef<
             {notice && <p role="status">{notice}</p>}
           </fieldset>
           {section === "general" &&
-            (project?.role === "owner" ||
-              (state.deletedProjects?.length ?? 0) > 0) && (
+            (project || (state.deletedProjects?.length ?? 0) > 0) && (
               <SettingsDanger
-                project={
-                  projectUnavailable || project?.role !== "owner"
-                    ? undefined
-                    : project
+                project={projectUnavailable ? undefined : project}
+                deletedProjects={
+                  project && project.role !== "owner"
+                    ? []
+                    : (state.deletedProjects ?? [])
                 }
-                deletedProjects={state.deletedProjects ?? []}
                 members={projectMembers}
                 busy={busy}
                 run={workspaceRun}
