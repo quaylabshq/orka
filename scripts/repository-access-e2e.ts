@@ -353,7 +353,9 @@ try {
     operation: "remove-source",
     input: { projectId, sourceId },
   });
-  assert.deepEqual(catalogRequests, ["/v2/projects?includeArchived=true"]);
+  assert.deepEqual(catalogRequests, [
+    "/v2/projects?includeArchived=true&projectLifecycle=1",
+  ]);
   const savedArchived = JSON.parse(
     String(
       connection
