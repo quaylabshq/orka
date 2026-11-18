@@ -243,6 +243,28 @@ test("missing deadlines never fabricate a restore date", () => {
   expect(restorableUntil("invalid")).toBeNull();
 });
 
+test("a failed member lookup keeps the account-wide consequence accurate", async () => {
+  renderDanger({
+    project,
+    command: async (name) => {
+      if (name === "governance_command") throw new Error("Offline");
+      return { softDelete: 1, projectRestoreWindowDays: 7 };
+    },
+  });
+  const deleting = screen.getByRole("button", { name: "Delete project" });
+  await waitFor(() =>
+    expect((deleting as HTMLButtonElement).disabled).toBe(false),
+  );
+  fireEvent.click(deleting);
+  const dialog = await screen.findByRole("dialog");
+  await waitFor(() =>
+    expect(dialog.textContent).toContain(
+      "All members of this project will lose access.",
+    ),
+  );
+  expect(dialog.textContent).not.toContain("The 1 member");
+});
+
 test("archived owner projects can be restored without an active project", async () => {
   renderDanger({
     archivedProjects: [{ ...project, archivedAt: "2026-01-01T00:00:00Z" }],
@@ -259,4 +281,40 @@ test("archived owner projects can be restored without an active project", async 
       },
     }),
   );
+});
+
+test("deletion stays disabled until the service confirms support", async () => {
+  let confirmSupport: (value: unknown) => void = () => {};
+  const capability = new Promise((resolve) => {
+    confirmSupport = resolve;
+  });
+  renderDanger({ project, command: async () => capability });
+  const deleting = screen.getByRole("button", { name: "Delete project" });
+  expect((deleting as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.getByText(/Checking deletion support/)).toBeTruthy();
+  confirmSupport({ softDelete: 1, projectRestoreWindowDays: 7 });
+  await waitFor(() =>
+    expect((deleting as HTMLButtonElement).disabled).toBe(false),
+  );
+});
+
+test("failed capability checks can be retried before deletion", async () => {
+  let attempts = 0;
+  renderDanger({
+    project,
+    command: async () => {
+      if (attempts++ === 0) throw new Error("Offline");
+      return { softDelete: 1, projectRestoreWindowDays: 7 };
+    },
+  });
+  const deleting = screen.getByRole("button", { name: "Delete project" });
+  await screen.findByText(/Could not check project deletion support/);
+  expect((deleting as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: /^Retry$/ }));
+  await waitFor(() =>
+    expect((deleting as HTMLButtonElement).disabled).toBe(false),
+  );
+  expect(
+    screen.queryByText(/Could not check project deletion support/),
+  ).toBeNull();
 });

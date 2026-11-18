@@ -248,6 +248,8 @@ mod plan_tests;
 mod plugin_connection_tests;
 #[path = "plugin_operations_tests.rs"]
 mod plugin_operations_tests;
+#[path = "project_conflict_tests.rs"]
+mod project_conflict_tests;
 #[path = "project_export_tests.rs"]
 mod project_export_tests;
 #[path = "repository_tests.rs"]

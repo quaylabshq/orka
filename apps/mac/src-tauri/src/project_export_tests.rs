@@ -153,3 +153,159 @@ fn project_export_keeps_the_selected_legacy_session_copy_snapshot() {
     assert_eq!(f.outbox(), before);
     assert_eq!(db::get(&f.db, &state_key).unwrap(), copy_before);
 }
+
+fn session_conflict(f: &Fixture, label: &str, author: &str) -> Value {
+    let resource = session_snapshot(f, "Current cached version", 7);
+    let mut candidate = session_snapshot(f, label, 5);
+    candidate["resourceId"] = resource["resourceId"].clone();
+    db::upsert(
+        &f.db,
+        "resources",
+        resource["resourceId"].as_str().unwrap(),
+        f.project["id"].as_str().unwrap(),
+        &resource,
+    )
+    .unwrap();
+    let conflict = json!({"id":uuid::Uuid::new_v4().to_string(),"resourceId":resource["resourceId"],"author":author,"candidate":candidate});
+    db::upsert(
+        &f.db,
+        "conflicts",
+        conflict["id"].as_str().unwrap(),
+        f.project["id"].as_str().unwrap(),
+        &conflict,
+    )
+    .unwrap();
+    conflict
+}
+
+fn session_snapshot(f: &Fixture, text: &str, revision: i64) -> Value {
+    let id = uuid::Uuid::new_v4().to_string();
+    let bytes = native::encode(&[
+        json!({"type":"user","uuid":uuid::Uuid::new_v4().to_string(),"message":{"role":"user","content":text}}),
+    ]);
+    json!({"resourceId":id,"projectId":f.project["id"],"kind":"session","source":"claude","logicalPath":format!("claude/{id}"),"title":text,"files":[{"path":"session.jsonl","hash":db::blob(&bytes).unwrap(),"size":bytes.len(),"executable":false}],"deleted":false,"revision":revision,"owner":db::get(&f.db,"user").unwrap()})
+}
+
+#[test]
+fn project_export_preserves_cached_conflict_versions_while_inactive() {
+    for deleted in [false, true] {
+        let f = Fixture::new();
+        let project = f.project["id"].as_str().unwrap();
+        let conflict = session_conflict(
+            &f,
+            "Cached rejected conversation",
+            &uuid::Uuid::new_v4().to_string(),
+        );
+        let mut saved = f.project.clone();
+        saved["archivedAt"] = json!("2026-11-19T00:00:00Z");
+        if deleted {
+            saved["deletedAt"] = json!("2026-11-19T00:00:00Z");
+        }
+        db::upsert(&f.db, "projects", project, project, &saved).unwrap();
+        assert!(
+            f.outbox().is_empty(),
+            "The rejected upload is already acknowledged"
+        );
+        let path = f.root.join("project.zip");
+        bundles::export_project(&f.db, project, &path).unwrap();
+        let mut zip = zip::ZipArchive::new(fs::File::open(path).unwrap()).unwrap();
+        assert_eq!(header(&mut zip)["conflicts"], 1);
+        let prefix = format!("conflicts/{}/", conflict["id"].as_str().unwrap());
+        let exported: Value =
+            serde_json::from_slice(&blob(&mut zip, &format!("{prefix}conflict.json"))).unwrap();
+        assert_eq!(exported, conflict);
+        let hash = conflict["candidate"]["files"][0]["hash"].as_str().unwrap();
+        assert_eq!(
+            blob(&mut zip, &format!("{prefix}blobs/{hash}")),
+            db::blob_read(hash).unwrap()
+        );
+        assert_eq!(
+            db::rows(&f.db, "SELECT value FROM conflicts", &[]).unwrap(),
+            vec![conflict]
+        );
+    }
+}
+
+#[test]
+fn project_export_after_detach_contains_only_preserved_private_conflicts() {
+    let f = Fixture::new();
+    let project = f.project["id"].as_str().unwrap();
+    let user = db::get(&f.db, "user").unwrap();
+    let own = session_conflict(&f, "My rejected conversation", user.as_str().unwrap());
+    let foreign = session_conflict(
+        &f,
+        "Teammate rejected conversation",
+        &uuid::Uuid::new_v4().to_string(),
+    );
+    crate::projects::merge_catalog(&f.db, &json!([])).unwrap();
+    let path = f.root.join("project.zip");
+    bundles::export_project(&f.db, project, &path).unwrap();
+    let mut zip = zip::ZipArchive::new(fs::File::open(path).unwrap()).unwrap();
+    assert_eq!(header(&mut zip)["conflicts"], 0);
+    assert_eq!(header(&mut zip)["drafts"], 1);
+    let own_hash = own["candidate"]["files"][0]["hash"].as_str().unwrap();
+    let foreign_hash = foreign["candidate"]["files"][0]["hash"].as_str().unwrap();
+    let names = (0..zip.len())
+        .map(|i| zip.by_index(i).unwrap().name().unwrap().to_string())
+        .collect::<Vec<_>>();
+    assert!(names
+        .iter()
+        .any(|name| name.starts_with("drafts/") && name.ends_with(own_hash)));
+    assert!(!names
+        .iter()
+        .any(|name| name.starts_with("conflicts/") || name.ends_with(foreign_hash)));
+}
+
+#[test]
+fn project_export_keeps_a_frozen_resolution_after_newer_remote_state() {
+    for selected in ["current", "candidate"] {
+        let f = Fixture::new();
+        let project = f.project["id"].as_str().unwrap();
+        let conflict = session_conflict(
+            &f,
+            "Selected rejected version",
+            &uuid::Uuid::new_v4().to_string(),
+        );
+        let current = f.resources()[0].clone();
+        crate::commands::session_action(
+            current["resourceId"].as_str().unwrap().into(),
+            "override".into(),
+            Some(conflict["id"].as_str().unwrap().into()),
+            Some(selected.into()),
+        )
+        .unwrap();
+        let request = f.outbox()[0].clone();
+        let source = if selected == "current" {
+            &current
+        } else {
+            &conflict["candidate"]
+        };
+        let mut latest = session_snapshot(&f, "Newer accepted conversation", 8);
+        latest["resourceId"] = current["resourceId"].clone();
+        db::upsert(
+            &f.db,
+            "resources",
+            latest["resourceId"].as_str().unwrap(),
+            project,
+            &latest,
+        )
+        .unwrap();
+        f.db.execute("DELETE FROM conflicts", []).unwrap();
+        let mut saved = f.project.clone();
+        saved["archivedAt"] = json!("2026-11-19T00:00:00Z");
+        db::upsert(&f.db, "projects", project, project, &saved).unwrap();
+        let path = f.root.join("project.zip");
+        bundles::export_project(&f.db, project, &path).unwrap();
+        let mut zip = zip::ZipArchive::new(fs::File::open(path).unwrap()).unwrap();
+        let prefix = format!("pending/{}/", request["id"].as_str().unwrap());
+        let exported: Value =
+            serde_json::from_slice(&blob(&mut zip, &format!("{prefix}resource.json"))).unwrap();
+        assert_eq!(exported["files"], source["files"]);
+        let hash = source["files"][0]["hash"].as_str().unwrap();
+        assert_eq!(
+            blob(&mut zip, &format!("{prefix}blobs/{hash}")),
+            db::blob_read(hash).unwrap()
+        );
+        assert_eq!(f.outbox(), vec![request]);
+    }
+}

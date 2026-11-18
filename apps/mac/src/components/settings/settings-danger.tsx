@@ -32,6 +32,7 @@ export function SettingsDanger({
   members,
   busy,
   run,
+  onComplete,
 }: {
   project?: Project;
   deletedProjects?: Project[];
@@ -40,6 +41,7 @@ export function SettingsDanger({
   members: number | null;
   busy: boolean;
   run: (action: () => Promise<unknown>) => Promise<unknown>;
+  onComplete?: (message?: string) => void;
 }) {
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [typed, setTyped] = useState("");
@@ -105,9 +107,8 @@ export function SettingsDanger({
         if (kind === "leave" && typeof catalog.policyRevision === "number")
           setPolicyRevision(catalog.policyRevision);
       })
-      .catch(() => {
-        if (kind === "delete") setMemberCount((count) => count ?? 1);
-      });
+      // Membership counts are optional; never fabricate a team size.
+      .catch(() => {});
   };
 
   const lifecycle = async (target: Project, action: "archive" | "restore") => {
@@ -126,6 +127,7 @@ export function SettingsDanger({
         }),
       );
       setNotice(`Project ${action === "archive" ? "archived" : "restored"}.`);
+      onComplete?.();
     } catch (error) {
       setSectionError(errorText(error));
     } finally {
@@ -164,7 +166,11 @@ export function SettingsDanger({
       );
       setDialog(null);
       setTyped("");
-      if (leaving) setNotice("You left the project.");
+      onComplete?.(
+        leaving
+          ? "You left the project. Your account no longer has access on any device."
+          : undefined,
+      );
     } catch (error) {
       const message = errorText(error);
       setDialogError(
@@ -183,7 +189,7 @@ export function SettingsDanger({
     (dialog.kind === "leave" ||
       (typed.trim() === dialog.project.name && supportsDelete)),
   );
-  const count = Math.max(1, memberCount ?? 1);
+  const count = memberCount !== null && memberCount > 0 ? memberCount : null;
   const title =
     dialog?.kind === "leave"
       ? "Leave project?"
@@ -370,8 +376,8 @@ export function SettingsDanger({
             </p>
           ) : dialog.kind === "delete" ? (
             <p>
-              {memberCount === null
-                ? "Counting who will lose access."
+              {count === null
+                ? "All members of this project will lose access."
                 : `The ${count} ${count === 1 ? "member" : "members"} of this project will lose access.`}{" "}
               {restorePromise}
             </p>

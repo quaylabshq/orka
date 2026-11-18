@@ -882,6 +882,10 @@ export const SettingsModal = forwardRef<
               members={projectMembers}
               busy={busy}
               run={workspaceRun}
+              onComplete={(message) => {
+                request({ section: "projects", projectId });
+                if (message) setNotice(message);
+              }}
             />
           )}
           {section === "projects" && (
@@ -900,6 +904,7 @@ export const SettingsModal = forwardRef<
                 members={null}
                 busy={busy}
                 run={workspaceRun}
+                onComplete={() => request({ section: "projects", projectId })}
               />
             </>
           )}
