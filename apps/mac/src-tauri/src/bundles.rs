@@ -46,7 +46,17 @@ pub fn export_project(db: &rusqlite::Connection, project: &str, path: &Path) -> 
         "SELECT json_object('id',id,'path',path,'value',json(value)) FROM outbox WHERE project=? ORDER BY rowid",
         &[&project],
     )?;
-    let header = json!({"version":1,"exportedAt":db::now(),"project":{"id":saved["id"],"name":crate::projects::display_name(&saved),"role":saved["role"]},"resources":resources.len(),"localResources":local.len(),"drafts":drafts.len(),"pendingChanges":pending.len()});
+    let conflicts =
+        if saved["revoked"] == true || saved["purged"] == true || saved["detachedAt"].is_string() {
+            Vec::new()
+        } else {
+            db::rows(
+                db,
+                "SELECT value FROM conflicts WHERE project=? ORDER BY id",
+                &[&project],
+            )?
+        };
+    let header = json!({"version":1,"exportedAt":db::now(),"project":{"id":saved["id"],"name":crate::projects::display_name(&saved),"role":saved["role"]},"resources":resources.len(),"localResources":local.len(),"drafts":drafts.len(),"pendingChanges":pending.len(),"conflicts":conflicts.len()});
     let parent = path.parent().ok_or("Missing output parent")?;
     if !parent.is_dir() {
         return Err("Choose an existing folder for the export".into());
@@ -75,13 +85,29 @@ pub fn export_project(db: &rusqlite::Connection, project: &str, path: &Path) -> 
             write_json(&mut zip, &format!("{folder}draft.json"), draft, options)?;
             write_blobs(&mut zip, options, &draft["resource"], &folder)?;
         }
+        for conflict in &conflicts {
+            let folder = format!(
+                "conflicts/{}/",
+                conflict["id"].as_str().ok_or("Missing conflict ID")?
+            );
+            write_json(
+                &mut zip,
+                &format!("{folder}conflict.json"),
+                conflict,
+                options,
+            )?;
+            write_project_resource(&mut zip, options, &conflict["candidate"], &folder)?;
+        }
         for change in &pending {
             let folder = format!(
                 "pending/{}/",
                 change["id"].as_str().ok_or("Missing request ID")?
             );
             write_json(&mut zip, &format!("{folder}request.json"), change, options)?;
-            let resource = if change["path"] == "/v2/sessions/copy" {
+            let resource = if matches!(
+                change["path"].as_str(),
+                Some("/v2/sessions/copy" | "/v2/sessions/resolve")
+            ) {
                 sync::queued_session_snapshot(db, &change["value"])?.ok_or(
                     "The queued session snapshot is unavailable; keep this project on this Mac",
                 )?
