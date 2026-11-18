@@ -9,12 +9,10 @@
   "packages": [
     {
       "name": "@portable/protocol",
-      "version": "0.7.2-invite-revoked",
-      "file": "portable-protocol-0.7.2-invite-revoked.tgz",
-      "sha256": "028982ab656de9839b4de81d4a25b861f630bee83535ac99580ad25e8a57b471",
-      "integrity": "sha512-XduALpZbELTO2S29hD8U/AHzo4/h/sllJJm5E2MGA5gj/46+T7I4zuvGNT9mYRiwsDUDgFpoTHbdRczM95SSuw=="
+      "version": "0.7.2",
+      "file": "portable-protocol-0.7.2.tgz",
+      "sha256": "401172d80d0af958eef5fa0570b06bf70dd14c27d0f6321017864b3dc412af71",
+      "integrity": "sha512-cQYZ47IlYXHirb27vSRe97VXIQJGtapg4x5VDNbRzY+lZmsRQA6e2XQLyNb3e+1Czkai0JwVWxnW6v2g00X55Q=="
     }
-  ],
-  "candidate": true,
-  "sourceTreeSha256": "40b9fb1a2f234a7ff10e62057f24cb4c007d25eae8bde9ee07d20df376256452"
+  ]
 }

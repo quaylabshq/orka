@@ -57,7 +57,7 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@portable/protocol": "file:vendor/portable-protocol-0.7.2-invite-revoked.tgz"
+    "@portable/protocol": "file:vendor/portable-protocol-0.7.2.tgz"
   },
   "overrides": {
     "@typescript-eslint/typescript-estree": {

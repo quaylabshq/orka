@@ -10,7 +10,12 @@ import {
   type ProjectCall,
 } from "./project-permissions.js";
 
-function description(entry: ManagementLog): string {
+// Newer servers can send invite.revoked before the vendored protocol includes it.
+function description(
+  entry: Omit<ManagementLog, "action"> & {
+    action: ManagementLog["action"] | "invite.revoked";
+  },
+): string {
   const actor = displayText(entry.actorName),
     subject = displayText(entry.subjectName ?? "a member");
   const category =
