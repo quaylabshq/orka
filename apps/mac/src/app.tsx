@@ -1134,6 +1134,7 @@ function WorkspaceApp({
             run={(action) => void act(action)}
             sharing={setup.sharing}
             onSharingChange={setup.setSharing}
+            invite={setup.invite}
             busy={busy}
             error={error}
             onChange={setup.setInput}

@@ -10,6 +10,7 @@ import {
   parseProjectInvite,
   sameServiceUrl,
 } from "./project-invite.js";
+import { useInvitePreview } from "./use-invite-preview.js";
 import { useToastNotice } from "./toasts.js";
 import { useSourceFolders } from "./source-folders.js";
 
@@ -59,13 +60,17 @@ export function useProjectSetup(
   const selection = useSourceFolders();
   const [sharing, setSharing] = useState<ProjectSharing>(defaultSharing);
   let inviteService: string | undefined;
+  let inviteToken = "";
   if (dialog === "join") {
     try {
-      inviteService = parseProjectInvite(input).serviceUrl;
+      const invite = parseProjectInvite(input);
+      inviteService = invite.serviceUrl;
+      inviteToken = invite.token;
     } catch {
       // Partial input is validated when the form is submitted.
     }
   }
+  const invitePreview = useInvitePreview(inviteToken, inviteService ?? "");
   const serviceMismatch = Boolean(
     inviteService && apiUrl && !sameServiceUrl(inviteService, apiUrl),
   );
@@ -156,6 +161,7 @@ export function useProjectSetup(
     selection,
     sharing,
     inviteService,
+    invite: invitePreview,
     serviceMismatch,
     setSharing,
     show,
