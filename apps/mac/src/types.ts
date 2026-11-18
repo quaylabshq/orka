@@ -106,6 +106,8 @@ export interface Snapshot {
   projects: Project[];
   /** Archived, deleted, or unreachable projects that stay visible as read-only. */
   inactive?: Project[];
+  deletedProjects?: Project[];
+  archivedProjects?: Project[];
   resources: ProjectResource[];
   bindings: Binding[];
   conflicts: SessionConflict[];

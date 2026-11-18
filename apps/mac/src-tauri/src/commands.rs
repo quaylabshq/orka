@@ -61,6 +61,16 @@ pub fn snapshot() -> Result<Value> {
             project["folderState"] = json!(crate::sources::folder_state(project));
         }
     }
+    let deleted_projects = db::rows(
+        &db,
+        "SELECT value FROM projects WHERE coalesce(json_extract(value,'$.revoked'),0)=0 AND json_extract(value,'$.role')='owner' AND json_extract(value,'$.deletedAt') IS NOT NULL AND coalesce(json_extract(value,'$.purged'),0)=0 AND json_extract(value,'$.detachedAt') IS NULL ORDER BY json_extract(value,'$.name')",
+        &[],
+    )?;
+    let archived_projects = db::rows(
+        &db,
+        "SELECT value FROM projects WHERE coalesce(json_extract(value,'$.revoked'),0)=0 AND json_extract(value,'$.role')='owner' AND json_extract(value,'$.archivedAt') IS NOT NULL AND json_extract(value,'$.deletedAt') IS NULL AND coalesce(json_extract(value,'$.purged'),0)=0 AND json_extract(value,'$.detachedAt') IS NULL ORDER BY json_extract(value,'$.name')",
+        &[],
+    )?;
     let mut local_skills = Vec::new();
     for project in &projects {
         for source in crate::sources::views(project) {
@@ -81,7 +91,7 @@ pub fn snapshot() -> Result<Value> {
     Ok(json!({
         "profile":crate::profiles::current(), "onboarding":onboarding, "accountProfile":db::get(&db,"accountProfile")?,
         "user":db::get(&db,"user")?, "config":db::get(&db,"config")?,
-        "projects":projects, "inactive":inactive, "localSkills":local_skills,
+        "projects":projects, "inactive":inactive, "deletedProjects":deleted_projects, "archivedProjects":archived_projects, "localSkills":local_skills,
         "managedProjects":db::rows(&db,"SELECT json_set(value,'$.pendingChanges',(SELECT count(*) FROM outbox WHERE project=projects.id)+(SELECT count(*) FROM meta WHERE ? AND key LIKE 'env:%:pending:%' AND json_extract(value,'$.sourceRemoval') IS NULL AND json_extract(value,'$.header.manifest.projectId')=projects.id)) FROM projects ORDER BY json_extract(value,'$.name')",&[&crate::env::enabled()])?,
         "resources":resources, "bindings":scoped("bindings")?, "conflicts":scoped("conflicts")?,
         "drafts":scoped("drafts")?,
@@ -336,7 +346,7 @@ pub(crate) async fn cloud_action_scoped(
         db::upsert(&db, "projects", id, id, &project)?;
         // Creation has succeeded. A catalog outage must not lose consent or ask
         // the user to create the same project again; sync will refresh it later.
-        if let Ok(list) = sync::api("GET", "/v2/projects?includeArchived=true", None).await {
+        if let Ok(list) = sync::api("GET", crate::projects::CATALOG_PATH, None).await {
             projects::merge_catalog(&db, &list)?;
         }
         let current = db::rows(&db, "SELECT value FROM projects WHERE id=?", &[&id])?
