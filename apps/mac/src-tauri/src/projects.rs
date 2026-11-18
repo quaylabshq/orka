@@ -11,7 +11,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub const ACTIVE: &str = "coalesce(json_extract(value,'$.revoked'),0)=0 AND coalesce(json_extract(value,'$.hidden'),0)=0 AND json_extract(value,'$.archivedAt') IS NULL";
+pub const ACTIVE: &str = "coalesce(json_extract(value,'$.revoked'),0)=0 AND coalesce(json_extract(value,'$.hidden'),0)=0 AND json_extract(value,'$.archivedAt') IS NULL AND json_extract(value,'$.deletedAt') IS NULL";
 
 pub fn display_name(project: &Value) -> Option<&str> {
     if project["role"] == "owner" {
@@ -190,6 +190,23 @@ pub fn merge_catalog(db: &Connection, remote: &Value) -> Result<()> {
             .into_iter()
             .next()
             .unwrap_or(json!({}));
+        if !item["deletedAt"].is_null() {
+            // A deleted project arrives as a reduced row, without its sources or
+            // lifecycle revision. Keep the local copy so a restore keeps its
+            // folders, and record only the deletion markers.
+            let mut project = old.clone();
+            project["id"] = item["id"].clone();
+            for key in ["name", "deletedAt", "purgeAfter", "purged"] {
+                if !item[key].is_null() {
+                    project[key] = item[key].clone();
+                }
+            }
+            if old["id"].is_null() {
+                project["sharing"] = json!(Sharing::default());
+            }
+            db::upsert(&tx, "projects", id, id, &project)?;
+            continue;
+        }
         if item["lifecycleRevision"].as_u64().unwrap_or(0)
             < old["lifecycleRevision"].as_u64().unwrap_or(0)
         {
@@ -231,6 +248,14 @@ pub fn merge_catalog(db: &Connection, remote: &Value) -> Result<()> {
             project["sharing"] = json!(Sharing::default());
         }
         db::upsert(&tx, "projects", id, id, &project)?;
+        // A restored project sends again what its 403 stopped.
+        if !old["deletedAt"].is_null() || !old["archivedAt"].is_null() {
+            tx.execute(
+                "UPDATE outbox SET error=NULL WHERE project=? AND error LIKE '403:%'",
+                [id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
     }
     for mut project in db::rows(&tx, "SELECT value FROM projects", &[])? {
         if !remote.iter().any(|p| p["id"] == project["id"]) {
