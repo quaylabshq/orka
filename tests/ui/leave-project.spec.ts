@@ -47,6 +47,12 @@ test("a member sees Leave project and can confirm it without typing", async ({
       ),
     )
     .toMatchObject({ args: { input: { expectedPolicyRevision: 1 } } });
+  await expect(
+    settings.getByRole("heading", { name: "Projects", exact: true }),
+  ).toBeFocused();
+  await expect(settings.getByRole("status")).toContainText(
+    "Your account no longer has access on any device.",
+  );
 });
 
 test("a refused leave keeps its message in the open dialog", async ({
