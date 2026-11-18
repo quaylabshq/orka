@@ -16,6 +16,7 @@ import { ProjectSharingChoices } from "./project-sharing.js";
 import { SegmentedControl } from "./segmented-control.js";
 import type { ProjectSharing } from "../types.js";
 import { SourceFolders, type useSourceFolders } from "./source-folders.js";
+import { joinErrorMessage } from "./project-invite.js";
 
 export type ProjectSetupMode = "create" | "join";
 
@@ -171,7 +172,7 @@ export function ProjectSetupDialog({
           {error && (
             <div className="setup-error" role="alert">
               <TriangleAlertIcon size={16} aria-hidden="true" />
-              <span>{error}</span>
+              <span>{creating ? error : joinErrorMessage(error)}</span>
             </div>
           )}
         </div>

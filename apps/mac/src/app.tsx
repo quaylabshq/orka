@@ -218,6 +218,7 @@ function WorkspaceApp({
     setError,
     state.config?.apiUrl,
     (id) => setRepositorySetup(id),
+    state.projects,
   );
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const reducedMotion = useReducedMotion();
