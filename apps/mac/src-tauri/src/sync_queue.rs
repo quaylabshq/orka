@@ -61,7 +61,12 @@ fn outage(error: &str) -> bool {
     let code = error
         .split_once(':')
         .and_then(|(code, _)| code.parse::<u16>().ok());
-    error == "Cloud unavailable; local work stays queued" || matches!(code, Some(408 | 500..=599))
+    matches!(
+        error,
+        "Cloud unavailable; local work stays queued"
+            | "Blob upload failed; retry retained"
+            | "Blob download failed"
+    ) || matches!(code, Some(408 | 500..=599))
 }
 
 fn sql(result: rusqlite::Result<usize>) -> Result<()> {
@@ -564,6 +569,54 @@ mod tests {
         assert!(rows(&db)
             .iter()
             .all(|job| job.not_before >= 60_003 && job.attempts == 2));
+    }
+
+    #[test]
+    fn blob_transport_failures_hold_existing_and_new_background_work() {
+        for error in ["Blob upload failed; retry retained", "Blob download failed"] {
+            let (_root, db) = queue_db(&[]);
+            let mut queue = SyncQueue::new(0);
+            let interval = interval();
+            for project in ["a", "b"] {
+                SyncQueue::enqueue(&db, project, Priority::Local, "local", 0).unwrap();
+            }
+            let job = SyncQueue::claim(&db, 0).unwrap().unwrap();
+            queue
+                .settle(&db, job, &Err(error.into()), 0, &interval)
+                .unwrap();
+            let held_until = rows(&db)[0].not_before;
+            SyncQueue::enqueue(&db, "c", Priority::Local, "indexer", 1).unwrap();
+            let jobs = rows(&db);
+            assert_eq!(jobs.len(), 3);
+            assert!(
+                jobs.iter()
+                    .all(|job| job.not_before == held_until && job.attempts == 1),
+                "{error}: {jobs:?}"
+            );
+            assert_eq!(SyncQueue::next(&db, held_until - 1).unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn authentication_and_rate_limit_failures_keep_per_project_backoff() {
+        for error in ["401: Sign in required", "429: Rate limited"] {
+            let (_root, db) = queue_db(&[]);
+            let mut queue = SyncQueue::new(0);
+            let interval = interval();
+            for project in ["a", "b"] {
+                SyncQueue::enqueue(&db, project, Priority::Local, "local", 0).unwrap();
+            }
+            let job = SyncQueue::claim(&db, 0).unwrap().unwrap();
+            queue
+                .settle(&db, job, &Err(error.into()), 0, &interval)
+                .unwrap();
+            SyncQueue::enqueue(&db, "c", Priority::Local, "indexer", 1).unwrap();
+            assert!(db::get(&db, OUTAGE).unwrap().is_null(), "{error}");
+            let jobs = rows(&db);
+            assert!(jobs[0].not_before >= 30_000, "{error}: {jobs:?}");
+            assert_eq!((jobs[1].not_before, jobs[2].not_before), (0, 1));
+            assert_eq!(SyncQueue::next(&db, 0).unwrap().unwrap().project, "b");
+        }
     }
 
     #[test]
