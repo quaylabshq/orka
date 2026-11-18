@@ -137,30 +137,36 @@ export function SyncMenu({
     attention.historyRequests.length +
     attention.historyDrafts.length +
     attention.activity.length;
-  const status = !running
+  const waitingStatus = waiting.length
+    ? waiting.every((entry) => entry.state === "waiting")
+      ? "Waiting to retry"
+      : "Sync queued"
+    : null;
+  const visibleStatus = !running
     ? "Sync stopped"
-    : connected
-      ? "Sync running"
-      : "Sync offline";
-  const visibleStatus = stopping
-    ? "Stopping…"
-    : hasActivity
-      ? "Syncing…"
-      : placement === "header" && connected
-        ? attention.outbox.some((item) => !item.error)
-          ? "Changes pending"
-          : count
-            ? "Needs attention"
-            : state.sync?.lastSync
-              ? "Up to date"
-              : "Connected"
-        : status;
+    : stopping
+      ? "Stopping…"
+      : hasActivity
+        ? "Syncing…"
+        : (waitingStatus ??
+          (attention.outbox.some((item) => !item.error)
+            ? "Changes pending"
+            : !connected && state.sync?.online === false
+              ? "Sync offline"
+              : count
+                ? "Needs attention"
+                : connected
+                  ? state.sync?.lastSync
+                    ? "Up to date"
+                    : "Connected"
+                  : "Waiting to connect"));
   const label = `${visibleStatus}${count ? `, ${count} ${count === 1 ? "notification" : "notifications"}` : ""}`;
   const compactStatus: Record<string, string> = {
     "Changes pending": "Pending",
     "Needs attention": "Attention",
     "Sync stopped": "Stopped",
     "Sync offline": "Offline",
+    "Sync queued": "Queued",
   };
   const leave = (action: () => void) => {
     setOpen(false);
@@ -330,17 +336,7 @@ export function SyncMenu({
           ) : (
             <div className="sync-menu-status">
               <strong role="status">
-                {!running
-                  ? "Background sync stopped"
-                  : count
-                    ? "Needs attention"
-                    : waiting.length
-                      ? waiting.every((entry) => entry.state === "waiting")
-                        ? "Waiting to retry"
-                        : "Sync queued"
-                      : connected
-                        ? "Up to date"
-                        : "Waiting to sync"}
+                {!running ? "Background sync stopped" : visibleStatus}
               </strong>
               <div className="sync-menu-actions">
                 {running ? (

@@ -61,6 +61,7 @@ function menu(
 ) {
   return (
     <SyncMenu
+      placement="header"
       state={snapshot}
       attention={review}
       busy={false}
@@ -107,6 +108,46 @@ test("the panel identifies its scope and keeps an idle queue compact", () => {
   expect(screen.getByRole("button", { name: "Sync now" })).toBeTruthy();
   expect(document.querySelector(".sync-queue-row")).toBeNull();
   expect(screen.queryByRole("progressbar")).toBeNull();
+});
+
+test("pending uploads cannot be presented as up to date", () => {
+  const outbox: Snapshot["outbox"] = [
+    { id: "pending", project: "one", error: null },
+  ];
+  render(menu([], { ...state, outbox }, vi.fn(), { ...attention, outbox }));
+  expect(document.querySelector(".sync-menu-status")?.textContent).toContain(
+    "Changes pending",
+  );
+  expect(document.querySelector(".sync-status")?.textContent).toBe("Pending");
+  expect(screen.queryByText("Up to date", { exact: true })).toBeNull();
+});
+
+test("queued projects give the overview and trigger the same queued state", () => {
+  render(menu([entry("two")]));
+  expect(document.querySelector(".sync-menu-status")?.textContent).toContain(
+    "Sync queued",
+  );
+  expect(document.querySelector(".sync-status")?.textContent).toBe("Queued");
+  expect(screen.queryByText("Up to date", { exact: true })).toBeNull();
+});
+
+test("waiting retries give the overview and trigger the same waiting state", () => {
+  render(
+    menu([
+      entry("three", {
+        state: "waiting",
+        attempts: 2,
+        notBefore: new Date(Date.now() + 120_000).toISOString(),
+      }),
+    ]),
+  );
+  expect(document.querySelector(".sync-menu-status")?.textContent).toContain(
+    "Waiting to retry",
+  );
+  expect(document.querySelector(".sync-status")?.textContent).toBe(
+    "Waiting to retry",
+  );
+  expect(screen.queryByText("Up to date", { exact: true })).toBeNull();
 });
 
 test("active project progress belongs to its row above the waiting projects", () => {
