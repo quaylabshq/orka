@@ -9,6 +9,7 @@ mod commands;
 mod context_sharing;
 mod db;
 mod device_metadata;
+mod doctor;
 mod env;
 mod global_skills;
 mod governance;
@@ -35,6 +36,7 @@ mod selective_sharing;
 mod session_forks;
 mod session_launcher;
 mod session_presentation;
+mod session_redaction;
 mod session_translation;
 mod settings;
 mod settings_lifecycle;
@@ -63,6 +65,9 @@ fn main() {
             std::process::exit(1);
         }
     };
+    if args.get(1).is_some_and(|a| a == "--orka-doctor") {
+        std::process::exit(doctor::Doctor::run());
+    }
     #[cfg(debug_assertions)]
     if args.get(1).is_some_and(|a| a == "--orka-env-test") {
         env::test_support::run();

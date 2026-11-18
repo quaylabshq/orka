@@ -1,13 +1,21 @@
 import { ChevronRightIcon, EllipsisIcon } from "lucide-react";
-import React, { useRef } from "react";
+import React, { useRef, useState } from "react";
 import * as ContextMenu from "@radix-ui/react-context-menu";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { IconButton } from "./icon-button.js";
+import type { IconGlyph } from "./icons.js";
+import { hasNativeTextMenu } from "../hooks/use-web-view-menu-policy.js";
 import "./item-menu.css";
+
+/** The most top-level entries one item menu should show. */
+export const ITEM_MENU_CAP = 8;
 
 export interface ItemMenuAction {
   id: string;
   label: string;
+  icon?: IconGlyph;
+  /** Actions in one group sit together; a separator divides two groups. */
+  group?: string;
   onSelect: () => void;
   disabled?: boolean;
   reason?: string;
@@ -17,21 +25,36 @@ export interface ItemMenuAction {
   restoreFocus?: boolean;
 }
 
-export function hasNativeTextMenu(target: EventTarget | null) {
-  if (!(target instanceof Element)) return false;
-  if (
-    target.closest(
-      'input, textarea, [contenteditable]:not([contenteditable="false"]), a[href], [data-native-context-menu]',
-    )
-  )
-    return true;
-  const selection = window.getSelection();
-  return Boolean(
-    selection &&
-    !selection.isCollapsed &&
-    selection.anchorNode &&
-    (target.contains(selection.anchorNode) ||
-      selection.containsNode(target, true)),
+/** Whether a separator goes above each action. */
+function separators(actions: ItemMenuAction[]) {
+  let group: string | undefined;
+  return actions.map((action, index) => {
+    const changed =
+      action.group !== undefined &&
+      group !== undefined &&
+      action.group !== group;
+    group = action.group ?? group;
+    return index > 0 && (Boolean(action.separator) || changed);
+  });
+}
+
+function ActionLabel({
+  action,
+  iconSlot,
+}: {
+  action: ItemMenuAction;
+  iconSlot: boolean;
+}) {
+  return (
+    <>
+      {action.icon ? (
+        <action.icon className="item-menu-icon" size={16} aria-hidden />
+      ) : (
+        // Keeps labels aligned when only some actions have an icon.
+        iconSlot && <span className="item-menu-icon" aria-hidden />
+      )}
+      <span className="item-menu-label">{action.label}</span>
+    </>
   );
 }
 
@@ -45,9 +68,11 @@ function MenuItems({
   onSelect: (action: ItemMenuAction) => void;
 }) {
   const Menu = contextual ? ContextMenu : DropdownMenu;
-  return actions.map((action) => (
+  const separated = separators(actions);
+  const iconSlot = actions.some((action) => action.icon);
+  return actions.map((action, index) => (
     <React.Fragment key={action.id}>
-      {action.separator && <Menu.Separator className="item-menu-separator" />}
+      {separated[index] && <Menu.Separator className="item-menu-separator" />}
       {action.children?.length ? (
         <Menu.Sub>
           <Menu.SubTrigger
@@ -55,7 +80,7 @@ function MenuItems({
             disabled={action.disabled}
             title={action.reason}
           >
-            {action.label}
+            <ActionLabel action={action} iconSlot={iconSlot} />
             <ChevronRightIcon size={14} aria-hidden="true" />
           </Menu.SubTrigger>
           <Menu.Portal>
@@ -85,11 +110,48 @@ function MenuItems({
             action.onSelect();
           }}
         >
-          {action.label}
+          <ActionLabel action={action} iconSlot={iconSlot} />
         </Menu.Item>
       )}
     </React.Fragment>
   ));
+}
+
+/**
+ * Native macOS menus swallow the click that dismisses them. Radix's modal mode
+ * would too, but it also hides the rest of the window from assistive
+ * technology, so the menus stay non-modal and drop that one click instead.
+ */
+function swallowDismissingClick() {
+  let timer = 0;
+  const stop = (event: Event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    disarm();
+  };
+  // WebKit sends a press's click in the same task as its pointerup, so a timer
+  // started there runs after that click. A right-click has no click, and the
+  // timer still clears the guard before anything else can be activated.
+  const settle = () => {
+    window.clearTimeout(timer);
+    timer = window.setTimeout(disarm);
+  };
+  const listeners = {
+    click: stop,
+    pointerup: settle,
+    pointercancel: settle,
+    // A press whose pointerup never arrives, for example one released
+    // outside the window, ends at the next press or key.
+    pointerdown: disarm,
+    keydown: disarm,
+  };
+  function disarm() {
+    window.clearTimeout(timer);
+    for (const [type, listener] of Object.entries(listeners))
+      document.removeEventListener(type, listener, true);
+  }
+  for (const [type, listener] of Object.entries(listeners))
+    document.addEventListener(type, listener, true);
 }
 
 export function ItemContextMenu({
@@ -105,18 +167,30 @@ export function ItemContextMenu({
 }) {
   const trigger = useRef<HTMLSpanElement>(null);
   const selected = useRef(false);
+  const [open, setOpen] = useState(false);
   if (!actions.length) return children;
   return (
     <ContextMenu.Root
       modal={false}
-      onOpenChange={(open) => {
-        if (open) selected.current = false;
+      onOpenChange={(value) => {
+        setOpen(value);
+        if (value) selected.current = false;
       }}
     >
       <ContextMenu.Trigger
         asChild
         ref={trigger}
         disabled={disabled}
+        // Not data-state: a trigger such as the project picker carries its own.
+        data-item-menu-open={open ? "" : undefined}
+        onClickCapture={(event) => {
+          // Control-click is a secondary click on macOS, but WebKit still
+          // follows it with a click. Keep that click from opening the item.
+          if (event.ctrlKey) {
+            event.preventDefault();
+            event.stopPropagation();
+          }
+        }}
         onContextMenuCapture={(event) => {
           if (hasNativeTextMenu(event.target)) event.stopPropagation();
         }}
@@ -148,6 +222,7 @@ export function ItemContextMenu({
           className="item-menu-content"
           aria-label={label}
           collisionPadding={10}
+          onPointerDownOutside={swallowDismissingClick}
           onClick={(event) => event.stopPropagation()}
           onKeyDown={(event) => event.stopPropagation()}
           onCloseAutoFocus={(event) => {
@@ -213,6 +288,7 @@ export function ItemMenuButton({
           align="end"
           sideOffset={5}
           collisionPadding={10}
+          onPointerDownOutside={swallowDismissingClick}
           onClick={(event) => event.stopPropagation()}
           onKeyDown={(event) => event.stopPropagation()}
           onCloseAutoFocus={(event) => {

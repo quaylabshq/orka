@@ -61,7 +61,7 @@ struct Launcher {
 
     private static func launch(_ installation: Installation, arguments: [String]) throws {
         let command = arguments.dropFirst(arguments.first == "--profile" ? 2 : 0).first
-        let headless = ["--orka-agent", "--orka-plugin", "--orka-sync", "--orka-hook", "--orka-context", "--orka-env-test", "--orka-test"].contains(command ?? "")
+        let headless = ["--orka-agent", "--orka-plugin", "--orka-sync", "--orka-doctor", "--orka-hook", "--orka-context", "--orka-env-test", "--orka-test"].contains(command ?? "")
         if headless {
             try replaceProcess(with: installation.desktopExecutable, arguments: arguments)
         }

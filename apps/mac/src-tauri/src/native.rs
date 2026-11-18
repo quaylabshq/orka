@@ -440,7 +440,10 @@ fn transcript_title(records: &[Value]) -> String {
     records
         .iter()
         .filter_map(session_translation::user_text)
-        .find_map(|text| crate::session_presentation::request_text(&text))
+        .find_map(|text| {
+            let redacted = crate::session_redaction::SessionRedactor::text(&text);
+            crate::session_presentation::request_text(&redacted)
+        })
         .unwrap_or_else(|| "Imported session".into())
 }
 pub fn transcript_messages(records: &[Value]) -> Vec<Value> {
@@ -571,48 +574,172 @@ pub fn fork_session(db: &rusqlite::Connection, project: &Value, resource: &Value
     materialize(db, project, &fork, &Value::Null)
 }
 
-pub fn install_hooks(project: &Path) -> Result<()> {
-    let base = project.canonicalize().map_err(|e| e.to_string())?;
-    let executable = crate::updates::executable().map_err(|e| e.to_string())?;
-    let quote = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
-    for (tool, file) in [
+#[derive(Debug, PartialEq, Eq)]
+pub enum HookState {
+    Configured,
+    Missing,
+    Partial,
+    WrongProfile,
+    WrongExecutable,
+    Malformed,
+    Unreadable,
+}
+#[derive(Debug)]
+pub struct HookFileStatus {
+    pub tool: &'static str,
+    pub file: PathBuf,
+    pub state: HookState,
+}
+#[derive(Debug)]
+pub struct HookStatus {
+    pub files: [HookFileStatus; 2],
+}
+pub struct Hooks;
+impl Hooks {
+    const FILES: [(&'static str, &'static str); 2] = [
         ("claude", ".claude/settings.local.json"),
         ("codex", ".codex/hooks.json"),
-    ] {
-        let path = base.join(file);
-        packages::safe_directory(&base, path.parent().ok_or("Missing parent")?)?;
-        let mut cfg: Value = if path.exists() {
-            serde_json::from_slice(&fs::read(&path).map_err(|e| e.to_string())?)
-                .map_err(|e| e.to_string())?
-        } else {
-            json!({})
-        };
-        if !cfg.is_object() {
-            return Err("Hook config must be an object".into());
-        }
-        if cfg["hooks"].is_null() {
-            cfg["hooks"] = json!({});
-        }
-        for event in ["SessionStart", "UserPromptSubmit", "Stop", "SessionEnd"] {
-            let mut list = cfg["hooks"][event].as_array().cloned().unwrap_or_default();
-            list.retain(|v| {
-                !v.to_string().contains("--orka-hook")
-                    && !v.to_string().contains("--workspace-hook")
-            });
-            list.push(json!({"hooks":[{"type":"command","command":format!("{} --profile {} --orka-hook {tool}",quote(&executable.to_string_lossy()),quote(crate::profiles::current())),"timeout":3}]}));
-            cfg["hooks"][event] = json!(list);
-        }
-        let backup = path.with_extension("json.orka-backup");
-        if path.exists() && !backup.exists() {
-            fs::copy(&path, backup).map_err(|e| e.to_string())?;
-        }
-        db::atomic(
-            &path,
-            &serde_json::to_vec_pretty(&cfg).map_err(|e| e.to_string())?,
-        )?;
+    ];
+    const EVENTS: [&'static str; 4] = ["SessionStart", "UserPromptSubmit", "Stop", "SessionEnd"];
+    const FLAG: &'static str = "--orka-hook";
+
+    fn quote(value: &str) -> String {
+        format!("'{}'", value.replace('\'', "'\\''"))
     }
-    Ok(())
+    fn command(executable: &Path, tool: &str) -> String {
+        format!(
+            "{} --profile {} {} {tool}",
+            Self::quote(&executable.to_string_lossy()),
+            Self::quote(crate::profiles::current()),
+            Self::FLAG
+        )
+    }
+    fn parts<'a>(hook: &'a Value, tool: &str) -> Option<(&'a str, &'a str)> {
+        if hook["type"] != "command" {
+            return None;
+        }
+        let command = hook["command"].as_str()?;
+        let prefix = [Self::FLAG, "--workspace-hook"]
+            .into_iter()
+            .find_map(|flag| command.strip_suffix(&format!(" {flag} {tool}")))?;
+        let (executable, profile) = prefix.rsplit_once(" --profile ").unwrap_or((prefix, ""));
+        let literal = executable.strip_prefix("'/")?.strip_suffix('\'')?;
+        (!literal.replace("'\\''", "").contains('\'')).then_some((executable, profile))
+    }
+    pub fn install(root: &Path) -> Result<()> {
+        let base = root.canonicalize().map_err(|e| e.to_string())?;
+        let executable = crate::updates::executable().map_err(|e| e.to_string())?;
+        for HookFileStatus {
+            tool,
+            file: path,
+            state,
+        } in Self::inspect(&base)?.files
+        {
+            packages::safe_directory(&base, path.parent().ok_or("Missing parent")?)?;
+            if state == HookState::Configured {
+                continue;
+            }
+            let mut cfg: Value = if path.exists() {
+                serde_json::from_slice(&fs::read(&path).map_err(|e| e.to_string())?)
+                    .map_err(|e| e.to_string())?
+            } else {
+                json!({})
+            };
+            if !cfg.is_object() || (!cfg["hooks"].is_null() && !cfg["hooks"].is_object()) {
+                return Err("Hook config must be an object".into());
+            }
+            if cfg["hooks"].is_null() {
+                cfg["hooks"] = json!({});
+            }
+            for event in Self::EVENTS {
+                let mut list = cfg["hooks"][event].as_array().cloned().unwrap_or_default();
+                list.retain_mut(|group| {
+                    let Some(hooks) = group.get_mut("hooks").and_then(Value::as_array_mut) else {
+                        return true;
+                    };
+                    let before = hooks.len();
+                    hooks.retain(|hook| Self::parts(hook, tool).is_none());
+                    hooks.len() == before || !hooks.is_empty()
+                });
+                list.push(json!({"hooks":[{"type":"command","command":Self::command(&executable, tool),"timeout":3}]}));
+                cfg["hooks"][event] = json!(list);
+            }
+            let backup = path.with_extension("json.orka-backup");
+            if path.exists() && !backup.exists() {
+                fs::copy(&path, backup).map_err(|e| e.to_string())?;
+            }
+            db::atomic(
+                &path,
+                &serde_json::to_vec_pretty(&cfg).map_err(|e| e.to_string())?,
+            )?;
+        }
+        Ok(())
+    }
+    pub fn inspect(root: &Path) -> Result<HookStatus> {
+        let executable = crate::updates::executable().map_err(|e| e.to_string())?;
+        Ok(HookStatus {
+            files: Self::FILES.map(|(tool, file)| {
+                let file = root.join(file);
+                let state = match fs::read(&file) {
+                    Ok(bytes) => serde_json::from_slice::<Value>(&bytes)
+                        .map_or(HookState::Malformed, |cfg| {
+                            Self::state(&cfg, &executable, tool)
+                        }),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        HookState::Missing
+                    }
+                    Err(_) => HookState::Unreadable,
+                };
+                HookFileStatus { tool, file, state }
+            }),
+        })
+    }
+    fn state(cfg: &Value, executable: &Path, tool: &str) -> HookState {
+        if !cfg.is_object() || (!cfg["hooks"].is_null() && !cfg["hooks"].is_object()) {
+            return HookState::Malformed;
+        }
+        let mut configured = 0;
+        let mut owned = false;
+        for event in Self::EVENTS {
+            if cfg["hooks"][event].is_null() {
+                continue;
+            }
+            let Some(groups) = cfg["hooks"][event].as_array() else {
+                return HookState::Malformed;
+            };
+            let mut found = false;
+            for group in groups {
+                let Some(hooks) = group["hooks"].as_array() else {
+                    continue;
+                };
+                for hook in hooks {
+                    if let Some((path, profile)) = Self::parts(hook, tool) {
+                        owned = true;
+                        if profile != Self::quote(crate::profiles::current()) {
+                            return HookState::WrongProfile;
+                        }
+                        if path != Self::quote(&executable.to_string_lossy()) {
+                            return HookState::WrongExecutable;
+                        }
+                        found |= hook["command"] == Self::command(executable, tool)
+                            && group.get("matcher").is_none_or(|v| v == "");
+                    }
+                }
+            }
+            configured += usize::from(found);
+        }
+        if configured == Self::EVENTS.len() {
+            HookState::Configured
+        } else if !owned {
+            HookState::Missing
+        } else {
+            HookState::Partial
+        }
+    }
 }
+#[cfg(test)]
+#[path = "hook_tests.rs"]
+mod hook_tests;
 pub fn hook(tool: &str, input: Value) -> Result<Value> {
     let db = db::open()?;
     let Some(cwd) = input["cwd"].as_str() else {

@@ -13,6 +13,9 @@ import { RepositoryLabel } from "./repository-label.js";
 import { sessionAncestors, sessionTree } from "./session-tree.js";
 import { Button } from "./button.js";
 import { ResourceIdentity } from "./resource-identity.js";
+import { useQueryClient } from "@tanstack/react-query";
+import { useWorkspaceScope } from "./workspace-cache.js";
+import { SessionMessagesQuery } from "./use-session-messages.js";
 
 /** "23h ago" style labels for recent activity, calendar dates beyond a week. */
 function relativeUpdated(value: string, now = Date.now()) {
@@ -69,6 +72,8 @@ export function ResourceTable({
   filtered = false,
   onOpen,
 }: ResourceTableProps) {
+  const client = useQueryClient();
+  const scope = useWorkspaceScope();
   const memberName = useMemberLabel(user);
   const sessions = resources[0]?.kind === "session";
   const showRepository = resources.some((resource) => resource.repositoryName);
@@ -169,6 +174,12 @@ export function ResourceTable({
               {(actions) => (
                 <tr
                   className={depth > 0 ? "session-fork-row" : undefined}
+                  onPointerEnter={() =>
+                    void SessionMessagesQuery.prefetch(client, scope, resource)
+                  }
+                  onFocus={() =>
+                    void SessionMessagesQuery.prefetch(client, scope, resource)
+                  }
                   onClick={() => onOpen(resource.resourceId)}
                 >
                   <th scope="row" className="resource-table-title">

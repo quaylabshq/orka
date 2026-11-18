@@ -1,4 +1,4 @@
-use crate::{db, projects, sync};
+use crate::{db, sync};
 use serde_json::{json, Value};
 use tauri::Manager;
 
@@ -84,42 +84,12 @@ pub fn menu_bar_snapshot() -> db::Result<Value> {
 
 pub(crate) fn snapshot(db: &rusqlite::Connection, running: bool) -> db::Result<Value> {
     let onboarding = crate::onboarding::snapshot(db)?["active"] == true;
-    let projects = db::rows(
-        db,
-        &format!(
-            "SELECT json_object('pending',(SELECT count(*) FROM outbox WHERE project=p.id),\
-             'issues',(SELECT count(*) FROM outbox WHERE project=p.id AND error IS NOT NULL)+(SELECT count(*) FROM conflicts WHERE project=p.id)+(SELECT count(*) FROM errors WHERE source=p.id OR substr(source,1,length(p.id)+1)=p.id||':' OR source IN (SELECT id FROM resources WHERE project=p.id)))\
-             FROM projects p WHERE {} AND json_extract(p.value,'$.removedAt') IS NULL AND CASE WHEN json_type(p.value,'$.sources')='array' THEN EXISTS(SELECT 1 FROM json_each(p.value,'$.sources') WHERE json_extract(json_each.value,'$.removedAt') IS NULL AND coalesce(json_extract(json_each.value,'$.path'),'')<>'') ELSE coalesce(json_extract(p.value,'$.path'),'')<>'' END",
-            projects::ACTIVE
-        ),
-        &[],
-    )?;
-    let pending: u64 = projects
-        .iter()
-        .filter_map(|project| project["pending"].as_u64())
-        .sum();
-    let project_issues: u64 = projects
-        .iter()
-        .filter_map(|project| project["issues"].as_u64())
-        .sum();
-    let account_issues: u64 = db
-        .query_row(
-            "SELECT count(*) FROM errors WHERE source LIKE 'history:unattributed:%'",
-            [],
-            |row| row.get::<_, i64>(0).map(|count| count as u64),
-        )
-        .map_err(|error| error.to_string())?;
-    let status = db::get(db, "sync")?;
-    let issues = (project_issues + account_issues).max(u64::from(
-        status["error"]
-            .as_str()
-            .is_some_and(|error| !error.is_empty()),
-    ));
+    let summary = sync::Summary::read(db, running)?;
     Ok(json!({
         "user":db::get(db,"user")?, "onboarding":onboarding,
         "running":running,
-        "sync":status, "progress":sync::current_progress(db,running)?,
-        "projectCount":projects.len(), "pending":pending, "issues":issues
+        "sync":summary.status, "progress":summary.progress,
+        "projectCount":summary.project_count, "pending":summary.pending, "issues":summary.issues
     }))
 }
 

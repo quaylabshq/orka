@@ -559,7 +559,7 @@ pub fn connect_project(id: String, path: String) -> Result<()> {
             return Err("Disconnect the project before changing its folder".into());
         }
     }
-    native::install_hooks(&root)?;
+    native::Hooks::install(&root)?;
     p["folderIdentity"] = json!(indexer::folder_identity(&root)?);
     p["path"] = json!(root);
     db::upsert(&db, "projects", &id, &id, &p)?;

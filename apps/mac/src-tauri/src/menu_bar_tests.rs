@@ -93,6 +93,53 @@ fn menu_bar_reports_pending_changes_failures_and_account_status() {
 }
 
 #[test]
+fn shared_sync_summary_retains_recorded_success_and_reports_queue_and_progress() {
+    let f = Fixture::new();
+    let id = f.project["id"].as_str().unwrap();
+    f.db.execute(
+        "INSERT INTO outbox VALUES('queued',?,'/private','{}',NULL)",
+        [id],
+    )
+    .unwrap();
+    let success = "2026-11-14T10:00:00Z";
+    db::set(
+        &f.db,
+        "sync",
+        &json!({"online":true,"lastSync":success,"updatedAt":success}),
+    )
+    .unwrap();
+    let summary = sync::Summary::read(&f.db, false).unwrap();
+    assert_eq!(summary.pending, 1);
+    assert_eq!(summary.issues, 0);
+    assert_eq!(summary.project_count, 1);
+    assert_eq!(summary.status["lastSync"], success);
+    let failed_at = "2026-11-14T10:05:00Z";
+    db::set(
+        &f.db,
+        "sync",
+        &json!({"online":false,"lastSync":success,"error":"Offline","updatedAt":failed_at}),
+    )
+    .unwrap();
+    let progress = json!({"label":"Preparing sync"});
+    db::set(&f.db, "syncProgress", &progress).unwrap();
+    let summary = sync::Summary::read(&f.db, true).unwrap();
+    assert_eq!(summary.pending, 1);
+    assert_eq!(summary.issues, 1);
+    assert_eq!(summary.status["lastSync"], success);
+    assert_eq!(summary.status["error"], "Offline");
+    assert_eq!(summary.status["updatedAt"], failed_at);
+    assert_eq!(summary.progress, progress);
+    assert_eq!(
+        crate::menu_bar::snapshot(&f.db, true).unwrap(),
+        json!({
+            "user":db::get(&f.db,"user").unwrap(), "onboarding":false,
+            "running":true, "sync":summary.status, "progress":progress,
+            "projectCount":1, "pending":1, "issues":1
+        })
+    );
+}
+
+#[test]
 fn menu_bar_cannot_invoke_workspace_or_credential_commands() {
     for command in [
         "menu_bar_snapshot",

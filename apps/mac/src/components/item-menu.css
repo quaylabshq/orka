@@ -20,8 +20,7 @@
 .item-menu-action {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
+  gap: 8px;
   min-height: 32px;
   padding: 6px 10px;
   border-radius: var(--radius-detail);
@@ -40,6 +39,22 @@
 
 .item-menu-action[data-danger]:not([data-disabled]) {
   color: var(--text-danger);
+}
+
+.item-menu-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.item-menu-icon {
+  flex: 0 0 16px;
+  width: 16px;
+  color: var(--text-secondary);
+}
+
+.item-menu-action[data-disabled] .item-menu-icon,
+.item-menu-action[data-danger] .item-menu-icon {
+  color: inherit;
 }
 
 .item-menu-separator {
@@ -411,4 +426,18 @@
 
 .resource-command-button-size {
   visibility: hidden;
+}
+
+/* Ring the item a context menu belongs to, as Finder does. */
+[data-item-menu-open]:not(.resource-detail, tr) {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
+.resource-table tbody tr[data-item-menu-open] > * {
+  background: color-mix(
+    in srgb,
+    var(--surface-tertiary) 60%,
+    var(--surface-secondary)
+  );
 }

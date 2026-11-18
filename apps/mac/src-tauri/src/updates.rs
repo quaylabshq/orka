@@ -104,6 +104,7 @@ pub fn initialize(args: &mut Vec<String>) -> Result<Option<LaunchGuard>> {
             "--orka-agent",
             "--orka-plugin",
             "--orka-sync",
+            "--orka-doctor",
             "--orka-hook",
             "--orka-context",
             "--orka-env-test",

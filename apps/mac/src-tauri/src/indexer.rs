@@ -471,6 +471,11 @@ fn collect(
         } else {
             b["base"]["title"].as_str().unwrap_or(title)
         };
+        let title = if kind == "session" {
+            std::borrow::Cow::Owned(crate::session_redaction::SessionRedactor::text(title))
+        } else {
+            std::borrow::Cow::Borrowed(title)
+        };
         let mut input = json!({"resourceId":id,"kind":kind,"source":source,"logicalPath":b["base"]["logicalPath"].as_str().unwrap_or(logical),"title":title,"files":files,"deleted":deleted});
         crate::sources::scope(project, &mut input);
         if project["governed"] == true && (kind == "session" || kind == "plan") {

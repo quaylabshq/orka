@@ -565,6 +565,20 @@ fn explicit_fork_uses_the_latest_local_conversation_and_native_home_changes_are_
     let message = json!({"type":"user","sessionId":first["nativeId"],"cwd":f.root,"uuid":uuid::Uuid::new_v4().to_string(),"message":{"role":"user","content":"Newest local turn before sync"}});
     file.write_all(&native::encode(&[message])).unwrap();
     drop(file);
+    let page = tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(crate::commands::session_messages(
+            child_id.into(),
+            None,
+            Some(0),
+            Some(200),
+        ))
+        .unwrap();
+    assert!(page["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|message| message["text"] == "Newest local turn before sync"));
     session_launcher::launch_with(child_id, Tool::Claude, Destination::Terminal, true, &host)
         .unwrap();
     let copied = host.forks.borrow().last().unwrap().clone();

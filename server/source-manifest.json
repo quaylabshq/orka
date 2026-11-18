@@ -1,8 +1,8 @@
 {
   "repository": "https://github.com/whysosaket/orka-api",
-  "commit": "71c3752a82f4cd936cd63140978e6163a3b42fc2",
+  "commit": "9be6be6afa9495b5e19f1b1e7380e00c90d42c9b",
   "candidate": false,
-  "sourceTreeSha256": "9fd13a50d46621e81b3f7383be03944697592b68012364695fcc8043f8ceb38f",
+  "sourceTreeSha256": "d42270187e296e14f1af8aa30cd241a98965848d564672fb862126e1c2ba57eb",
   "files": [
     {
       "path": ".dockerignore",
@@ -151,7 +151,7 @@
     },
     {
       "path": "docs/compatibility.md",
-      "sha256": "cc7e7aa384fb56e9af59c067fb38fd7d2e6050d8779bd93c6ba9e282bdcefbbc",
+      "sha256": "a55bba24f42cdb372de96de4920ed4e27b20cc1feba03fd0db015eb91386509f",
       "mode": 420
     },
     {
@@ -251,7 +251,7 @@
     },
     {
       "path": "internal/server/api.go",
-      "sha256": "06f6b214be2bdcb104dce8501a761b1f3dd64fd57f63747c16cb6cde7760cd04",
+      "sha256": "8617ad1f5bb9d382f9795866525319dd66aeb9ca59925f04590de0779f7af375",
       "mode": 420
     },
     {
@@ -461,7 +461,7 @@
     },
     {
       "path": "internal/server/sync.go",
-      "sha256": "832395c5a7e3bd284d4354558aeb86734a8e3b2089fd49b9d512b161a4df933e",
+      "sha256": "2b95da6d09428c7c968ed01d71901d40b7ed48be766567680c22a9014b9e22e1",
       "mode": 420
     },
     {
@@ -526,12 +526,12 @@
     },
     {
       "path": "package-lock.json",
-      "sha256": "22f46f72e41a5751d43e576ff3c6352ce1f05b8811f144fc7bd27a3a2fe28ef0",
+      "sha256": "e94d62e8f08c0d4ad7c35e1aff9298b3bc130d735934fe3e4c94b2e98ff53955",
       "mode": 420
     },
     {
       "path": "package.json",
-      "sha256": "55081df954ac6ab924a128b04168d534557879661ed7a094bf796403a4e2f6f1",
+      "sha256": "d4cf586361da9e13a1ac3cc14b4301d029f1eddacc955613f3fd9fc7ea22a5a4",
       "mode": 420
     },
     {
@@ -546,7 +546,7 @@
     },
     {
       "path": "packages/protocol/package.json",
-      "sha256": "d5a0274af323907e60742b09fa77e260e891866b7e3d7947499c48db09ce82da",
+      "sha256": "3735d1a0fd0e6dd8e85bd98dc019105b9eacea72a1a65c0dabcaa594864899ac",
       "mode": 420
     },
     {
@@ -726,7 +726,7 @@
     },
     {
       "path": "tests/acceptance/integration.ts",
-      "sha256": "201786caf8bd67edc05aec4499cc7e97a8c99faf7b66241c82c4662d358c31a8",
+      "sha256": "3b1e402acaf82c99587f475da891b16ffd88d7204fda946d0d8ed19b5cfb218a",
       "mode": 420
     },
     {
@@ -972,6 +972,16 @@
     {
       "path": "tests/session-latest.integration.ts",
       "sha256": "cbb95000e81d33ac71646d05c570b19b2c9a624fc35e06ba8f7902f4fa1ceff8",
+      "mode": 420
+    },
+    {
+      "path": "tests/session-outbox-native.integration.ts",
+      "sha256": "059f40eea7eee76a67b459b90e9cf70b8592c2d206c36e33a2c6597108867fa7",
+      "mode": 420
+    },
+    {
+      "path": "tests/session-reconcile.integration.ts",
+      "sha256": "f2d245a67868246682ba561f182b2291ed2f98a929b7140a37b79c22ffb1cc11",
       "mode": 420
     },
     {

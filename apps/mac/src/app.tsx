@@ -16,10 +16,8 @@ import React, {
 import { motion, useReducedMotion } from "motion/react";
 import { spring } from "./lib/springs.js";
 import { ResourceMenuProvider } from "./components/resource-menu.js";
-import {
-  hasNativeTextMenu,
-  type ItemMenuAction,
-} from "./components/item-menu.js";
+import type { ItemMenuAction } from "./components/item-menu.js";
+import { useWebViewMenuPolicy } from "./hooks/use-web-view-menu-policy.js";
 import { ENV_ENABLED } from "./lib/features.js";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -129,14 +127,7 @@ const pageLabels: Record<ProjectPage, string> = {
 };
 
 export function App() {
-  useEffect(() => {
-    const menu = (event: MouseEvent) => {
-      if (!event.defaultPrevented && !hasNativeTextMenu(event.target))
-        event.preventDefault();
-    };
-    document.addEventListener("contextmenu", menu);
-    return () => document.removeEventListener("contextmenu", menu);
-  }, []);
+  useWebViewMenuPolicy();
   const workspace = useWorkspace();
   if (!workspace.hasSnapshot)
     return (

@@ -1191,15 +1191,27 @@ test("read-only shared skills retain copy and export but omit sharing and deleti
   page,
 }) => {
   await skillFixture(page, { role: "member", access: "read", open: false });
-  await page.locator(".skill-card").click({ button: "right" });
-  const menu = page.getByRole("menu");
+  await page.locator(".skill-card").click({
+    button: "right",
+    position: { x: 8, y: 8 },
+  });
+  const menu = page.getByRole("menu", { name: "skill actions", exact: true });
   await expect(
     menu.getByRole("menuitem", { name: "Copy link", exact: true }),
   ).toBeVisible();
   await expect(
-    menu.getByRole("menuitem", { name: "Export ZIP…", exact: true }),
+    menu.getByRole("menuitem", { name: /Delete shared skill|Share snapshot/ }),
+  ).toHaveCount(0);
+  await menu
+    .getByRole("menuitem", { name: "More actions", exact: true })
+    .hover();
+  const submenu = page.getByRole("menu", { name: "More actions" });
+  await expect(
+    submenu.getByRole("menuitem", { name: "Export ZIP…", exact: true }),
   ).toBeVisible();
   await expect(
-    menu.getByRole("menuitem", { name: /Delete shared skill|Share snapshot/ }),
+    submenu.getByRole("menuitem", {
+      name: /Delete shared skill|Share snapshot/,
+    }),
   ).toHaveCount(0);
 });

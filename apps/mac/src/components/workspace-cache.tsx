@@ -1,6 +1,15 @@
-import { useEffect, useLayoutEffect, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useState,
+  type ReactNode,
+} from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Snapshot } from "../types.js";
+
+const WorkspaceScope = createContext("");
 
 export class WorkspaceCache {
   static scope(state: Pick<Snapshot, "profile" | "user" | "config">) {
@@ -23,6 +32,11 @@ export class WorkspaceCache {
   }
 }
 
+/** The provider's scope; query keys hold it second so a scope change evicts them. */
+export function useWorkspaceScope() {
+  return useContext(WorkspaceScope);
+}
+
 export function WorkspaceCacheProvider({
   state,
   children,
@@ -38,5 +52,11 @@ export function WorkspaceCacheProvider({
     client.removeQueries({ predicate: (query) => query.queryKey[1] !== scope });
   }, [client, scope]);
   useEffect(() => () => client.clear(), [client]);
-  return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+  return (
+    <QueryClientProvider client={client}>
+      <WorkspaceScope.Provider value={scope}>
+        {children}
+      </WorkspaceScope.Provider>
+    </QueryClientProvider>
+  );
 }

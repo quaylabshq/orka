@@ -423,7 +423,7 @@ pub(crate) async fn connect_sources(
             view["folderIdentity"] = source["folderIdentity"].clone();
             view["repository"] = source["repository"].clone();
             validate(&view)?;
-            native::install_hooks(Path::new(path))?;
+            native::Hooks::install(Path::new(path))?;
         }
     }
     project["sources"] = json!(sources);

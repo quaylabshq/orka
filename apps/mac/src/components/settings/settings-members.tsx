@@ -2,6 +2,7 @@ import { HistoryIcon, MailIcon, UserPlusIcon } from "lucide-react";
 import { RepositoryRequests } from "../repository-connections.js";
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Project, ProjectMember, Snapshot } from "../../types.js";
 import {
   governanceCall,
@@ -19,7 +20,7 @@ import { Overlay } from "../overlay.js";
 import { LoadingRegion } from "../loading-region.js";
 import { ActivityIndicator } from "../activity-indicator.js";
 import { SettingsHeading } from "./settings-shared.js";
-import { useSettingsQuery } from "./use-settings-query.js";
+import { useWorkspaceScope } from "../workspace-cache.js";
 
 const samples: ProjectMember[] = [
   {
@@ -206,17 +207,68 @@ export function SettingsMembers({
       governanceCall<T>(action, { projectId, ...input }),
     [projectId],
   );
-  const load = useCallback(async () => {
-    const catalog = await call<GovernanceCatalog>("catalog");
-    if (!Array.isArray(catalog.members))
-      throw new Error("The service returned an invalid member list.");
-    return { ...catalog, requests: catalog.requests ?? [] };
-  }, [call]);
-  const query = useSettingsQuery(load, null, project.policyRevision);
-  const cachedMembers =
-    state.governance?.find((entry) => entry.projectId === projectId)?.catalog
-      .members ?? null;
-  const members = query.data?.members ?? cachedMembers;
+  const scope = useWorkspaceScope();
+  const client = useQueryClient();
+  // The last catalog the service returned, stored natively for this profile.
+  const stored = state.governance?.find(
+    (entry) => entry.projectId === projectId,
+  )?.catalog as Partial<GovernanceCatalog> | undefined;
+  const catalog = useQuery({
+    queryKey: ["governance-catalog", scope, projectId],
+    queryFn: async () => {
+      const catalog = await call<GovernanceCatalog>("catalog");
+      if (!Array.isArray(catalog.members))
+        throw new Error("The service returned an invalid member list.");
+      return { ...catalog, requests: catalog.requests ?? [] };
+    },
+    // Show the cached list at once and still ask the service on every visit.
+    refetchOnMount: "always",
+  });
+  const { refetch } = catalog;
+  // Cancel even an initial read before refetching: otherwise Query deduplicates
+  // it and a response from the old policy can consume the invalidation.
+  const revision = useRef([scope, projectId, project.policyRevision]);
+  useEffect(() => {
+    const [previousScope, id, value] = revision.current;
+    revision.current = [scope, projectId, project.policyRevision];
+    if (
+      previousScope !== scope ||
+      id !== projectId ||
+      value === project.policyRevision
+    )
+      return;
+    const filters = {
+      queryKey: ["governance-catalog", scope, projectId],
+      exact: true,
+    };
+    let active = true;
+    void client.cancelQueries(filters).then(() => {
+      if (active) void client.refetchQueries({ ...filters, type: "active" });
+    });
+    return () => {
+      active = false;
+    };
+  }, [client, scope, projectId, project.policyRevision]);
+  const [extended, setExtended] = useState(false);
+  useEffect(() => {
+    if (!catalog.isFetching) return;
+    const timer = setTimeout(() => setExtended(true), 8000);
+    return () => {
+      clearTimeout(timer);
+      setExtended(false);
+    };
+  }, [catalog.isFetching]);
+  // Roles come only from a service answer; the stored list just fills rows.
+  const query = {
+    data: catalog.data ?? null,
+    loading: catalog.isFetching,
+    error: catalog.error ? String(catalog.error) : "",
+    extended,
+    refresh: () => refetch(),
+  };
+  const members =
+    catalog.data?.members ??
+    (Array.isArray(stored?.members) ? stored.members : null);
   const pendingInvites = query.data?.pendingInvites ?? [];
   const [busy, setBusy] = useState(""),
     [error, setError] = useState(""),

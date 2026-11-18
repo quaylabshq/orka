@@ -28,6 +28,25 @@ It does not substitute a newer remote conversation. An older copy request withou
 request receives 409 `Cached session revision unavailable` without a receipt.
 Committed legacy requests retain their original retry identity.
 
+`sessionUploadReconcile: 1` advertises `POST /v2/sessions/reconcile` with
+`{projectId, deviceId, id}`, where `id` is the original queued session request.
+It accepts no snapshot content. An accepted request returns
+`{status: "accepted", receipt}` with its original acknowledgement and current
+read authorization, even when the session has since advanced. A request that has
+not committed returns `{status: "cancelled"}` after durably fencing its old ID
+under the publication lock. Repeating reconciliation is safe; a delayed original
+request receives HTTP 409 instead of committing after cancellation. A client can
+then rebuild the queued snapshot under a fresh request ID without duplicating a
+copy. Reconciliation is scoped to the signed-in author and requires current
+project membership and a registered device. It does not rewrite old server
+snapshots or erase previously exposed credentials.
+
+Deploy this capability before desktops that rebuild pre-redaction session
+uploads. Without it, clients must retain affected queued requests and require a
+server update rather than changing the content of an uncertain retry. Both
+server editions use the same handler and existing receipt storage; no migration,
+provider setting or protocol package update is required.
+
 Update the API before updated desktops. Desktops detect this capability and
 freeze the cached source into their durable request before first submission.
 Requests already submitted to older services keep their original body and ID;

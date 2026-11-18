@@ -10,6 +10,225 @@ static SERIAL: Mutex<()> = Mutex::new(());
 mod attention_tests;
 #[path = "context_sharing_tests.rs"]
 mod context_sharing_tests;
+mod doctor_tests {
+    use super::*;
+    use crate::doctor::Doctor;
+    struct Setup;
+    impl Setup {
+        fn fixture() -> (Fixture, Value) {
+            let f = Fixture::new();
+            let config = json!({"apiUrl":"https://d.invalid","syncMinutes":1});
+            Self::set(&f, "config", config);
+            let now = db::now();
+            let sync = json!({"online":true,"lastSync":now,"updatedAt":now});
+            Self::set(&f, "sync", sync);
+            let session = json!({"user":{"id":db::get(&f.db,"user").unwrap()},"apiUrl":"https://d.invalid","access_token":"SECRET_ACCESS","refresh_token":"SECRET_REFRESH","expires_at":chrono::Utc::now().timestamp()+3600});
+            native::Hooks::install(&f.root).unwrap();
+            for tool in ["claude", "codex"] {
+                Self::set(
+                    &f,
+                    &format!("hookSeen:{tool}"),
+                    json!("2001-01-01T00:00:00Z"),
+                );
+            }
+            (f, session)
+        }
+        fn set(f: &Fixture, key: &str, value: Value) {
+            db::set(&f.db, key, &value).unwrap();
+        }
+        fn check(f: &Fixture, session: db::Result<Value>) -> Doctor {
+            let report = Doctor::collect(Some(&f.db), session);
+            for secret in ["SECRET_ACCESS", "SECRET_REFRESH", "SECRET_ERROR"] {
+                assert!(!report.output.contains(secret));
+            }
+            report
+        }
+    }
+    #[test]
+    fn doctor_login_pass_fail_and_refresh_warning_continue_to_sync() {
+        let (f, session) = Setup::fixture();
+        let mut expired = session.clone();
+        expired["expires_at"] = json!(0);
+        let mut cases = vec![
+            (Ok(session.clone()), 0, "PASS Login"),
+            (Err("SECRET_ERROR".into()), 1, "FAIL Login"),
+            (Ok(expired), 2, "WARN Login"),
+        ];
+        for (key, value) in [
+            ("user", json!({"id":uuid::Uuid::new_v4().to_string()})),
+            ("apiUrl", json!("https://another.invalid")),
+            ("access_token", json!("")),
+            ("refresh_token", json!("")),
+        ] {
+            let mut invalid = session.clone();
+            invalid[key] = value;
+            cases.push((Ok(invalid), 1, "FAIL Login"));
+        }
+        for (input, code, label) in cases {
+            let before = db::get(&f.db, "sync").unwrap();
+            let report = Setup::check(&f, input);
+            assert_eq!(report.code, code);
+            assert!(report.output.contains(label));
+            assert!(report.output.contains("PASS Sync"));
+            assert_eq!(db::get(&f.db, "sync").unwrap(), before);
+        }
+    }
+    #[test]
+    fn doctor_sync_freshness_uses_the_interval_with_a_five_minute_floor() {
+        let (f, session) = Setup::fixture();
+        for (minutes, age, code) in [(1, 299, 0), (1, 301, 2), (10, 1199, 0), (10, 1201, 2)] {
+            let config = json!({"apiUrl":"https://d.invalid","syncMinutes":minutes});
+            Setup::set(&f, "config", config);
+            let at = (chrono::Utc::now() - chrono::Duration::seconds(age)).to_rfc3339();
+            let sync = json!({"online":true,"lastSync":at,"updatedAt":at});
+            Setup::set(&f, "sync", sync);
+            let report = Setup::check(&f, Ok(session.clone()));
+            assert_eq!(report.code, code);
+            assert_eq!(report.output.contains("last success is stale"), code == 2);
+        }
+        for (value, code) in [(Value::Null, 2), (json!({"lastSync":"SECRET_ERROR"}), 1)] {
+            db::set(&f.db, "sync", &value).unwrap();
+            assert_eq!(Setup::check(&f, Ok(session.clone())).code, code);
+        }
+    }
+    #[test]
+    fn doctor_reports_queue_and_sync_failure_without_changing_saved_work() {
+        let (f, session) = Setup::fixture();
+        let last = db::get(&f.db, "sync").unwrap()["lastSync"].clone();
+        let id = f.project["id"].as_str().unwrap();
+        let sql = "INSERT INTO outbox VALUES('queued',?,'/test','{}',NULL)";
+        f.db.execute(sql, [id]).unwrap();
+        let report = Setup::check(&f, Ok(session.clone()));
+        assert_eq!(report.code, 2);
+        assert!(report.output.contains("queued work; 1 queued"));
+        let failure =
+            json!({"online":false,"lastSync":last,"updatedAt":db::now(),"error":"SECRET_ERROR"});
+        Setup::set(&f, "sync", failure);
+        let report = Setup::check(&f, Ok(session));
+        assert_eq!(report.code, 1);
+        assert!(report.output.contains("FAIL Sync"));
+        assert!(report.output.contains("recorded error present"));
+        assert_eq!(f.outbox().len(), 1);
+        assert_eq!(db::get(&f.db, "sync").unwrap()["lastSync"], last);
+        let report = Doctor::collect(None, Err("SECRET_ERROR".into()));
+        assert_eq!(report.code, 1);
+        assert!(report.output.contains("FAIL Login"));
+        assert!(report.output.contains("FAIL Sync"));
+        assert!(!report.output.contains("SECRET_ERROR"));
+        assert!(report.output.contains("FAIL Hooks"));
+    }
+    #[test]
+    fn doctor_hooks_pass_with_old_activity_without_changing_the_files() {
+        let (f, session) = Setup::fixture();
+        let path = f.root.join(".claude/settings.local.json");
+        let before = fs::read(&path).unwrap();
+        let report = Setup::check(&f, Ok(session));
+        assert_eq!(report.code, 0);
+        assert!(report.output.contains("PASS claude hooks"));
+        assert!(report.output.contains("PASS codex hooks"));
+        assert!(report.output.contains("2001-01-01"));
+        assert!(report.output.contains("tool-wide, not per folder"));
+        assert_eq!(fs::read(path).unwrap(), before);
+    }
+    #[test]
+    fn doctor_reports_unseen_missing_and_malformed_hooks_and_keeps_checking() {
+        let (f, session) = Setup::fixture();
+        Setup::set(&f, "hookSeen:claude", Value::Null);
+        let report = Setup::check(&f, Ok(session.clone()));
+        assert_eq!(report.code, 2);
+        assert!(report.output.contains("WARN claude hooks"));
+        assert_eq!(Setup::check(&f, Err("SECRET_ERROR".into())).code, 1);
+        let path = f.root.join(".claude/settings.local.json");
+        fs::remove_file(&path).unwrap();
+        let report = Setup::check(&f, Ok(session.clone()));
+        assert_eq!(report.code, 1);
+        assert!(report.output.contains("FAIL claude hooks: missing hooks"));
+        assert!(report.output.contains("PASS codex hooks"));
+        assert!(!path.exists());
+        fs::write(f.root.join(".codex/hooks.json"), "[").unwrap();
+        let report = Setup::check(&f, Ok(session));
+        assert!(report.output.contains("FAIL claude hooks"));
+        assert!(report
+            .output
+            .contains("FAIL codex hooks: malformed configuration"));
+    }
+    #[test]
+    fn doctor_checks_each_connected_source_and_ignores_removed_sources() {
+        let (f, session) = Setup::fixture();
+        let second = f.root.join("second");
+        fs::create_dir(&second).unwrap();
+        native::Hooks::install(&second).unwrap();
+        let mut project = f.project.clone();
+        project["path"] = Value::Null;
+        project["sources"] = json!([{"id":"one","path":f.root},{"id":"two","path":second},{"id":"old","path":"/not-a-connected-source","removedAt":db::now()}]);
+        let id = project["id"].as_str().unwrap();
+        db::upsert(&f.db, "projects", id, "", &project).unwrap();
+        fs::remove_file(f.root.join(".claude/settings.local.json")).unwrap();
+        let report = Setup::check(&f, Ok(session));
+        assert_eq!(report.code, 1);
+        assert_eq!(report.output.matches("claude hooks:").count(), 2);
+        assert_eq!(report.output.matches("codex hooks:").count(), 2);
+        assert!(!report.output.contains("/not-a-connected-source"));
+    }
+    #[test]
+    fn doctor_ignores_unconnected_sources_alongside_healthy_connected_folders() {
+        let (f, session) = Setup::fixture();
+        let mut project = f.project.clone();
+        project["path"] = Value::Null;
+        project["sources"] = json!([
+            {"id":"connected","path":f.root},
+            {"id":"disconnected","path":null,"folderIdentity":null},
+            {"id":"remote"}
+        ]);
+        let id = project["id"].as_str().unwrap();
+        db::upsert(&f.db, "projects", id, "", &project).unwrap();
+        let report = Setup::check(&f, Ok(session));
+        assert_eq!(report.code, 0, "{}", report.output);
+        assert_eq!(report.output.matches("PASS claude hooks:").count(), 1);
+        assert_eq!(report.output.matches("PASS codex hooks:").count(), 1);
+        assert!(!report.output.contains("WARN Hooks"));
+    }
+    #[test]
+    fn doctor_reports_no_connected_folders_for_unconnected_registrations() {
+        let (f, session) = Setup::fixture();
+        let mut project = f.project.clone();
+        project["path"] = Value::Null;
+        for sources in [
+            json!([{"id":"disconnected","path":null}, {"id":"remote"}]),
+            Value::Null,
+        ] {
+            project["sources"] = sources;
+            let id = project["id"].as_str().unwrap();
+            db::upsert(&f.db, "projects", id, "", &project).unwrap();
+            let report = Setup::check(&f, Ok(session.clone()));
+            assert_eq!(report.code, 2, "{}", report.output);
+            assert!(report
+                .output
+                .contains("WARN Hooks: No connected source folders to inspect."));
+            assert!(!report.output.contains("Source folder unavailable"));
+            assert!(!report.output.contains("claude hooks:"));
+            assert!(!report.output.contains("codex hooks:"));
+        }
+    }
+    #[test]
+    fn doctor_reports_unreadable_hooks_and_unavailable_or_disconnected_sources() {
+        let (f, session) = Setup::fixture();
+        let path = f.root.join(".claude/settings.local.json");
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        let report = Setup::check(&f, Ok(session.clone()));
+        assert_eq!(report.code, 1);
+        assert!(report.output.contains("FAIL claude hooks: file unreadable"));
+        fs::remove_dir_all(&f.root).unwrap();
+        let report = Setup::check(&f, Ok(session.clone()));
+        assert_eq!(report.code, 2);
+        assert!(report.output.contains("Source folder unavailable"));
+        f.db.execute("DELETE FROM projects", []).unwrap();
+        let report = Setup::check(&f, Ok(session));
+        assert_eq!(report.code, 2);
+        assert!(report.output.contains("No connected source folders"));
+    }
+}
 #[path = "global_skill_tests.rs"]
 mod global_skill_tests;
 #[path = "governance_tests.rs"]
@@ -36,6 +255,8 @@ mod selective_sharing_tests;
 mod session_compatibility_tests;
 #[path = "session_launcher_tests.rs"]
 mod session_launcher_tests;
+#[path = "session_redaction_tests.rs"]
+mod session_redaction_tests;
 #[path = "session_snapshot_tests.rs"]
 mod session_snapshot_tests;
 #[path = "sharing_tests.rs"]

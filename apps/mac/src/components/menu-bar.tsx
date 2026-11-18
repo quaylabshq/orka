@@ -6,6 +6,7 @@ import type { Snapshot, SyncProgress } from "../types.js";
 import { Button } from "./button.js";
 import { Icon } from "./icon.js";
 import { spring } from "../lib/springs.js";
+import { useWebViewMenuPolicy } from "../hooks/use-web-view-menu-policy.js";
 import "./menu-bar.css";
 
 export interface MenuBarSnapshot {
@@ -31,6 +32,7 @@ function lastSynced(value?: string) {
 }
 
 export function MenuBar() {
+  useWebViewMenuPolicy();
   const [state, setState] = useState<MenuBarSnapshot | null>(null);
   const [readError, setReadError] = useState("");
   const [actionError, setActionError] = useState("");
