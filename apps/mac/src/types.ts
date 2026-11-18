@@ -74,6 +74,14 @@ export interface SyncProgress {
   completed?: number;
   total?: number | null;
 }
+/** One queued project from `sync_queue_state`; the workspace `*` row is not sent. */
+export interface SyncQueueEntry {
+  projectId: string;
+  state: "queued" | "running" | "waiting";
+  reason: string;
+  attempts: number;
+  notBefore: string | null;
+}
 export interface Snapshot {
   onboarding?: import("./components/onboarding/model.js").OnboardingInfo;
   accountProfile?:

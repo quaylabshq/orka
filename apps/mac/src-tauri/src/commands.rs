@@ -246,6 +246,10 @@ pub fn cancel_sync(project_id: String) -> Result<()> {
     SyncQueue::cancel(&db::open()?, &project_id)
 }
 #[tauri::command]
+pub fn sync_queue_state() -> Result<Value> {
+    SyncQueue::states(&db::open()?, SyncQueue::now())
+}
+#[tauri::command]
 pub async fn cloud_action(action: String, input: Value) -> Result<Value> {
     if action == "invite-capabilities" {
         let caps = sync::api("GET", "/v2/instance", None).await?;

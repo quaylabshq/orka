@@ -311,6 +311,7 @@ fn main() {
                 commands::sign_out,
                 commands::sync_now,
                 commands::cancel_sync,
+                commands::sync_queue_state,
                 commands::sync_progress,
                 commands::cloud_action,
                 commands::connect_project,

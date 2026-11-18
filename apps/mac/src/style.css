@@ -671,6 +671,15 @@
   .sync-menu-notification small {
     @apply text-xs text-muted;
   }
+  .sync-queue-row {
+    @apply flex w-full items-center gap-2 text-xs;
+  }
+  .sync-queue-project {
+    @apply min-w-0 flex-1 truncate text-foreground;
+  }
+  .sync-queue-row small {
+    @apply shrink-0;
+  }
   .navigation-action {
     @apply relative z-10 inline-flex h-9 w-full shrink-0 items-center justify-start gap-2 overflow-hidden rounded-lg bg-transparent px-2.5 py-2 text-label-sm text-muted;
   }

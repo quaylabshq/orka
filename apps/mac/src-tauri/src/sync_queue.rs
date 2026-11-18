@@ -7,7 +7,7 @@ use crate::{
     sync_schedule::{jitter, Interval},
 };
 use rusqlite::{params, Connection, OptionalExtension};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::{collections::HashMap, time::Duration};
 
 pub(crate) const WORKSPACE: &str = "*";
@@ -76,6 +76,11 @@ fn outage(error: &str) -> bool {
         .split_once(':')
         .and_then(|(code, _)| code.parse::<u16>().ok());
     error == "Cloud unavailable; local work stays queued" || matches!(code, Some(408 | 500..=599))
+}
+
+fn iso(at: i64) -> Option<String> {
+    chrono::DateTime::from_timestamp_millis(at)
+        .map(|time| time.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
 }
 
 fn sql(result: rusqlite::Result<usize>) -> Result<()> {
@@ -269,6 +274,48 @@ impl SyncQueue {
             sql(tx.execute("DELETE FROM meta WHERE key=?", [cancel_key(project)]))?;
         }
         tx.commit().map_err(|e| e.to_string())
+    }
+
+    /// One entry per queued project for the app's queue panel, in the order the
+    /// worker picks jobs. The account-wide `*` row is internal, so it is left
+    /// out. `notBefore` is set only while a failed job waits to retry; a queued
+    /// job has no time the user acts on.
+    pub(crate) fn states(db: &Connection, now: i64) -> Result<Value> {
+        let mut query = db
+            .prepare(
+                "SELECT project,reason,attempts,not_before FROM sync_queue
+                 WHERE project<>?1 ORDER BY priority DESC,requested_at,project",
+            )
+            .map_err(|e| e.to_string())?;
+        let jobs = query
+            .query_map([WORKSPACE], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, u32>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            })
+            .and_then(|rows| rows.collect::<rusqlite::Result<Vec<_>>>())
+            .map_err(|e| e.to_string())?;
+        let states = jobs
+            .into_iter()
+            .map(|(project, reason, attempts, not_before)| {
+                let waiting = attempts > 0 && not_before > now;
+                let state = if not_before == RUNNING {
+                    "running"
+                } else if waiting {
+                    "waiting"
+                } else {
+                    "queued"
+                };
+                json!({
+                    "projectId":project, "state":state, "reason":reason, "attempts":attempts,
+                    "notBefore": if waiting { iso(not_before) } else { None },
+                })
+            })
+            .collect();
+        Ok(Value::Array(states))
     }
 
     fn running(db: &Connection, project: &str) -> Result<bool> {
@@ -774,6 +821,35 @@ mod tests {
         let queued = SyncQueue::claim(&db, i64::MAX - 1).unwrap().unwrap();
         assert_eq!((queued.project.as_str(), queued.attempts), ("a", 0));
         assert!(SyncQueue::next(&db, i64::MAX - 1).unwrap().is_none());
+    }
+
+    #[test]
+    fn queue_state_reports_each_project_and_leaves_out_the_workspace() {
+        let (_root, db) = queue_db(&["running", "queued", "waiting", "due"]);
+        SyncQueue::enqueue(&db, "running", Priority::Timer, "timer", 0).unwrap();
+        SyncQueue::claim(&db, 0).unwrap();
+        SyncQueue::enqueue(&db, "queued", Priority::Local, "local", 1).unwrap();
+        let failed = |project: &str, not_before, requested_at| Job {
+            project: project.into(),
+            priority: 0,
+            reason: "timer".into(),
+            requested_at,
+            not_before,
+            attempts: 2,
+        };
+        SyncQueue::merge(&db, &failed("waiting", 5_000, 2)).unwrap();
+        // Past its backoff, so it is queued again rather than waiting.
+        SyncQueue::merge(&db, &failed("due", 500, 3)).unwrap();
+        SyncQueue::enqueue(&db, WORKSPACE, Priority::User, "sync now", 4).unwrap();
+        assert_eq!(
+            SyncQueue::states(&db, 1_000).unwrap(),
+            json!([
+                {"projectId":"queued","state":"queued","reason":"local","attempts":0,"notBefore":null},
+                {"projectId":"running","state":"running","reason":"timer","attempts":0,"notBefore":null},
+                {"projectId":"waiting","state":"waiting","reason":"timer","attempts":2,"notBefore":"1970-01-01T00:00:05.000Z"},
+                {"projectId":"due","state":"queued","reason":"timer","attempts":2,"notBefore":null},
+            ])
+        );
     }
 
     #[test]

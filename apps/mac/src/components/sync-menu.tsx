@@ -7,12 +7,14 @@ import {
 import React, { useState } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import type { Resource } from "@portable/protocol";
-import type { Snapshot } from "../types.js";
+import type { Snapshot, SyncQueueEntry } from "../types.js";
 import { Button } from "./button.js";
 import { IconButton } from "./icon-button.js";
 import { Icon } from "./icon.js";
 import { useMemberLabel } from "./member-names.js";
+import { projectLabel } from "./project-navigation.js";
 
+import { canCancel, queueStateLabel } from "./sync-queue.js";
 import { syncIssueRecovery } from "./sync-issues.js";
 import type { ProjectAttention } from "./sync-attention.js";
 
@@ -34,9 +36,13 @@ export function SyncMenu({
   onDismissError,
   onResumeSetup,
   skillUsagePartial = false,
+  queue = [],
+  onCancel,
 }: {
   placement?: "sidebar" | "header";
   actionError?: string;
+  queue?: SyncQueueEntry[];
+  onCancel?: (projectId: string) => void;
   onDismissError?: () => void;
   onResumeSetup?: () => void;
   skillUsagePartial?: boolean;
@@ -120,6 +126,10 @@ export function SyncMenu({
   const resourceTitle = (id: string) =>
     state.resources.find((item: Resource) => item.resourceId === id)?.title ??
     "Session";
+  const projectName = (id: string) => {
+    const project = state.projects.find((item) => item.id === id);
+    return project ? projectLabel(project) : "Project";
+  };
   return (
     <Popover.Root open={open} onOpenChange={setOpen}>
       <Popover.Trigger asChild>
@@ -350,6 +360,33 @@ export function SyncMenu({
                     </div>
                   ))}
                 </details>
+              </section>
+            )}
+            {queue.length > 0 && (
+              <section
+                className="sync-menu-notification"
+                aria-label="Sync queue"
+              >
+                <h3>Queue</h3>
+                {queue.map((entry) => (
+                  <div className="sync-queue-row" key={entry.projectId}>
+                    <span className="sync-queue-project">
+                      {projectName(entry.projectId)}
+                    </span>
+                    <small>{queueStateLabel(entry)}</small>
+                    {onCancel && canCancel(entry) && (
+                      <Button
+                        variant="tertiary"
+                        size="sm"
+                        disabled={busy}
+                        aria-label={`Cancel sync for ${projectName(entry.projectId)}`}
+                        onClick={() => onCancel(entry.projectId)}
+                      >
+                        Cancel
+                      </Button>
+                    )}
+                  </div>
+                ))}
               </section>
             )}
             {attention.items.length > 0 && (

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { Snapshot, SyncProgress } from "../types.js";
+import type { Snapshot, SyncProgress, SyncQueueEntry } from "../types.js";
 import type { ActionFeedback } from "./use-resource-actions.js";
+import { queueEntries } from "./sync-queue.js";
 
 const empty: Snapshot = {
   user: null,
@@ -23,6 +24,7 @@ const empty: Snapshot = {
 /** Reads native state and serializes user actions independently of navigation. */
 export function useWorkspace() {
   const [state, setState] = useState(empty);
+  const [queue, setQueue] = useState<SyncQueueEntry[]>([]);
   const [hasSnapshot, setHasSnapshot] = useState(false);
   const [project, setProject] = useState("");
   const [error, setError] = useState("");
@@ -164,6 +166,16 @@ export function useWorkspace() {
   const user = state.user;
   const apiUrl = state.config?.apiUrl;
   const running = state.daemon?.running;
+  const refreshQueue = useCallback(async () => {
+    try {
+      const next = queueEntries(await invoke("sync_queue_state"));
+      setQueue((current) =>
+        JSON.stringify(current) === JSON.stringify(next) ? current : next,
+      );
+    } catch {
+      // The queue panel is descriptive; sync progress still drives the status.
+    }
+  }, []);
   useEffect(() => {
     if (!user || !running) return;
     let stopped = false;
@@ -174,32 +186,36 @@ export function useWorkspace() {
           user: string | null;
           progress: SyncProgress | null;
         }>("sync_progress");
-        if (stopped || result.user !== user || result.progress === undefined)
-          return;
-        setState((current) =>
-          current.profile === profile &&
-          current.user === user &&
-          current.config?.apiUrl === apiUrl &&
-          JSON.stringify(current.syncProgress ?? null) !==
-            JSON.stringify(result.progress)
-            ? { ...current, syncProgress: result.progress }
-            : current,
-        );
+        if (!stopped && result.user === user && result.progress !== undefined)
+          setState((current) =>
+            current.profile === profile &&
+            current.user === user &&
+            current.config?.apiUrl === apiUrl &&
+            JSON.stringify(current.syncProgress ?? null) !==
+              JSON.stringify(result.progress)
+              ? { ...current, syncProgress: result.progress }
+              : current,
+          );
       } catch {
         // The full snapshot poll still refreshes state and reports read errors.
-      } finally {
-        if (!stopped) timer = window.setTimeout(() => void poll(), 500);
       }
+      // The queue rides the same poll and pauses with the window.
+      if (!document.hidden && !stopped) await refreshQueue();
+      // Schedule after completion so a slow native read cannot pile up polls.
+      if (!stopped) timer = window.setTimeout(() => void poll(), 500);
     };
     void poll();
     return () => {
       stopped = true;
       window.clearTimeout(timer);
+      setQueue([]);
     };
-  }, [profile, user, apiUrl, running]);
+  }, [profile, user, apiUrl, running, refreshQueue]);
 
   return {
     state,
+    queue,
+    refreshQueue,
     hasSnapshot,
     project,
     setProject,

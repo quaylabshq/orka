@@ -1,15 +1,21 @@
 import { test, expect, type Page } from "@playwright/test";
 import { AxeBuilder } from "@axe-core/playwright";
-import type { Snapshot, SyncProgress } from "../../apps/mac/src/types.js";
+import type {
+  Snapshot,
+  SyncProgress,
+  SyncQueueEntry,
+} from "../../apps/mac/src/types.js";
 
 declare global {
   interface Window {
     syncProgressFixture: {
       progress: SyncProgress | null;
+      queue: SyncQueueEntry[];
       sync: Snapshot["sync"];
       running: boolean;
       errors: Snapshot["errors"];
       calls: string[];
+      cancelled: string[];
     };
   }
 }
@@ -18,10 +24,12 @@ test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
     const fixture: Window["syncProgressFixture"] = {
       progress: null,
+      queue: [],
       sync: { online: true, lastSync: "2026-11-13T08:00:00Z" },
       running: true,
       errors: [],
       calls: [],
+      cancelled: [],
     };
     Object.assign(window, {
       syncProgressFixture: fixture,
@@ -29,7 +37,7 @@ test.beforeEach(async ({ page }) => {
       __TAURI_INTERNALS__: {
         transformCallback: () => 1,
         unregisterCallback: () => {},
-        invoke: async (name: string) => {
+        invoke: async (name: string, args?: { projectId?: string }) => {
           fixture.calls.push(name);
           if (name === "snapshot")
             return {
@@ -37,6 +45,13 @@ test.beforeEach(async ({ page }) => {
               config: { apiUrl: "https://test.local", syncMinutes: 15 },
               projects: [
                 { id: "one", name: "Orka", path: "/test/orka", role: "owner" },
+                { id: "two", name: "Docs", path: "/test/docs", role: "owner" },
+                {
+                  id: "three",
+                  name: "Site",
+                  path: "/test/site",
+                  role: "owner",
+                },
               ],
               resources: [],
               bindings: [],
@@ -53,6 +68,14 @@ test.beforeEach(async ({ page }) => {
             } satisfies Snapshot;
           if (name === "sync_progress")
             return { user: "user", progress: fixture.progress };
+          if (name === "sync_queue_state") return fixture.queue;
+          if (name === "cancel_sync") {
+            fixture.cancelled.push(args?.projectId ?? "");
+            fixture.queue = fixture.queue.filter(
+              (entry) => entry.projectId !== args?.projectId,
+            );
+            return;
+          }
           if (name === "sync_now") {
             fixture.progress = { label: "Waiting for sync to start…" };
             return;
@@ -214,6 +237,56 @@ test("stopped sync hides stale activity", async ({ page }) => {
   await expect(
     dialog.getByRole("button", { name: "Sync now", exact: true }),
   ).toBeDisabled();
+});
+
+test("the queue shows each project's state and cancels only queued or running work", async ({
+  page,
+}) => {
+  await page.evaluate(() => {
+    window.syncProgressFixture.queue = [
+      {
+        projectId: "one",
+        state: "running",
+        reason: "sync now",
+        attempts: 0,
+        notBefore: null,
+      },
+      {
+        projectId: "two",
+        state: "queued",
+        reason: "local",
+        attempts: 0,
+        notBefore: null,
+      },
+      {
+        projectId: "three",
+        state: "waiting",
+        reason: "timer",
+        attempts: 2,
+        notBefore: new Date(Date.now() + 120_000).toISOString(),
+      },
+    ];
+  });
+  const dialog = await openSync(page);
+  const row = (name: string) =>
+    dialog.locator(".sync-queue-row").filter({ hasText: name });
+  await expect(row("Orka")).toContainText("Syncing");
+  await expect(row("Docs")).toContainText("Queued");
+  await expect(row("Site")).toContainText("Retrying at");
+  await expect(row("Site").getByRole("button")).toHaveCount(0);
+  const accessibility = await new AxeBuilder({ page })
+    .include(".sync-menu")
+    .analyze();
+  expect(accessibility.violations).toEqual([]);
+  await row("Docs")
+    .getByRole("button", { name: "Cancel sync for Docs" })
+    .click();
+  await expect(row("Docs")).toHaveCount(0);
+  await expect(row("Orka")).toContainText("Syncing");
+  expect(
+    await page.evaluate(() => window.syncProgressFixture.cancelled),
+  ).toEqual(["two"]);
+  await dialog.screenshot({ path: "artifacts/sync-queue.png" });
 });
 
 for (const size of [
