@@ -1017,6 +1017,23 @@ mod tests {
     }
 
     #[test]
+    fn a_merged_request_stays_visible_as_running_until_the_claim_settles() {
+        let (_root, db) = queue_db(&["a"]);
+        let mut queue = SyncQueue::new(0);
+        SyncQueue::enqueue(&db, "a", Priority::Timer, "timer", 0).unwrap();
+        let job = SyncQueue::claim(&db, 0).unwrap().unwrap();
+        SyncQueue::enqueue(&db, "a", Priority::Local, "indexer", 1).unwrap();
+        assert_eq!(SyncQueue::states(&db, 2).unwrap()[0]["state"], "running");
+        SyncQueue::cancel(&db, "a").unwrap();
+        SyncQueue::enqueue(&db, "a", Priority::Local, "new change", 3).unwrap();
+        assert_eq!(SyncQueue::states(&db, 3).unwrap()[0]["state"], "running");
+        queue
+            .settle(&db, job, &Ok(Outcome::Cancelled), 4, &interval())
+            .unwrap();
+        assert_eq!(SyncQueue::states(&db, 4).unwrap()[0]["state"], "queued");
+    }
+
+    #[test]
     fn queue_state_keeps_a_merged_running_job_visible_until_its_boundary() {
         let (_root, db) = queue_db(&["a"]);
         SyncQueue::enqueue(&db, "a", Priority::Timer, "timer", 0).unwrap();
