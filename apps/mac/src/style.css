@@ -1499,7 +1499,7 @@
     @apply mb-4 flex shrink-0 items-center justify-between gap-4;
   }
   .create-project-heading h2 {
-    @apply m-0 text-heading-xs;
+    @apply m-0 min-w-0 truncate text-heading-xs;
   }
   .source-folders-heading {
     @apply mb-2 mt-3 flex items-center justify-between gap-3;

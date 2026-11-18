@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  joinErrorMessage,
   parseProjectInvite,
   sameServiceUrl,
 } from "../apps/mac/src/components/project-invite.js";
@@ -67,4 +68,71 @@ await test("service comparisons normalize origins while retaining service bounda
     "not a URL",
   ])
     assert.equal(sameServiceUrl(service, "https://team.example"), false);
+});
+
+const expired =
+  "This invite has expired. Ask the project owner for a new invite.";
+const used =
+  "This invite was already used or is no longer valid. Ask the project owner for a new invite.";
+const expiredOrUsed =
+  "This invite has expired or was already used. Ask the project owner for a new invite.";
+const archived = "This project is archived, so its invites no longer work.";
+const wrongAccount = (email: string) =>
+  `This invite was sent to ${email}. Sign in with that email address to join.`;
+
+await test("join errors drop the status prefix and say what to do next", () => {
+  const cases: [string, string][] = [
+    [
+      "400: This invite has expired. Ask the project owner for a new invite.",
+      expired,
+    ],
+    ["400: Invite expired or already used", expiredOrUsed],
+    [
+      "400: This invite was already used or is no longer valid. Ask the project owner for a new invite.",
+      used,
+    ],
+    ["400: This project is archived, so its invites no longer work.", archived],
+    [
+      "403: This invite was sent to mira@example.com. Sign in with that verified email address to join.",
+      wrongAccount("mira@example.com"),
+    ],
+    [
+      "403: This invite was sent to first.last@team.example. Sign in with that verified email address to join.",
+      wrongAccount("first.last@team.example"),
+    ],
+    [
+      "409: Update Orka to join a project with resource permissions",
+      "Update Orka to join a project with resource permissions",
+    ],
+    [
+      "Cloud unavailable; local work stays queued",
+      "Cloud unavailable; local work stays queued",
+    ],
+  ];
+  for (const [error, expected] of cases)
+    assert.equal(joinErrorMessage(error), expected);
+  assert.equal(
+    joinErrorMessage(new Error("400: Invite expired or already used")),
+    expiredOrUsed,
+  );
+});
+
+await test("join messages are the same when the dialog maps them again", () => {
+  for (const message of [
+    expired,
+    used,
+    expiredOrUsed,
+    archived,
+    wrongAccount("mira@example.com"),
+    "Update Orka to join a project with resource permissions",
+  ])
+    assert.equal(joinErrorMessage(message), message);
+});
+
+await test("join errors with nothing to say fall back to one clear line", () => {
+  for (const error of ["", "   ", "400: ", new Error(""), undefined, null])
+    assert.equal(
+      joinErrorMessage(error),
+      "Couldn’t join this project. Try again.",
+    );
 });
