@@ -4,6 +4,7 @@ use crate::{
 use serde_json::{json, Value};
 use std::{
     fs,
+    io::Read,
     path::{Path, PathBuf},
     sync::{Mutex, MutexGuard},
 };
@@ -247,6 +248,8 @@ mod plan_tests;
 mod plugin_connection_tests;
 #[path = "plugin_operations_tests.rs"]
 mod plugin_operations_tests;
+#[path = "project_export_tests.rs"]
+mod project_export_tests;
 #[path = "repository_tests.rs"]
 mod repository_tests;
 #[path = "resource_command_tests.rs"]
@@ -526,7 +529,7 @@ fn deleted_projects_leave_the_active_list_but_keep_their_row() {
     assert_eq!(saved["purged"], true);
     assert_eq!(saved["name"], "test");
     assert!(crate::projects::active(&f.db, id).is_err());
-    // A restored project is active again and forgets the purge.
+    // Purging is terminal: a stale pre-purge catalog cannot restore the row.
     crate::projects::merge_catalog(
         &f.db,
         &json!([{"id":id,"name":"test","role":"member","lifecycleRevision":4}]),
@@ -535,9 +538,115 @@ fn deleted_projects_leave_the_active_list_but_keep_their_row() {
     let saved = db::rows(&f.db, "SELECT value FROM projects WHERE id=?", &[&id])
         .unwrap()
         .remove(0);
-    assert!(saved["deletedAt"].is_null() && saved["purged"].is_null());
+    assert_eq!(saved["purged"], true);
     assert_eq!(saved["path"], f.project["path"]);
-    crate::projects::active(&f.db, id).unwrap();
+    assert!(crate::projects::active(&f.db, id).is_err());
+}
+
+#[test]
+fn recoverable_project_deletion_requires_advertised_server_support() {
+    for caps in [
+        json!({}),
+        json!({"lifecycle":1}),
+        json!({"softDelete":0}),
+        json!({"softDelete":"1"}),
+    ] {
+        assert!(crate::projects::require_soft_delete(&caps)
+            .unwrap_err()
+            .contains("Update the server"));
+    }
+    crate::projects::require_soft_delete(&json!({"lifecycle":1,"softDelete":1})).unwrap();
+}
+
+#[test]
+fn a_successful_soft_delete_pauses_even_with_an_older_minimal_receipt() {
+    let f = Fixture::new();
+    let id = f.project["id"].as_str().unwrap();
+    f.db.mark_deleted(
+        id,
+        &json!({"projectId":id,"action":"delete","lifecycleRevision":1}),
+    )
+    .unwrap();
+    assert!(crate::projects::active(&f.db, id).is_err());
+    let saved = db::rows(&f.db, "SELECT value FROM projects WHERE id=?", &[&id])
+        .unwrap()
+        .remove(0);
+    assert!(saved["deletedAt"].is_string());
+    assert!(
+        saved["purgeAfter"].is_null(),
+        "Do not fabricate a restore deadline"
+    );
+    assert_eq!(saved["path"], f.project["path"]);
+}
+
+#[test]
+fn deleted_owner_catalog_refreshes_recovery_metadata_on_existing_and_fresh_macs() {
+    let mut f = Fixture::new();
+    let id = f.project["id"].as_str().unwrap().to_string();
+    let source = uuid::Uuid::new_v4().to_string();
+    f.project["role"] = json!("owner");
+    f.project["lifecycleRevision"] = json!(1);
+    f.project["sources"] = json!([{"id":source,"name":"repo","path":f.root,"folderIdentity":indexer::folder_identity(&f.root).unwrap()}]);
+    db::upsert(&f.db, "projects", &id, &id, &f.project).unwrap();
+    let deleted = json!([{"id":id,"name":"test","role":"owner","lifecycleRevision":2,"deletedAt":"2026-11-19T00:00:00Z","archivedAt":"2026-11-19T00:00:00Z","purgeAfter":"2026-12-19T00:00:00Z","sources":[{"id":source,"name":"repo"}]}]);
+    crate::projects::merge_catalog(&f.db, &deleted).unwrap();
+    let saved = db::rows(&f.db, "SELECT value FROM projects WHERE id=?", &[&id])
+        .unwrap()
+        .remove(0);
+    assert_eq!(saved["role"], "owner");
+    assert_eq!(saved["lifecycleRevision"], 2);
+    assert_eq!(saved["sources"][0]["path"], json!(f.root));
+    assert!(crate::projects::active(&f.db, &id).is_err());
+
+    // A response fetched before deletion must not overwrite its newer revision.
+    crate::projects::merge_catalog(
+        &f.db,
+        &json!([{"id":id,"name":"test","role":"owner","lifecycleRevision":1}]),
+    )
+    .unwrap();
+    assert!(crate::projects::active(&f.db, &id).is_err());
+    crate::projects::merge_catalog(&f.db, &json!([{"id":id,"name":"test","role":"owner","lifecycleRevision":3,"sources":[{"id":source,"name":"repo"}]}])).unwrap();
+    crate::projects::active(&f.db, &id).unwrap();
+    let restored = db::rows(&f.db, "SELECT value FROM projects WHERE id=?", &[&id])
+        .unwrap()
+        .remove(0);
+    assert_eq!(restored["sources"][0]["path"], json!(f.root));
+
+    f.db.execute("DELETE FROM projects", []).unwrap();
+    crate::projects::merge_catalog(&f.db, &deleted).unwrap();
+    let fresh = db::rows(&f.db, "SELECT value FROM projects WHERE id=?", &[&id])
+        .unwrap()
+        .remove(0);
+    assert_eq!(fresh["role"], "owner");
+    assert_eq!(fresh["lifecycleRevision"], 2);
+    assert_eq!(fresh["purgeAfter"], "2026-12-19T00:00:00Z");
+}
+
+#[test]
+fn reduced_deleted_member_rows_order_lifecycle_and_update_membership_without_losing_bindings() {
+    let mut f = Fixture::new();
+    let id = f.project["id"].as_str().unwrap().to_string();
+    f.project["role"] = json!("owner");
+    f.project["lifecycleRevision"] = json!(2);
+    f.project["revoked"] = json!(true);
+    f.project["detachedAt"] = json!("2026-11-18T00:00:00Z");
+    db::upsert(&f.db, "projects", &id, &id, &f.project).unwrap();
+    let deleted = json!([{"id":id,"name":"test","role":"admin","lifecycleRevision":3,"deletedAt":"2026-11-19T00:00:00Z","purgeAfter":"2026-12-19T00:00:00Z"}]);
+    crate::projects::merge_catalog(&f.db, &deleted).unwrap();
+    let saved = db::rows(&f.db, "SELECT value FROM projects WHERE id=?", &[&id])
+        .unwrap()
+        .remove(0);
+    assert_eq!(saved["role"], "admin");
+    assert_eq!(saved["lifecycleRevision"], 3);
+    assert!(saved["revoked"].is_null() && saved["detachedAt"].is_null());
+    assert_eq!(saved["path"], f.project["path"]);
+    crate::projects::merge_catalog(
+        &f.db,
+        &json!([{"id":id,"name":"test","role":"member","lifecycleRevision":4}]),
+    )
+    .unwrap();
+    crate::projects::merge_catalog(&f.db, &deleted).unwrap();
+    crate::projects::active(&f.db, &id).unwrap();
 }
 
 #[test]
@@ -659,6 +768,84 @@ fn a_restored_project_clears_the_errors_its_403_left() {
     .unwrap();
     crate::projects::active(&f.db, id).unwrap();
     assert_eq!(queued("refused"), None);
+}
+
+#[test]
+fn snapshot_keeps_archived_deleted_and_removed_projects_visible_until_hidden() {
+    let f = Fixture::new();
+    let id = f.project["id"].as_str().unwrap();
+    let snapshot = || crate::commands::snapshot().unwrap();
+    crate::projects::merge_catalog(&f.db,&json!([{"id":id,"name":"test","role":"member","archivedAt":"2026-10-03T00:00:00Z","lifecycleRevision":1}])).unwrap();
+    let state = snapshot();
+    assert!(state["projects"].as_array().unwrap().is_empty());
+    assert_eq!(state["inactive"].as_array().unwrap().len(), 1);
+    assert_eq!(state["inactive"][0]["archivedAt"], "2026-10-03T00:00:00Z");
+    assert!(state["inactive"][0]["deletedAt"].is_null());
+    crate::projects::merge_catalog(&f.db,&json!([{"id":id,"name":"test","deletedAt":"2026-01-01T00:00:00Z","purgeAfter":"2026-01-31T00:00:00Z"}])).unwrap();
+    let state = snapshot();
+    assert!(state["projects"].as_array().unwrap().is_empty());
+    assert_eq!(state["inactive"][0]["purgeAfter"], "2026-01-31T00:00:00Z");
+    // Leaving the catalog detaches the project instead of hiding it.
+    crate::projects::merge_catalog(&f.db, &json!([])).unwrap();
+    let state = snapshot();
+    assert_eq!(state["inactive"][0]["revoked"], true);
+    assert!(state["inactive"][0]["detachedAt"].is_string());
+    // Removing it from this Mac hides it for good.
+    crate::projects::remove_local(&f.db, id).unwrap();
+    assert!(snapshot()["inactive"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn exporting_a_project_writes_cached_resources_and_drafts() {
+    let f = Fixture::new();
+    let id = f.project["id"].as_str().unwrap();
+    let cached = b"# Cached memory\n";
+    let draft = b"# Unpublished draft\n";
+    let resource = json!({"resourceId":"cached","projectId":id,"kind":"memory","source":"shared","logicalPath":"knowledge/cached.md","title":"Cached","deleted":false,"files":[{"path":"content.md","hash":db::blob(cached).unwrap(),"size":cached.len(),"executable":false}]});
+    db::upsert(&f.db, "resources", "cached", id, &resource).unwrap();
+    let queued = json!({"id":"draft","projectId":id,"status":"local","createdAt":db::now(),"resource":{"resourceId":"draft-resource","kind":"memory","source":"shared","logicalPath":"knowledge/draft.md","title":"Draft","deleted":false,"files":[{"path":"content.md","hash":db::blob(draft).unwrap(),"size":draft.len(),"executable":false}]}});
+    db::upsert(&f.db, "drafts", "draft", id, &queued).unwrap();
+    let path = f.root.join("project.zip");
+    bundles::export_project(&f.db, id, &path).unwrap();
+    let mut zip = zip::ZipArchive::new(fs::File::open(&path).unwrap()).unwrap();
+    let mut names = Vec::new();
+    for index in 0..zip.len() {
+        names.push(zip.by_index(index).unwrap().name().unwrap().to_string());
+    }
+    let memory_hash = db::blob(cached).unwrap();
+    let draft_hash = db::blob(draft).unwrap();
+    for name in [
+        "project.json".to_string(),
+        "resources/cached/resource.json".to_string(),
+        format!("resources/cached/blobs/{memory_hash}"),
+        "drafts/draft/draft.json".to_string(),
+        format!("drafts/draft/blobs/{draft_hash}"),
+    ] {
+        assert!(names.contains(&name), "missing {name}: {names:?}");
+    }
+    let mut header = String::new();
+    zip.by_name("project.json")
+        .unwrap()
+        .read_to_string(&mut header)
+        .unwrap();
+    let header: Value = serde_json::from_str(&header).unwrap();
+    assert_eq!(header["project"]["name"], "test");
+    assert_eq!(header["resources"], 1);
+    assert_eq!(header["drafts"], 1);
+    let mut blob = Vec::new();
+    zip.by_name(&format!("drafts/draft/blobs/{draft_hash}"))
+        .unwrap()
+        .read_to_end(&mut blob)
+        .unwrap();
+    assert_eq!(blob, draft);
+    // Local folders and cached work are untouched by the export.
+    assert_eq!(f.resources().len(), 1);
+    assert_eq!(
+        db::rows(&f.db, "SELECT value FROM drafts", &[])
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 #[test]

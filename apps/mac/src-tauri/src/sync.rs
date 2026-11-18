@@ -1483,7 +1483,7 @@ impl<'a> SyncPass<'a> {
             .ok_or("Configure the service")?
             .to_string();
         register_device(owner, &origin, &device).await?;
-        let projects = api_as(owner, "GET", "/v2/projects?includeArchived=true", None).await?;
+        let projects = api_as(owner, "GET", crate::projects::CATALOG_PATH, None).await?;
         crate::projects::merge_catalog(db, &projects)?;
         Ok(Continue(()))
     }

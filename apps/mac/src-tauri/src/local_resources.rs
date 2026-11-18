@@ -186,6 +186,12 @@ pub fn catalog(db: &Connection, project: &Value, kind: &str) -> Result<Value> {
     read_catalog(db, project, kind, errors, true)
 }
 
+/// A read-only view for exports, including private cached content when its
+/// original files are gone. Keep the same ownership and source checks as reads.
+pub(crate) fn cached_catalog(db: &Connection, project: &Value, kind: &str) -> Result<Value> {
+    read_catalog(db, project, kind, Vec::new(), false)
+}
+
 fn read_catalog(
     db: &Connection,
     project: &Value,

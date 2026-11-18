@@ -331,7 +331,7 @@ async fn attach(context: &Context, job: &Value) -> Result<()> {
         &context.user,
         &context.service,
         "GET",
-        "/v2/projects?includeArchived=true",
+        crate::projects::CATALOG_PATH,
         None,
     )
     .await?;
@@ -626,7 +626,7 @@ pub async fn repository_command(action: String, input: Value, context: Context) 
             &context.user,
             &context.service,
             "GET",
-            "/v2/projects?includeArchived=true",
+            crate::projects::CATALOG_PATH,
             None,
         )
         .await?;
