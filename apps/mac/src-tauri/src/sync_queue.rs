@@ -325,7 +325,8 @@ impl SyncQueue {
     pub(crate) fn states(db: &Connection, now: i64) -> Result<Value> {
         let mut query = db
             .prepare(
-                "SELECT project,reason,attempts,not_before FROM sync_queue
+                "SELECT project,reason,attempts,not_before,EXISTS(
+                 SELECT 1 FROM meta WHERE key='syncClaim:'||project AND json_type(value)='text') FROM sync_queue
                  WHERE project<>?1 ORDER BY priority DESC,requested_at,project",
             )
             .map_err(|e| e.to_string())?;
@@ -336,15 +337,16 @@ impl SyncQueue {
                     row.get::<_, String>(1)?,
                     row.get::<_, u32>(2)?,
                     row.get::<_, i64>(3)?,
+                    row.get::<_, bool>(4)?,
                 ))
             })
             .and_then(|rows| rows.collect::<rusqlite::Result<Vec<_>>>())
             .map_err(|e| e.to_string())?;
         let states = jobs
             .into_iter()
-            .map(|(project, reason, attempts, not_before)| {
-                let waiting = attempts > 0 && not_before > now;
-                let state = if not_before == RUNNING {
+            .map(|(project, reason, attempts, not_before, running)| {
+                let waiting = !running && attempts > 0 && not_before > now;
+                let state = if running {
                     "running"
                 } else if waiting {
                     "waiting"
@@ -1012,6 +1014,19 @@ mod tests {
                 {"projectId":"due","state":"queued","reason":"timer","attempts":2,"notBefore":null},
             ])
         );
+    }
+
+    #[test]
+    fn queue_state_keeps_a_merged_running_job_visible_until_its_boundary() {
+        let (_root, db) = queue_db(&["a"]);
+        SyncQueue::enqueue(&db, "a", Priority::Timer, "timer", 0).unwrap();
+        SyncQueue::claim(&db, 0).unwrap().unwrap();
+        SyncQueue::enqueue(&db, "a", Priority::Local, "indexer", 1).unwrap();
+        assert_eq!(SyncQueue::states(&db, 2).unwrap()[0]["state"], "running");
+        SyncQueue::cancel(&db, "a").unwrap();
+        let state = SyncQueue::states(&db, 2).unwrap();
+        assert_eq!(state[0]["state"], "running");
+        assert!(state[0]["notBefore"].is_null());
     }
 
     #[test]
