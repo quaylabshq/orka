@@ -13,12 +13,15 @@ export function ProjectInviteDialog({
   projectName,
   onClose,
   onCloseAutoFocus,
+  onDelivery,
 }: {
   title?: string;
   projectId: string;
   projectName: string;
   onClose: () => void;
   onCloseAutoFocus?: (event: Event) => void;
+  /** Reports whether an email invite reached the mail service (503 means not). */
+  onDelivery?: (email: string, delivered: boolean) => void;
 }) {
   const [emailAvailable, setEmailAvailable] = useState<boolean | null>(null);
   const [mode, setMode] = useState<"email" | "link">("email");
@@ -69,6 +72,7 @@ export function ProjectInviteDialog({
         );
         if (!result.sent)
           throw new Error("Email invites are unavailable. Use an invite link.");
+        onDelivery?.(result.email, true);
         setMessage(`Invite sent to ${result.email}.`);
         setEmail("");
       } else {
@@ -88,6 +92,8 @@ export function ProjectInviteDialog({
         setMessage("Link copied.");
       }
     } catch (cause) {
+      if (mode === "email" && /^503:/.test(String(cause)))
+        onDelivery?.(email.trim().toLowerCase(), false);
       setError(String(cause).replace(/^Error:\s*/, ""));
     } finally {
       inFlight.current = false;

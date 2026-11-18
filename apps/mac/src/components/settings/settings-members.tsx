@@ -1,5 +1,6 @@
 import { HistoryIcon, MailIcon, UserPlusIcon } from "lucide-react";
 import { RepositoryRequests } from "../repository-connections.js";
+import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Project, ProjectMember, Snapshot } from "../../types.js";
 import {
@@ -224,7 +225,25 @@ export function SettingsMembers({
     [confirmation, setConfirmation] = useState<{
       action: "remove-member" | "transfer-ownership";
       member: ProjectMember;
-    } | null>(null);
+    } | null>(null),
+    [revoking, setRevoking] = useState(""),
+    [revokeUnsupported, setRevokeUnsupported] = useState(false);
+  // A 503 can mean the provider accepted the email without confirming it.
+  // This uncertainty is local to this view; reopening Members shows Pending.
+  const [unconfirmedDelivery, setUnconfirmedDelivery] = useState<
+    ReadonlySet<string>
+  >(new Set());
+  const markDeliveryUnconfirmed = useCallback(
+    (email: string, unconfirmed: boolean) => {
+      setUnconfirmedDelivery((current) => {
+        const next = new Set(current);
+        if (unconfirmed) next.add(email);
+        else next.delete(email);
+        return next;
+      });
+    },
+    [],
+  );
   const active = useRef(true),
     locked = useRef(false);
   useEffect(() => {
@@ -255,13 +274,20 @@ export function SettingsMembers({
       if (active.current) {
         setNotice(message);
         setConfirmation(null);
+        setRevoking("");
         await query.refresh();
       }
     } catch (error) {
       if (active.current) {
-        setError(String(error));
+        // Rate limit and delivery messages from the service are shown as written.
+        setError(
+          String(error)
+            .replace(/^Error:\s*/, "")
+            .replace(/^(?:429|503):\s*/, ""),
+        );
         if (/(?:403|409):/.test(String(error))) {
           setConfirmation(null);
+          setRevoking("");
           await query.refresh();
         }
       }
@@ -270,6 +296,45 @@ export function SettingsMembers({
       if (active.current) setBusy("");
     }
   }
+  const resend = (email: string) =>
+    void mutate(
+      `invite:${email}`,
+      async () => {
+        try {
+          await invoke("cloud_action", {
+            action: "invite",
+            input: { projectId, email },
+          });
+          markDeliveryUnconfirmed(email, false);
+        } catch (error) {
+          if (/^503:/.test(String(error))) markDeliveryUnconfirmed(email, true);
+          throw error;
+        }
+      },
+      `Invite sent again to ${email}.`,
+    );
+  const revoke = (email: string) =>
+    void mutate(
+      `invite:${email}`,
+      async () => {
+        try {
+          await invoke("cloud_action", {
+            action: "revoke-invite",
+            input: { projectId, email },
+          });
+          markDeliveryUnconfirmed(email, false);
+        } catch (error) {
+          if (!/^404:/.test(String(error))) throw error;
+          setRevokeUnsupported(true);
+          setRevoking("");
+          throw new Error(
+            "Revoking invites needs an updated Orka service. Ask your service admin to update it.",
+            { cause: error },
+          );
+        }
+      },
+      `Invite to ${email} revoked.`,
+    );
   return (
     <>
       <SettingsHeading
@@ -349,26 +414,65 @@ export function SettingsMembers({
         <section aria-label="Pending invites">
           <h3>Pending invites ({pendingInvites.length})</h3>
           <ul className="settings-group settings-member-list">
-            {pendingInvites.map((invite) => (
-              <li className="settings-member-row" key={invite.email}>
-                <span className="settings-member-avatar">
-                  <MailIcon size={20} aria-hidden="true" />
-                </span>
-                <div className="settings-member-identity">
-                  <div className="settings-identity-name">
-                    <strong title={invite.email}>{invite.email}</strong>
-                    <span className="settings-device-label">Pending</span>
-                  </div>
-                  <p>
-                    Expires{" "}
-                    <time dateTime={invite.expiresAt}>
-                      {new Date(invite.expiresAt).toLocaleString()}
-                    </time>
-                  </p>
-                </div>
-                <span className="settings-member-role">Member</span>
-              </li>
-            ))}
+            {pendingInvites.map((invite) => {
+              const label = `Actions for invite to ${invite.email}`;
+              const disabled = Boolean(busy) || staleAuthority;
+              const actions: ItemMenuAction[] = [
+                {
+                  id: "resend",
+                  label: "Resend",
+                  disabled,
+                  onSelect: () => resend(invite.email),
+                },
+              ];
+              if (!revokeUnsupported)
+                actions.push({
+                  id: "revoke",
+                  label: "Revoke",
+                  danger: true,
+                  separator: true,
+                  disabled,
+                  onSelect: () => setRevoking(invite.email),
+                });
+              return (
+                <ItemContextMenu
+                  key={invite.email}
+                  actions={actions}
+                  label={label}
+                >
+                  <li className="settings-member-row">
+                    <span className="settings-member-avatar">
+                      <MailIcon size={20} aria-hidden="true" />
+                    </span>
+                    <div className="settings-member-identity">
+                      <div className="settings-identity-name">
+                        <strong title={invite.email}>{invite.email}</strong>
+                        <span className="settings-device-label">
+                          {unconfirmedDelivery.has(invite.email)
+                            ? "Delivery unconfirmed"
+                            : "Pending"}
+                        </span>
+                      </div>
+                      <p>
+                        Expires{" "}
+                        <time dateTime={invite.expiresAt}>
+                          {new Date(invite.expiresAt).toLocaleString()}
+                        </time>
+                      </p>
+                    </div>
+                    {busy === `invite:${invite.email}` && <ActivityIndicator />}
+                    <div className="settings-member-controls">
+                      <span className="settings-member-role">Member</span>
+                      <ItemMenuButton
+                        actions={actions}
+                        label={label}
+                        disabled={disabled}
+                      />
+                    </div>
+                  </li>
+                </ItemContextMenu>
+              );
+            })}
           </ul>
         </section>
       )}
@@ -399,11 +503,41 @@ export function SettingsMembers({
           title="Invite member"
           projectId={projectId}
           projectName={project.name}
+          onDelivery={(email, confirmed) =>
+            markDeliveryUnconfirmed(email, !confirmed)
+          }
           onClose={() => {
             setInvite(false);
             void query.refresh();
           }}
         />
+      )}
+      {revoking && (
+        <Overlay
+          open
+          title="Revoke invite?"
+          className="settings-confirm"
+          onClose={() => {
+            if (!busy) setRevoking("");
+          }}
+        >
+          <h2>Revoke the invite to {revoking}?</h2>
+          <p>Links sent to this address will stop working.</p>
+          {error && <p role="alert">{error}</p>}
+          <div className="settings-confirm-actions">
+            <Button disabled={Boolean(busy)} onClick={() => setRevoking("")}>
+              Stay
+            </Button>
+            <Button
+              variant="primary"
+              disabled={Boolean(busy)}
+              onClick={() => revoke(revoking)}
+            >
+              {busy && <ActivityIndicator />}
+              Revoke invite
+            </Button>
+          </div>
+        </Overlay>
       )}
       {confirmation && (
         <Overlay
