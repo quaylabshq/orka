@@ -1546,7 +1546,6 @@ impl<'a> SyncPass<'a> {
         let db = &mut *self.db;
         let owner = self.owner;
         let retry_only = self.mode == ProjectMode::RetryOnly;
-        let blocked_projects = &mut self.blocked;
         if crate::projects::foreground_waiting()? {
             return Ok(Break(()));
         }
@@ -1554,11 +1553,6 @@ impl<'a> SyncPass<'a> {
             let id = p["id"].as_str().ok_or("Missing project")?;
             let result: Result<()> = async {
                 let local = crate::governance::project(db, id)?;
-                if !retry_only {
-                    crate::governance::localize_outbox(db, &local)?;
-                } else {
-                    crate::governance::block_legacy_retry(db, &local)?;
-                }
                 let catalog = api_as(
                     owner,
                     "POST",
@@ -1567,6 +1561,13 @@ impl<'a> SyncPass<'a> {
                 )
                 .await?;
                 db::set(db, &format!("governance:{id}"), &catalog)?;
+                // A lifecycle refusal must leave queued work unchanged. Only
+                // prepare legacy knowledge after current access is confirmed.
+                if !retry_only {
+                    crate::governance::localize_outbox(db, &local)?;
+                } else {
+                    crate::governance::block_legacy_retry(db, &local)?;
+                }
                 if !retry_only {
                     crate::context_sharing::approve_own_pending(db, owner, &local, &catalog)
                         .await?;
@@ -1574,14 +1575,27 @@ impl<'a> SyncPass<'a> {
                 Ok(())
             }
             .await;
-            if result.as_ref().is_err_and(|e| service_error(e)) {
-                return result.map(Continue);
-            }
-            if result.is_err() {
-                blocked_projects.insert(id.to_string());
-            }
-            record_result(db, &format!("{id}:permissions"), result)?;
+            return self.record_authorization(id, result);
         }
+        Ok(Continue(()))
+    }
+
+    fn record_authorization(&mut self, project: &str, result: Result<()>) -> Stage {
+        if result.as_ref().is_err_and(|e| service_error(e)) {
+            return result.map(Continue);
+        }
+        let result = if result.as_ref().is_err_and(|error| SyncError(error).holds()) {
+            // The catalog may have changed since the workspace refresh. Preserve
+            // pending work and wait quietly for the project to become active.
+            self.held.insert(project.to_string());
+            Ok(())
+        } else {
+            if result.is_err() {
+                self.blocked.insert(project.to_string());
+            }
+            result
+        };
+        record_result(self.db, &format!("{project}:permissions"), result)?;
         Ok(Continue(()))
     }
 
@@ -1593,7 +1607,7 @@ impl<'a> SyncPass<'a> {
         let deferred = &mut self.deferred;
         let held = &mut self.held;
         let project = p["id"].as_str().ok_or("Missing project")?;
-        if self.blocked.contains(project) {
+        if self.blocked.contains(project) || held.contains(project) {
             return Ok(Continue(()));
         }
         let mut outbox = ProjectOutbox::open(db, project)?;
@@ -2453,6 +2467,82 @@ mod queue_tests {
         assert_eq!(other, "409: Already invited");
         assert_eq!(SyncError(&other).access(), None);
         assert!(!SyncError(&other).holds());
+    }
+
+    #[tokio::test]
+    async fn governance_lifecycle_refusals_hold_pending_work_without_permission_errors() {
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("ORKA_TEST_HOME", home.path());
+        db::open().unwrap();
+        for code in ["project_archived", "project_deleted"] {
+            let (_root, mut db) = outbox_db(&["a"]);
+            enqueue(&db, "a", "memory");
+            let before = db::rows(&db, "SELECT value FROM outbox", &[]).unwrap();
+            record_result(
+                &db,
+                "a:permissions",
+                Err("403: stale permission error".into()),
+            )
+            .unwrap();
+            let mut pass = SyncPass::new(&mut db, "owner", None);
+            let error = format!("403: {code}: Project is unavailable");
+            assert!(pass
+                .record_authorization("a", Err(error))
+                .unwrap()
+                .is_continue());
+            assert!(pass.held.contains("a"));
+            assert!(!pass.blocked.contains("a"));
+            let project = json!({"id":"a"});
+            // No service configuration is available: these stages must skip the
+            // held project before trying any upload or pull.
+            assert!(pass.drain_outbox(&project).await.unwrap().is_continue());
+            assert!(pass.pull_project(&project).await.unwrap().is_continue());
+            assert_eq!(
+                db::rows(pass.db, "SELECT value FROM outbox", &[]).unwrap(),
+                before
+            );
+            assert!(
+                db::rows(pass.db, "SELECT json_quote(error) FROM errors", &[])
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+    }
+
+    #[test]
+    fn governance_member_refusals_and_outages_keep_their_existing_behavior() {
+        for error in ["403: not_member: Not a member", "403: Forbidden"] {
+            let (_root, mut db) = outbox_db(&["a"]);
+            let mut pass = SyncPass::new(&mut db, "owner", None);
+            assert!(pass
+                .record_authorization("a", Err(error.into()))
+                .unwrap()
+                .is_continue());
+            assert!(pass.blocked.contains("a"));
+            assert!(!pass.held.contains("a"));
+            assert_eq!(
+                db::rows(pass.db, "SELECT json_quote(error) FROM errors", &[]).unwrap(),
+                [json!(error)]
+            );
+            assert!(pass
+                .record_authorization("a", Ok(()))
+                .unwrap()
+                .is_continue());
+            assert!(
+                db::rows(pass.db, "SELECT json_quote(error) FROM errors", &[])
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        let (_root, mut db) = outbox_db(&["a"]);
+        let mut pass = SyncPass::new(&mut db, "owner", None);
+        assert_eq!(
+            pass.record_authorization("a", Err("503: Service unavailable".into()))
+                .unwrap_err(),
+            "503: Service unavailable"
+        );
+        assert!(pass.held.is_empty());
+        assert!(pass.blocked.is_empty());
     }
 
     #[test]
