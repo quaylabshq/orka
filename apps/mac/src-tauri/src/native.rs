@@ -440,7 +440,10 @@ fn transcript_title(records: &[Value]) -> String {
     records
         .iter()
         .filter_map(session_translation::user_text)
-        .find_map(|text| crate::session_presentation::request_text(&text))
+        .find_map(|text| {
+            let redacted = crate::session_redaction::SessionRedactor::text(&text);
+            crate::session_presentation::request_text(&redacted)
+        })
         .unwrap_or_else(|| "Imported session".into())
 }
 pub fn transcript_messages(records: &[Value]) -> Vec<Value> {

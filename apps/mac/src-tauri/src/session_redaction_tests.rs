@@ -1,5 +1,78 @@
 use super::*;
 
+#[test]
+fn scanned_session_queues_a_redacted_title() {
+    let f = Fixture::new();
+    let id = uuid::Uuid::new_v4();
+    let path = native::claude_home()
+        .unwrap()
+        .join("projects/test")
+        .join(format!("{id}.jsonl"));
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let prompt = format!("Check this key: sk-{}", "x".repeat(24));
+    let original = native::encode(&[
+        json!({"type":"user","sessionId":id,"cwd":f.root,"message":{"role":"user","content":prompt}}),
+    ]);
+    fs::write(&path, &original).unwrap();
+
+    indexer::scan(&f.db, &f.project).unwrap();
+
+    let queued = f.outbox();
+    assert_eq!(queued[0]["resource"]["title"], "Check this key: [REDACTED]");
+    assert_eq!(fs::read(path).unwrap(), original);
+}
+
+#[test]
+fn previously_queued_raw_session_is_blocked_before_upload() {
+    let f = Fixture::new();
+    let project = f.project["id"].as_str().unwrap();
+    let raw = b"{\"tool\":{\"password\":\"synthetic-fixture\"}}\n";
+    let hash = db::blob(raw).unwrap();
+    let id = uuid::Uuid::new_v4().to_string();
+    let request = json!({"id":id,"projectId":project,"resource":{"kind":"session","title":"Old session","files":[{"path":"session.jsonl","hash":hash,"size":raw.len()}]}});
+    indexer::queue(&f.db, project, "/v2/sync/push", &request).unwrap();
+
+    let queued = f.outbox().remove(0);
+    let result = tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(crate::repair::upload("test", project, &queued["resource"]));
+    assert_eq!(
+        result.unwrap_err(),
+        "422: Session upload blocked because the snapshot still contains a recognized secret"
+    );
+    assert_eq!(f.outbox(), vec![request]);
+    assert_eq!(db::blob_read(&hash).unwrap(), raw);
+}
+
+#[test]
+fn session_upload_guard_checks_the_exact_blob_including_an_unterminated_record() {
+    let _f = Fixture::new();
+    let raw = br#"{"password":"synthetic-fixture"}"#;
+    let resource = json!({"kind":"session","files":[{"path":"session.jsonl","hash":db::blob(raw).unwrap(),"size":raw.len()}]});
+    let result = tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(crate::repair::upload("test", "test", &resource));
+    assert_eq!(
+        result.unwrap_err(),
+        "422: Session upload blocked because the snapshot still contains a recognized secret"
+    );
+}
+
+#[test]
+fn clean_snapshot_keeps_its_original_bytes_and_hash() {
+    let f = Fixture::new();
+    let path = f.root.join("clean.jsonl");
+    let clean =
+        b"{\"message\":{\"content\":\"Check the build\",\"role\":\"user\"},\"type\":\"user\"}\n";
+    fs::write(&path, clean).unwrap();
+    let files = crate::history::session_files("claude", &path, None).unwrap();
+    assert_eq!(files[0]["hash"], db::digest(clean));
+    assert_eq!(
+        db::blob_read(files[0]["hash"].as_str().unwrap()).unwrap(),
+        clean
+    );
+}
+
 fn redacted_session_records(f: &Fixture, tool: &str, records: &[Value]) -> Vec<Value> {
     let path = f.root.join(format!("{tool}-redaction.jsonl"));
     let original = native::encode(records);

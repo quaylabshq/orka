@@ -115,11 +115,23 @@ pub(crate) async fn register_device(owner: &str, origin: &str, device: &str) -> 
     api_at(owner, origin, "POST", "/v2/devices", Some(&registration)).await?;
     Ok(())
 }
-pub(crate) async fn upload(owner: &str, project: &str, files: &[Value]) -> Result<()> {
+pub(crate) async fn upload(owner: &str, project: &str, resource: &Value) -> Result<()> {
+    use crate::session_redaction::SessionRedactor;
+
+    let session = resource["kind"] == "session";
+    if let Some(title) = resource["title"].as_str().filter(|_| session) {
+        SessionRedactor::check_upload(title.as_bytes())?;
+    }
+    let files = resource["files"]
+        .as_array()
+        .ok_or("Local upload: missing files")?;
     packages::reject_env_files(files).map_err(|e| format!("Local upload: {e}"))?;
     for f in files {
         let hash = f["hash"].as_str().ok_or("Local upload: missing hash")?;
         let bytes = db::blob_read(hash).map_err(|e| format!("Local upload: {e}"))?;
+        if session {
+            SessionRedactor::check_upload(&bytes)?;
+        }
         let response = request(owner, "PUT", &format!("/v2/blobs/{project}/{hash}"))
             .await?
             .body(bytes)
@@ -213,6 +225,10 @@ pub fn apply_event(db: &rusqlite::Connection, event: &Value) -> Result<()> {
 
 fn copy_state_key(id: &str) -> String {
     format!("sessionCopy:{id}")
+}
+
+fn outbox_redaction_key(id: &str) -> String {
+    format!("sessionOutboxRedaction:{id}")
 }
 
 fn copy_source_snapshot(base: &Value) -> Result<Value> {
@@ -431,8 +447,11 @@ pub(crate) fn queued_session_snapshot(
 }
 
 pub(crate) fn clear_session_copy(db: &rusqlite::Connection, id: &str) -> Result<()> {
-    db.execute("DELETE FROM meta WHERE key=?", [copy_state_key(id)])
-        .map_err(|error| error.to_string())?;
+    db.execute(
+        "DELETE FROM meta WHERE key IN (?,?)",
+        params![copy_state_key(id), outbox_redaction_key(id)],
+    )
+    .map_err(|error| error.to_string())?;
     Ok(())
 }
 
@@ -483,6 +502,163 @@ pub(crate) fn replace_unavailable_session_copy(
     }
     clear_session_copy(&tx, input["id"].as_str().ok_or("Missing request ID")?)?;
     tx.commit().map_err(|error| error.to_string())?;
+    Ok(true)
+}
+
+/// Stage old snapshots once. Their original request bodies remain frozen until
+/// the service acknowledges or cancels their potentially accepted operation.
+const OUTBOX_REDACTION_KEY: &str = "sessionOutboxRedactionPrepared";
+
+fn redact_session_snapshot(snapshot: &mut Value) -> Result<()> {
+    if snapshot["kind"] != "session" {
+        return Ok(());
+    }
+    if let Some(title) = snapshot["title"].as_str() {
+        snapshot["title"] = json!(crate::session_redaction::SessionRedactor::text(title));
+    }
+    if snapshot["files"]
+        .as_array()
+        .is_some_and(|files| !files.is_empty())
+    {
+        snapshot["files"] = json!(crate::history::redacted_files(
+            &snapshot["source"],
+            &snapshot["files"]
+        )?);
+    }
+    Ok(())
+}
+
+/// Prepare redacted replacements without changing an uncertain request's identity.
+/// Even a local 422 can follow an earlier accepted request whose response was lost.
+pub(crate) fn rebuild_unredacted_outbox(db: &rusqlite::Connection) -> Result<()> {
+    if db::get(db, OUTBOX_REDACTION_KEY)? == true {
+        return Ok(());
+    }
+    let tx = db
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
+    let previously_rebuilt = db::get(&tx, "sessionOutboxRedacted")? == true;
+    let rows = db::rows(
+        &tx,
+        "SELECT json_object('id',id,'path',path,'value',json(value),'error',error) FROM outbox WHERE path='/v2/sessions/copy' OR (path='/v2/sync/push' AND json_extract(value,'$.resource.kind')='session') ORDER BY rowid",
+        &[],
+    )?;
+    for row in rows {
+        let id = row["id"].as_str().ok_or("Missing request ID")?;
+        let mut value = row["value"].clone();
+        let mut state = db::get(&tx, &copy_state_key(id))?;
+        let rebuilt = if row["path"] == "/v2/sessions/copy" {
+            (|| {
+                let mut source = queued_session_snapshot(&tx, &value)?
+                    .ok_or("The selected session snapshot is unavailable")?;
+                redact_session_snapshot(&mut source)?;
+                value["sourceSnapshot"] = copy_source_snapshot(&source)?;
+                state["source"] = source;
+                Ok::<_, String>(())
+            })()
+        } else {
+            redact_session_snapshot(&mut value["resource"])
+        };
+        let replacement = match rebuilt {
+            Ok(())
+                if previously_rebuilt
+                    || value != row["value"]
+                    || row["error"] == "409: Retry ID reused with different content" =>
+            {
+                json!({"value":value,"state":state})
+            }
+            Ok(()) => continue,
+            Err(_) => json!({"drop":true}),
+        };
+        db::set(&tx, &outbox_redaction_key(id), &replacement)?;
+    }
+    db::set(&tx, OUTBOX_REDACTION_KEY, &json!(true))?;
+    tx.commit().map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+/// Called only after the service has fenced the old ID against delayed uploads.
+/// UPDATE preserves rowid, so later edits cannot overtake this replacement.
+pub(crate) fn replace_redacted_outbox(
+    db: &rusqlite::Connection,
+    queued: &mut Value,
+) -> Result<bool> {
+    let id = queued["id"].as_str().ok_or("Missing request ID")?;
+    let project = queued["project"].as_str().ok_or("Missing project")?;
+    let replacement = db::get(db, &outbox_redaction_key(id))?;
+    if !replacement.is_object() {
+        return Err("The queued session replacement is unavailable".into());
+    }
+    let tx = db
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
+    if db::rows(&tx, "SELECT value FROM outbox WHERE id=?", &[&id])?.first()
+        != Some(&queued["value"])
+    {
+        return Err("The queued session changed; retry was preserved".into());
+    }
+    if replacement["drop"] == true {
+        tx.execute("DELETE FROM outbox WHERE id=?", [id])
+            .map_err(|error| error.to_string())?;
+        let push = queued["path"] == "/v2/sync/push";
+        let resource = if push {
+            queued["value"]["resource"]["resourceId"].as_str()
+        } else {
+            queued["value"]["resourceId"].as_str()
+        };
+        if let Some(resource) = resource {
+            let mut binding = indexer::binding(&tx, resource)?;
+            let rebind = if push {
+                binding["lastSeenHash"].is_string()
+            } else {
+                binding["copyRequest"] == id
+            };
+            if rebind {
+                if push {
+                    // Keep a string so a teammate's session stays on the copy path.
+                    binding["lastSeenHash"] = json!("");
+                } else {
+                    binding["copyRequest"] = Value::Null;
+                }
+                db::upsert(&tx, "bindings", resource, project, &binding)?;
+            }
+        }
+        clear_session_copy(&tx, id)?;
+        tx.commit().map_err(|error| error.to_string())?;
+        return Ok(false);
+    }
+    let new_id = uuid::Uuid::new_v4().to_string();
+    let mut value = replacement["value"].clone();
+    value["id"] = json!(new_id);
+    if tx
+        .execute(
+            "UPDATE outbox SET id=?,value=?,error=NULL WHERE id=?",
+            params![new_id, value.to_string(), id],
+        )
+        .map_err(|error| error.to_string())?
+        != 1
+    {
+        return Err("The queued session changed; retry was preserved".into());
+    }
+    if queued["path"] == "/v2/sessions/copy" {
+        let mut state = replacement["state"].clone();
+        // The reconciliation capability requires exact cached-snapshot copying.
+        state["negotiate"] = json!(false);
+        db::set(&tx, &copy_state_key(&new_id), &state)?;
+        let resource = value["resourceId"]
+            .as_str()
+            .ok_or("Missing copied resource")?;
+        let mut binding = indexer::binding(&tx, resource)?;
+        if binding["copyRequest"] == id {
+            binding["copyRequest"] = json!(new_id);
+            db::upsert(&tx, "bindings", resource, project, &binding)?;
+        }
+    }
+    clear_session_copy(&tx, id)?;
+    tx.commit().map_err(|error| error.to_string())?;
+    queued["id"] = json!(new_id);
+    queued["value"] = value;
+    queued["error"] = Value::Null;
     Ok(true)
 }
 
@@ -1442,6 +1618,9 @@ impl<'a> SyncPass<'a> {
     }
 
     async fn sync_project(&mut self, p: &Value) -> Stage {
+        // A project job can run independently of the next workspace job. Fence
+        // its old retry identities before a scan creates newly redacted edits.
+        rebuild_unredacted_outbox(self.db)?;
         if self.preflight(p)?.is_break()
             || self.authorize(p).await?.is_break()
             || self.drain_outbox(p).await?.is_break()
@@ -1469,6 +1648,7 @@ impl<'a> SyncPass<'a> {
             crate::repair::workspace(db)?;
             packages::recover_installations(db)?;
         }
+        rebuild_unredacted_outbox(db)?;
         let device = self.device()?;
         let db = &mut *self.db;
         for binding in db::rows(
@@ -1606,8 +1786,9 @@ impl<'a> SyncPass<'a> {
         let owner = self.owner;
         let deferred = &mut self.deferred;
         let held = &mut self.held;
+        let blocked = &mut self.blocked;
         let project = p["id"].as_str().ok_or("Missing project")?;
-        if self.blocked.contains(project) || held.contains(project) {
+        if blocked.contains(project) || held.contains(project) {
             return Ok(Continue(()));
         }
         let mut outbox = ProjectOutbox::open(db, project)?;
@@ -1635,7 +1816,8 @@ impl<'a> SyncPass<'a> {
                 .map(|q| q["id"].clone()),
         );
         let uploads = outbox.batch(&queued);
-        for (index, q) in uploads.iter().enumerate() {
+        for (index, original) in uploads.iter().enumerate() {
+            let mut q = (**original).clone();
             if crate::projects::foreground_waiting()? {
                 return Ok(Break(()));
             }
@@ -1657,6 +1839,45 @@ impl<'a> SyncPass<'a> {
                 Some(uploads.len()),
             )?;
             let result = async {
+                let id = q["id"].as_str().ok_or("Missing request ID")?;
+                if db::get(db, &outbox_redaction_key(id))?.is_object() {
+                    let capabilities =
+                        api_as(owner, "GET", "/v2/projects/capabilities", None).await?;
+                    if capabilities["sessionUploadReconcile"] != 1
+                        || (q["path"] == "/v2/sessions/copy"
+                            && capabilities["sessionLatestOnly"] != 1)
+                    {
+                        // Keep permission pulls from discarding a queued initial
+                        // upload before the service has fenced its old retry ID.
+                        blocked.insert(project.to_string());
+                        return Err(
+                            "409: Update the service to safely rebuild queued session uploads"
+                                .into(),
+                        );
+                    }
+                    let outcome = api_as(
+                        owner,
+                        "POST",
+                        "/v2/sessions/reconcile",
+                        Some(&json!({"projectId":project,"deviceId":device,"id":id})),
+                    )
+                    .await?;
+                    match outcome["status"].as_str() {
+                        Some("accepted") => return Ok(Some(outcome["receipt"].clone())),
+                        Some("cancelled") => {
+                            deferred.remove(&q["id"]);
+                            if !replace_redacted_outbox(db, &mut q)? {
+                                return Ok(None);
+                            }
+                            input = q["value"].clone();
+                        }
+                        _ => {
+                            return Err(
+                                "The service returned an invalid session reconciliation".into()
+                            )
+                        }
+                    }
+                }
                 if q["path"] == "/v2/sessions/copy" {
                     let id = input["id"].as_str().ok_or("Missing request ID")?;
                     if db::get(db, &copy_state_key(id))?["negotiate"] == true {
@@ -1678,10 +1899,12 @@ impl<'a> SyncPass<'a> {
                     }
                 }
                 if q["path"] == crate::selective_sharing::QUEUE_PATH {
-                    return crate::selective_sharing::send(db, owner, q).await;
+                    return crate::selective_sharing::send(db, owner, &q)
+                        .await
+                        .map(Some);
                 }
                 if q["path"] == crate::context_sharing::QUEUE_PATH {
-                    crate::context_sharing::upload(db, owner, q).await?;
+                    crate::context_sharing::upload(db, owner, &q).await?;
                 } else if input["resource"]["files"].is_array() {
                     crate::repair::upload(
                         owner,
@@ -1693,7 +1916,7 @@ impl<'a> SyncPass<'a> {
                 if q["path"] == crate::global_skills::IMPORT_PATH
                     || q["path"] == crate::context_sharing::QUEUE_PATH
                 {
-                    return crate::context_sharing::share(db, owner, q).await;
+                    return crate::context_sharing::share(db, owner, &q).await.map(Some);
                 }
                 api_as(
                     owner,
@@ -1702,27 +1925,31 @@ impl<'a> SyncPass<'a> {
                     Some(&input),
                 )
                 .await
+                .map(Some)
             }
             .await;
             match result {
                 Ok(receipt) => {
                     let tx = db.transaction().map_err(|e| e.to_string())?;
-                    if q["path"] == crate::selective_sharing::QUEUE_PATH {
-                        crate::selective_sharing::complete(&tx, q, &receipt)?;
-                    } else if q["path"] == crate::global_skills::IMPORT_PATH
-                        || q["path"] == crate::context_sharing::QUEUE_PATH
-                    {
-                        crate::context_sharing::complete(&tx, q, &receipt)?;
-                    } else {
-                        apply_event(&tx, &receipt["event"])?;
+                    if let Some(receipt) = receipt {
+                        if q["path"] == crate::selective_sharing::QUEUE_PATH {
+                            crate::selective_sharing::complete(&tx, &q, &receipt)?;
+                        } else if q["path"] == crate::global_skills::IMPORT_PATH
+                            || q["path"] == crate::context_sharing::QUEUE_PATH
+                        {
+                            crate::context_sharing::complete(&tx, &q, &receipt)?;
+                        } else {
+                            apply_event(&tx, &receipt["event"])?;
+                        }
+                        acknowledge_session(
+                            &tx,
+                            q["project"].as_str().ok_or("Missing project")?,
+                            q["path"].as_str().ok_or("Missing upload path")?,
+                            &input,
+                            &receipt,
+                        )?;
                     }
-                    acknowledge_session(
-                        &tx,
-                        q["project"].as_str().ok_or("Missing project")?,
-                        q["path"].as_str().ok_or("Missing upload path")?,
-                        &input,
-                        &receipt,
-                    )?;
+                    clear_session_copy(&tx, q["id"].as_str().ok_or("Missing request ID")?)?;
                     tx.execute("DELETE FROM outbox WHERE id=?", [q["id"].as_str()])
                         .map_err(|e| e.to_string())?;
                     tx.commit().map_err(|e| e.to_string())?;
@@ -1740,13 +1967,13 @@ impl<'a> SyncPass<'a> {
                         outbox.advance(db, &q["sequence"])?;
                         continue;
                     }
-                    if outbox.fail(db, q, &error)? {
+                    if outbox.fail(db, &q, &error)? {
                         // Archived or deleted: keep the row for a restore and let
                         // the project's job back off without an error.
                         held.insert(project.to_string());
                         return Ok(Continue(()));
                     }
-                    if consolidation_pending(q, &error) || error.starts_with("Local upload: ") {
+                    if consolidation_pending(&q, &error) || error.starts_with("Local upload: ") {
                         deferred.insert(q["id"].clone());
                     } else if terminal_error(&error) {
                         deferred.remove(&q["id"]);
@@ -2168,7 +2395,7 @@ impl<'p> ProjectOutbox<'p> {
 
     /// Queued rows that may be sent now, oldest first.
     fn queued(&self, db: &rusqlite::Connection) -> Result<Vec<Value>> {
-        db::rows(db, "SELECT json_object('sequence',rowid,'id',id,'project',project,'path',path,'value',json(value),'error',error) FROM outbox WHERE project=? AND (error IS NULL OR error NOT GLOB '4[0-9][0-9]:*' OR substr(error,1,3) IN ('401','408','429')) ORDER BY rowid", &[&self.project])
+        db::rows(db, "SELECT json_object('sequence',rowid,'id',id,'project',project,'path',path,'value',json(value),'error',error) FROM outbox WHERE project=? AND (EXISTS(SELECT 1 FROM meta WHERE key='sessionOutboxRedaction:'||outbox.id) OR error IS NULL OR error NOT GLOB '4[0-9][0-9]:*' OR substr(error,1,3) IN ('401','408','429')) ORDER BY rowid", &[&self.project])
     }
 
     fn batch<'q>(&self, queued: &'q [Value]) -> Vec<&'q Value> {
@@ -2741,6 +2968,104 @@ mod queue_tests {
         assert_eq!(ProjectOutbox::open(&db, "a").unwrap().cursor, 9);
         // A project added after the migration starts from the beginning.
         assert_eq!(ProjectOutbox::open(&db, "c").unwrap().cursor, 0);
+    }
+
+    #[test]
+    fn project_batches_reconcile_fenced_terminal_rows_without_overtaking_them() {
+        let (_root, db) = outbox_db(&["a", "b"]);
+        let fenced = enqueue(&db, "a", "session");
+        let later = enqueue(&db, "a", "session");
+        let other = enqueue(&db, "a", "independent");
+        let terminal = enqueue(&db, "a", "terminal");
+        let peer = enqueue(&db, "b", "peer-session");
+        for sequence in [fenced, later, peer] {
+            db.execute(
+                "UPDATE outbox SET value=json_set(value,'$.resource.kind','session') WHERE rowid=?",
+                [sequence],
+            )
+            .unwrap();
+        }
+        for sequence in [fenced, terminal, peer] {
+            db.execute(
+                "UPDATE outbox SET error='422: Session upload blocked' WHERE rowid=?",
+                [sequence],
+            )
+            .unwrap();
+        }
+        for sequence in [fenced, peer] {
+            let id: String = db
+                .query_row("SELECT id FROM outbox WHERE rowid=?", [sequence], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            db::set(&db, &outbox_redaction_key(&id), &json!({"drop":true})).unwrap();
+        }
+        assert_eq!(batch(&db, "a"), vec![fenced, other]);
+        assert_eq!(batch(&db, "b"), vec![peer]);
+        // A rotated cursor still cannot let a later edit of the same session
+        // overtake the fenced request while its service outcome is unknown.
+        let mut outbox = ProjectOutbox::open(&db, "a").unwrap();
+        outbox.advance(&db, &json!(other)).unwrap();
+        assert_eq!(batch(&db, "a"), vec![fenced, other]);
+        db.execute("DELETE FROM outbox WHERE rowid=?", [fenced])
+            .unwrap();
+        assert_eq!(batch(&db, "a"), vec![later, other]);
+    }
+
+    #[tokio::test]
+    async fn a_project_job_stages_legacy_session_retries_before_any_workspace_job() {
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("ORKA_TEST_HOME", home.path());
+        db::open().unwrap();
+        let (_root, mut db) = outbox_db(&["a"]);
+        db::set(&db, "user", &json!("owner")).unwrap();
+        let secret = "sk-abcdefghijklmnopqrstuvwxyz123456";
+        let bytes = native::encode(&[
+            json!({"type":"user","uuid":"user-message","message":{"role":"user","content":format!("Use {secret}")}}),
+        ]);
+        let source = json!({"resourceId":"session","projectId":"a","kind":"session","source":"claude","logicalPath":"claude/session","title":format!("Use {secret}"),"revision":7,"deleted":false,"files":[{"path":"session.jsonl","hash":db::blob(&bytes).unwrap(),"size":bytes.len(),"executable":false}]});
+        let request = json!({"version":2,"id":"legacy-request","projectId":"a","deviceId":"device","resourceId":"session","expectedRevision":7});
+        indexer::queue(&db, "a", "/v2/sessions/copy", &request).unwrap();
+        let state = json!({"source":source,"negotiate":false});
+        db::set(&db, &copy_state_key("legacy-request"), &state).unwrap();
+        SyncQueue::enqueue(&db, "a", Priority::Timer, "timer", 0).unwrap();
+        let job = SyncQueue::next(&db, 0).unwrap().unwrap();
+        assert_eq!(job.project, "a");
+
+        // Yield before a project scan or any network call. The legacy retry
+        // still needs staging on this daemon path, even with no global job.
+        let waiting = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(db::root().unwrap().join("workspace-waiters.lock"))
+            .unwrap();
+        FileExt::lock_shared(&waiting).unwrap();
+        assert!(matches!(
+            sync_job(&mut db, &job).await.unwrap(),
+            Outcome::Yielded
+        ));
+        assert_eq!(db::get(&db, OUTBOX_REDACTION_KEY).unwrap(), true);
+        let replacement = db::get(&db, &outbox_redaction_key("legacy-request")).unwrap();
+        assert!(replacement["value"]["sourceSnapshot"].is_object());
+        assert_ne!(
+            replacement["value"]["sourceSnapshot"]["files"],
+            source["files"]
+        );
+        let hash = replacement["value"]["sourceSnapshot"]["files"][0]["hash"]
+            .as_str()
+            .unwrap();
+        crate::session_redaction::SessionRedactor::check_upload(&db::blob_read(hash).unwrap())
+            .unwrap();
+        assert_eq!(
+            db::rows(&db, "SELECT value FROM outbox", &[]).unwrap(),
+            vec![request]
+        );
+        assert_eq!(
+            db::get(&db, &copy_state_key("legacy-request")).unwrap(),
+            state
+        );
     }
 
     #[test]
