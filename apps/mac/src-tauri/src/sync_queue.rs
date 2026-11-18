@@ -7,9 +7,28 @@ use crate::{
     sync_schedule::{jitter, Interval},
 };
 use rusqlite::{params, Connection, OptionalExtension};
-use std::{collections::HashMap, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::{LazyLock, Mutex, MutexGuard},
+    time::Duration,
+};
 
 pub(crate) const WORKSPACE: &str = "*";
+
+/// Projects whose running job the user cancelled, and the job this process is
+/// running. A queued job is deleted from the queue instead; this only holds a
+/// job already running, and the worker checks it at a stage boundary rather
+/// than inside a request.
+static CANCELLED: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
+static RUNNING_JOB: LazyLock<Mutex<Option<String>>> = LazyLock::new(|| Mutex::new(None));
+
+fn cancelled_projects() -> MutexGuard<'static, HashSet<String>> {
+    CANCELLED.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn running_job() -> MutexGuard<'static, Option<String>> {
+    RUNNING_JOB.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 /// The `not_before` of a job while it runs, so it is not picked again. A request
 /// that arrives meanwhile merges in and lowers it, which tells the worker to
@@ -33,12 +52,16 @@ pub(crate) struct Job {
     attempts: u32,
 }
 
+#[derive(Debug)]
 pub(crate) enum Outcome {
     Synced,
     /// Finished with item errors or deferred uploads; retried with backoff.
     Deferred,
     /// Stopped early for foreground work; queued again as it was.
     Yielded,
+    /// The user cancelled it at a stage boundary: no backoff for the rest of
+    /// the work, and the project's timer keeps the time of its last sync.
+    Cancelled,
 }
 
 /// The worker's schedule. The queue itself lives in SQLite; this keeps when
@@ -209,6 +232,40 @@ impl SyncQueue {
         Ok(())
     }
 
+    /// Whether the project's running job should stop at its next stage boundary.
+    pub(crate) fn cancelled(project: &str) -> bool {
+        cancelled_projects().contains(project)
+    }
+
+    fn uncancel(project: &str) {
+        cancelled_projects().remove(project);
+    }
+
+    /// Test hook: flags a project's job without running one.
+    #[cfg(test)]
+    pub(crate) fn mark_cancelled(project: &str) {
+        cancelled_projects().insert(project.into());
+    }
+
+    /// Removes the project's queued job, or stops the job this process is
+    /// running for it at the next stage boundary. The account-wide `*` steps
+    /// cannot be cancelled.
+    pub(crate) fn cancel(db: &Connection, project: &str) -> Result<()> {
+        if project == WORKSPACE {
+            return Err("The workspace sync cannot be cancelled".into());
+        }
+        sql(db.execute(
+            "DELETE FROM sync_queue WHERE project=?1 AND not_before<>?2",
+            params![project, RUNNING],
+        ))?;
+        // Only the job running now is flagged, so a request after the cancel
+        // queues normally. The worker clears the flag when the job settles.
+        if running_job().as_deref() == Some(project) {
+            cancelled_projects().insert(project.into());
+        }
+        Ok(())
+    }
+
     fn queued(db: &Connection, project: &str) -> Result<bool> {
         db.query_row(
             "SELECT EXISTS(SELECT 1 FROM sync_queue WHERE project=?)",
@@ -254,11 +311,12 @@ impl SyncQueue {
         Ok(job)
     }
 
-    /// Success removes the job and restarts the project's timer, a failure
-    /// backs only that project off with jitter, and a yielded job is ready
-    /// again as it was. A request that arrived while the job ran stays queued
-    /// with its own `not_before`. A service outage also holds every other job
-    /// due before then until the same time, so it costs one request per step.
+    /// Success removes the job and restarts the project's timer, a cancel does
+    /// the same without the timer, a failure backs only that project off with
+    /// jitter, and a yielded job is ready again as it was. A request that
+    /// arrived while the job ran stays queued with its own `not_before`. A
+    /// service outage also holds every other job due before then until the same
+    /// time, so it costs one request per step.
     fn settle(
         &mut self,
         db: &Connection,
@@ -268,8 +326,10 @@ impl SyncQueue {
         interval: &Interval,
     ) -> Result<()> {
         let project = &job.project;
+        // The job is over, so a flag for it must not reach a later request.
+        Self::uncancel(project);
         match result {
-            Ok(Outcome::Synced) => {
+            Ok(Outcome::Synced | Outcome::Cancelled) => {
                 let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
                 sql(tx.execute(
                     "DELETE FROM sync_queue WHERE project=?1 AND not_before=?2",
@@ -280,7 +340,9 @@ impl SyncQueue {
                     [project],
                 ))?;
                 tx.commit().map_err(|e| e.to_string())?;
-                self.synced.insert(job.project, now);
+                if matches!(result, Ok(Outcome::Synced)) {
+                    self.synced.insert(job.project.clone(), now);
+                }
                 Ok(())
             }
             Ok(Outcome::Yielded) => sql(db.execute(
@@ -326,7 +388,10 @@ impl SyncQueue {
         let Some(job) = Self::claim(&db, Self::now())? else {
             return Ok(false);
         };
+        *running_job() = Some(job.project.clone());
         let result = run(&mut db, &job).await;
+        // The job is over, so a cancel from here on must not reach a later one.
+        *running_job() = None;
         self.settle(&db, job, &result, Self::now(), interval)?;
         Ok(true)
     }
@@ -611,6 +676,93 @@ mod tests {
         assert!(jobs
             .iter()
             .all(|job| job.priority == 1 && job.not_before == 5));
+    }
+
+    #[test]
+    fn cancelling_a_queued_job_removes_it_and_a_later_request_queues() {
+        let (_root, db) = queue_db(&["a", "b"]);
+        SyncQueue::enqueue(&db, "a", Priority::Timer, "timer", 0).unwrap();
+        SyncQueue::enqueue(&db, "b", Priority::Timer, "timer", 0).unwrap();
+        SyncQueue::cancel(&db, "a").unwrap();
+        let jobs = rows(&db);
+        assert_eq!(jobs.len(), 1, "{jobs:?}");
+        assert_eq!(jobs[0].project, "b");
+        assert!(!SyncQueue::cancelled("a"));
+        SyncQueue::request(&db, "a", Priority::User, "sync now").unwrap();
+        let job = SyncQueue::claim(&db, i64::MAX - 1).unwrap().unwrap();
+        assert_eq!((job.project.as_str(), job.attempts), ("a", 0));
+    }
+
+    #[tokio::test]
+    async fn a_cancel_stops_the_running_job_without_backoff_or_a_timer_reset() {
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("ORKA_TEST_HOME", home.path());
+        let db = db::open().unwrap();
+        db.execute(
+            "INSERT INTO projects VALUES(?,?)",
+            params!["a", json!({"id":"a"}).to_string()],
+        )
+        .unwrap();
+        let mut queue = SyncQueue::new(0);
+        let interval = interval();
+        // A previous failure left attempts and a backoff on the project.
+        let failed = Job {
+            project: "a".into(),
+            priority: 0,
+            reason: "timer".into(),
+            requested_at: 0,
+            not_before: 0,
+            attempts: 2,
+        };
+        SyncQueue::merge(&db, &failed).unwrap();
+        let ran = queue
+            .run_next(&interval, async |db, job| {
+                assert_eq!((job.project.as_str(), job.attempts), ("a", 2));
+                SyncQueue::cancel(db, "a").unwrap();
+                // The next stage boundary stops it; the job was not resynced.
+                assert!(SyncQueue::cancelled("a"));
+                Ok(Outcome::Cancelled)
+            })
+            .await;
+        assert!(ran.unwrap());
+        assert!(rows(&db).is_empty());
+        assert!(!SyncQueue::cancelled("a"));
+        // No backoff is waiting, and the timer still counts from the last sync,
+        // so the project is due at its usual offset rather than a full interval.
+        assert_eq!(SyncQueue::next(&db, i64::MAX - 1).unwrap(), None);
+        let offset = millis(jitter(&db::device(&db).unwrap(), "a", interval.duration()));
+        let due = |db: &Connection| rows(db).iter().any(|job| job.project == "a");
+        queue.enqueue_due(&db, offset - 1, &interval).unwrap();
+        assert!(!due(&db));
+        queue.enqueue_due(&db, offset, &interval).unwrap();
+        assert!(due(&db));
+    }
+
+    #[test]
+    fn a_request_after_a_cancel_queues_normally() {
+        let (_root, db) = queue_db(&["a"]);
+        let mut queue = SyncQueue::new(0);
+        let interval = interval();
+        SyncQueue::enqueue(&db, "a", Priority::Timer, "timer", 0).unwrap();
+        let job = SyncQueue::claim(&db, 0).unwrap().unwrap();
+        SyncQueue::cancel(&db, "a").unwrap();
+        queue
+            .settle(&db, job, &Ok(Outcome::Cancelled), 10, &interval)
+            .unwrap();
+        SyncQueue::request(&db, "a", Priority::User, "sync now").unwrap();
+        let queued = SyncQueue::claim(&db, i64::MAX - 1).unwrap().unwrap();
+        assert_eq!((queued.project.as_str(), queued.attempts), ("a", 0));
+        assert!(SyncQueue::next(&db, i64::MAX - 1).unwrap().is_none());
+    }
+
+    #[test]
+    fn the_workspace_job_cannot_be_cancelled() {
+        let (_root, db) = queue_db(&["a"]);
+        SyncQueue::request_all(&db, Priority::User, "sync now").unwrap();
+        let error = SyncQueue::cancel(&db, WORKSPACE).unwrap_err();
+        assert!(error.contains("cannot be cancelled"), "{error}");
+        assert_eq!(rows(&db).len(), 2);
+        assert!(!SyncQueue::cancelled(WORKSPACE));
     }
 
     #[tokio::test]

@@ -310,6 +310,7 @@ fn main() {
                 commands::retry_sign_in_storage,
                 commands::sign_out,
                 commands::sync_now,
+                commands::cancel_sync,
                 commands::sync_progress,
                 commands::cloud_action,
                 commands::connect_project,

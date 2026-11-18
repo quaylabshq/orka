@@ -1331,6 +1331,16 @@ fn preflight_project(db: &rusqlite::Connection, project: &Value, retry_only: boo
 /// workspace lock to a waiting foreground operation.
 type Stage = Result<ControlFlow<()>>;
 
+/// A stage boundary. A cancelled project's job stops here, between requests and
+/// transactions, so nothing is cut in half and nothing already sent is undone.
+fn boundary(project: &str) -> Stage {
+    Ok(if SyncQueue::cancelled(project) {
+        Break(())
+    } else {
+        Continue(())
+    })
+}
+
 /// How much a project's sync does. A plugin retry only resends what is already
 /// queued: it validates sources without scanning and prepares no new sharing.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1388,8 +1398,12 @@ impl<'a> SyncPass<'a> {
     }
 
     async fn sync_project(&mut self, p: &Value) -> Stage {
-        if self.preflight(p)?.is_break()
+        let project = p["id"].as_str().unwrap_or("");
+        if boundary(project)?.is_break()
+            || self.preflight(p)?.is_break()
+            || boundary(project)?.is_break()
             || self.authorize(p).await?.is_break()
+            || boundary(project)?.is_break()
             || self.drain_outbox(p).await?.is_break()
         {
             return Ok(Break(()));
@@ -1567,7 +1581,7 @@ impl<'a> SyncPass<'a> {
         );
         let uploads = outbox.batch(&queued);
         for (index, q) in uploads.iter().enumerate() {
-            if crate::projects::foreground_waiting()? {
+            if crate::projects::foreground_waiting()? || SyncQueue::cancelled(project) {
                 return Ok(Break(()));
             }
             let project_name = crate::projects::display_name(p);
@@ -1699,6 +1713,9 @@ impl<'a> SyncPass<'a> {
 
     /// Rescans one project, pulls its changes and applies them on this Mac.
     async fn pull_project(&mut self, p: &Value) -> Stage {
+        if boundary(p["id"].as_str().unwrap_or(""))?.is_break() {
+            return Ok(Break(()));
+        }
         let db = &mut *self.db;
         let owner = self.owner;
         let retry_only = self.mode == ProjectMode::RetryOnly;
@@ -1760,7 +1777,7 @@ impl<'a> SyncPass<'a> {
             &[&project],
         )?;
         for (index, r) in resources.iter().enumerate() {
-            if crate::projects::foreground_waiting()? {
+            if crate::projects::foreground_waiting()? || SyncQueue::cancelled(project) {
                 return Ok(Break(()));
             }
             let detail = format!(
@@ -1928,7 +1945,7 @@ async fn run_job(db: &mut rusqlite::Connection, job: &crate::sync_queue::Job) ->
     let result = sync_job(db, job).await;
     let previous = db::get(db, "sync")?;
     let status = match &result {
-        Ok(Outcome::Yielded) => previous,
+        Ok(Outcome::Yielded | Outcome::Cancelled) => previous,
         Ok(_) => json!({"online":true,"lastSync":db::now(),"updatedAt":db::now()}),
         Err(error) => {
             json!({"online":false,"lastSync":previous["lastSync"],"error":error,"updatedAt":db::now()})
@@ -1940,7 +1957,7 @@ async fn run_job(db: &mut rusqlite::Connection, job: &crate::sync_queue::Job) ->
     if !more || crate::projects::foreground_waiting()? {
         db::set(db, "syncProgress", &Value::Null)?;
     }
-    if !matches!(result, Ok(Outcome::Yielded)) {
+    if !matches!(result, Ok(Outcome::Yielded | Outcome::Cancelled)) {
         let error = result.as_ref().err().map(String::as_str);
         let _ = crate::onboarding::reconcile_workspace_sync(db, error);
     }
@@ -1979,7 +1996,9 @@ async fn sync_job(db: &mut rusqlite::Connection, job: &crate::sync_queue::Job) -
             |r| r.get(0),
         )
         .map_err(|e| e.to_string())?;
-    Ok(if flow.is_break() {
+    Ok(if SyncQueue::cancelled(&job.project) {
+        Outcome::Cancelled
+    } else if flow.is_break() {
         Outcome::Yielded
     } else if !pass.deferred.is_empty() || errors {
         Outcome::Deferred
@@ -2379,6 +2398,44 @@ mod queue_tests {
         assert_eq!(next[0]["sequence"], 101);
         assert_eq!(next[1]["sequence"], 1);
         assert_eq!(select_uploads(&queue, 1000)[0]["sequence"], 1);
+    }
+
+    #[test]
+    fn only_a_cancelled_project_stops_at_a_stage_boundary() {
+        let project = uuid::Uuid::new_v4().to_string();
+        assert!(boundary(&project).unwrap().is_continue());
+        SyncQueue::mark_cancelled(&project);
+        assert!(boundary(&project).unwrap().is_break());
+        assert!(boundary(&uuid::Uuid::new_v4().to_string())
+            .unwrap()
+            .is_continue());
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_job_stops_before_its_next_request_and_keeps_the_outbox() {
+        let (_root, db) = outbox_db(&[]);
+        let project = uuid::Uuid::new_v4().to_string();
+        db.execute(
+            "INSERT INTO projects VALUES(?,?)",
+            params![project, json!({"id": project}).to_string()],
+        )
+        .unwrap();
+        db::set(&db, "user", &json!(uuid::Uuid::new_v4().to_string())).unwrap();
+        let mut db = db;
+        enqueue(&db, &project, "memory");
+        enqueue(&db, &project, "skill");
+        SyncQueue::request(&db, &project, Priority::User, "sync now").unwrap();
+        let job = SyncQueue::next(&db, i64::MAX - 1).unwrap().unwrap();
+        SyncQueue::mark_cancelled(&project);
+        let outcome = sync_job(&mut db, &job).await;
+        assert!(matches!(outcome, Ok(Outcome::Cancelled)), "{outcome:?}");
+        // Nothing already sent is rolled back and nothing unsent is dropped.
+        assert_eq!(
+            db::rows(&db, "SELECT value FROM outbox", &[])
+                .unwrap()
+                .len(),
+            2
+        );
     }
 
     fn outbox_db(projects: &[&str]) -> (tempfile::TempDir, rusqlite::Connection) {
