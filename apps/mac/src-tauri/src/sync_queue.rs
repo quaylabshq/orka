@@ -22,10 +22,6 @@ const RUNNING: i64 = i64::MAX;
 pub(crate) enum Priority {
     Timer = 0,
     Local = 1,
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "Sync now, retry and governance request it next")
-    )]
     User = 2,
 }
 
@@ -161,6 +157,18 @@ impl SyncQueue {
         for project in Self::targets(&tx)? {
             Self::enqueue(&tx, &project, priority, reason, now)?;
         }
+        tx.commit().map_err(|e| e.to_string())
+    }
+
+    /// Explicit actions retry immediately without lifting the hold for new
+    /// automatic work. Keep the request marker for progress and older workers.
+    pub(crate) fn request_now(db: &Connection) -> Result<()> {
+        let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
+        let now = Self::now();
+        for project in Self::targets(&tx)? {
+            Self::enqueue(&tx, &project, Priority::User, "sync now", now)?;
+        }
+        db::set(&tx, "syncRequest", &json!(uuid::Uuid::new_v4().to_string()))?;
         tx.commit().map_err(|e| e.to_string())
     }
 
@@ -745,6 +753,34 @@ mod tests {
         assert!(jobs
             .iter()
             .all(|job| job.priority == 1 && job.not_before == 5));
+    }
+
+    #[test]
+    fn sync_now_retries_after_an_outage_while_automatic_requests_stay_held() {
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("ORKA_TEST_HOME", home.path());
+        let db = db::open().unwrap();
+        db.execute(
+            "INSERT INTO projects VALUES('a',json('{\"id\":\"a\"}'))",
+            [],
+        )
+        .unwrap();
+        let held_until = SyncQueue::now() + 60_000;
+        db::set(&db, OUTAGE, &json!({"notBefore":held_until,"attempts":2})).unwrap();
+        db::set(&db, "syncRequest", &json!("indexer")).unwrap();
+        assert!(SyncQueue::accept_request(&db, SyncQueue::now()).unwrap());
+        assert!(rows(&db).iter().all(|job| job.not_before == held_until));
+
+        crate::commands::sync_now().unwrap();
+        assert!(SyncQueue::accept_request(&db, SyncQueue::now()).unwrap());
+        let jobs = rows(&db);
+        assert_eq!(jobs.len(), 2);
+        assert!(jobs.iter().all(|job| job.priority == Priority::User as i64
+            && job.not_before < held_until
+            && job.attempts == 2));
+        SyncQueue::enqueue(&db, "new", Priority::Local, "indexer", SyncQueue::now()).unwrap();
+        assert_eq!(rows(&db).last().unwrap().not_before, held_until);
+        assert_eq!(db::get(&db, OUTAGE).unwrap()["notBefore"], held_until);
     }
 
     #[tokio::test]

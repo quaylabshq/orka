@@ -237,11 +237,7 @@ pub fn sign_out() -> Result<()> {
 }
 #[tauri::command]
 pub fn sync_now() -> Result<()> {
-    db::set(
-        &db::open()?,
-        "syncRequest",
-        &json!(Uuid::new_v4().to_string()),
-    )
+    crate::sync_queue::SyncQueue::request_now(&db::open()?)
 }
 #[tauri::command]
 pub async fn cloud_action(action: String, input: Value) -> Result<Value> {
