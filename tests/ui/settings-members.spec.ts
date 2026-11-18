@@ -187,7 +187,7 @@ test("Resend shows the service's rate limit message", async ({ page }) => {
   await expect(pendingRow(settings).getByText("Pending")).toBeVisible();
 });
 
-test("a failed delivery marks the invite Not delivered and keeps Resend", async ({
+test("an unconfirmed delivery keeps Resend without claiming the email was not delivered", async ({
   page,
 }) => {
   const settings = await settingsFixture(page, {
@@ -201,8 +201,11 @@ test("a failed delivery marks the invite Not delivered and keeps Resend", async 
     "Invitation email delivery could not be confirmed. Try again in a minute or use a joining link.",
   );
   await expect(
-    pendingRow(settings).getByText("Not delivered", { exact: true }),
+    pendingRow(settings).getByText("Delivery unconfirmed", { exact: true }),
   ).toBeVisible();
+  await expect(
+    pendingRow(settings).getByText("Not delivered", { exact: true }),
+  ).toHaveCount(0);
   expect(await inviteActions(page)).toEqual(["Resend", "Revoke"]);
 });
 
