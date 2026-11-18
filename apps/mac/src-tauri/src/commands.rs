@@ -326,7 +326,7 @@ pub(crate) async fn cloud_action_scoped(
         db::upsert(&db, "projects", id, id, &project)?;
         // Creation has succeeded. A catalog outage must not lose consent or ask
         // the user to create the same project again; sync will refresh it later.
-        if let Ok(list) = sync::api("GET", "/v2/projects?includeArchived=true", None).await {
+        if let Ok(list) = sync::api("GET", crate::projects::CATALOG_PATH, None).await {
             projects::merge_catalog(&db, &list)?;
         }
         let current = db::rows(&db, "SELECT value FROM projects WHERE id=?", &[&id])?
