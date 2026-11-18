@@ -1398,17 +1398,39 @@ impl<'a> SyncPass<'a> {
     }
 
     async fn sync_project(&mut self, p: &Value) -> Stage {
-        let project = p["id"].as_str().unwrap_or("");
+        let project = p["id"].as_str().ok_or("Missing project")?;
         if boundary(self.db, project)?.is_break()
+            || self.prepare_project(p)?.is_break()
+            || boundary(self.db, project)?.is_break()
             || self.preflight(p)?.is_break()
             || boundary(self.db, project)?.is_break()
-            || self.authorize(p).await?.is_break()
-            || boundary(self.db, project)?.is_break()
-            || self.drain_outbox(p).await?.is_break()
         {
             return Ok(Break(()));
         }
-        self.pull_project(p).await
+        // Include continuations discovered by this scan in the same project job.
+        self.prepare_copies(Some(project))?;
+        if boundary(self.db, project)?.is_break()
+            || self.authorize(p).await?.is_break()
+            || boundary(self.db, project)?.is_break()
+            || self.drain_outbox(p).await?.is_break()
+            || self.pull_project(p).await?.is_break()
+            || boundary(self.db, project)?.is_break()
+        {
+            return Ok(Break(()));
+        }
+        crate::codex_skills::retry_project(self.db, project)?;
+        Ok(Continue(()))
+    }
+
+    fn prepare_project(&mut self, project: &Value) -> Stage {
+        if crate::projects::foreground_waiting()? {
+            return Ok(Break(()));
+        }
+        for source in crate::sources::views(project) {
+            crate::repair::project_state(self.db, &source)?;
+        }
+        packages::recover_project_installations(self.db, project)?;
+        Ok(Continue(()))
     }
 
     /// Repairs local state and queues pending session copies before any project syncs.
@@ -1421,32 +1443,33 @@ impl<'a> SyncPass<'a> {
         if let Some(id) = project_filter {
             let project = crate::governance::project(db, id)?;
             crate::governance::block_legacy_retry(db, &project)?;
-            for source in crate::sources::views(&project) {
-                crate::repair::project_state(db, &source)?;
+            if self.prepare_project(&project)?.is_break() {
+                return Ok(Break(()));
             }
-            packages::recover_project_installations(db, &project)?;
         } else {
             crate::repair::workspace(db)?;
             packages::recover_installations(db)?;
         }
+        self.prepare_copies(project_filter)?;
+        if project_filter.is_none() {
+            crate::history::clear_missing_session_errors(self.db)?;
+        }
+        Ok(Continue(()))
+    }
+
+    fn prepare_copies(&mut self, project_filter: Option<&str>) -> Result<()> {
         let device = self.device()?;
         let db = &mut *self.db;
         for binding in db::rows(
             db,
-            &format!("SELECT value FROM bindings WHERE json_extract(value,'$.needsCopy')=1 AND project IN (SELECT id FROM projects WHERE {})",crate::projects::ACTIVE),
-            &[],
+            &format!("SELECT value FROM bindings WHERE json_extract(value,'$.needsCopy')=1 AND (?1 IS NULL OR project=?1) AND project IN (SELECT id FROM projects WHERE {})",crate::projects::ACTIVE),
+            &[&project_filter],
         )? {
-            if project_filter.is_some_and(|id| binding["base"]["projectId"] != id) {
-                continue;
-            }
             if binding["copyRequest"].is_null() {
                 queue_session_copy(db, &binding, &device)?;
             }
         }
-        if project_filter.is_none() {
-            crate::history::clear_missing_session_errors(db)?;
-        }
-        Ok(Continue(()))
+        Ok(())
     }
 
     /// Scans (or, for a retry, validates) one project's local files.
@@ -2320,6 +2343,89 @@ mod queue_tests {
             .await
             .unwrap()
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn project_jobs_prepare_new_session_copies_without_preparing_other_projects() {
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("ORKA_TEST_HOME", home.path());
+        std::env::set_var("CODEX_HOME", home.path().join(".codex"));
+        std::env::set_var("CLAUDE_CONFIG_DIR", home.path().join(".claude"));
+        let root = home.path().join("project");
+        fs::create_dir(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let mut db = db::open().unwrap();
+        let owner = uuid::Uuid::new_v4().to_string();
+        db::set(&db, "user", &json!(owner)).unwrap();
+        let project = json!({"id":uuid::Uuid::new_v4().to_string(),"name":"Project","path":root});
+        let project_id = project["id"].as_str().unwrap();
+        db::upsert(&db, "projects", project_id, "", &project).unwrap();
+
+        let native_id = uuid::Uuid::new_v4().to_string();
+        let resource = uuid::Uuid::new_v4().to_string();
+        let directory = native::claude_home().unwrap().join("projects/test");
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join(format!("{native_id}.jsonl"));
+        let bytes = native::encode(&[
+            json!({"type":"user","cwd":root,"sessionId":native_id,"version":"2.1.286","message":{"role":"user","content":"A teammate session continued here"}}),
+        ]);
+        fs::write(&path, &bytes).unwrap();
+        let base = json!({"resourceId":resource,"projectId":project_id,"owner":uuid::Uuid::new_v4().to_string(),"revision":1,"kind":"session","source":"claude","logicalPath":format!("claude/{native_id}"),"title":"Peer session","deleted":false,"files":[{"path":"session.jsonl","hash":db::blob(&bytes).unwrap(),"size":bytes.len(),"executable":false}]});
+        let binding = json!({"nativeId":native_id,"paths":[path],"lastSeenHash":"before-the-local-edit","base":base});
+        db::upsert(&db, "bindings", &resource, project_id, &binding).unwrap();
+
+        // An unrelated project has an unavailable copy source. It must neither
+        // block this project nor acquire a request as a side effect of its job.
+        let other_project = uuid::Uuid::new_v4().to_string();
+        let other_resource = uuid::Uuid::new_v4().to_string();
+        db::upsert(
+            &db,
+            "projects",
+            &other_project,
+            "",
+            &json!({"id":other_project}),
+        )
+        .unwrap();
+        let other = json!({"needsCopy":true,"base":{"resourceId":other_resource,"projectId":other_project,"revision":0}});
+        db::upsert(&db, "bindings", &other_resource, &other_project, &other).unwrap();
+
+        let mut pass = SyncPass::new(&mut db, &owner, None);
+        // No service is configured: the first network attempt fails, after
+        // preparation has durably frozen this project's copy for retry.
+        assert_eq!(
+            pass.sync_project(&project).await.unwrap_err(),
+            "Configure the service"
+        );
+        let copy = indexer::binding(pass.db, &resource).unwrap();
+        assert_eq!(copy["needsCopy"], true);
+        assert!(copy["copyRequest"].is_string());
+        let queued = db::rows(
+            pass.db,
+            "SELECT json_object('project',project,'path',path,'value',json(value)) FROM outbox",
+            &[],
+        )
+        .unwrap();
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0]["project"], project_id);
+        assert_eq!(queued[0]["path"], "/v2/sessions/copy");
+        assert_eq!(queued[0]["value"]["id"], copy["copyRequest"]);
+        assert_eq!(queued[0]["value"]["expectedRevision"], 1);
+        assert!(indexer::binding(pass.db, &other_resource).unwrap()["copyRequest"].is_null());
+
+        assert_eq!(
+            pass.sync_project(&project).await.unwrap_err(),
+            "Configure the service"
+        );
+        assert_eq!(
+            indexer::binding(pass.db, &resource).unwrap()["copyRequest"],
+            copy["copyRequest"]
+        );
+        assert_eq!(
+            db::rows(pass.db, "SELECT value FROM outbox", &[])
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     fn queued(sequence: i64, resource: &str) -> Value {
