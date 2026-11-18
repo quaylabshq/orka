@@ -894,13 +894,48 @@ test("Plans supports both providers, source filters, Markdown, editor actions, a
     id: "plan-codex",
     file: "content.md",
   });
-  await detail.getByRole("button", { name: "More resource actions" }).click();
+  const moreActions = detail.getByRole("button", {
+    name: "More resource actions",
+  });
+  await moreActions.click();
+  const dropdown = page.getByRole("menu", { name: "More resource actions" });
+  const actions = await dropdown.getByRole("menuitem").allTextContents();
   await expect(
-    page.getByRole("menuitem", { name: "Export ZIP…", exact: true }),
+    dropdown.getByRole("menuitem", { name: "Copy link", exact: true }),
   ).toBeVisible();
-  await expect(
-    page.getByRole("menuitem", { name: "Copy link", exact: true }),
-  ).toBeVisible();
+  await dropdown
+    .getByRole("menuitem", { name: "More actions", exact: true })
+    .press("ArrowRight");
+  const submenu = page.getByRole("menu", { name: "More actions", exact: true });
+  await expect(submenu.getByRole("menuitem")).toHaveText([
+    "Export ZIP…",
+    "Show in Finder",
+    "Copy local path",
+  ]);
+  await page.keyboard.press("Escape");
+  await expect(dropdown).toHaveCount(0);
+
+  const inspections = await calls(page, "inspect_resource");
+  const planSteps = detail.getByRole("heading", { name: "Plan steps" });
+  await planSteps.click({ button: "right" });
+  const contextMenu = page.getByRole("menu", {
+    name: "plan actions",
+    exact: true,
+  });
+  await expect(contextMenu.getByRole("menuitem")).toHaveText(actions);
+  await expect(planSteps).toBeVisible();
+  expect(await calls(page, "inspect_resource")).toEqual(inspections);
+  await contextMenu
+    .getByRole("menuitem", { name: "More actions", exact: true })
+    .hover();
+  await expect(submenu.getByRole("menuitem")).toHaveText([
+    "Export ZIP…",
+    "Show in Finder",
+    "Copy local path",
+  ]);
+  await page.screenshot({ path: test.info().outputPath("64-menu.png") });
+  await page.keyboard.press("Escape");
+  await moreActions.click();
   await page
     .getByRole("menuitem", { name: "Show Markdown", exact: true })
     .click();

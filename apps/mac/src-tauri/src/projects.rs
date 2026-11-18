@@ -393,6 +393,9 @@ pub fn remove_local(db: &Connection, id: &str) -> Result<()> {
         [id],
     )
     .map_err(|e| e.to_string())?;
+    for request in db::rows(&tx, "SELECT json_quote(id) FROM outbox WHERE project=?1 UNION SELECT json_quote(substr(key,length('sessionCopy:')+1)) FROM meta WHERE key LIKE 'sessionCopy:%' AND json_extract(value,'$.source.projectId')=?1", &[&id])? {
+        sync::clear_session_copy(&tx, request.as_str().ok_or("Missing request ID")?)?;
+    }
     for table in [
         "resources",
         "bindings",
@@ -409,7 +412,6 @@ pub fn remove_local(db: &Connection, id: &str) -> Result<()> {
     // Keep signed trust pins, but discard encrypted pending publications for this project.
     tx.execute("DELETE FROM meta WHERE key LIKE 'env:%' AND (json_extract(value,'$.header.manifest.projectId')=? OR json_extract(value,'$.projectId')=?)",[id,id]).map_err(|e| e.to_string())?;
     tx.execute("DELETE FROM meta WHERE (key LIKE 'share-preview:%' OR key LIKE 'selected-share:%' OR key LIKE 'resource-delete:%') AND json_extract(value,'$.projectId')=?",[id]).map_err(|e|e.to_string())?;
-    tx.execute("DELETE FROM meta WHERE key LIKE 'sessionCopy:%' AND json_extract(value,'$.source.projectId')=?", [id]).map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
     env::clear();
     Ok(())

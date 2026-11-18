@@ -471,6 +471,58 @@ fn removed_projects_stay_removed_and_keep_source_files() {
 }
 
 #[test]
+fn detach_and_local_removal_clear_only_their_pending_session_rebuild_state() {
+    for detach in [true, false] {
+        let f = Fixture::new();
+        let id = f.project["id"].as_str().unwrap();
+        fs::write(f.root.join("CLAUDE.md"), "Keep my local work\n").unwrap();
+        indexer::scan(&f.db, &f.project).unwrap();
+        let mut keys = Vec::new();
+        for queued in f.outbox() {
+            let key = format!("sessionOutboxRedaction:{}", queued["id"].as_str().unwrap());
+            db::set(&f.db, &key, &json!({"drop":true})).unwrap();
+            keys.push(key);
+        }
+        assert!(!keys.is_empty());
+        if !detach {
+            db::set(
+                &f.db,
+                "sessionCopy:orphan",
+                &json!({"source":{"projectId":id}}),
+            )
+            .unwrap();
+            db::set(
+                &f.db,
+                "sessionOutboxRedaction:orphan",
+                &json!({"drop":true}),
+            )
+            .unwrap();
+            keys.extend([
+                "sessionCopy:orphan".into(),
+                "sessionOutboxRedaction:orphan".into(),
+            ]);
+        }
+        db::set(&f.db, "sessionOutboxRedaction:other", &json!({"drop":true})).unwrap();
+        if detach {
+            crate::governance::DetachProject::detach_project(&f.db, id).unwrap();
+        } else {
+            crate::projects::remove_local(&f.db, id).unwrap();
+        }
+        for key in keys {
+            assert!(db::get(&f.db, &key).unwrap().is_null(), "{key}");
+        }
+        assert_eq!(
+            db::get(&f.db, "sessionOutboxRedaction:other").unwrap(),
+            json!({"drop":true})
+        );
+        assert_eq!(
+            fs::read_to_string(f.root.join("CLAUDE.md")).unwrap(),
+            "Keep my local work\n"
+        );
+    }
+}
+
+#[test]
 fn archived_projects_keep_their_mapping_but_are_excluded_from_active_work() {
     let f = Fixture::new();
     let id = f.project["id"].as_str().unwrap();
