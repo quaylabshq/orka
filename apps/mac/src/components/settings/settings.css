@@ -475,6 +475,9 @@
   .modal.settings-migration p {
     @apply text-body-sm text-secondary;
   }
+  .settings-confirm p {
+    overflow-wrap: anywhere;
+  }
   .settings-confirm-actions {
     @apply flex flex-wrap justify-end gap-2;
   }

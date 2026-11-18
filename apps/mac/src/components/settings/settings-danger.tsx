@@ -32,6 +32,7 @@ export function SettingsDanger({
   members,
   busy,
   run,
+  onComplete,
 }: {
   project?: Project;
   deletedProjects?: Project[];
@@ -40,6 +41,7 @@ export function SettingsDanger({
   members: number | null;
   busy: boolean;
   run: (action: () => Promise<unknown>) => Promise<unknown>;
+  onComplete?: () => void;
 }) {
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [typed, setTyped] = useState("");
@@ -98,7 +100,8 @@ export function SettingsDanger({
         if (Array.isArray(catalog.members))
           setMemberCount(catalog.members.length);
       })
-      .catch(() => setMemberCount((count) => count ?? 1));
+      // The account-wide consequence stays accurate when a count is unavailable.
+      .catch(() => {});
   };
 
   const lifecycle = async (target: Project, action: "archive" | "restore") => {
@@ -117,6 +120,7 @@ export function SettingsDanger({
         }),
       );
       setNotice(`Project ${action === "archive" ? "archived" : "restored"}.`);
+      onComplete?.();
     } catch (error) {
       setSectionError(errorText(error));
     } finally {
@@ -149,6 +153,7 @@ export function SettingsDanger({
       );
       setDialog(null);
       setTyped("");
+      onComplete?.();
     } catch (error) {
       setDialogError(errorText(error));
     } finally {
@@ -162,7 +167,7 @@ export function SettingsDanger({
     !disabled &&
     supportsDelete,
   );
-  const count = Math.max(1, memberCount ?? 1);
+  const count = memberCount !== null && memberCount > 0 ? memberCount : null;
   const title =
     dialog?.kind === "purge"
       ? "Delete project permanently?"
@@ -315,8 +320,8 @@ export function SettingsDanger({
           <h2>{title}</h2>
           {dialog.kind === "delete" ? (
             <p>
-              {memberCount === null
-                ? "Counting who will lose access."
+              {count === null
+                ? "All members of this project will lose access."
                 : `The ${count} ${count === 1 ? "member" : "members"} of this project will lose access.`}{" "}
               {restorePromise}
             </p>
