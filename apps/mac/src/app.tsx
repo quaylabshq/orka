@@ -295,24 +295,28 @@ function WorkspaceApp({
   }, [act, projectLifecycle, lifecycleTarget]);
   const deleteTarget =
     projectLifecycle?.action === "delete" ? lifecycleTarget : undefined;
-  const leaveSettings = (action: () => void) => {
+  const leaveSettings = (
+    action: () => void,
+    onGuardCloseAutoFocus?: (accepted: boolean) => void,
+  ) => {
     if (settings && settingsNavigation.current)
       settingsNavigation.current.requestExit(() => {
         setSettings(null);
         action();
-      });
+      }, onGuardCloseAutoFocus);
     else action();
   };
   const requestProjectLifecycle = (
     id: string,
     action: NonNullable<typeof projectLifecycle>["action"],
-  ) => {
-    // The settings guard needs a return target after the menu unmounts.
-    if (settings) projectPickerTrigger.current?.focus();
-    leaveSettings(() =>
-      setProjectLifecycle({ id, scope: workspaceScope, action }),
+  ) =>
+    leaveSettings(
+      () => setProjectLifecycle({ id, scope: workspaceScope, action }),
+      (accepted) => {
+        if (!accepted || action !== "delete")
+          projectPickerTrigger.current?.focus();
+      },
     );
-  };
   const openProjectSettings = (id: string, section: SettingsSection) => {
     if (settings && settingsNavigation.current) {
       settingsNavigation.current.requestProject(id, () => {

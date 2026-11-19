@@ -521,26 +521,30 @@ test("archiving from the picker respects the unsaved settings guard", async ({
   ]);
 });
 
-test("staying on a settings draft after a keyboard delete returns focus to the picker", async ({
+test("keyboard focus follows the choice made in the settings guard for delete", async ({
   page,
 }) => {
-  const settings = await settingsFixture(page);
+  const settings = await settingsFixture(page, { websiteRole: "owner" });
   const picker = page.getByRole("combobox", { name: "Select project" });
   const name = settings.getByRole("textbox", {
     name: "Project name",
     exact: true,
   });
   await name.fill("Unsaved project name");
+  const guard = page.getByRole("dialog", { name: "Save your changes?" });
 
-  for (const fromRow of [false, true]) {
-    if (fromRow) await picker.press("ArrowDown");
+  const openGuard = async (fromRow: boolean) => {
+    if (fromRow) await picker.press("End");
     const target = fromRow
-      ? page.getByRole("option", { name: "Orka", exact: true })
+      ? page.getByRole("option", { name: "Website", exact: true })
       : picker;
     await target.press("Shift+F10");
-    const item = page.getByRole("menuitem", { name: "Delete project…" });
-    await item.press("Enter");
-    const guard = page.getByRole("dialog", { name: "Save your changes?" });
+    await page
+      .getByRole("menuitem", { name: "Delete project…" })
+      .press("Enter");
+  };
+  for (const fromRow of [false, true]) {
+    await openGuard(fromRow);
     await guard
       .getByRole("button", { name: "Stay", exact: true })
       .press("Enter");
@@ -548,6 +552,15 @@ test("staying on a settings draft after a keyboard delete returns focus to the p
     await expect(picker).toBeFocused();
     await expect(name).toHaveValue("Unsaved project name");
   }
+
+  await openGuard(true);
+  await guard.getByRole("button", { name: "Save", exact: true }).press("Enter");
+  const dialog = page.getByRole("dialog", { name: "Delete project?" });
+  const confirmation = dialog.getByRole("textbox", { name: "Project name" });
+  await expect(confirmation).toBeFocused();
+  await page.keyboard.type("Website", { delay: 35 });
+  await expect(confirmation).toHaveValue("Website");
+  await expect(confirmation).toBeFocused();
   expect(
     (await settingsCalls(page)).some((call) => call.args.action === "delete"),
   ).toBe(false);

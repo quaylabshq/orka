@@ -34,7 +34,10 @@ import { SettingsPluginConnections } from "./settings-plugin-connections.js";
 import type { DesktopUpdates } from "../use-desktop-updates.js";
 
 export interface SettingsNavigationHandle {
-  requestExit: (action: () => void) => void;
+  requestExit: (
+    action: () => void,
+    onGuardCloseAutoFocus?: (accepted: boolean) => void,
+  ) => void;
   requestSection: (section: SettingsSection) => void;
   requestProject: (projectId: string, action: () => void) => void;
 }
@@ -108,6 +111,7 @@ export const SettingsModal = forwardRef<
   const [serviceDirty, setServiceDirty] = useState(false),
     [draftVersion, setDraftVersion] = useState(0);
   const [pending, setPending] = useState<Destination | null>(null);
+  const guardCloseAutoFocus = useRef<(() => void) | undefined>(undefined);
   const [confirmation, setConfirmation] = useState<{
     action: "disconnect" | "remove-source" | "signout";
     sourceId?: string;
@@ -251,13 +255,24 @@ export const SettingsModal = forwardRef<
       heading.current?.querySelector<HTMLHeadingElement>("h2")?.focus(),
     );
   };
-  const request = (destination: Destination) => {
+  const request = (destination: Destination, onGuardClose?: () => void) => {
     if (locked.current || pending || confirmation) return;
-    if (dirty()) setPending(() => destination);
-    else navigate(destination);
+    if (dirty()) {
+      guardCloseAutoFocus.current = onGuardClose;
+      setPending(() => destination);
+    } else navigate(destination);
   };
   useImperativeHandle(ref, () => ({
-    requestExit: (action) => request(action),
+    requestExit: (action, onGuardClose) => {
+      let accepted = false;
+      request(
+        () => {
+          accepted = true;
+          action();
+        },
+        onGuardClose && (() => onGuardClose(accepted)),
+      );
+    },
     requestProject: (id, action) =>
       request(() => {
         reset(id);
@@ -915,6 +930,13 @@ export const SettingsModal = forwardRef<
           open
           title={serviceDirty ? "Discard service setup?" : "Save your changes?"}
           className="settings-confirm"
+          onCloseAutoFocus={(event) => {
+            const restore = guardCloseAutoFocus.current;
+            if (!restore) return;
+            event.preventDefault();
+            guardCloseAutoFocus.current = undefined;
+            restore();
+          }}
           onClose={() => {
             if (!saving) setPending(null);
           }}
