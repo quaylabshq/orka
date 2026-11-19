@@ -22,6 +22,11 @@ declare global {
       projectNames: Record<string, string>;
       previews: { projectId?: string; resourceId?: string }[];
       keptSkills: { projectId?: string; resourceId?: string; token?: string }[];
+      planPreviews: {
+        projectId?: string;
+        resourceId?: string;
+        uploadId?: string;
+      }[];
     };
   }
 }
@@ -42,10 +47,12 @@ test.beforeEach(async ({ page }) => {
       projectNames: { one: "Orka", two: "Docs", three: "Site" },
       previews: [],
       keptSkills: [],
+      planPreviews: [],
     };
     Object.assign(window, {
       syncProgressFixture: fixture,
       isTauri: true,
+      __TAURI_EVENT_PLUGIN_INTERNALS__: { unregisterListener: () => {} },
       __TAURI_INTERNALS__: {
         transformCallback: () => 1,
         unregisterCallback: () => {},
@@ -54,7 +61,12 @@ test.beforeEach(async ({ page }) => {
           args?: {
             projectId?: string;
             action?: string;
-            input?: { projectId?: string; resourceId?: string; token?: string };
+            input?: {
+              projectId?: string;
+              resourceId?: string;
+              token?: string;
+              uploadId?: string;
+            };
           },
         ) => {
           fixture.calls.push(name);
@@ -99,6 +111,33 @@ test.beforeEach(async ({ page }) => {
           if (name === "sync_progress")
             return { user: "user", progress: fixture.progress };
           if (name === "sync_queue_state") return fixture.queue;
+          if (name === "inspect_resource")
+            return {
+              content: "# Writing guide\n\nUse the shared examples.\n",
+              previous: null,
+              paths: [],
+            };
+          if (
+            name === "resource_command" &&
+            args?.action === "preview-upload"
+          ) {
+            const { projectId, resourceId, uploadId } = args.input ?? {};
+            fixture.planPreviews.push({ projectId, resourceId, uploadId });
+            return {
+              previewToken: "plan-review-token",
+              title: "Release plan",
+              revision: 2,
+              before: { "content.md": "Shared milestone" },
+              files: { "content.md": "Queued milestone" },
+              beforeManifest: [
+                { path: "content.md", hash: "current", binary: false },
+              ],
+              afterManifest: [
+                { path: "content.md", hash: "queued", binary: false },
+              ],
+              note: "Review the latest shared plan and queued snapshot.",
+            };
+          }
           if (
             name === "governance_command" &&
             args?.action === "preview-install"
@@ -138,12 +177,17 @@ test.beforeEach(async ({ page }) => {
             const { resourceId, projectId } = args.input ?? {};
             fixture.errors = fixture.errors.filter(
               ({ source }) =>
-                source !== `${projectId}:installation:${resourceId}`,
+                !source.startsWith(`${projectId}:`) ||
+                !source.endsWith(`:scan:skills/${resourceId}`),
             );
             fixture.bindings = fixture.bindings.map((binding) =>
               binding.resourceId === resourceId &&
               binding.projectId === projectId
-                ? { ...binding, installationState: "current" }
+                ? {
+                    ...binding,
+                    installationState: "kept_local",
+                    skillReviewFingerprint: null,
+                  }
                 : binding,
             );
             return {};
@@ -366,6 +410,7 @@ async function seedSyncReviews(page: Page) {
     fixture.resources = titles.map((title, index) => ({
       resourceId: `skill-${index}`,
       projectId: "two",
+      ...(index === 0 ? { sourceId: "source-two" } : {}),
       kind: "skill",
       logicalPath: `skill-${index}`,
       source: "shared",
@@ -380,8 +425,9 @@ async function seedSyncReviews(page: Page) {
       hash: "shared",
       revision: 2,
     }));
-    fixture.bindings = fixture.resources.map(
-      ({ resourceId, projectId, revision }) => ({
+    fixture.bindings = fixture.resources.map((resource, index) => {
+      const { resourceId, projectId, revision } = resource;
+      return {
         resourceId,
         projectId,
         paths: [
@@ -390,13 +436,18 @@ async function seedSyncReviews(page: Page) {
         ],
         installationState: "locally_modified",
         availableRevision: revision,
+        ...(index === 0
+          ? { base: resource, skillReviewFingerprint: "same-revision-conflict" }
+          : {}),
+      };
+    });
+    fixture.errors = fixture.resources.map(
+      ({ resourceId, projectId, sourceId }) => ({
+        source: `${projectId}:${sourceId ? `${sourceId}:` : ""}scan:skills/${resourceId}`,
+        error:
+          "Local skill edits preserved; resolve them before applying the shared update",
       }),
     );
-    fixture.errors = fixture.resources.map(({ resourceId, projectId }) => ({
-      source: `${projectId}:installation:${resourceId}`,
-      error:
-        "Local skill edits preserved; resolve them before applying the shared update",
-    }));
     fixture.queue = [
       {
         projectId: "three",
@@ -460,7 +511,7 @@ test("skill reviews from another project stay separate from automatic retries", 
   await expect(reviews.getByRole("group")).toHaveCount(2);
 });
 
-test("a stale plan opens the affected resource from the Sync panel", async ({
+test("a stale plan opens its exact shared-versus-queued review from the Sync panel", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 900, height: 640 });
@@ -495,6 +546,7 @@ test("a stale plan opens the affected resource from the Sync panel", async ({
         title: "Release plan",
         error:
           "409: Resource changed; refresh and review the exact version again",
+        reviewable: true,
       },
     ];
   });
@@ -507,11 +559,19 @@ test("a stale plan opens the affected resource from the Sync panel", async ({
   await expect(
     dialog.getByRole("button", { name: "Retry uploads" }),
   ).toHaveCount(0);
-  await review.getByRole("button", { name: "Review Release plan" }).click();
+  await review
+    .getByRole("button", { name: "Review upload", exact: true })
+    .click();
   await expect(dialog).toHaveCount(0);
+  const preview = page.getByRole("dialog", { name: "Review queued upload" });
+  await expect(preview).toContainText("Shared milestone");
+  await expect(preview).toContainText("Queued milestone");
   await expect(
-    page.getByRole("heading", { name: "Release plan", exact: true }),
-  ).toBeVisible();
+    preview.getByRole("button", { name: "Queue reviewed update" }),
+  ).toBeInViewport();
+  expect(
+    await page.evaluate(() => window.syncProgressFixture.planPreviews),
+  ).toEqual([{ projectId: "two", resourceId: "plan-0", uploadId: "upload-0" }]);
 });
 
 test("the project queue has one active block and consistent Cancel actions", async ({

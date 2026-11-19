@@ -857,6 +857,7 @@ pub async fn governance_command(action: String, input: Value) -> Result<Value> {
                 return Ok(json!({"draft":draft,"files":files,"manifest":manifest,"beforeManifest":before_manifest,"sourceUnavailable":crate::context_sharing::require_active_source(&p,&draft).is_err(),"related":related,"canPublish":can_publish,"baseRevision":current["revision"].as_u64().unwrap_or(0),"before":before}));
             }
             crate::context_sharing::require_active_source(&p,&draft)?;
+            crate::skill_reconciliation::verify_candidate(&db,&p,&draft)?;
             if let Some(files) = input.get("reviewedFiles") {
                 if !files.is_array() || files != &draft["resource"]["files"]
                     || (!draft["submission"].is_null() && files != &draft["submission"]["resource"]["files"]) {

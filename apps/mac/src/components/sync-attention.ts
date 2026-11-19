@@ -67,11 +67,18 @@ const skillConflictMessages = new Set([
 ]);
 const staleVersionMessage =
   "409: Resource changed; refresh and review the exact version again";
+const needsPlanReview = (upload: Snapshot["outbox"][number]) =>
+  upload.kind === "plan" &&
+  (upload.reviewable || upload.error === staleVersionMessage);
 
 export interface SyncReviewItem {
   projectId: string;
   item: AttentionItem;
-  reason: "Local skill copies need review" | "Shared version changed";
+  reason:
+    | "Local skill copies need review"
+    | "Shared version changed"
+    | "Queued upload needs review";
+  uploadId?: string;
 }
 
 /** Find decisions across the active workspace, with the same deduplication as Requests. */
@@ -87,21 +94,14 @@ export function syncReviewItems(
   );
   const candidates = new Set([
     selectedProjectId,
-    ...state.resources.flatMap(({ kind, projectId, resourceId }) =>
-      kind === "skill" &&
-      (skillSources.has(resourceId) ||
-        skillSources.has(`${projectId}:installation:${resourceId}`))
-        ? [projectId]
-        : [],
-    ),
-    ...state.outbox.flatMap(({ project, kind, error }) =>
-      kind === "plan" && error === staleVersionMessage ? [project] : [],
-    ),
-    ...(state.drafts ?? []).flatMap((draft) =>
-      draft.resource.kind === "plan" && draft.status === "stale"
-        ? [draft.projectId]
-        : [],
-    ),
+    ...state.bindings
+      .filter(({ skillReviewFingerprint }) => skillReviewFingerprint)
+      .map(bindingProjectId),
+    ...Array.from(skillSources, (source) => source.split(":", 1)[0]),
+    ...state.resources
+      .filter(({ resourceId }) => skillSources.has(resourceId))
+      .map(({ projectId }) => projectId),
+    ...state.outbox.filter(needsPlanReview).map(({ project }) => project),
   ]);
   return state.projects.flatMap(({ id }) => {
     if (!candidates.has(id)) return [];
@@ -112,18 +112,27 @@ export function syncReviewItems(
     return items.flatMap<SyncReviewItem>((item) => {
       if (
         item.kind === "skill" &&
-        item.messages.some((m) => skillConflictMessages.has(m))
+        item.binding?.installationState !== "kept_local" &&
+        (item.binding?.skillReviewFingerprint ||
+          item.messages.some((m) => skillConflictMessages.has(m)))
       )
         return [
           { projectId: id, item, reason: "Local skill copies need review" },
         ];
-      if (
-        item.kind === "plan" &&
-        (item.draft?.status === "stale" ||
-          item.uploads.some((upload) => upload.error === staleVersionMessage))
-      )
-        return [{ projectId: id, item, reason: "Shared version changed" }];
-      return [];
+      const upload = item.uploads.find(needsPlanReview);
+      return upload
+        ? [
+            {
+              projectId: id,
+              item,
+              reason:
+                upload.error === staleVersionMessage
+                  ? "Shared version changed"
+                  : "Queued upload needs review",
+              uploadId: upload.reviewable ? upload.id : undefined,
+            },
+          ]
+        : [];
     });
   });
 }

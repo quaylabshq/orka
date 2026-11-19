@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Command,
 };
 
@@ -22,7 +22,9 @@ fn installed_base<'a>(binding: &'a Value, shared: &Value) -> Option<&'a Value> {
     (revision > 0
         && revision <= current
         && base["deleted"] != true
-        && base["files"].as_array().is_some_and(|files| !files.is_empty())
+        && base["files"]
+            .as_array()
+            .is_some_and(|files| !files.is_empty())
         && [
             "resourceId",
             "projectId",
@@ -49,16 +51,66 @@ fn hold_unsent_drafts(db: &Connection, project: &str, resource: &str) -> Result<
     .map_err(|error| error.to_string())
 }
 
+fn retire_candidates(
+    db: &Connection,
+    project: &str,
+    resource: &str,
+    keep: Option<&str>,
+) -> Result<()> {
+    db.execute(
+        "UPDATE drafts SET value=json_set(value,'$.status','dismissed','$.dismissalReason','superseded','$.archivedAt',?1)
+         WHERE project=?2 AND json_extract(value,'$.resource.resourceId')=?3
+           AND json_extract(value,'$.skillReconciliation')=1 AND json_extract(value,'$.status')='local'
+           AND json_extract(value,'$.submission') IS NULL AND json_extract(value,'$.requestId') IS NULL
+           AND (?4 IS NULL OR id<>?4)",
+        params![db::now(), project, resource, keep],
+    )
+    .map(|_| ())
+    .map_err(|error| error.to_string())
+}
+
+fn guard_path(path: &Path) -> String {
+    path.canonicalize()
+        .unwrap_or_else(|_| path.to_path_buf())
+        .to_string_lossy()
+        .into_owned()
+}
+
 fn snapshot(copies: &[Copy<'_>]) -> BTreeMap<String, String> {
     copies
         .iter()
         .filter(|(_, files)| files.as_array().is_some_and(|files| !files.is_empty()))
-        .map(|(path, files)| (path.to_string_lossy().into_owned(), indexer::manifest_hash(files)))
+        .map(|(path, files)| (guard_path(path), indexer::manifest_hash(files)))
         .collect()
 }
 
 fn decision(shared: &Value, guards: &BTreeMap<String, String>) -> Value {
     json!({"revision":shared["revision"],"manifest":indexer::manifest_hash(&shared["files"]),"guards":guards})
+}
+
+fn fingerprint(base: Option<&Value>, shared: &Value, guards: &BTreeMap<String, String>) -> String {
+    db::digest(
+        json!([base, decision(shared, guards)])
+            .to_string()
+            .as_bytes(),
+    )
+}
+
+fn path_guards(paths: &Value, guards: &[String]) -> Result<BTreeMap<String, String>> {
+    let paths = paths.as_array().ok_or("Missing skill paths")?;
+    let empty = indexer::manifest_hash(&json!([]));
+    if paths.len() != guards.len() {
+        return Err("Missing skill guards".into());
+    }
+    paths
+        .iter()
+        .zip(guards)
+        .filter(|(_, hash)| *hash != &empty)
+        .map(|(path, hash)| {
+            let path = Path::new(path.as_str().ok_or("Invalid skill path")?);
+            Ok((guard_path(path), hash.clone()))
+        })
+        .collect()
 }
 
 pub(crate) fn kept(binding: &Value, shared: &Value, copies: &[Copy<'_>]) -> bool {
@@ -75,32 +127,57 @@ pub(crate) fn keep(
 ) -> Result<()> {
     let id = shared["resourceId"].as_str().ok_or("Missing resource")?;
     let project_id = project["id"].as_str().ok_or("Missing project")?;
-    let empty = indexer::manifest_hash(&json!([]));
-    let guards = binding["paths"].as_array().ok_or("Missing paths")?
+    let hashes = review["guards"]
+        .as_array()
+        .ok_or("Missing review guards")?
         .iter()
-        .zip(review["guards"].as_array().ok_or("Missing review guards")?)
-        .filter_map(|(path, hash)| Some((path.as_str()?, hash.as_str()?)))
-        .filter(|(_, hash)| *hash != empty)
-        .map(|(path, hash)| (path.to_owned(), hash.to_owned()))
-        .collect();
+        .map(|hash| {
+            hash.as_str()
+                .map(str::to_owned)
+                .ok_or("Invalid review guard")
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let guards = path_guards(&binding["paths"], &hashes)?;
     binding["keptLocalSkill"] = decision(shared, &guards);
     binding["skillReviewFingerprint"] = Value::Null;
     binding["installationState"] = json!("kept_local");
     binding["availableRevision"] = shared["revision"].clone();
-    let tx = db.unchecked_transaction().map_err(|error| error.to_string())?;
+    let tx = db
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
     db::upsert(&tx, "bindings", id, project_id, &binding)?;
     // Preserve the prepared local candidate in history when the user chooses
     // to keep the active files. Existing explicit proposals are independent.
-    tx.execute(
-        "UPDATE drafts SET value=json_set(value,'$.status','dismissed','$.archivedAt',?1)
-         WHERE project=?2 AND json_extract(value,'$.resource.resourceId')=?3
-           AND json_extract(value,'$.skillReconciliation')=1 AND json_extract(value,'$.status')='local'
-           AND json_extract(value,'$.submission') IS NULL AND json_extract(value,'$.requestId') IS NULL",
-        params![db::now(), project_id, id],
-    )
-    .map_err(|error| error.to_string())?;
+    retire_candidates(&tx, project_id, id, None)?;
     clear_review_errors(&tx, project, shared)?;
     tx.commit().map_err(|error| error.to_string())
+}
+
+pub(crate) fn verify_candidate(db: &Connection, project: &Value, draft: &Value) -> Result<()> {
+    if draft["skillReconciliation"] != true || !draft["submission"].is_null() {
+        return Ok(());
+    }
+    let changed = "Local or shared files changed; review the update again";
+    if draft["status"] != "local" {
+        return Err(changed.into());
+    }
+    let id = draft["resource"]["resourceId"].as_str().ok_or(changed)?;
+    let shared = governance::resource(db, id)?;
+    if draft["baseRevision"] != shared["revision"] {
+        return Err(changed.into());
+    }
+    let source = crate::sources::for_resource(project, &shared).ok_or(changed)?;
+    crate::sources::validate(&source)?;
+    let root = Path::new(source["path"].as_str().ok_or(changed)?);
+    let binding = indexer::binding(db, id)?;
+    let live = crate::sync::live_hash(&binding, "skill", root)?;
+    let guards = path_guards(&binding["paths"], &live)?;
+    if draft["skillReviewFingerprint"]
+        != fingerprint(installed_base(&binding, &shared), &shared, &guards)
+    {
+        return Err(changed.into());
+    }
+    Ok(())
 }
 
 pub(crate) fn clear_review_errors(db: &Connection, project: &Value, shared: &Value) -> Result<()> {
@@ -149,7 +226,8 @@ pub(crate) fn defer_scan(
         }
         let base = &binding["base"];
         let base_is_current = base["revision"] == shared["revision"]
-            && (installed_base(binding, &shared).is_some_and(|base| base["files"] == shared["files"])
+            && (installed_base(binding, &shared)
+                .is_some_and(|base| base["files"] == shared["files"])
                 || (base["resourceId"] == shared["resourceId"]
                     && base["deleted"] == true
                     && shared["deleted"] == true));
@@ -167,17 +245,24 @@ pub(crate) fn defer_scan(
             return Ok(true);
         }
         if !binding["skillReviewFingerprint"].is_null() || !binding["keptLocalSkill"].is_null() {
+            let tx = db
+                .unchecked_transaction()
+                .map_err(|error| error.to_string())?;
+            retire_candidates(&tx, project_id, id, None)?;
             binding["skillReviewFingerprint"] = Value::Null;
             binding["keptLocalSkill"] = Value::Null;
             if !local_differs {
                 binding["installationState"] = json!("current");
             }
-            db::upsert(db, "bindings", id, project_id, binding)?;
+            db::upsert(&tx, "bindings", id, project_id, binding)?;
+            tx.commit().map_err(|error| error.to_string())?;
         }
     } else if mirrors_differ {
         let fingerprint = db::digest(json!(snapshot(copies)).to_string().as_bytes());
         if binding["skillReviewFingerprint"] != fingerprint {
-            let tx = db.unchecked_transaction().map_err(|error| error.to_string())?;
+            let tx = db
+                .unchecked_transaction()
+                .map_err(|error| error.to_string())?;
             for (path, files) in copies {
                 let resource = json!({"resourceId":id,"kind":"skill","source":"shared","logicalPath":name,"title":name,"files":files,"deleted":false});
                 governance::capture(&tx, project, &resource, &json!([path]))?;
@@ -205,11 +290,7 @@ pub(crate) fn reconcile(
     let id = shared["resourceId"].as_str().ok_or("Missing resource")?;
     let project_id = project["id"].as_str().ok_or("Missing project")?;
     let base = installed_base(binding, shared);
-    let fingerprint = db::digest(
-        json!([base, shared["revision"], shared["files"], snapshot(copies)])
-            .to_string()
-            .as_bytes(),
-    );
+    let fingerprint = fingerprint(base, shared, &snapshot(copies));
     if binding["skillReviewFingerprint"] == fingerprint {
         return Ok(false);
     }
@@ -218,18 +299,23 @@ pub(crate) fn reconcile(
         if shared["deleted"] == true {
             return None;
         }
-        copies.iter().filter(|(_, files)| files.as_array().is_some_and(|f| !f.is_empty())).try_fold(
-            shared["files"].clone(),
-            |candidate, (_, files)| merge_manifest(&base["files"], &candidate, files),
-        )
+        copies
+            .iter()
+            .filter(|(_, files)| files.as_array().is_some_and(|f| !f.is_empty()))
+            .try_fold(shared["files"].clone(), |candidate, (_, files)| {
+                merge_manifest(&base["files"], &candidate, files)
+            })
     });
     if candidate.as_ref() == Some(&shared["files"]) {
+        retire_candidates(db, project_id, id, None)?;
         return Ok(true);
     }
 
-    let tx = db.unchecked_transaction().map_err(|error| error.to_string())?;
+    let tx = db
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
     hold_unsent_drafts(&tx, project_id, id)?;
-    if let Some(files) = candidate {
+    let retained = if let Some(files) = candidate {
         let existing: bool = tx
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM drafts WHERE project=?1
@@ -247,13 +333,17 @@ pub(crate) fn reconcile(
         // This is a local candidate. An explicit review freezes the version
         // sent to the existing publication workflow.
         tx.execute(
-            "UPDATE drafts SET value=json_set(value,'$.baseRevision',?1,'$.automaticSharing',json('false'),'$.conflictReview',json('true'),'$.skillReconciliation',json('true'))
+            "UPDATE drafts SET value=json_set(value,'$.baseRevision',?1,'$.automaticSharing',json('false'),'$.conflictReview',json('true'),'$.skillReconciliation',json('true'),'$.skillReviewFingerprint',?5)
              WHERE id=?2 AND project=?3 AND json_extract(value,'$.status')='local'
                AND json_extract(value,'$.submission') IS NULL AND json_extract(value,'$.requestId') IS NULL AND NOT ?4",
-            params![shared["revision"].as_u64(), draft_id, project_id, existing],
+            params![shared["revision"].as_u64(), &draft_id, project_id, existing, &fingerprint],
         )
         .map_err(|error| error.to_string())?;
-    }
+        Some(draft_id)
+    } else {
+        None
+    };
+    retire_candidates(&tx, project_id, id, retained.as_deref())?;
     binding["installationState"] = json!("locally_modified");
     binding["availableRevision"] = shared["revision"].clone();
     binding["skillReviewFingerprint"] = json!(fingerprint);
@@ -276,7 +366,11 @@ fn merge_manifest(base: &Value, shared: &Value, local: &Value) -> Option<Value> 
     let base = file_map(base)?;
     let shared = file_map(shared)?;
     let local = file_map(local)?;
-    let paths = base.keys().chain(shared.keys()).chain(local.keys()).collect::<BTreeSet<_>>();
+    let paths = base
+        .keys()
+        .chain(shared.keys())
+        .chain(local.keys())
+        .collect::<BTreeSet<_>>();
     let mut merged = Vec::new();
     for path in paths {
         let base = base.get(path).copied();
@@ -294,7 +388,8 @@ fn merge_manifest(base: &Value, shared: &Value, local: &Value) -> Option<Value> 
     let size: u64 = merged
         .iter()
         .try_fold(0_u64, |size, file| size.checked_add(file["size"].as_u64()?))?;
-    (merged.len() <= 200 && size <= 4_000_000
+    (merged.len() <= 200
+        && size <= 4_000_000
         && merged.iter().any(|file| file["path"] == "SKILL.md"))
     .then(|| json!(merged))
 }
@@ -337,7 +432,7 @@ fn merge_text(local: &str, base: &str, shared: &str) -> Option<Vec<u8>> {
         paths.push(path);
     }
     let output = Command::new("/usr/bin/diff3")
-        .arg("-m")
+        .args(["-m", "-E"])
         .args(&paths)
         .env_clear()
         .env("PATH", "/usr/bin:/bin")

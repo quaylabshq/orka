@@ -12,7 +12,8 @@ async function loadFixture(
 async function openReview(page: Page) {
   await page.locator(".workspace-header .sync-status").click();
   await page
-    .getByRole("group", { name: "Release checklist", exact: true })
+    .getByRole("region", { name: "Changes that need review" })
+    .getByRole("group", { name: "Release checklist in Product", exact: true })
     .getByRole("button", { name: "Review upload", exact: true })
     .click();
   return page.getByRole("dialog", {

@@ -417,8 +417,13 @@ export function SyncMenu({
                 >
                   <h3>Needs review</h3>
                   {reviews.map((review) => {
+                    const { uploadId } = review;
                     const name = projectName(review.projectId);
                     const detail = `${name} · ${review.reason}`;
+                    const reviewAction =
+                      uploadId && reviewUpload
+                        ? () => reviewUpload(uploadId)
+                        : onReviewItem && (() => onReviewItem(review));
                     return (
                       <div
                         className="sync-queue-row"
@@ -432,15 +437,20 @@ export function SyncMenu({
                           </strong>
                           <small title={detail}>{detail}</small>
                         </div>
-                        {onReviewItem && (
+                        {reviewAction && (
                           <Button
                             variant="secondary"
                             size="sm"
                             className="sync-queue-action"
-                            aria-label={`Review ${review.item.title}`}
-                            onClick={() => leave(() => onReviewItem(review))}
+                            aria-label={
+                              uploadId
+                                ? undefined
+                                : `Review ${review.item.title}`
+                            }
+                            disabled={uploadId ? busy : undefined}
+                            onClick={() => leave(reviewAction)}
                           >
-                            Review
+                            {uploadId ? "Review upload" : "Review"}
                           </Button>
                         )}
                       </div>
