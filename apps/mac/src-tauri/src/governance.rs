@@ -776,6 +776,7 @@ pub async fn governance_command(action: String, input: Value) -> Result<Value> {
             | "dismiss"
             | "preview-install"
             | "apply-install"
+            | "keep-skill-copies"
             | "context"
     ) {
         Some(projects::lock()?)
@@ -914,6 +915,18 @@ pub async fn governance_command(action: String, input: Value) -> Result<Value> {
             if resource(&db,id)?["projectId"]!=project_id {return Err("Resource belongs to another project".into());}
             return install_preview(&db,id);
         },
+        "keep-skill-copies"=>{
+            let id=input["resourceId"].as_str().ok_or("Choose a skill")?;
+            let r=resource(&db,id)?;
+            if r["projectId"]!=project_id || r["kind"]!="skill" {return Err("Choose a skill from this project".into());}
+            let reviewed=install_preview(&db,id)?;
+            if input["token"]!=reviewed["token"] {return Err("Local or shared files changed; review the update again".into());}
+            if reviewed["dirty"]!=true {return Err("This skill has no differing local copies".into());}
+            let source=crate::sources::for_resource(&p,&r).ok_or("Connect this resource's repository")?;
+            let binding=installation_binding(&db,&r,&source)?;
+            crate::skill_reconciliation::keep(&db,&source,&r,binding,&reviewed)?;
+            return Ok(json!({"status":"kept_local"}));
+        }
         "apply-install"=>{
             let id=input["resourceId"].as_str().ok_or("Choose a resource")?;
             if resource(&db,id)?["projectId"]!=project_id {return Err("Resource belongs to another project".into());}
@@ -932,7 +945,11 @@ pub async fn governance_command(action: String, input: Value) -> Result<Value> {
             b["reviewedRevision"]=r["revision"].clone();
             b["guards"]=reviewed["guards"].clone();
             db::upsert(&db,"bindings",id,project_id,&b)?;
-            sync::materialize(&db,&p,&r)?;
+            sync::materialize_reviewed(&db,&p,&r)?;
+            if r["kind"]=="skill" {
+                let source=crate::sources::for_resource(&p,&r).ok_or("Connect this resource's repository")?;
+                crate::skill_reconciliation::clear_review_errors(&db,&source,&r)?;
+            }
             indexer::memory_index(&db,&p)?;
             return Ok(json!({"status":"current"}));
         }

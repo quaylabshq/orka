@@ -61,6 +61,73 @@ export interface ProjectAttention {
   accountIssues: Snapshot["errors"];
 }
 
+const skillConflictMessages = new Set([
+  "Local skill edits preserved; resolve them before applying the shared update",
+  "Skill copies differ between .agents/skills and .claude/skills. Review and align them to resume this skill's sync; both local copies are preserved.",
+]);
+const staleVersionMessage =
+  "409: Resource changed; refresh and review the exact version again";
+
+export interface SyncReviewItem {
+  projectId: string;
+  item: AttentionItem;
+  reason: "Local skill copies need review" | "Shared version changed";
+}
+
+/** Find decisions across the active workspace, with the same deduplication as Requests. */
+export function syncReviewItems(
+  state: Snapshot,
+  selectedProjectId: string,
+  selectedAttention: ProjectAttention,
+): SyncReviewItem[] {
+  const skillSources = new Set(
+    state.errors
+      .filter(({ error }) => skillConflictMessages.has(error))
+      .map(({ source }) => source),
+  );
+  const candidates = new Set([
+    selectedProjectId,
+    ...state.resources.flatMap(({ kind, projectId, resourceId }) =>
+      kind === "skill" &&
+      (skillSources.has(resourceId) ||
+        skillSources.has(`${projectId}:installation:${resourceId}`))
+        ? [projectId]
+        : [],
+    ),
+    ...state.outbox.flatMap(({ project, kind, error }) =>
+      kind === "plan" && error === staleVersionMessage ? [project] : [],
+    ),
+    ...(state.drafts ?? []).flatMap((draft) =>
+      draft.resource.kind === "plan" && draft.status === "stale"
+        ? [draft.projectId]
+        : [],
+    ),
+  ]);
+  return state.projects.flatMap(({ id }) => {
+    if (!candidates.has(id)) return [];
+    const { items } =
+      id === selectedProjectId
+        ? selectedAttention
+        : projectAttention(state, id);
+    return items.flatMap<SyncReviewItem>((item) => {
+      if (
+        item.kind === "skill" &&
+        item.messages.some((m) => skillConflictMessages.has(m))
+      )
+        return [
+          { projectId: id, item, reason: "Local skill copies need review" },
+        ];
+      if (
+        item.kind === "plan" &&
+        (item.draft?.status === "stale" ||
+          item.uploads.some((upload) => upload.error === staleVersionMessage))
+      )
+        return [{ projectId: id, item, reason: "Shared version changed" }];
+      return [];
+    });
+  });
+}
+
 /** One attention item per resource, regardless of how many local records describe it. */
 export function projectAttention(
   state: Snapshot,

@@ -40,6 +40,7 @@ mod session_redaction;
 mod session_translation;
 mod settings;
 mod settings_lifecycle;
+mod skill_reconciliation;
 mod skill_usage;
 mod sources;
 mod sync;

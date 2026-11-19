@@ -21,12 +21,15 @@ import {
   retryTime,
 } from "./sync-queue.js";
 import { syncIssueRecovery } from "./sync-issues.js";
-import type { ProjectAttention } from "./sync-attention.js";
+import type { ProjectAttention, SyncReviewItem } from "./sync-attention.js";
 import { useQueuedUploadReview } from "./resource-menu.js";
 
 export function SyncMenu({
   state,
   attention,
+  projectId,
+  reviews = [],
+  onReviewItem,
   busy,
   onSync,
   onRetry,
@@ -54,6 +57,9 @@ export function SyncMenu({
   skillUsagePartial?: boolean;
   state: Snapshot;
   attention: ProjectAttention;
+  projectId?: string;
+  reviews?: SyncReviewItem[];
+  onReviewItem?: (review: SyncReviewItem) => void;
   busy: boolean;
   onSync: () => void;
   onRetry: () => void;
@@ -130,11 +136,18 @@ export function SyncMenu({
     actionError &&
     actionError !== attention.accountError &&
     !attention.items.some((item) => item.messages.includes(actionError));
-  const count =
-    attention.items.length +
+  const attentionItems = attention.items.filter(
+    (item) =>
+      !reviews.some(
+        (review) => review.projectId === projectId && review.item === item,
+      ),
+  );
+  const attentionCount =
+    attentionItems.length +
     Number(Boolean(attention.accountError)) +
     Number(Boolean(independentActionError)) +
     Number(Boolean(setup && !setup.deferred && !setupRunning));
+  const count = attentionCount + reviews.length;
   const historyCount =
     attention.historyRequests.length +
     attention.historyDrafts.length +
@@ -155,13 +168,15 @@ export function SyncMenu({
             ? "Changes pending"
             : !connected && state.sync?.online === false
               ? "Sync offline"
-              : count
+              : attentionCount
                 ? "Needs attention"
-                : connected
-                  ? state.sync?.lastSync
-                    ? "Up to date"
-                    : "Connected"
-                  : "Waiting to connect"));
+                : reviews.length
+                  ? "Needs review"
+                  : connected
+                    ? state.sync?.lastSync
+                      ? "Up to date"
+                      : "Connected"
+                    : "Waiting to connect"));
   const label = `${visibleStatus}${count ? `, ${count} ${count === 1 ? "notification" : "notifications"}` : ""}`;
   const compactStatus: Record<string, string> = {
     "Changes pending": "Pending",
@@ -395,7 +410,45 @@ export function SyncMenu({
                   ))}
                 </section>
               )}
-              {count > 0 && (
+              {reviews.length > 0 && (
+                <section
+                  className="sync-menu-queue"
+                  aria-label="Changes that need review"
+                >
+                  <h3>Needs review</h3>
+                  {reviews.map((review) => {
+                    const name = projectName(review.projectId);
+                    const detail = `${name} · ${review.reason}`;
+                    return (
+                      <div
+                        className="sync-queue-row"
+                        key={`${review.projectId}:${review.item.key}`}
+                        role="group"
+                        aria-label={`${review.item.title} in ${name}`}
+                      >
+                        <div className="sync-queue-project">
+                          <strong title={review.item.title}>
+                            {review.item.title}
+                          </strong>
+                          <small title={detail}>{detail}</small>
+                        </div>
+                        {onReviewItem && (
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            className="sync-queue-action"
+                            aria-label={`Review ${review.item.title}`}
+                            onClick={() => leave(() => onReviewItem(review))}
+                          >
+                            Review
+                          </Button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </section>
+              )}
+              {attentionCount > 0 && (
                 <h3 className="sync-menu-attention-heading">Needs attention</h3>
               )}
               {setup && (
@@ -470,7 +523,7 @@ export function SyncMenu({
                   <p>{attention.accountError}</p>
                 </section>
               )}
-              {attention.items.map((item) => (
+              {attentionItems.map((item) => (
                 <section
                   className="sync-menu-notification"
                   key={item.key}
