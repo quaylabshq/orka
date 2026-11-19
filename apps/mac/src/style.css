@@ -960,7 +960,7 @@
     @apply min-w-0 flex-1;
   }
   .global-skills-destination {
-    @apply max-w-[200px] justify-start;
+    @apply max-w-[220px] justify-start;
   }
   .global-skills-sort {
     @apply w-36 shrink-0 justify-between;
@@ -2320,8 +2320,14 @@
 .repository-select-trigger > span {
   min-width: 0;
 }
-.repository-filter-label {
-  @apply block truncate;
+.repository-select-name {
+  @apply flex min-w-0;
+}
+.repository-select-name > span:first-child {
+  @apply min-w-0 truncate;
+}
+.repository-select-name > span + span {
+  @apply shrink-0 whitespace-pre;
 }
 .repository-menu {
   @apply z-50 overflow-hidden rounded-lg bg-raised p-1 shadow-2xl;
@@ -2337,7 +2343,7 @@
   outline-offset: -2px;
 }
 .repository-menu-option > span:first-child {
-  @apply min-w-0 flex-1 truncate;
+  @apply min-w-0 flex-1;
 }
 .repository-menu-check {
   @apply flex h-4 w-4 shrink-0 items-center justify-center;

@@ -25,7 +25,7 @@ import { readSkillMarkdown } from "./skill-markdown.js";
 import { projectLabel } from "./project-navigation.js";
 import { SkillUsageCount, type SkillUsage } from "./skill-usage.js";
 import { SortMenu } from "./sort-menu.js";
-import { activeSources, repositoryLabel } from "./project-sources.js";
+import { activeSources } from "./project-sources.js";
 import { RepositorySelect } from "./repository-filter.js";
 import { LoadingRegion } from "./loading-region.js";
 
@@ -358,12 +358,8 @@ function GlobalSkillsDialog({
             align="start"
             disabled={Boolean(pending)}
             value={sourceId}
-            options={destinations.map((source) => ({
-              value: source.id,
-              label:
-                repositoryLabel(project.sources ?? [], source.id) ??
-                source.name,
-            }))}
+            repositories={destinations}
+            labelSources={project.sources}
             onChange={(nextSourceId) => {
               setSourceId(nextSourceId);
               setAdded(new Set());

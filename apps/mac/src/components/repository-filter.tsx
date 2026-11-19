@@ -8,32 +8,43 @@ import {
 import { Button } from "./button.js";
 import { FluidHoverHighlight } from "./fluid-hover-highlight.js";
 import type { ControlSize } from "./icon.js";
-import { repositoryLabel } from "./project-sources.js";
+import { repositoryLabelSuffix } from "./project-sources.js";
 
-type RepositoryOptionData = { value: string; label: string };
+type Repository = { id: string; name: string };
+type RepositoryOptionData = { value: string; name: string; suffix: string };
+
+function RepositoryName({ name, suffix }: RepositoryOptionData) {
+  return (
+    <span className="repository-select-name">
+      <span>{name}</span>
+      {suffix && <span>{suffix}</span>}
+    </span>
+  );
+}
 
 function RepositoryOption({
-  value,
-  label,
+  option,
   index,
   registerItem,
 }: {
-  value: string;
-  label: string;
+  option: RepositoryOptionData;
   index: number;
   registerItem: ReturnType<typeof useFluidHover>["registerItem"];
 }) {
   const ref = useRef<HTMLDivElement>(null);
   useRegisterFluidHoverItem(registerItem, index, ref);
+  const label = option.name + option.suffix;
   return (
     <Select.Item
       ref={ref}
-      value={value}
+      value={option.value}
       textValue={label}
       title={label}
       className="repository-menu-option"
     >
-      <Select.ItemText>{label}</Select.ItemText>
+      <Select.ItemText>
+        <RepositoryName {...option} />
+      </Select.ItemText>
       <span className="repository-menu-check">
         <Select.ItemIndicator>
           <CheckIcon size={16} aria-hidden="true" />
@@ -53,11 +64,10 @@ function RepositoryOptions({ options }: { options: RepositoryOptionData[] }) {
       {...hover.handlers}
     >
       <FluidHoverHighlight hover={hover} className="project-menu-hover" />
-      {options.map(({ value, label }, index) => (
+      {options.map((option, index) => (
         <RepositoryOption
-          key={value}
-          value={value}
-          label={label}
+          key={option.value}
+          option={option}
           index={index}
           registerItem={hover.registerItem}
         />
@@ -71,7 +81,7 @@ export function RepositoryFilter({
   value,
   onChange,
 }: {
-  repositories: { id: string; name: string }[];
+  repositories: Repository[];
   value: string;
   onChange: (value: string) => void;
 }) {
@@ -79,14 +89,8 @@ export function RepositoryFilter({
     <RepositorySelect
       className="workspace-repository-filter"
       label="Filter by repository"
-      options={[
-        { value: "all", label: "All repositories" },
-        ...repositories.map((repository) => ({
-          value: repository.id,
-          label:
-            repositoryLabel(repositories, repository.id) ?? repository.name,
-        })),
-      ]}
+      repositories={repositories}
+      includeAll
       value={value}
       placeholder="All repositories"
       onChange={onChange}
@@ -95,7 +99,9 @@ export function RepositoryFilter({
 }
 
 export function RepositorySelect({
-  options,
+  repositories,
+  labelSources = repositories,
+  includeAll = false,
   value,
   onChange,
   label,
@@ -105,7 +111,9 @@ export function RepositorySelect({
   align = "end",
   disabled,
 }: {
-  options: RepositoryOptionData[];
+  repositories: Repository[];
+  labelSources?: Repository[];
+  includeAll?: boolean;
   value: string;
   onChange: (value: string) => void;
   label: string;
@@ -115,11 +123,17 @@ export function RepositorySelect({
   align?: "start" | "end";
   disabled?: boolean;
 }) {
-  const selectedLabel = options.find((option) => option.value === value)?.label;
-  const displayLabel = selectedLabel ?? placeholder;
+  const options = repositories.map((repository) => ({
+    value: repository.id,
+    name: repository.name,
+    suffix: repositoryLabelSuffix(labelSources, repository),
+  }));
+  if (includeAll)
+    options.unshift({ value: "all", name: "All repositories", suffix: "" });
+  const selectedOption = options.find((option) => option.value === value);
   return (
     <Select.Root
-      value={selectedLabel === undefined ? "" : value}
+      value={selectedOption?.value ?? ""}
       onValueChange={onChange}
       disabled={disabled}
     >
@@ -128,12 +142,16 @@ export function RepositorySelect({
           size={size}
           className={`repository-select-trigger ${className}`}
           aria-label={label}
-          title={displayLabel}
+          title={
+            selectedOption
+              ? selectedOption.name + selectedOption.suffix
+              : placeholder
+          }
         >
           <BookMarkedIcon size={16} aria-hidden="true" />
-          <span className="repository-filter-label">
+          <span>
             <Select.Value placeholder={placeholder}>
-              {selectedLabel}
+              {selectedOption && <RepositoryName {...selectedOption} />}
             </Select.Value>
           </span>
           <Select.Icon asChild>

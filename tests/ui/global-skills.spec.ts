@@ -99,12 +99,12 @@ async function fixture(page: Page, mode = "normal") {
                         sources: [
                           {
                             id: "desktop",
-                            name: "orka-platform",
+                            name: "orka-platform-infrastructure",
                             path: "/test/desktop",
                           },
                           {
                             id: "backend",
-                            name: "orka-platform",
+                            name: "orka-platform-infrastructure",
                             path: "/test/backend",
                           },
                           { id: "other", name: "Disconnected repository" },
@@ -1254,19 +1254,36 @@ test("changing repositories clears bulk selection and scopes installation to the
     name: "Install into repository",
     exact: true,
   });
-  await expect(destination).toHaveText("orka-platform · deskto");
+  await expect(destination).toHaveText("orka-platform-infrastructure · deskto");
   const refresh = dialog.getByRole("button", { name: "Scan again" });
   const destinationBox = (await destination.boundingBox())!;
   const refreshBox = (await refresh.boundingBox())!;
   expect(destinationBox.height).toBe(refreshBox.height);
   expect(destinationBox.y).toBe(refreshBox.y);
 
+  const expectUnclippedId = async (label: ReturnType<Page["getByText"]>) => {
+    const bounds = await label.evaluate((id) => {
+      const row = id.parentElement!;
+      const name = row.firstElementChild!;
+      return {
+        nameTruncated: name.scrollWidth > name.clientWidth,
+        idRight: id.getBoundingClientRect().right,
+        rowRight: row.getBoundingClientRect().right,
+      };
+    });
+    expect(bounds.nameTruncated).toBe(true);
+    expect(bounds.idRight).toBeLessThanOrEqual(bounds.rowRight);
+  };
+  await expectUnclippedId(destination.getByText("· deskto", { exact: true }));
+
   await destination.click();
   const menu = page.getByRole("listbox", { name: "Repositories" });
   await expect(menu.getByRole("option")).toHaveText([
-    "orka-platform · deskto",
-    "orka-platform · backen",
+    "orka-platform-infrastructure · deskto",
+    "orka-platform-infrastructure · backen",
   ]);
+  await expectUnclippedId(menu.getByText("· deskto", { exact: true }));
+  await expectUnclippedId(menu.getByText("· backen", { exact: true }));
   await page.keyboard.press("Escape");
   await expect(menu).toBeHidden();
   await expect(destination).toBeFocused();
@@ -1275,8 +1292,9 @@ test("changing repositories clears bulk selection and scopes installation to the
   await destination.press("ArrowDown");
   await expect(menu.getByRole("option").first()).toBeFocused();
   await page.keyboard.press("ArrowDown");
+  await expect(menu.getByRole("option").nth(1)).toBeFocused();
   await page.keyboard.press("Enter");
-  await expect(destination).toHaveText("orka-platform · backen");
+  await expect(destination).toHaveText("orka-platform-infrastructure · backen");
   await expect(destination).toBeFocused();
   await expect(dialog.getByText("0 selected", { exact: true })).toBeVisible();
   expect(
