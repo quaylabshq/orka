@@ -80,6 +80,8 @@ export async function settingsFixture(
       lifecycleRevision?: number;
     }[];
     projectRestoreWindowDays?: number;
+    restoreError?: string;
+    failDeletionCapabilities?: boolean;
     policyFailure?: "drop" | "offline" | "conflict";
     legacy?: boolean;
     long?: boolean;
@@ -276,6 +278,8 @@ export async function settingsFixture(
       failedRename = false,
       policyFailed = false;
     const controls = {
+      restoreError: options.restoreError ?? "",
+      failDeletionCapabilities: options.failDeletionCapabilities ?? false,
       failRefresh: options.failInitial ?? false,
       failService: false,
       failSwitch: false,
@@ -595,11 +599,13 @@ export async function settingsFixture(
             };
           if (command === "project_command") {
             const restoreWindowDays = options.projectRestoreWindowDays ?? 7;
-            if (args.action === "capabilities")
+            if (args.action === "capabilities") {
+              if (controls.failDeletionCapabilities) throw new Error("Offline");
               return {
                 softDelete: options.olderService ? 0 : 1,
                 projectRestoreWindowDays: restoreWindowDays,
               };
+            }
             if (args.action === "list")
               return { supported: true, projects: structuredClone(projects) };
             const project = (projects.find(
@@ -671,6 +677,7 @@ export async function settingsFixture(
               return { ok: true };
             }
             if (args.action === "restore") {
+              if (controls.restoreError) throw new Error(controls.restoreError);
               const bucket = deletedProjects.some(
                 (item) => item.id === args.input.projectId,
               )

@@ -262,3 +262,84 @@ test("permanent deletion wraps the maximum-length name and returns focus to Proj
     settings.getByRole("heading", { name: "Projects", exact: true }),
   ).toBeFocused();
 });
+
+for (const kind of ["archived", "deleted"] as const) {
+  test(`a failed restore stays visible beside its ${kind} project in a long list`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 900, height: 640 });
+    const projects = Array.from({ length: 20 }, (_, index) => ({
+      id: `recover-${index}`,
+      name: `Recovery project ${String(index).padStart(2, "0")}`,
+      role: "owner" as const,
+      lifecycleRevision: 2,
+    }));
+    const message =
+      "The service is unavailable. Try restoring this project again when connected.";
+    const recovery =
+      kind === "archived"
+        ? {
+            archivedProjects: projects.map((project) => ({
+              ...project,
+              archivedAt: "2026-11-19T00:00:00Z",
+            })),
+          }
+        : {
+            deletedProjects: projects.map((project) => ({
+              ...project,
+              deletedAt: "2026-11-19T00:00:00Z",
+              purgeAfter: "2026-11-26T00:00:00Z",
+            })),
+          };
+    const settings = await settingsFixture(page, {
+      noProjects: true,
+      restoreError: message,
+      ...recovery,
+    });
+    await settings
+      .getByRole("button", { name: "Projects", exact: true })
+      .click();
+    const row = settings.getByRole("listitem").filter({
+      hasText:
+        kind === "deleted" ? "Recovery project 03" : "Recovery project 00",
+    });
+    await row.getByRole("button", { name: "Restore", exact: true }).click();
+    await expect(row.getByRole("alert")).toHaveText(message);
+    await expect(row.getByRole("alert")).toBeInViewport({ ratio: 1 });
+    await page.evaluate(() => {
+      (window as any).settingsControls.restoreError = "";
+    });
+    await row.getByRole("button", { name: "Restore", exact: true }).click();
+    await expect(row).toHaveCount(0);
+  });
+}
+
+test("deletion support failure and retry remain visible above a long recovery list", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 900, height: 640 });
+  const settings = await settingsFixture(page, {
+    noProjects: true,
+    failDeletionCapabilities: true,
+    deletedProjects: Array.from({ length: 20 }, (_, index) => ({
+      id: `deleted-${index}`,
+      name: `Recovery project ${index}`,
+      role: "owner",
+      deletedAt: "2026-11-19T00:00:00Z",
+      purgeAfter: "2026-11-26T00:00:00Z",
+    })),
+  });
+  await settings.getByRole("button", { name: "Projects", exact: true }).click();
+  const retry = settings.getByRole("button", { name: "Retry", exact: true });
+  await expect(retry).toBeInViewport();
+  const deleting = settings
+    .getByRole("button", { name: "Delete now", exact: true })
+    .first();
+  await expect(deleting).toBeDisabled();
+  await page.evaluate(() => {
+    (window as any).settingsControls.failDeletionCapabilities = false;
+  });
+  await retry.click();
+  await expect(deleting).toBeEnabled();
+  await expect(retry).toHaveCount(0);
+});

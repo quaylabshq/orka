@@ -12,6 +12,8 @@ import { inactiveMessage, removalWarning } from "./project-inactive.js";
 import { useToastNotice } from "./toasts.js";
 import type { Run } from "./use-resource-actions.js";
 
+const errorText = (error: unknown) => String(error).replace(/^Error:\s*/, "");
+
 /** The view for a project that stays visible but no longer syncs. */
 export function InactiveProject({
   project,
@@ -25,8 +27,30 @@ export function InactiveProject({
   const notice = useToastNotice();
   const [exporting, setExporting] = useState(false);
   const [confirming, setConfirming] = useState(false);
+  const [removing, setRemoving] = useState(false);
+  const [removalError, setRemovalError] = useState("");
   const [error, setError] = useState("");
   const name = projectLabel(project);
+  const removeProject = async () => {
+    if (busy || removing) return;
+    setRemoving(true);
+    setRemovalError("");
+    try {
+      await run(
+        () =>
+          invoke("project_command", {
+            action: "remove",
+            input: { projectId: project.id },
+          }),
+        { successTitle: "Project removed from this Mac" },
+      );
+      setConfirming(false);
+    } catch (cause) {
+      setRemovalError(errorText(cause));
+    } finally {
+      setRemoving(false);
+    }
+  };
   const exportProject = async () => {
     setError("");
     setExporting(true);
@@ -43,7 +67,7 @@ export function InactiveProject({
       });
       notice("Project exported");
     } catch (cause) {
-      setError(String(cause));
+      setError(errorText(cause));
     } finally {
       setExporting(false);
     }
@@ -73,7 +97,10 @@ export function InactiveProject({
           </Button>
           <Button
             disabled={busy || exporting}
-            onClick={() => setConfirming(true)}
+            onClick={() => {
+              setRemovalError("");
+              setConfirming(true);
+            }}
           >
             Remove from this Mac
           </Button>
@@ -90,7 +117,7 @@ export function InactiveProject({
           title="Remove from this Mac?"
           className="settings-confirm project-lifecycle-confirm"
           onClose={() => {
-            if (!busy) setConfirming(false);
+            if (!busy && !removing) setConfirming(false);
           }}
         >
           <h2>Remove from this Mac?</h2>
@@ -99,24 +126,25 @@ export function InactiveProject({
             <span>{name}</span>
           </div>
           <p>{removalWarning()}</p>
+          {removalError && (
+            <p className="project-lifecycle-feedback" role="alert">
+              {removalError}
+            </p>
+          )}
           <div className="settings-confirm-actions">
-            <Button disabled={busy} onClick={() => setConfirming(false)}>
+            <Button
+              disabled={busy || removing}
+              onClick={() => setConfirming(false)}
+            >
               Keep it
             </Button>
             <Button
               className="project-lifecycle-danger"
-              disabled={busy}
-              onClick={() => {
-                void run(
-                  () =>
-                    invoke("project_command", {
-                      action: "remove",
-                      input: { projectId: project.id },
-                    }),
-                  { successTitle: "Project removed from this Mac" },
-                ).then(() => setConfirming(false));
-              }}
+              aria-busy={removing}
+              disabled={busy || removing}
+              onClick={() => void removeProject()}
             >
+              {removing && <ActivityIndicator />}
               Remove
             </Button>
           </div>

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   ArchiveIcon,
@@ -56,7 +56,14 @@ export function SettingsDanger({
   const [memberCount, setMemberCount] = useState<number | null>(null);
   const [policyRevision, setPolicyRevision] = useState(0);
   const [dialogError, setDialogError] = useState("");
-  const [sectionError, setSectionError] = useState("");
+  const [lifecycleError, setLifecycleError] = useState<{
+    projectId: string;
+    message: string;
+  } | null>(null);
+  const lifecycleErrorRef = useRef<HTMLParagraphElement>(null);
+  useEffect(() => {
+    lifecycleErrorRef.current?.scrollIntoView?.({ block: "nearest" });
+  }, [lifecycleError]);
   const [notice, setNotice] = useState("");
   const [operation, setOperation] = useState<
     "confirm" | { projectId: string } | null
@@ -125,7 +132,7 @@ export function SettingsDanger({
   };
 
   const lifecycle = async (target: Project, action: "archive" | "restore") => {
-    setSectionError("");
+    setLifecycleError(null);
     setNotice("");
     setOperation({ projectId: target.id });
     try {
@@ -142,7 +149,7 @@ export function SettingsDanger({
       setNotice(`Project ${action === "archive" ? "archived" : "restored"}.`);
       onComplete?.();
     } catch (error) {
-      setSectionError(errorText(error));
+      setLifecycleError({ projectId: target.id, message: errorText(error) });
     } finally {
       setOperation(null);
     }
@@ -209,9 +216,31 @@ export function SettingsDanger({
       : dialog?.kind === "purge"
         ? "Delete project permanently?"
         : "Delete project?";
+  const lifecycleFeedback = (projectId: string) =>
+    lifecycleError?.projectId === projectId && (
+      <p
+        ref={lifecycleErrorRef}
+        className="project-lifecycle-feedback settings-lifecycle-feedback"
+        role="alert"
+      >
+        {lifecycleError.message}
+      </p>
+    );
 
   return (
     <>
+      {capabilityError && (
+        <p className="project-lifecycle-feedback" role="alert">
+          {capabilityError}{" "}
+          <Button
+            size="sm"
+            disabled={disabled}
+            onClick={() => setCapabilityAttempt((attempt) => attempt + 1)}
+          >
+            Retry
+          </Button>
+        </p>
+      )}
       {project && (
         <section className="settings-danger" aria-label="Danger zone">
           <div className="settings-danger-heading">
@@ -258,6 +287,7 @@ export function SettingsDanger({
                     )}
                     {project.archivedAt ? "Restore project" : "Archive project"}
                   </Button>
+                  {lifecycleFeedback(project.id)}
                 </div>
                 <div className="settings-row">
                   <div>
@@ -265,7 +295,9 @@ export function SettingsDanger({
                     <p>
                       Remove it for all members.{" "}
                       {capabilities === null
-                        ? "Checking deletion support…"
+                        ? capabilityError
+                          ? "Check deletion support to continue."
+                          : "Checking deletion support…"
                         : supportsDelete
                           ? restorePromise
                           : "Update this service to use recoverable project deletion."}
@@ -333,6 +365,7 @@ export function SettingsDanger({
                     Restore
                   </Button>
                 </div>
+                {lifecycleFeedback(item.id)}
               </li>
             ))}
           </ul>
@@ -378,27 +411,11 @@ export function SettingsDanger({
                     Delete now
                   </Button>
                 </div>
+                {lifecycleFeedback(item.id)}
               </li>
             ))}
           </ul>
         </section>
-      )}
-      {capabilityError && (
-        <p className="project-lifecycle-feedback" role="alert">
-          {capabilityError}{" "}
-          <Button
-            size="sm"
-            disabled={disabled}
-            onClick={() => setCapabilityAttempt((attempt) => attempt + 1)}
-          >
-            Retry
-          </Button>
-        </p>
-      )}
-      {sectionError && (
-        <p className="project-lifecycle-feedback" role="alert">
-          {sectionError}
-        </p>
       )}
       {notice && (
         <p className="project-lifecycle-feedback" role="status">

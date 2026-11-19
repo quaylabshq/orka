@@ -440,7 +440,7 @@
     @apply mt-1;
   }
   .settings-lifecycle-actions .settings-row {
-    @apply gap-4 px-4;
+    @apply flex-wrap gap-4 px-4;
   }
   .settings-lifecycle-actions,
   .settings-deleted-list {
@@ -450,7 +450,7 @@
     @apply overflow-hidden;
   }
   .settings-deleted-row {
-    @apply flex min-w-0 items-center justify-between gap-3 px-4 py-4;
+    @apply flex min-w-0 flex-wrap items-center justify-between gap-3 px-4 py-4;
   }
   .settings-project-summary {
     @apply min-w-0 flex-1;
@@ -516,6 +516,9 @@
   }
   .project-lifecycle-feedback {
     @apply rounded-lg border border-line bg-raised p-3;
+  }
+  .settings-lifecycle-feedback {
+    @apply basis-full;
   }
   .settings-check {
     @apply flex items-start gap-3 text-body-sm;

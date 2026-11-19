@@ -6,13 +6,18 @@ declare global {
     memberViewFixture: {
       state: Snapshot;
       calls: { name: string; args?: Record<string, unknown> }[];
+      controls: { removeError: string; holdRemoval: boolean };
+      releaseRemoval?: () => void;
     };
   }
 }
 
 /** One active project beside every inactive state the sidebar explains. */
-export async function memberViewFixture(page: Page) {
-  await page.addInitScript(() => {
+export async function memberViewFixture(
+  page: Page,
+  options: { removeError?: string; holdRemoval?: boolean } = {},
+) {
+  await page.addInitScript((options) => {
     const inactive = [
       {
         id: "archived",
@@ -74,7 +79,14 @@ export async function memberViewFixture(page: Page) {
       deviceId: "device",
       background: true,
     };
-    const fixture: Window["memberViewFixture"] = { state, calls: [] };
+    const fixture: Window["memberViewFixture"] = {
+      state,
+      calls: [],
+      controls: {
+        removeError: options.removeError ?? "",
+        holdRemoval: options.holdRemoval ?? false,
+      },
+    };
     Object.assign(window, {
       memberViewFixture: fixture,
       isTauri: true,
@@ -90,6 +102,16 @@ export async function memberViewFixture(page: Page) {
           if (name.startsWith("plugin:")) return null;
           if (name === "export_project") return null;
           if (name === "project_command" && args?.action === "remove") {
+            if (fixture.controls.holdRemoval)
+              await new Promise<void>((resolve) => {
+                fixture.releaseRemoval = () => {
+                  fixture.controls.holdRemoval = false;
+                  fixture.releaseRemoval = undefined;
+                  resolve();
+                };
+              });
+            if (fixture.controls.removeError)
+              throw new Error(fixture.controls.removeError);
             const input = args.input as { projectId?: string } | undefined;
             fixture.state.inactive = fixture.state.inactive?.filter(
               (project) => project.id !== input?.projectId,
@@ -100,7 +122,7 @@ export async function memberViewFixture(page: Page) {
         },
       },
     });
-  });
+  }, options);
   await page.goto("/");
 }
 

@@ -969,7 +969,7 @@ function WorkspaceApp({
               key={inactiveProject.id}
               project={inactiveProject}
               busy={busy}
-              run={act}
+              run={(action, feedback) => run(action, true, feedback)}
             />
           ) : !selectedProject ? (
             <ProjectEmptyState

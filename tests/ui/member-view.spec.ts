@@ -163,3 +163,65 @@ test("a selected inactive project keeps its checkmark aligned with its name", as
   expect(Math.abs(centers.check - centers.folder)).toBeLessThanOrEqual(1);
   expect(Math.abs(centers.check - centers.name)).toBeLessThanOrEqual(1);
 });
+
+test("a failed local removal keeps its confirmation open for retry", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 900, height: 640 });
+  const message =
+    "Could not remove the cached files. Check folder permissions and try again.";
+  await memberViewFixture(page, { removeError: message });
+  const projects = await openPicker(page);
+  await projects
+    .getByRole("option")
+    .filter({ hasText: "Deleted notes" })
+    .click();
+  await page
+    .getByRole("button", { name: "Remove from this Mac", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog", {
+    name: "Remove from this Mac?",
+    exact: true,
+  });
+  await dialog.getByRole("button", { name: "Remove", exact: true }).click();
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole("alert")).toHaveText(message);
+  await expect(dialog.getByRole("alert")).toBeInViewport();
+  await page.evaluate(() => {
+    window.memberViewFixture.controls.removeError = "";
+  });
+  await dialog.getByRole("button", { name: "Remove", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(
+    page.getByRole("heading", { name: "Home", exact: true }),
+  ).toBeVisible();
+});
+
+test("local removal shows progress and blocks dismissal until it finishes", async ({
+  page,
+}) => {
+  await memberViewFixture(page, { holdRemoval: true });
+  const projects = await openPicker(page);
+  await projects
+    .getByRole("option")
+    .filter({ hasText: "Deleted notes" })
+    .click();
+  await page
+    .getByRole("button", { name: "Remove from this Mac", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog", {
+    name: "Remove from this Mac?",
+    exact: true,
+  });
+  const remove = dialog.getByRole("button", { name: "Remove", exact: true });
+  await remove.click();
+  await expect(remove).toHaveAttribute("aria-busy", "true");
+  await expect(remove.locator(".activity-indicator")).toBeVisible();
+  await expect(
+    dialog.getByRole("button", { name: "Keep it", exact: true }),
+  ).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeVisible();
+  await page.evaluate(() => window.memberViewFixture.releaseRemoval?.());
+  await expect(dialog).toHaveCount(0);
+});
