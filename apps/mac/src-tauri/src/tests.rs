@@ -11,6 +11,8 @@ use std::{
 static SERIAL: Mutex<()> = Mutex::new(());
 #[path = "attention_tests.rs"]
 mod attention_tests;
+#[path = "codex_rollout_tests.rs"]
+mod codex_rollout_tests;
 #[path = "context_sharing_tests.rs"]
 mod context_sharing_tests;
 #[path = "sync_request_tests.rs"]

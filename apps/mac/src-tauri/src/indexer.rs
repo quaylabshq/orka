@@ -815,6 +815,8 @@ fn refresh_catalog(
             )
         }));
     }
+    let mut unique = BTreeSet::new();
+    errors.retain(|message| unique.insert(message.clone()));
     Ok(errors)
 }
 

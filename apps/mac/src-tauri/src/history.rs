@@ -231,7 +231,14 @@ pub fn find_rollout(home: &Path, id: &str) -> Result<PathBuf> {
     )
 }
 
-fn segments(home: &Path, id: &str) -> Result<Vec<(u64, PathBuf)>> {
+struct Segment {
+    ordinal: u64,
+    path: PathBuf,
+    multi_agent_v2: bool,
+    cwd: Option<PathBuf>,
+}
+
+fn segments(home: &Path, id: &str) -> Result<Vec<Segment>> {
     Uuid::parse_str(id).map_err(|_| "Invalid history identity")?;
     let mut candidates = Vec::new();
     for directory in [home.join("sessions"), home.join("archived_sessions")] {
@@ -259,34 +266,127 @@ fn segments(home: &Path, id: &str) -> Result<Vec<(u64, PathBuf)>> {
             let record: Value =
                 serde_json::from_str(&first).map_err(|_| "Invalid native segment metadata")?;
             if record["type"] == "session_meta" && record["payload"]["id"] == id {
-                candidates.push((record["ordinal"].as_u64().unwrap_or(0), entry.into_path()));
+                candidates.push(Segment {
+                    ordinal: record["ordinal"].as_u64().unwrap_or(0),
+                    path: entry.into_path(),
+                    multi_agent_v2: record["payload"]["multi_agent_version"] == "v2",
+                    cwd: record["payload"]["cwd"].as_str().map(PathBuf::from),
+                });
             }
         }
     }
-    candidates.sort_by_key(|(ordinal, _)| *ordinal);
+    candidates.sort_by_key(|segment| segment.ordinal);
     Ok(candidates)
 }
 
+// Codex can replace a rollout when entering multi-agent v2, keeping the thread
+// ID but restarting ordinals. Its state index identifies the current generation.
+// This optional lookup never starts an app server, repairs its index, or creates
+// a database. Unavailable or unfamiliar state leaves ambiguity checks in charge.
+fn indexed_v2_segment<'a>(home: &Path, id: &str, candidates: &'a [Segment]) -> Option<&'a Segment> {
+    let mut databases = fs::read_dir(home)
+        .ok()?
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let name = entry.file_name();
+            let version = name
+                .to_str()?
+                .strip_prefix("state_")?
+                .strip_suffix(".sqlite")?;
+            if !version.bytes().all(|byte| byte.is_ascii_digit()) {
+                return None;
+            }
+            let version = version.parse::<u64>().ok()?;
+            Some((version, entry.path()))
+        })
+        .collect::<Vec<_>>();
+    databases.sort_by_key(|(version, _)| *version);
+    let (version, path) = databases.last()?;
+    if databases.iter().filter(|(v, _)| v == version).count() != 1
+        || !fs::symlink_metadata(path).ok()?.is_file()
+    {
+        return None;
+    }
+    let db = rusqlite::Connection::open_with_flags(
+        path.canonicalize().ok()?,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+            | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    )
+    .ok()?;
+    db.busy_timeout(std::time::Duration::from_millis(50)).ok()?;
+    let raw: String = db
+        .query_row("SELECT rollout_path FROM threads WHERE id=?", [id], |row| {
+            row.get(0)
+        })
+        .ok()?;
+    let indexed = Path::new(&raw);
+    if !indexed.is_absolute()
+        || indexed
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir))
+        || !fs::symlink_metadata(indexed).ok()?.is_file()
+    {
+        return None;
+    }
+    let indexed = indexed.canonicalize().ok()?;
+    let selected = candidates
+        .iter()
+        .find(|candidate| candidate.path.canonicalize().ok().as_ref() == Some(&indexed))?;
+    let cwd = selected.cwd.as_ref().filter(|cwd| cwd.is_absolute())?;
+    if !selected.multi_agent_v2
+        || candidates
+            .iter()
+            .any(|candidate| candidate.cwd.as_ref() != Some(cwd))
+    {
+        return None;
+    }
+    let record: Value = serde_json::from_str(&first_line(&selected.path).ok()?).ok()?;
+    if record["payload"]["session_id"] != id
+        || record["payload"]["history_mode"] != "paginated"
+        || record["ordinal"].as_u64() != Some(selected.ordinal)
+    {
+        return None;
+    }
+    Some(selected)
+}
+
 pub fn current_path(path: &Path, id: &str) -> Result<PathBuf> {
-    let candidates = segments(&native::codex_home()?, id)?;
+    let home = native::codex_home()?;
+    let candidates = segments(&home, id)?;
+    if candidates.len() > 1 && candidates.iter().any(|segment| segment.multi_agent_v2) {
+        if let Some(selected) = indexed_v2_segment(&home, id, &candidates) {
+            return Ok(selected.path.clone());
+        }
+        let reset = candidates
+            .iter()
+            .any(|segment| segment.multi_agent_v2 && segment.ordinal == 0);
+        let duplicate_ordinal = candidates
+            .windows(2)
+            .any(|pair| pair[0].ordinal == pair[1].ordinal);
+        if duplicate_ordinal || (reset && candidates.iter().any(|segment| !segment.multi_agent_v2))
+        {
+            return Err("Ambiguous native history segments; source preserved".into());
+        }
+    }
     if candidates.len() > 1
-        && candidates[candidates.len() - 2].0 == candidates[candidates.len() - 1].0
+        && candidates[candidates.len() - 2].ordinal == candidates[candidates.len() - 1].ordinal
     {
         return Err("Ambiguous native history segments; source preserved".into());
     }
     Ok(candidates
         .last()
-        .map(|(_, path)| path.clone())
+        .map(|segment| segment.path.clone())
         .unwrap_or_else(|| path.into()))
 }
 
 fn parent_prefix(home: &Path, id: &str, end: u64, offset: u64) -> Result<Vec<u8>> {
     let mut found = None;
-    for (start, path) in segments(home, id)?.into_iter().rev() {
-        if start >= end {
+    for segment in segments(home, id)?.into_iter().rev() {
+        if segment.ordinal >= end {
             continue;
         }
-        let bytes = read(&path, Some(offset))?;
+        let bytes = read(&segment.path, Some(offset))?;
         if bytes.len() as u64 != offset {
             continue;
         }
