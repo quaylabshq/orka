@@ -913,3 +913,49 @@ test("a focused session stays reachable when its display title changes pages", a
   await expect(pages).toContainText("Page 2 of 2");
   await expect(item).toBeFocused();
 });
+
+for (const mode of ["button", "context menu"] as const) {
+  test(`an open resource ${mode} stays available when its session changes pages`, async ({
+    page,
+  }) => {
+    await resourceLibraryFixture(page, {
+      extraRows: 50,
+      emptyLocal: true,
+      deferredTitleId: "session-extra-0",
+    });
+    await page.getByRole("button", { name: /^Sessions/ }).click();
+    await page
+      .getByRole("button", { name: "Sort by Recently updated" })
+      .click();
+    await page
+      .getByRole("menuitemradio", { name: "Title", exact: true })
+      .click();
+    const item = page.locator('[data-resource-id="session-extra-0"]');
+    if (mode === "button")
+      await page
+        .getByRole("button", {
+          name: "Actions for Archive session 0",
+          exact: true,
+        })
+        .press("Enter");
+    else await item.press("Shift+F10");
+
+    const menu = page.getByRole("menu");
+    await expect(menu).toBeVisible();
+    await page.waitForFunction(
+      () => (window as unknown as LibraryWindow).library.finishTitle,
+    );
+    await page.evaluate(() =>
+      (window as unknown as LibraryWindow).library.finishTitle?.("Zulu Page B"),
+    );
+    await expect(item).toHaveText("Zulu Page B");
+    await expect(menu).toBeVisible();
+    await expect(
+      page.getByRole("navigation", { name: "Session pages" }),
+    ).toContainText("Page 2 of 2");
+    await menu.getByRole("menuitem", { name: "Open", exact: true }).click();
+    await expect(
+      page.getByRole("button", { name: "Back to Sessions" }),
+    ).toBeVisible();
+  });
+}

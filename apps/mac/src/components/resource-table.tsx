@@ -128,8 +128,10 @@ export function ResourceTable({
     };
   });
   const [focusedResource, setFocusedResource] = useState<string>();
+  const [menuResource, setMenuResource] = useState<string>();
+  const anchoredResource = menuResource ?? focusedResource;
   const focusedRoot =
-    sessionAncestors(focusedResource, tree.parents).at(-1) ?? focusedResource;
+    sessionAncestors(anchoredResource, tree.parents).at(-1) ?? anchoredResource;
   const focusedIndex = focusedRoot
     ? tree.roots.findIndex((resource) => resource.resourceId === focusedRoot)
     : -1;
@@ -140,6 +142,10 @@ export function ResourceTable({
       : focusedIndex >= 0
         ? Math.floor(focusedIndex / rootsPerPage)
         : Math.min(position.page, pageCount - 1);
+  if (position.key !== pageKey || (anchoredResource && focusedIndex < 0)) {
+    setFocusedResource(undefined);
+    setMenuResource(undefined);
+  }
   if (page !== position.page || position.key !== pageKey) {
     setPosition({ key: pageKey, page });
   }
@@ -175,6 +181,7 @@ export function ResourceTable({
   const goToPage = (page: number) => {
     pageChanged.current = true;
     setFocusedResource(undefined);
+    setMenuResource(undefined);
     setPosition({ key: pageKey, page });
   };
   useLayoutEffect(() => {
@@ -221,6 +228,7 @@ export function ResourceTable({
               <tr
                 key={`more:${row.parent.resourceId}`}
                 className="session-forks-more"
+                onFocus={() => setFocusedResource(row.parent.resourceId)}
               >
                 <td colSpan={showRepository ? 5 : 4}>
                   <Button
@@ -248,8 +256,20 @@ export function ResourceTable({
             : dateTime.format(updated);
           const children = tree.children.get(resource.resourceId) ?? [];
           const open = filtered || expanded.has(resource.resourceId);
+          const onMenuChange = (open: boolean) =>
+            setMenuResource((current) =>
+              open
+                ? resource.resourceId
+                : current === resource.resourceId
+                  ? undefined
+                  : current,
+            );
           return (
-            <ResourceItemMenu key={resource.resourceId} resource={resource}>
+            <ResourceItemMenu
+              key={resource.resourceId}
+              resource={resource}
+              onOpenChange={onMenuChange}
+            >
               {(actions) => (
                 <tr
                   className={depth > 0 ? "session-fork-row" : undefined}
@@ -379,6 +399,7 @@ export function ResourceTable({
                       <ItemMenuButton
                         actions={actions}
                         label={`Actions for ${title}`}
+                        onOpenChange={onMenuChange}
                       />
                     ) : (
                       <ChevronRightIcon size={16} aria-hidden="true" />

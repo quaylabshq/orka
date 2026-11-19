@@ -147,11 +147,13 @@ export function ItemContextMenu({
   label,
   children,
   disabled = false,
+  onOpenChange,
 }: {
   actions: ItemMenuAction[];
   label: string;
   children: React.ReactElement;
   disabled?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }) {
   const trigger = useRef<HTMLSpanElement>(null);
   const selected = useRef(false);
@@ -163,6 +165,7 @@ export function ItemContextMenu({
       onOpenChange={(value) => {
         setOpen(value);
         if (value) selected.current = false;
+        onOpenChange?.(value);
       }}
     >
       <ContextMenu.Trigger
@@ -244,11 +247,13 @@ export function ItemMenuButton({
   label,
   disabled,
   size = "sm",
+  onOpenChange,
 }: {
   actions: ItemMenuAction[];
   label: string;
   disabled?: boolean;
   size?: "sm" | "md" | "lg";
+  onOpenChange?: (open: boolean) => void;
 }) {
   const selected = useRef(false);
   return (
@@ -256,6 +261,7 @@ export function ItemMenuButton({
       modal={false}
       onOpenChange={(open) => {
         if (open) selected.current = false;
+        onOpenChange?.(open);
       }}
     >
       <DropdownMenu.Trigger asChild>
