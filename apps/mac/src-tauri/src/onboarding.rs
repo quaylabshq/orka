@@ -8,7 +8,11 @@ use crate::{
 };
 use fs2::FileExt;
 use serde_json::{json, Value};
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    io::ErrorKind,
+    path::{Path, PathBuf},
+};
 fn draft_path() -> Result<PathBuf> {
     Ok(db::root()?.join("onboarding.json"))
 }
@@ -953,6 +957,25 @@ fn setup_status() -> Result<Value> {
         json!({"hooks":status,"background":{"enabled":db::get(&db,"background")?==true,"running":db::daemon_running()?},"hidden":db::get(&db,"setupHidden")?,"completedAt":db::get(&db,"setupCompletedAt")?}),
     )
 }
+/// Returns no status only when the path is confirmed missing or no longer a folder.
+fn check_discovered_folder(path: &Path) -> Option<bool> {
+    match fs::metadata(path) {
+        Ok(metadata) if metadata.is_dir() => Some(fs::read_dir(path).is_ok()),
+        Ok(_) => None,
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            // Paths on a disconnected macOS volume can look like deleted folders.
+            let volumes = Path::new("/Volumes");
+            let mount = path.strip_prefix(volumes).ok()?.iter().next()?;
+            if fs::metadata(volumes.join(mount)).is_err() {
+                Some(false)
+            } else {
+                None
+            }
+        }
+        Err(_) => Some(false),
+    }
+}
+
 #[tauri::command]
 pub async fn onboarding_command(
     action: String,
@@ -986,6 +1009,22 @@ pub async fn onboarding_command(
                 checkpoint(input)
             }
             "discover" => discovery::discover(input["path"].as_str()),
+            "check-discovered-folders" => {
+                let paths = input["paths"].as_array().ok_or("Choose a project folder")?;
+                Ok(Value::Object(
+                    paths
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .filter(|path| Path::new(path).is_absolute())
+                        .map(|path| {
+                            (
+                                path.to_string(),
+                                json!(check_discovered_folder(Path::new(path))),
+                            )
+                        })
+                        .collect(),
+                ))
+            }
             "folder-access" => {
                 let path =
                     fs::canonicalize(input["path"].as_str().ok_or("Choose the project folder")?)
@@ -1118,6 +1157,25 @@ pub async fn onboarding_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saved_folder_recheck_distinguishes_missing_folders_and_offline_volumes() {
+        let directory = tempfile::tempdir().unwrap();
+        let picked = directory.path().join("picked");
+        fs::create_dir(&picked).unwrap();
+        assert_eq!(check_discovered_folder(&picked), Some(true));
+
+        fs::remove_dir(&picked).unwrap();
+        assert_eq!(check_discovered_folder(&picked), None);
+
+        fs::write(&picked, b"file").unwrap();
+        assert_eq!(check_discovered_folder(&picked), None);
+        let offline = PathBuf::from("/Volumes")
+            .join(format!("orka-test-{}", uuid::Uuid::new_v4()))
+            .join("picked");
+        assert_eq!(check_discovered_folder(&offline), Some(false));
+    }
+
     #[test]
     fn dismissed_setup_only_retries_reviewed_unconnected_selected_folders() {
         let mut saved = json!({"draft":{"completedAt":"done","reviewed":true,"selected":["/selected"],"projects":[{"path":"/selected","status":"error"},{"path":"/other","status":"error"}]}});

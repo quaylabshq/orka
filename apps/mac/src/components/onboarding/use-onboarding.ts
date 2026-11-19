@@ -27,42 +27,50 @@ function ranked(projects: DiscoveredProject[]) {
       a.path.localeCompare(b.path),
   );
 }
-const folder = (path: string) => path.split("/").filter(Boolean).pop() ?? "";
-const after = (path: string, marker: string) => {
-  const index = path.indexOf(marker);
-  return index < 0
-    ? undefined
-    : path
-        .slice(index + marker.length)
-        .split("/")
-        .filter(Boolean);
-};
-/** Finds the repository row a worktree path belongs to. */
-function repository(path: string, rows: DiscoveredProject[]) {
-  // Claude Code keeps its worktrees inside the repository.
-  const claude = path.indexOf("/.claude/worktrees/");
-  if (claude > 0)
-    return rows.filter((row) => row.path === path.slice(0, claude));
-  // T3 uses <repository>/<branch>; Codex uses <id>/<repository>.
-  const name =
-    after(path, "/.t3/worktrees/")?.[0] ??
-    after(path, "/.codex/worktrees/")?.[1];
-  return name ? rows.filter((row) => folder(row.path) === name) : [];
+interface DiscoveryResult {
+  projects: DiscoveredProject[];
+  truncated?: boolean;
+  incomplete?: boolean;
 }
-/** Rows saved before 0.3.16 carry no pick marker, but the draft names the picked folder. */
-const legacyPicks = (draft: OnboardingDraft) =>
-  Boolean(draft.folder) &&
-  !draft.projects.some((row) => row.folderPick !== undefined);
-const picked = (draft: OnboardingDraft) => (row: DiscoveredProject) =>
-  Boolean(row.folderPick) || legacyPicks(draft);
-const sameRows = (a: DiscoveredProject[], b: DiscoveredProject[]) =>
-  a.length === b.length &&
-  a.every(
-    (row, index) =>
-      row.path === b[index].path &&
-      (row.readable !== false) === (b[index].readable !== false),
+
+function pickedRows(draft: OnboardingDraft) {
+  // Older drafts have no markers, but record whether a folder was picked.
+  if (
+    draft.folder &&
+    !draft.projects.some((row) => row.folderPick !== undefined)
+  )
+    return draft.projects;
+  return draft.projects.filter((row) => row.folderPick);
+}
+
+function discoveryStep(projects: DiscoveredProject[]): OnboardingStep {
+  if (!projects.length) return "empty";
+  return projects.some((project) => project.readable === false)
+    ? "partial-access"
+    : "select";
+}
+
+function restoredDiscoveryStep(
+  before: OnboardingDraft,
+  projects: DiscoveredProject[],
+): OnboardingStep {
+  const step = discoveryStep(projects);
+  if (before.step !== "select" || step !== "partial-access") return step;
+
+  // The user can acknowledge blocked folders and continue to the selection step.
+  const knownBlocked = new Set(
+    before.projects
+      .filter((row) => row.readable === false)
+      .map((row) => row.path),
   );
-/** Replaces rows, keeps selections, and moves a worktree's selection to its repository. */
+  return projects.some(
+    (row) => row.readable === false && !knownBlocked.has(row.path),
+  )
+    ? "partial-access"
+    : "select";
+}
+
+/** Retains exact selections and moves folded worktrees using native attribution. */
 function reconcile(
   before: OnboardingDraft,
   projects: DiscoveredProject[],
@@ -76,9 +84,7 @@ function reconcile(
       keep.add(path);
       continue;
     }
-    const matches = repository(path, rows).filter(
-      (row) => row.readable !== false,
-    );
+    const matches = rows.filter((row) => row.worktreePaths?.includes(path));
     if (matches.length === 1) keep.add(matches[0].path);
   }
   return {
@@ -119,11 +125,14 @@ export function useOnboarding(
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const current = useRef(draft);
-  current.current = draft;
+  const applyDraft = useCallback((next: OnboardingDraft) => {
+    current.current = next;
+    setDraft(next);
+  }, []);
   const active = useRef(true);
   const locked = useRef(false);
-  const choiceWrites = useRef(Promise.resolve());
-  const choicesDirty = useRef(false);
+  const draftWrites = useRef(Promise.resolve());
+  const draftDirty = useRef(false);
   useEffect(() => {
     active.current = true;
     return () => {
@@ -136,13 +145,28 @@ export function useOnboarding(
         throw new Error("Account or service changed. Reopen onboarding.");
       const next = { ...current.current, ...patch };
       await command("checkpoint", next);
-      if (active.current) {
-        current.current = next;
-        setDraft(next);
-      }
+      if (active.current) applyDraft(next);
       return next;
     },
-    [command],
+    [applyDraft, command],
+  );
+  const queueDraft = useCallback(
+    (next: OnboardingDraft, reportError: boolean) => {
+      applyDraft(next);
+      draftDirty.current = true;
+      // Rescans and user edits write complete drafts through the same queue.
+      draftWrites.current = draftWrites.current.then(async () => {
+        if (!active.current) return;
+        try {
+          await command("checkpoint", next);
+          if (current.current === next) draftDirty.current = false;
+        } catch (e) {
+          if (reportError && active.current && current.current === next)
+            setError(String(e).replace(/^Error:\s*/, ""));
+        }
+      });
+    },
+    [applyDraft, command],
   );
   const updateChoices = (
     patch: (
@@ -155,22 +179,8 @@ export function useOnboarding(
     >,
   ) => {
     if (locked.current || !active.current) return;
-    const next = { ...current.current, ...patch(current.current) };
-    current.current = next;
-    setDraft(next);
     setError("");
-    choicesDirty.current = true;
-    // Keep quick edits responsive and persist them in the same order as clicks.
-    choiceWrites.current = choiceWrites.current.then(async () => {
-      if (!active.current) return;
-      try {
-        await command("checkpoint", next);
-        if (current.current === next) choicesDirty.current = false;
-      } catch (e) {
-        if (active.current && current.current === next)
-          setError(String(e).replace(/^Error:\s*/, ""));
-      }
-    });
+    queueDraft({ ...current.current, ...patch(current.current) }, true);
   };
   const run = async (task: () => Promise<unknown>) => {
     if (locked.current) return;
@@ -178,12 +188,12 @@ export function useOnboarding(
     setBusy(true);
     setError("");
     try {
-      await choiceWrites.current;
+      await draftWrites.current;
       if (!active.current) return;
-      // Retry a failed choice save before any action can use stale preferences.
-      if (choicesDirty.current) {
+      // Flush a failed write before any action can use stale progress.
+      if (draftDirty.current) {
         await checkpoint({});
-        choicesDirty.current = false;
+        draftDirty.current = false;
       }
       setError("");
       await task();
@@ -221,10 +231,7 @@ export function useOnboarding(
     const poll = async () => {
       try {
         const saved = await command<OnboardingDraft>("progress");
-        if (live && saved?.step) {
-          current.current = saved;
-          setDraft(saved);
-        }
+        if (live && saved?.step) applyDraft(saved);
       } catch (e) {
         if (live) setError(String(e));
       } finally {
@@ -236,71 +243,87 @@ export function useOnboarding(
       live = false;
       clearTimeout(timer);
     };
-  }, [draft.step, command]);
+  }, [draft.step, command, applyDraft]);
   const go = (step: OnboardingStep) => void run(() => checkpoint({ step }));
-  /** Re-checks picked folders, dropping the rows whose folder is gone. */
-  const recheck = useCallback(
-    async (rows: DiscoveredProject[]) =>
-      (
-        await Promise.all(
-          rows.map(async (saved): Promise<DiscoveredProject | undefined> => {
-            try {
-              const result = await command<{ projects: DiscoveredProject[] }>(
-                "discover",
-                { path: saved.path },
-              );
-              return {
-                ...(result.projects.find(
-                  (found) => found.path === saved.path,
-                ) ?? saved),
-                folderPick: true,
-              };
-            } catch {
-              return undefined;
-            }
-          }),
-        )
-      ).filter((row) => row !== undefined),
+  const historyWithFallback = useCallback(
+    () =>
+      command<DiscoveryResult>("discover").catch((): DiscoveryResult => ({
+        projects: [],
+        incomplete: true,
+      })),
     [command],
   );
-  /** A restored list can name folders that were deleted since it was saved. */
-  const rescan = useCallback(async () => {
-    try {
-      const start = current.current;
-      const results = (
-        await command<{ projects: DiscoveredProject[] }>("discover")
-      ).projects;
-      if (!active.current) return;
-      const listed = new Set(results.map((row) => row.path));
-      const kept = await recheck(
-        start.projects.filter(
-          (row) => picked(start)(row) && !listed.has(row.path),
-        ),
+  const mergeDiscovery = useCallback(
+    async (
+      before: OnboardingDraft,
+      history: DiscoveryResult,
+      picks: DiscoveredProject[] = [],
+    ) => {
+      const pickedPaths = new Set(pickedRows(before).map((row) => row.path));
+      const foldedPaths = new Set(
+        history.projects.flatMap((row) => row.worktreePaths ?? []),
       );
-      if (!active.current) return;
-      // Choices the user made after this scan started land first.
-      await choiceWrites.current;
-      if (!active.current) return;
-      const before = current.current;
-      // A list the user changed while this scan ran is newer than the scan.
-      if (before.projects !== start.projects) return;
-      // The user may have moved on, so never replace another step's list.
-      if (!["select", "partial-access", "empty"].includes(before.step)) return;
-      const next = reconcile(before, [...results, ...kept]);
-      if (
-        sameRows(before.projects, next.projects) &&
-        before.selected.join("\n") === next.selected.join("\n")
-      )
-        return;
-      await checkpoint({
-        ...next,
-        // An emptied list has nothing to select.
-        ...(next.projects.length ? {} : { step: "empty" as const }),
-      });
-    } catch {
-      // A background rescan never blocks the step the user is on.
-    }
-  }, [command, checkpoint, recheck]);
+      const incomplete = history.incomplete || history.truncated;
+      const rows = new Map(history.projects.map((row) => [row.path, row]));
+      for (const pick of picks) {
+        const latest = rows.get(pick.path);
+        rows.set(pick.path, {
+          ...pick,
+          ...latest,
+          readable: pick.readable,
+          folderPick: true,
+        });
+      }
+      const recheck: DiscoveredProject[] = [];
+      for (const saved of before.projects) {
+        const isPick = pickedPaths.has(saved.path);
+        const latest = rows.get(saved.path);
+        if (latest) {
+          if (isPick) rows.set(saved.path, { ...latest, folderPick: true });
+        } else if (isPick || (incomplete && !foldedPaths.has(saved.path))) {
+          recheck.push(isPick ? { ...saved, folderPick: true } : saved);
+        }
+      }
+      if (recheck.length) {
+        const statuses = await command<
+          Record<string, boolean | null | undefined>
+        >("check-discovered-folders", {
+          paths: recheck.map((row) => row.path),
+        }).catch(() => ({}) as Record<string, undefined>);
+        for (const row of recheck) {
+          const status = statuses[row.path];
+          if (status !== null)
+            rows.set(row.path, { ...row, readable: status ?? row.readable });
+        }
+      }
+      return [...rows.values()];
+    },
+    [command],
+  );
+  const rescan = useCallback(async () => {
+    const start = current.current;
+    const history = await historyWithFallback();
+    if (!active.current) return;
+    const projects = await mergeDiscovery(start, history);
+    const before = current.current;
+    if (
+      !active.current ||
+      locked.current ||
+      before.reviewed ||
+      before.projects !== start.projects ||
+      before.step !== start.step
+    )
+      return;
+    const next = reconcile(before, projects);
+    const step = restoredDiscoveryStep(before, next.projects);
+    if (
+      step === before.step &&
+      JSON.stringify(next.projects) === JSON.stringify(before.projects) &&
+      JSON.stringify(next.selected) === JSON.stringify(before.selected)
+    )
+      return;
+    queueDraft({ ...before, ...next, step }, false);
+  }, [historyWithFallback, mergeDiscovery, queueDraft]);
   const restored = useRef(draft.step);
   const rescanned = useRef(false);
   useEffect(() => {
@@ -312,13 +335,13 @@ export function useOnboarding(
   }, [rescan]);
   const find = async (paths?: string[], append = false) => {
     const before = current.current;
-    setDraft({ ...before, step: "scanning" });
+    applyDraft({ ...before, step: "scanning" });
     try {
       // A picked folder is honored as chosen, so its rows keep that marker.
       const results = paths
         ? await Promise.all(
             paths.map((path) =>
-              command<{ projects: DiscoveredProject[] }>("discover", {
+              command<DiscoveryResult>("discover", {
                 path,
               }),
             ),
@@ -327,32 +350,18 @@ export function useOnboarding(
       const picks = results.flatMap((result) =>
         result.projects.map((project) => ({ ...project, folderPick: true })),
       );
-      const isPick = picked(before);
-      const saved = before.projects.filter((project) => !isPick(project));
-      // Adding to a list with history rows rescans history instead of trusting them.
       const history = !paths
-        ? (await command<{ projects: DiscoveredProject[] }>("discover"))
-            .projects
-        : append && saved.length
-          ? await command<{ projects: DiscoveredProject[] }>("discover")
-              .then((result) => result.projects)
-              // Unreadable history must not undo the folders the user just chose.
-              .catch(() => saved)
-          : [];
-      const listed = new Set(
-        [...history, ...picks].map((project) => project.path),
-      );
-      // Adding more keeps picked folders that the new scan did not list.
-      const kept = append
-        ? await recheck(
-            before.projects.filter(
-              (project) => isPick(project) && !listed.has(project.path),
-            ),
-          )
-        : [];
-      const merged = new Map<string, DiscoveredProject>();
-      for (const project of [...history, ...kept, ...picks])
-        merged.set(project.path, project);
+        ? await command<DiscoveryResult>("discover")
+        : append && pickedRows(before).length < before.projects.length
+          ? await historyWithFallback()
+          : { projects: [] };
+      const discovered = append
+        ? await mergeDiscovery(before, history, picks)
+        : [
+            ...new Map(
+              [...history.projects, ...picks].map((row) => [row.path, row]),
+            ).values(),
+          ];
       const chosen = new Set(
         results.flatMap((result) =>
           result.projects.length === 1 ? [result.projects[0].path] : [],
@@ -360,7 +369,7 @@ export function useOnboarding(
       );
       const { projects, selected } = reconcile(
         before,
-        [...merged.values()],
+        discovered,
         paths
           ? [...chosen].filter(
               (path) =>
@@ -374,11 +383,7 @@ export function useOnboarding(
         projects,
         selected,
         folder: paths?.[0] ?? "",
-        step: projects.some((p) => p.readable === false)
-          ? "partial-access"
-          : projects.length
-            ? "select"
-            : "empty",
+        step: discoveryStep(projects),
         reviewed: false,
       });
     } catch (e) {
@@ -386,7 +391,7 @@ export function useOnboarding(
         await checkpoint({ step: "access-error", folder: paths?.[0] ?? "" });
       } catch {
         if (active.current)
-          setDraft({
+          applyDraft({
             ...before,
             step: "access-error",
             folder: paths?.[0] ?? "",
@@ -462,8 +467,7 @@ export function useOnboarding(
       void command<OnboardingDraft>("batch-sync", { retry })
         .then(async (next) => {
           if (active.current) {
-            current.current = next;
-            setDraft(next);
+            applyDraft(next);
             await refresh();
           }
         })
@@ -546,8 +550,7 @@ export function useOnboarding(
         void command<OnboardingDraft>("batch-sync", { retry: true })
           .then((next) => {
             if (active.current) {
-              current.current = next;
-              setDraft(next);
+              applyDraft(next);
             }
           })
           .catch((e) => {

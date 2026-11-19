@@ -94,12 +94,16 @@ async function fixture(
     reverseRank?: boolean;
     staleRows?: string[];
     goneFolderPicks?: string[];
+    missingFolderPaths?: string[];
+    blockedFolderPicks?: string[];
+    worktreePaths?: Record<string, string[]>;
     staleSelection?: string[];
     unselected?: number[];
     savedPicks?: string[];
     legacyPicks?: string[];
     pickFolders?: string[];
     historyDenied?: boolean;
+    historyIncomplete?: boolean;
     pauseFirstRecheck?: boolean;
     restoredUnreadable?: number[];
     clipboardFailure?: boolean;
@@ -158,6 +162,7 @@ async function fixture(
           name,
           lastActiveAt: names.length - index,
           relevance: options.reverseRank ? index : names.length - index,
+          worktreePaths: options.worktreePaths?.[name],
           path: `/Users/fixture/Developer/${name.toLowerCase()}`,
           displayPath: `~/Developer/${name.toLowerCase()}`,
           sources:
@@ -225,46 +230,60 @@ async function fixture(
         sessionStorage.getItem("onboarding-draft") ?? "null",
       ) ?? {
         step: options.step ?? "profile",
-        projects: options.step
-          ? [
-              ...projects.map((project, index) =>
-                (options.restoredUnreadable ?? []).includes(index)
-                  ? { ...project, readable: false }
-                  : project,
-              ),
-              ...(options.savedPicks ?? []).map((path) => ({
-                ...pickRow(path),
-                folderPick: true,
-              })),
-              ...(options.legacyPicks ?? []).map(pickRow),
-              ...(options.staleRows ?? []).map((path) => ({
-                name: path.split("/").pop() ?? path,
-                path,
-                displayPath: path,
-                sources: ["claude"],
-                readable: true,
-                lastActiveAt: 1,
-              })),
-              ...(options.goneFolderPicks ?? []).map((path) => ({
-                name: path.split("/").pop() ?? path,
-                path,
-                displayPath: path,
-                sources: ["claude"],
-                readable: true,
-                lastActiveAt: 1,
-                folderPick: true,
-              })),
-            ]
-          : [],
+        projects:
+          options.step && options.step !== "empty"
+            ? [
+                ...projects.map((project, index) => ({
+                  ...project,
+                  readable:
+                    project.readable &&
+                    !(options.restoredUnreadable ?? []).includes(index),
+                  ...((options.savedPicks ?? []).includes(project.path)
+                    ? { folderPick: true }
+                    : {}),
+                })),
+                ...(options.savedPicks ?? [])
+                  .filter(
+                    (path) =>
+                      !projects.some((project) => project.path === path),
+                  )
+                  .map((path) => ({ ...pickRow(path), folderPick: true })),
+                ...(options.blockedFolderPicks ?? []).map((path) => ({
+                  ...pickRow(path),
+                  folderPick: true,
+                })),
+                ...(options.legacyPicks ?? []).map(pickRow),
+                ...(options.staleRows ?? []).map((path) => ({
+                  name: path.split("/").pop() ?? path,
+                  path,
+                  displayPath: path,
+                  sources: ["claude"],
+                  readable: true,
+                  lastActiveAt: 1,
+                })),
+                ...(options.goneFolderPicks ?? []).map((path) => ({
+                  name: path.split("/").pop() ?? path,
+                  path,
+                  displayPath: path,
+                  sources: ["claude"],
+                  readable: true,
+                  lastActiveAt: 1,
+                  folderPick: true,
+                })),
+              ]
+            : [],
         selected:
-          options.step && options.step !== "discover"
+          options.step && !["discover", "empty"].includes(options.step)
             ? [
                 ...projects
                   .map((p) => p.path)
                   .filter(
                     (_, index) => !(options.unselected ?? []).includes(index),
                   ),
-                ...(options.savedPicks ?? []),
+                ...(options.savedPicks ?? []).filter(
+                  (path) => !projects.some((project) => project.path === path),
+                ),
+                ...(options.blockedFolderPicks ?? []),
                 ...(options.legacyPicks ?? []),
                 ...(options.staleRows ?? []),
                 ...(options.goneFolderPicks ?? []),
@@ -488,48 +507,54 @@ async function fixture(
                 );
                 return { ok: true };
               }
-              if (action === "discover") {
-                if (
-                  input.path &&
-                  (options.goneFolderPicks ?? []).includes(input.path)
-                )
-                  throw new Error(
-                    "Orka couldn’t read this folder. Choose it again to give Orka access.",
-                  );
-                if (options.historyDenied && !input.path)
-                  throw new Error(
-                    "Orka couldn’t read your coding history. Check Privacy & Security in System Settings, or choose a folder instead.",
-                  );
-                if (input.path && options.pauseFirstRecheck && !rechecks++)
+              if (action === "check-discovered-folders") {
+                if (options.pauseFirstRecheck && !rechecks++)
                   await new Promise((resolve) =>
                     Object.assign(window, { resolveRecheck: resolve }),
                   );
-                const extraPick = [
-                  ...(options.savedPicks ?? []),
-                  ...(options.legacyPicks ?? []),
-                  ...(options.pickFolders ?? []),
-                ].includes(input.path);
-                if (extraPick) return { projects: [pickRow(input.path)] };
-                return options.pauseDiscovery && !input.path
+                const missing = [
+                  ...(options.goneFolderPicks ?? []),
+                  ...(options.missingFolderPaths ?? []),
+                ];
+                return Object.fromEntries(
+                  input.paths.map((path: string) => [
+                    path,
+                    missing.includes(path)
+                      ? null
+                      : !(options.blockedFolderPicks ?? []).includes(path),
+                  ]),
+                );
+              }
+              if (action === "discover") {
+                if (input.path) {
+                  const project = projects.find((p) => p.path === input.path);
+                  return {
+                    projects: [
+                      { ...(project ?? pickRow(input.path)), readable: true },
+                    ],
+                  };
+                }
+                if (options.historyDenied)
+                  throw new Error(
+                    "Orka couldn’t read your coding history. Check Privacy & Security in System Settings, or choose a folder instead.",
+                  );
+                const history = {
+                  projects: options.empty
+                    ? []
+                    : projects.filter(
+                        (project) =>
+                          project.path !==
+                          sessionStorage.getItem("omit-project-from-history"),
+                      ),
+                  incomplete: options.historyIncomplete,
+                };
+                return options.pauseDiscovery
                   ? new Promise((resolve) => {
                       Object.assign(window, {
-                        resolveDiscovery: () => resolve({ projects }),
+                        resolveDiscovery: () => resolve(history),
                       });
                     })
-                  : {
-                      projects: input.path
-                        ? [
-                            {
-                              ...(projects.find((p) => p.path === input.path) ??
-                                projects[0]),
-                              readable: true,
-                              folderPick: true,
-                            },
-                          ]
-                        : options.empty
-                          ? []
-                          : projects,
-                    };
+                  : history;
               }
               if (action === "review")
                 return {
@@ -1322,6 +1347,7 @@ for (const width of [1440, 900]) {
         step,
         sample: true,
         blocked: step === "partial-access",
+        empty: step === "empty",
         folder:
           step === "folder" || step === "access-error"
             ? "~/Documents/zephyr"
@@ -1539,6 +1565,7 @@ test("a selected worktree moves its selection to its main repository", async ({
     unselected: [0],
     staleRows: ["/Users/fixture/.t3/worktrees/orka/removed"],
     staleSelection: ["/Users/fixture/.t3/worktrees/orka/feature"],
+    worktreePaths: { Orka: ["/Users/fixture/.t3/worktrees/orka/feature"] },
   });
   await expect(
     page.getByText("2 of 2 selected", { exact: true }),
@@ -1624,8 +1651,8 @@ test("a restored list from an older version keeps its picked folders", async ({
     .poll(async () =>
       (await calls(page)).some(
         (c) =>
-          c.args.action === "discover" &&
-          c.args.input.path === "/Users/fixture/Elsewhere/legacy",
+          c.args.action === "check-discovered-folders" &&
+          c.args.input.paths.includes("/Users/fixture/Elsewhere/legacy"),
       ),
     )
     .toBe(true);
@@ -1646,7 +1673,7 @@ test("a restored list that empties moves to the empty step", async ({
 });
 
 test("a restored list saves folders that became readable", async ({ page }) => {
-  await fixture(page, { step: "select", restoredUnreadable: [2] });
+  await fixture(page, { step: "partial-access", restoredUnreadable: [2] });
   await expect(
     page.getByText("7 of 7 selected", { exact: true }),
   ).toBeVisible();
@@ -1664,6 +1691,10 @@ test("selected Claude and Codex worktrees move to their main repository", async 
       "/Users/fixture/.codex/worktrees/a1b2/nimbus",
       "/Users/fixture/Developer/zephyr/.claude/worktrees/fix-menu",
     ],
+    worktreePaths: {
+      Nimbus: ["/Users/fixture/.codex/worktrees/a1b2/nimbus"],
+      Zephyr: ["/Users/fixture/Developer/zephyr/.claude/worktrees/fix-menu"],
+    },
   });
   for (const path of ["~/Developer/nimbus", "~/Developer/zephyr"])
     await expect(
@@ -1671,6 +1702,185 @@ test("selected Claude and Codex worktrees move to their main repository", async 
         .locator(".onboarding-flow__project", { hasText: path })
         .getByRole("checkbox"),
     ).toBeChecked();
+});
+
+test("a restored empty draft shows projects found by the background scan", async ({
+  page,
+}) => {
+  await fixture(page, { step: "empty", projectNames: ["Orka", "Nimbus"] });
+  await expect(
+    page.getByText("0 of 2 selected", { exact: true }),
+  ).toBeVisible();
+  await expect
+    .poll(
+      async () =>
+        (await calls(page))
+          .filter((call) => call.args.action === "checkpoint")
+          .at(-1)?.args.input.step,
+    )
+    .toBe("select");
+});
+
+for (const append of [false, true]) {
+  test(`a folder shared by picks and history keeps its pick after ${append ? "Add more" : "restore"}`, async ({
+    page,
+  }) => {
+    const picked = "/Users/fixture/Developer/orka";
+    const extra = "/Users/fixture/Developer/extra";
+    await fixture(page, {
+      step: "select",
+      projectNames: ["Orka", "Nimbus"],
+      savedPicks: [picked, "/Users/fixture/Elsewhere/another"],
+      pickFolders: [extra],
+      ...(append
+        ? { pauseDiscovery: true }
+        : { staleRows: ["/Users/fixture/Developer/stale"] }),
+    });
+    if (append) {
+      await page.getByRole("button", { name: "Add more", exact: true }).click();
+      await page.waitForFunction(
+        () =>
+          (window as any).onboardingCalls.filter(
+            (call: any) =>
+              call.args?.action === "discover" && !call.args.input.path,
+          ).length === 2,
+      );
+      await page.evaluate(() => (window as any).resolveDiscovery());
+      await expect(page.getByText(extra, { exact: true })).toBeVisible();
+    }
+    await expect
+      .poll(
+        async () =>
+          (await calls(page))
+            .filter((call) => call.args.action === "checkpoint")
+            .at(-1)
+            ?.args.input.projects.find(
+              (row: { path: string }) => row.path === picked,
+            )?.folderPick,
+      )
+      .toBe(true);
+    await page.evaluate(
+      (path) => sessionStorage.setItem("omit-project-from-history", path),
+      picked,
+    );
+    await page.reload();
+    if (append) {
+      await page.waitForFunction(() => "resolveDiscovery" in window);
+      await page.evaluate(() => (window as any).resolveDiscovery());
+    }
+    await expect
+      .poll(async () =>
+        (await calls(page)).some(
+          (call) =>
+            call.args.action === "check-discovered-folders" &&
+            call.args.input.paths.includes(picked),
+        ),
+      )
+      .toBe(true);
+    await expect(
+      page.getByText("~/Developer/orka", { exact: true }),
+    ).toBeVisible();
+  });
+}
+
+test("a rescan write and a user's next checkbox edit persist in order", async ({
+  page,
+}) => {
+  await fixture(page, {
+    step: "select",
+    projectNames: ["Orka", "Nimbus"],
+    staleRows: ["/Users/fixture/Developer/stale"],
+    pauseCheckpoints: true,
+  });
+  await page.waitForFunction(
+    () => (window as any).checkpointControls.pending.length === 1,
+  );
+  const checkbox = page
+    .locator(".onboarding-flow__project", { hasText: "~/Developer/orka" })
+    .getByRole("checkbox");
+  await checkbox.uncheck();
+  await page.evaluate(() => (window as any).checkpointControls.release());
+  await expect
+    .poll(async () =>
+      page.evaluate(
+        () =>
+          JSON.parse(sessionStorage.getItem("onboarding-draft") ?? "{}")
+            .selected,
+      ),
+    )
+    .toEqual(["/Users/fixture/Developer/nimbus"]);
+  await expect(checkbox).not.toBeChecked();
+  await expect(
+    page.getByText("1 of 2 selected", { exact: true }),
+  ).toBeVisible();
+});
+
+test("a stale Codex worktree does not select an unverified same-named repo", async ({
+  page,
+}) => {
+  await fixture(page, {
+    step: "select",
+    projectNames: ["Nimbus"],
+    unselected: [0],
+    staleRows: ["/Users/fixture/.codex/worktrees/a1b2/nimbus"],
+  });
+  await expect(
+    page.getByText("0 of 1 selected", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByRole("checkbox")).not.toBeChecked();
+});
+
+test("a restored pick with unavailable access stays in folder recovery", async ({
+  page,
+}) => {
+  const path = "/Volumes/Offline/project";
+  await fixture(page, {
+    step: "select",
+    projectNames: ["Orka"],
+    blockedFolderPicks: [path],
+  });
+  await expect(
+    page.getByRole("heading", { name: "Some folders need access" }),
+  ).toBeVisible();
+  await expect(page.getByText(path, { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Give access", exact: true }),
+  ).toBeEnabled();
+});
+
+test("an incomplete history rescan keeps confirmed folders and removes missing ones", async ({
+  page,
+}) => {
+  const existing = "/Users/fixture/Developer/still-here";
+  const deleted = "/Users/fixture/Developer/deleted";
+  await fixture(page, {
+    step: "partial-access",
+    projectNames: ["Orka"],
+    staleRows: [existing, deleted],
+    restoredUnreadable: [0],
+    missingFolderPaths: [deleted],
+    historyIncomplete: true,
+  });
+  await expect(
+    page.getByText("2 of 2 selected", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText(existing, { exact: true })).toBeVisible();
+  await expect(page.getByText(deleted, { exact: true })).toHaveCount(0);
+});
+
+test("an acknowledged access issue stays on the restored selection step", async ({
+  page,
+}) => {
+  await fixture(page, {
+    step: "select",
+    sample: true,
+    blocked: true,
+  });
+  await expect(
+    page.getByText("2 of 3 selected", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText("Needs access", { exact: true })).toBeVisible();
+  await expect(page.getByRole("checkbox").nth(2)).toBeDisabled();
 });
 
 test("finding projects ranks them by relevance, not only by recency", async ({
