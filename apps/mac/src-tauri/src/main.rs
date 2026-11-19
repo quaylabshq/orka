@@ -371,7 +371,7 @@ fn main() {
         .run(|app, event| {
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Opened { urls } = &event {
-                if main_window::reveals_current(urls, profiles::current()) {
+                if main_window::route_opened(urls, profiles::current()) {
                     let _ = menu_bar::open_main(app);
                 }
             }

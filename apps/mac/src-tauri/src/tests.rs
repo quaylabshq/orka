@@ -1120,6 +1120,62 @@ fn project_names_stay_local_across_catalog_updates_and_restart() {
     crate::projects::remove_local(&f.db, id).unwrap();
     assert!(rename(json!("Unavailable")).is_err());
 }
+#[test]
+fn native_opened_routes_to_the_destination_once_without_the_receiving_webview() {
+    use crate::{main_window, profiles};
+    let _fixture = Fixture::new();
+    let destination = profiles::current();
+    let lock = profiles::instance_lock(destination).unwrap();
+    fs2::FileExt::try_lock_exclusive(&lock).unwrap();
+    let focus = profiles::root(destination).unwrap().join("focus");
+    let callback = format!("orka://auth/callback?code=synthetic&profile={destination}");
+    let urls = [callback.parse().unwrap()];
+
+    assert!(!main_window::route_opened(&urls, "alice"));
+    assert!(focus.exists());
+    assert_eq!(profiles::take_callback().unwrap(), Some(callback));
+
+    fs::remove_file(&focus).unwrap();
+    assert!(!main_window::route_opened(&urls, "alice"));
+    assert!(!focus.exists());
+    assert_eq!(profiles::take_callback().unwrap(), None);
+
+    // A local link earlier in the batch must not short-circuit routing.
+    let new_callback = format!("orka://auth/callback?code=next&profile={destination}");
+    let mixed = [
+        "orka://join/token".parse().unwrap(),
+        new_callback.parse().unwrap(),
+    ];
+    assert!(main_window::route_opened(&mixed, "alice"));
+    assert!(focus.exists());
+    assert_eq!(profiles::take_callback().unwrap(), Some(new_callback));
+}
+
+#[test]
+fn webview_callback_command_skips_foreign_links_and_keeps_local_handling() {
+    use crate::{main_window, profiles};
+    let _fixture = Fixture::new();
+    let own = format!(
+        "orka://auth/callback?code=local&profile={}",
+        profiles::current()
+    );
+    let malformed = "orka://auth/callback?profile=bob&profile=alice";
+    let urls = [own.parse().unwrap(), malformed.parse().unwrap()];
+    assert!(main_window::route_opened(&urls, profiles::current()));
+    assert_eq!(profiles::take_callback().unwrap(), None);
+    assert!(profiles::route_auth_callback(malformed.into()).is_err());
+    profiles::route_auth_callback(own.clone()).unwrap();
+    assert_eq!(profiles::take_callback().unwrap(), Some(own));
+
+    // The forwarded WebView event must neither queue the foreign callback nor
+    // report an error (which would send it down the local completion path).
+    let bob = profiles::root("bob").unwrap();
+    fs::create_dir_all(&bob).unwrap();
+    profiles::route_auth_callback("orka://auth/callback?code=foreign&profile=bob".into()).unwrap();
+    assert!(!bob.join("auth-callback.json").exists());
+    assert!(!bob.join("focus").exists());
+}
+
 struct Fixture {
     _lock: MutexGuard<'static, ()>,
     _home: tempfile::TempDir,

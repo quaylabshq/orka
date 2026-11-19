@@ -1,7 +1,14 @@
 use crate::db::{self, Result};
 use fs2::FileExt;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{fs, path::PathBuf, process::Command, sync::OnceLock};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+    sync::OnceLock,
+};
 
 static CURRENT: OnceLock<String> = OnceLock::new();
 
@@ -164,12 +171,20 @@ pub fn open_profile(name: String) -> Result<()> {
     }
 }
 
-// The OS may deliver an OAuth callback to any running copy of the app.
-// Queue it for its original profile; only that profile has the PKCE verifier.
+// The deep-link plugin also forwards Opened URLs to the WebView. A valid
+// foreign callback must succeed here without queueing or falling back to local
+// sign-in: the native Opened handler already owns that delivery.
 #[tauri::command]
 pub fn route_auth_callback(callback: String) -> Result<()> {
-    let name = queue_callback(&callback)?;
-    if name != current() {
+    let name = crate::auth::callback_profile(&callback)?;
+    if name == current() {
+        queue_callback_for(&name, &callback)?;
+    }
+    Ok(())
+}
+
+pub fn route_foreign_auth_callback(name: String, callback: &str) -> Result<()> {
+    if queue_callback_for(&name, callback)? {
         open_profile(name)?;
     }
     Ok(())
@@ -185,7 +200,7 @@ pub fn route_plugin_callback(callback: String) -> Result<()> {
     Ok(())
 }
 
-fn callback_lock(root: &std::path::Path) -> Result<fs::File> {
+fn callback_lock(root: &Path) -> Result<fs::File> {
     let file = fs::OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -203,39 +218,63 @@ pub fn queue_callback(callback: &str) -> Result<String> {
     Ok(name)
 }
 
-fn queue_callback_for(name: &str, callback: &str) -> Result<()> {
+#[derive(Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CallbackInbox {
+    url: Option<String>,
+    expires_at: i64,
+    // Keep digests, not callback URLs, after delivery. The same lock protects
+    // the pending URL and receipts across all receiving profile processes.
+    #[serde(default)]
+    seen: BTreeMap<String, i64>,
+}
+
+impl CallbackInbox {
+    fn read(path: &Path) -> Result<Self> {
+        match fs::read(path) {
+            Ok(raw) => Ok(serde_json::from_slice(&raw).unwrap_or_default()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    fn write(&self, path: &Path) -> Result<()> {
+        db::atomic(path, &serde_json::to_vec(self).map_err(|e| e.to_string())?)
+    }
+}
+
+fn queue_callback_for(name: &str, callback: &str) -> Result<bool> {
     let root = root(name)?;
     if !root.is_dir() {
         return Err("The window that requested this sign-in is unavailable".into());
     }
     let _lock = callback_lock(&root)?;
-    db::atomic(
-        &root.join("auth-callback.json"),
-        &serde_json::to_vec(
-            &json!({"url":callback,"expiresAt":chrono::Utc::now().timestamp()+600}),
-        )
-        .map_err(|e| e.to_string())?,
-    )?;
-    Ok(())
+    let path = root.join("auth-callback.json");
+    let mut inbox = CallbackInbox::read(&path)?;
+    let now = chrono::Utc::now().timestamp();
+    inbox.seen.retain(|_, expires| *expires >= now);
+    let digest = db::digest(callback.as_bytes());
+    if inbox.seen.contains_key(&digest) {
+        return Ok(false);
+    }
+    inbox.expires_at = now + 600;
+    inbox.seen.insert(digest, inbox.expires_at);
+    inbox.url = Some(callback.into());
+    inbox.write(&path)?;
+    Ok(true)
 }
 
 pub fn take_callback() -> Result<Option<String>> {
-    let _lock = callback_lock(&db::root()?)?;
-    let path = db::root()?.join("auth-callback.json");
-    let raw = match fs::read(&path) {
-        Ok(raw) => raw,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(e.to_string()),
-    };
-    fs::remove_file(path).map_err(|e| e.to_string())?;
-    let value: Value = serde_json::from_slice(&raw).map_err(|e| e.to_string())?;
-    Ok(
-        if value["expiresAt"].as_i64().unwrap_or(0) >= chrono::Utc::now().timestamp() {
-            value["url"].as_str().map(str::to_string)
-        } else {
-            None
-        },
-    )
+    let root = db::root()?;
+    let _lock = callback_lock(&root)?;
+    let path = root.join("auth-callback.json");
+    let mut inbox = CallbackInbox::read(&path)?;
+    let now = chrono::Utc::now().timestamp();
+    let callback = inbox.url.take();
+    if callback.is_some() {
+        inbox.write(&path)?;
+    }
+    Ok(callback.filter(|_| inbox.expires_at >= now))
 }
 
 /// Consumes a request from another process to bring this profile forward.
