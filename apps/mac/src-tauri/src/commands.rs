@@ -12,6 +12,12 @@ use std::{
     sync::{Arc, LazyLock, Mutex},
 };
 use uuid::Uuid;
+
+const PENDING_CHANGES: &str = "(SELECT count(*) FROM outbox WHERE project=projects.id)
+    +(SELECT count(*) FROM meta WHERE ? AND key LIKE 'env:%:pending:%'
+      AND json_extract(value,'$.sourceRemoval') IS NULL
+      AND json_extract(value,'$.header.manifest.projectId')=projects.id)";
+
 #[tauri::command]
 pub fn snapshot() -> Result<Value> {
     let db = db::open()?;
@@ -45,14 +51,22 @@ pub fn snapshot() -> Result<Value> {
     )?;
     // Archived, deleted, and unreachable projects keep their place in the
     // sidebar so the reason and the local copy stay visible.
-    let inactive = db::rows(
+    let mut inactive = db::rows(
         &db,
         &format!(
-            "SELECT value FROM projects WHERE coalesce(json_extract(value,'$.hidden'),0)=0 AND NOT ({}) ORDER BY json_extract(value,'$.name')",
+            "SELECT json_set(value,'$.pendingChanges',{PENDING_CHANGES}) FROM projects WHERE coalesce(json_extract(value,'$.hidden'),0)=0 AND NOT ({}) ORDER BY json_extract(value,'$.name')",
             projects::ACTIVE
         ),
-        &[],
+        // Removing an inactive copy discards pending publications even if ENV is disabled.
+        &[&true],
     )?;
+    // Only the changes eligible for upload are advertised in the banner.
+    for project in &mut inactive {
+        project["heldChanges"] = json!(crate::indexer::held_count(
+            &db,
+            project["id"].as_str().unwrap_or_default()
+        )?);
+    }
     for project in &mut projects {
         if let Some(sources) = project["sources"].as_array_mut() {
             for source in sources {
@@ -101,7 +115,7 @@ pub fn snapshot() -> Result<Value> {
         "profile":crate::profiles::current(), "onboarding":onboarding, "accountProfile":db::get(&db,"accountProfile")?,
         "user":db::get(&db,"user")?, "config":db::get(&db,"config")?,
         "projects":projects, "inactive":inactive, "deletedProjects":deleted_projects, "archivedProjects":archived_projects, "localSkills":local_skills,
-        "managedProjects":db::rows(&db,"SELECT json_set(value,'$.pendingChanges',(SELECT count(*) FROM outbox WHERE project=projects.id)+(SELECT count(*) FROM meta WHERE ? AND key LIKE 'env:%:pending:%' AND json_extract(value,'$.sourceRemoval') IS NULL AND json_extract(value,'$.header.manifest.projectId')=projects.id)) FROM projects ORDER BY json_extract(value,'$.name')",&[&crate::env::enabled()])?,
+        "managedProjects":db::rows(&db,&format!("SELECT json_set(value,'$.pendingChanges',{PENDING_CHANGES}) FROM projects ORDER BY json_extract(value,'$.name')"),&[&crate::env::enabled()])?,
         "resources":resources, "bindings":scoped("bindings")?, "conflicts":scoped("conflicts")?,
         "drafts":scoped("drafts")?,
         "governance":db::rows(&db,&format!("SELECT json_object('projectId',substr(key,12),'catalog',json(value)) FROM meta WHERE key LIKE 'governance:%' AND substr(key,12) IN ({visible})"),&[])?,
@@ -909,9 +923,13 @@ pub fn export_bundle(id: String, path: String) -> Result<()> {
 }
 /// Keeps a copy of an inactive project's cached work before it leaves this Mac.
 #[tauri::command]
-pub fn export_project(project_id: String, destination: String) -> Result<()> {
-    let _lock = projects::lock()?;
-    bundles::export_project(&db::open()?, &project_id, &PathBuf::from(destination))
+pub async fn export_project(project_id: String, destination: String) -> Result<()> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let _lock = projects::lock()?;
+        bundles::export_project(&db::open()?, &project_id, &PathBuf::from(destination))
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 #[tauri::command]
 pub fn import_bundle(

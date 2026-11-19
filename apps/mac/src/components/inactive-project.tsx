@@ -125,7 +125,7 @@ export function InactiveProject({
             <Icon icon={FolderIcon} variant="tertiary" />
             <span>{name}</span>
           </div>
-          <p>{removalWarning()}</p>
+          <p>{removalWarning(project)}</p>
           {removalError && (
             <p className="project-lifecycle-feedback" role="alert">
               {removalError}

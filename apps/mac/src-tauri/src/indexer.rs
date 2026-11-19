@@ -402,6 +402,16 @@ pub(crate) fn clear_orphan_held_captures(db: &rusqlite::Connection) -> Result<()
     Ok(())
 }
 
+/// Outbox rows eligible to send after a restore clears the project's 403s.
+pub(crate) fn held_count(db: &rusqlite::Connection, project: &str) -> Result<i64> {
+    db.query_row(
+        "SELECT count(*) FROM outbox WHERE project=? AND (error IS NULL OR error LIKE '403:%')",
+        [project],
+        |row| row.get(0),
+    )
+    .map_err(|e| e.to_string())
+}
+
 pub fn binding(db: &rusqlite::Connection, id: &str) -> Result<Value> {
     Ok(
         db::rows(db, "SELECT value FROM bindings WHERE id=?", &[&id])?

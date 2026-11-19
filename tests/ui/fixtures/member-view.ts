@@ -15,7 +15,13 @@ declare global {
 /** One active project beside every inactive state the sidebar explains. */
 export async function memberViewFixture(
   page: Page,
-  options: { removeError?: string; holdRemoval?: boolean } = {},
+  options: {
+    removeError?: string;
+    holdRemoval?: boolean;
+    /** Changes held for the deleted project; 3 by default. */
+    heldChanges?: number;
+    pendingChanges?: number;
+  } = {},
 ) {
   await page.addInitScript((options) => {
     const inactive = [
@@ -24,6 +30,7 @@ export async function memberViewFixture(
         name: "Archived notes",
         role: "member" as const,
         archivedAt: "2026-01-01T00:00:00Z",
+        pendingChanges: 2,
         lifecycleRevision: 6,
       },
       {
@@ -32,6 +39,8 @@ export async function memberViewFixture(
         role: "member" as const,
         deletedAt: "2026-01-01T00:00:00Z",
         purgeAfter: "2026-01-31T00:00:00Z",
+        heldChanges: options.heldChanges ?? 3,
+        pendingChanges: options.pendingChanges ?? 4,
         lifecycleRevision: 7,
       },
       {

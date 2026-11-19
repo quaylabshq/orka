@@ -16,6 +16,12 @@ use uuid::Uuid;
 /// can be newer than both reading catalogs, and every version remains recoverable
 /// without changing a retry identity or touching the user's files.
 pub fn export_project(db: &rusqlite::Connection, project: &str, path: &Path) -> Result<()> {
+    // A deleted project that can still be restored captures changes locally.
+    // Scan before the transaction so edits made since the deletion are in the
+    // export. If the scan fails, keep exporting the work already held.
+    if let Err(error) = sync::capture_held(db, project) {
+        let _ = sync::record_result(db, project, Err(error));
+    }
     let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
     let db = &tx;
     let saved = db::rows(db, "SELECT value FROM projects WHERE id=?", &[&project])?

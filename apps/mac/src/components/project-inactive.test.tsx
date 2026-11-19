@@ -64,7 +64,23 @@ test("each inactive state gets its own sidebar badge", () => {
     "Deleted by owner",
   );
   expect(inactiveMessage(archived)).toContain("archived by its owner");
-  expect(inactiveMessage(deleted)).toContain("restored until Jan 31, 2026");
+  expect(inactiveMessage(deleted)).toBe(
+    "This project is deleted by its owner. Orka keeps capturing your changes on this Mac. Changes are uploaded if restored by Jan 31, 2026, kept as local drafts if not.",
+  );
+  expect(inactiveMessage({ ...deleted, heldChanges: 3 })).toContain(
+    "3 held, uploaded if restored by Jan 31, 2026, kept as local drafts if not.",
+  );
+  expect(inactiveMessage({ ...deleted, heldChanges: 1 })).toContain(
+    "1 held, uploaded if restored by Jan 31, 2026",
+  );
+  expect(inactiveMessage({ ...deleted, heldChanges: 0 })).toContain(
+    "Changes are uploaded if restored by Jan 31, 2026",
+  );
+  // A server before 0.7.4 sends no purgeAfter, so capture is off and the old
+  // sentence stays.
+  expect(inactiveMessage(project({ deletedAt: "2026-01-01T00:00:00Z" }))).toBe(
+    "This project is deleted by its owner.",
+  );
   expect(inactiveMessage(project({ revoked: true }))).toContain(
     "Access to this project was removed",
   );
@@ -101,6 +117,17 @@ test("export writes the project to the path the user picks", async () => {
   expect(mocks.invoke).toHaveBeenCalledTimes(1);
 });
 
+test("the removal warning counts all pending changes, not just restorable uploads", () => {
+  renderBanner({ ...deleted, heldChanges: 1, pendingChanges: 2 });
+  fireEvent.click(screen.getByRole("button", { name: "Remove from this Mac" }));
+  expect(
+    screen.getByRole("dialog", { name: "Remove from this Mac?" }),
+  ).toBeTruthy();
+  expect(
+    screen.getByText(/2 changes held on this Mac will be lost\./),
+  ).toBeTruthy();
+});
+
 test("removing from this Mac explains export and retained local drafts", async () => {
   mocks.invoke.mockResolvedValue({ ok: true });
   const run = renderBanner(archived);
@@ -108,11 +135,19 @@ test("removing from this Mac explains export and retained local drafts", async (
   expect(
     screen.getByRole("dialog", { name: "Remove from this Mac?" }),
   ).toBeTruthy();
-  expect(screen.getByText(removalWarning())).toBeTruthy();
-  expect(removalWarning()).toContain("Export first");
-  expect(removalWarning()).toContain(
+  expect(screen.getByText(removalWarning(deleted))).toBeTruthy();
+  expect(removalWarning(deleted)).toContain("Export first");
+  expect(removalWarning(deleted)).toContain(
     "Saved local drafts and your project folders stay on disk",
   );
+  expect(removalWarning({ ...deleted, pendingChanges: 3 })).toContain(
+    "3 changes held on this Mac will be lost.",
+  );
+  expect(removalWarning({ ...deleted, pendingChanges: 1 })).toContain(
+    "1 change held on this Mac will be lost.",
+  );
+  expect(removalWarning(deleted)).not.toContain("will be lost");
+  expect(removalWarning(archived)).not.toContain("will be lost");
   fireEvent.click(screen.getByRole("button", { name: "Remove" }));
   await waitFor(() => expect(run).toHaveBeenCalledTimes(1));
   expect(mocks.invoke).toHaveBeenCalledWith("project_command", {
