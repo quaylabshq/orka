@@ -909,9 +909,13 @@ pub fn export_bundle(id: String, path: String) -> Result<()> {
 }
 /// Keeps a copy of an inactive project's cached work before it leaves this Mac.
 #[tauri::command]
-pub fn export_project(project_id: String, destination: String) -> Result<()> {
-    let _lock = projects::lock()?;
-    bundles::export_project(&db::open()?, &project_id, &PathBuf::from(destination))
+pub async fn export_project(project_id: String, destination: String) -> Result<()> {
+    let cache = db::CacheScope::current()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        bundles::export_project(&cache, &project_id, &PathBuf::from(destination))
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 #[tauri::command]
 pub fn import_bundle(
