@@ -248,30 +248,43 @@ fn linked_common_dir(path: &Path) -> Option<PathBuf> {
     (directory != common).then_some(common)
 }
 
-fn is_bare_git_directory(directory: &Path) -> bool {
-    let Ok(config) = fs::File::open(directory.join("config")) else {
-        return false;
-    };
-    let mut in_core = false;
-    let mut bare = false;
+fn git_config_bool(path: &Path, section: &str, name: &str) -> Option<bool> {
+    let config = fs::File::open(path).ok()?;
+    let mut in_section = false;
+    let mut result = None;
     for line in BufReader::new(config.take(1_000_000))
         .lines()
         .map_while(std::result::Result::ok)
     {
         let line = line.split(['#', ';']).next().unwrap_or_default().trim();
         if line.starts_with('[') {
-            in_core = line.eq_ignore_ascii_case("[core]");
-        } else if in_core {
+            in_section = line
+                .strip_prefix('[')
+                .and_then(|value| value.strip_suffix(']'))
+                .is_some_and(|value| value.eq_ignore_ascii_case(section));
+        } else if in_section {
             let (key, value) = line.split_once('=').unwrap_or((line, "true"));
-            if key.trim().eq_ignore_ascii_case("bare") {
-                bare = matches!(
-                    value.trim().trim_matches('"').to_ascii_lowercase().as_str(),
-                    "true" | "yes" | "on" | "1"
-                );
+            if key.trim().eq_ignore_ascii_case(name) {
+                let value = value.trim().trim_matches('"').to_ascii_lowercase();
+                result = match value.as_str() {
+                    "true" | "yes" | "on" => Some(true),
+                    "" | "false" | "no" | "off" => Some(false),
+                    number => number.parse::<i64>().ok().map(|number| number != 0),
+                };
             }
         }
     }
-    bare
+    result
+}
+
+fn is_bare_git_directory(directory: &Path) -> bool {
+    let config = directory.join("config");
+    if git_config_bool(&config, "extensions", "worktreeConfig") == Some(true) {
+        if let Some(bare) = git_config_bool(&directory.join("config.worktree"), "core", "bare") {
+            return bare;
+        }
+    }
+    git_config_bool(&config, "core", "bare") == Some(true)
 }
 
 #[derive(Default)]
@@ -1693,6 +1706,16 @@ mod tests {
 
         let metadata = bare.parent().unwrap().to_path_buf();
         let connected = BTreeMap::from([(metadata.clone(), 0)]);
+        fold_worktrees(&mut found, &home, &connected);
+        assert!(found.contains_key(&checkout));
+        assert!(!found.contains_key(&metadata));
+
+        fs::write(
+            bare.join("config"),
+            "[extensions]\n worktreeConfig = true\n",
+        )
+        .unwrap();
+        fs::write(bare.join("config.worktree"), "[core]\n bare = true\n").unwrap();
         fold_worktrees(&mut found, &home, &connected);
         assert!(found.contains_key(&checkout));
         assert!(!found.contains_key(&metadata));
