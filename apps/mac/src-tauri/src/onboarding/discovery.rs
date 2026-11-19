@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    io::{BufRead, BufReader, Read},
+    io::{self, BufRead, BufReader, ErrorKind, Read},
     path::{Path, PathBuf},
     time::{Duration, Instant, SystemTime},
 };
@@ -20,6 +20,7 @@ struct Candidate {
     worktrees: usize,
     days: BTreeSet<u64>,
     worktree_paths: BTreeSet<PathBuf>,
+    linked_worktree_paths: BTreeSet<PathBuf>,
 }
 impl Candidate {
     fn activity(&mut self, tool: Option<&str>, last: u64, sessions: usize, days: BTreeSet<u64>) {
@@ -37,6 +38,8 @@ impl Candidate {
         self.worktrees += other.worktrees;
         self.days.extend(other.days);
         self.worktree_paths.extend(other.worktree_paths);
+        self.linked_worktree_paths
+            .extend(other.linked_worktree_paths);
     }
 }
 const DAY: u64 = 86_400_000;
@@ -133,6 +136,7 @@ struct Budget {
     files: usize,
     walked: usize,
     denied: bool,
+    unreadable: bool,
     truncated: bool,
 }
 impl Budget {
@@ -142,6 +146,7 @@ impl Budget {
             files: 0,
             walked: 0,
             denied: false,
+            unreadable: false,
             truncated: false,
         }
     }
@@ -161,10 +166,18 @@ impl Budget {
         }
         true
     }
+    fn read_error(&mut self, kind: ErrorKind) {
+        self.denied |= kind == ErrorKind::PermissionDenied;
+        self.unreadable = true;
+    }
+    fn incomplete(&self) -> bool {
+        self.unreadable || self.truncated
+    }
     fn entries(
         &mut self,
         path: &Path,
-        eligible: impl Fn(&fs::DirEntry) -> bool,
+        optional: bool,
+        eligible: impl Fn(&fs::DirEntry) -> io::Result<bool>,
     ) -> Vec<fs::DirEntry> {
         const MAX_ENTRIES: usize = 2001;
         let mut listed = Vec::new();
@@ -176,12 +189,21 @@ impl Budget {
                         self.truncated = true;
                         break;
                     }
-                    let Ok(entry) = entry else {
-                        self.truncated = true;
-                        continue;
+                    let entry = match entry {
+                        Ok(entry) => entry,
+                        Err(error) => {
+                            self.truncated = true;
+                            self.read_error(error.kind());
+                            continue;
+                        }
                     };
-                    if !eligible(&entry) {
-                        continue;
+                    match eligible(&entry) {
+                        Ok(true) => {}
+                        Ok(false) => continue,
+                        Err(error) => {
+                            self.read_error(error.kind());
+                            continue;
+                        }
                     }
                     if listed.len() == MAX_ENTRIES {
                         self.truncated = true;
@@ -190,10 +212,31 @@ impl Budget {
                     listed.push(entry);
                 }
             }
-            Err(e) => self.denied |= e.kind() == std::io::ErrorKind::PermissionDenied,
+            Err(error)
+                if optional && error.kind() == ErrorKind::NotFound && history_dir_absent(path) => {}
+            Err(error) => self.read_error(error.kind()),
         }
         listed
     }
+}
+/// A missing optional history directory is normal unless its path crosses an unavailable mount.
+fn history_dir_absent(path: &Path) -> bool {
+    // Inspect each missing ancestor as a link before accepting that the directory is absent.
+    for ancestor in path
+        .ancestors()
+        .take_while(|path| !path.as_os_str().is_empty())
+    {
+        match fs::symlink_metadata(ancestor) {
+            Ok(_) if ancestor == path => return false,
+            Ok(metadata) if metadata.is_symlink() => {
+                return fs::metadata(ancestor).is_ok_and(|target| target.is_dir());
+            }
+            Ok(metadata) => return metadata.is_dir() && ancestor != Path::new("/Volumes"),
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(_) => return false,
+        }
+    }
+    true
 }
 fn modified(path: &Path) -> u64 {
     fs::metadata(path)
@@ -367,6 +410,7 @@ fn fold_worktrees(
             continue;
         };
         worktree.worktrees += 1;
+        worktree.linked_worktree_paths.insert(path.clone());
         worktree.worktree_paths.insert(path);
         found.entry(main).or_default().fold(worktree);
     }
@@ -425,26 +469,79 @@ fn cwd_record(path: &Path, codex: bool, budget: &mut Budget) -> Option<Value> {
     let file = match crate::history::reader(path) {
         Ok(f) => f,
         Err(_) => {
+            budget.unreadable = true;
             budget.denied |= fs::File::open(path)
-                .is_err_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied);
+                .is_err_and(|error| error.kind() == ErrorKind::PermissionDenied);
             return None;
         }
     };
-    for line in BufReader::new(file.take(65_536))
-        .lines()
-        .map_while(std::result::Result::ok)
-    {
-        if let Ok(record) = serde_json::from_str::<Value>(&line) {
-            if codex {
-                return (record["type"] == "session_meta" && record["payload"]["cwd"].is_string())
-                    .then_some(record);
+    let mut reader = BufReader::new(file.take(65_536));
+    let mut malformed = false;
+    for line in reader.by_ref().lines() {
+        let line = match line {
+            Ok(line) => line,
+            Err(error) => {
+                budget.read_error(error.kind());
+                return None;
             }
-            if record["cwd"].is_string() {
+        };
+        let Ok(record) = serde_json::from_str::<Value>(&line) else {
+            malformed |= !line.trim().is_empty();
+            continue;
+        };
+        if codex {
+            if record["type"] == "session_meta" && record["payload"]["cwd"].is_string() {
                 return Some(record);
             }
+            break;
+        }
+        if record["cwd"].is_string() {
+            return Some(record);
+        }
+    }
+    budget.unreadable |= malformed;
+    let file = reader.into_inner();
+    if file.limit() == 0 {
+        match file.into_inner().read(&mut [0]) {
+            Ok(0) => {}
+            Ok(_) => budget.truncated = true,
+            Err(error) => budget.read_error(error.kind()),
         }
     }
     None
+}
+const CLAUDE_CONFIG_LIMIT: u64 = 4_000_000;
+fn claude_config(path: &Path, budget: &mut Budget) -> Option<Value> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_file() => {}
+        Ok(_) => return None,
+        Err(error) if error.kind() == ErrorKind::NotFound => return None,
+        Err(error) => {
+            budget.read_error(error.kind());
+            return None;
+        }
+    }
+    if !budget.next() {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    let read = fs::File::open(path)
+        .and_then(|file| file.take(CLAUDE_CONFIG_LIMIT + 1).read_to_end(&mut bytes));
+    if let Err(error) = read {
+        budget.read_error(error.kind());
+        return None;
+    }
+    if bytes.len() as u64 > CLAUDE_CONFIG_LIMIT {
+        budget.truncated = true;
+        return None;
+    }
+    match serde_json::from_slice(&bytes) {
+        Ok(value) => Some(value),
+        Err(_) => {
+            budget.unreadable = true;
+            None
+        }
+    }
 }
 fn claude(
     home: &Path,
@@ -453,18 +550,24 @@ fn claude(
     budget: &mut Budget,
 ) -> Result<Vec<Record>> {
     let mut records = Vec::new();
-    for folder in budget.entries(&root.join("projects"), |entry| {
-        entry.file_type().is_ok_and(|kind| kind.is_dir())
+    for folder in budget.entries(&root.join("projects"), true, |entry| {
+        entry.file_type().map(|kind| kind.is_dir())
     }) {
         if !budget.tick() {
             break;
         }
-        let mut files = budget.entries(&folder.path(), |file| {
+        let mut files = budget.entries(&folder.path(), false, |file| {
             let path = file.path();
-            path.extension().is_some_and(|e| e == "jsonl")
-                && file.file_type().is_ok_and(|kind| kind.is_file())
-                // Sync imports use their own native IDs and carry historical timestamps.
-                && !path.file_stem().and_then(|name| name.to_str()).is_some_and(|id| imported.contains(id))
+            // Sync imports use their own native IDs and carry historical timestamps.
+            if !path.extension().is_some_and(|e| e == "jsonl")
+                || path
+                    .file_stem()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|id| imported.contains(id))
+            {
+                return Ok(false);
+            }
+            file.file_type().map(|kind| kind.is_file())
         });
         files.sort_by_key(|f| std::cmp::Reverse(modified(&f.path())));
         let count = files.len();
@@ -486,50 +589,33 @@ fn claude(
             }
         }
     }
-    let config = home.join(".claude.json");
-    let metadata = fs::symlink_metadata(&config);
-    if metadata.as_ref().is_ok_and(|m| !m.is_file())
-        || metadata.is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
-    {
-        return Ok(records);
-    }
-    if budget.next() {
-        let file = fs::File::open(config);
-        if file
-            .as_ref()
-            .is_err_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied)
-        {
-            budget.denied = true;
-        }
-        if let Ok(file) = file {
-            if let Ok(value) = serde_json::from_reader::<_, Value>(file.take(4_000_000)) {
-                if let Some(projects) = value["projects"].as_object() {
-                    for (path, data) in projects {
-                        if !budget.next() {
-                            break;
-                        }
-                        let last = data["lastSessionDate"].as_u64().unwrap_or(0);
-                        records.push(Record {
-                            cwd: PathBuf::from(path),
-                            tool: Some("claude"),
-                            last,
-                            sessions: 0,
-                            days: active_days([last]),
-                            remote: None,
-                        });
-                    }
+    if let Some(config) = claude_config(&home.join(".claude.json"), budget) {
+        if let Some(projects) = config["projects"].as_object() {
+            for (path, data) in projects {
+                if !budget.next() {
+                    break;
                 }
+                let last = data["lastSessionDate"].as_u64().unwrap_or(0);
+                records.push(Record {
+                    cwd: PathBuf::from(path),
+                    tool: Some("claude"),
+                    last,
+                    sessions: 0,
+                    days: active_days([last]),
+                    remote: None,
+                });
             }
         }
     }
     Ok(records)
 }
+const CODEX_HISTORY_DEPTH: usize = 5;
 fn codex_files(root: &Path, depth: usize, budget: &mut Budget, files: &mut Vec<PathBuf>) {
     if depth == 0 {
         return;
     }
-    let mut entries = budget.entries(root, |entry| {
-        entry.file_type().is_ok_and(|kind| {
+    let mut entries = budget.entries(root, depth == CODEX_HISTORY_DEPTH, |entry| {
+        entry.file_type().map(|kind| {
             (kind.is_dir() && depth > 1)
                 || (kind.is_file()
                     && entry.file_name().to_string_lossy().starts_with("rollout-")
@@ -545,10 +631,11 @@ fn codex_files(root: &Path, depth: usize, budget: &mut Budget, files: &mut Vec<P
         if !budget.tick() {
             break;
         }
-        if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-            codex_files(&entry.path(), depth - 1, budget, files);
-        } else {
-            files.push(entry.path());
+        match entry.file_type() {
+            Ok(kind) if kind.is_dir() => codex_files(&entry.path(), depth - 1, budget, files),
+            Ok(kind) if kind.is_file() => files.push(entry.path()),
+            Ok(_) => budget.unreadable = true,
+            Err(error) => budget.read_error(error.kind()),
         }
     }
 }
@@ -571,11 +658,11 @@ fn folder(
     if depth == 1 {
         return;
     }
-    for entry in budget.entries(root, |entry| {
+    for entry in budget.entries(root, false, |entry| {
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        !name.starts_with('.')
-            && ![
+        if name.starts_with('.')
+            || [
                 "node_modules",
                 "target",
                 "vendor",
@@ -584,7 +671,10 @@ fn folder(
                 "Library",
             ]
             .contains(&name.as_ref())
-            && entry.file_type().is_ok_and(|kind| kind.is_dir())
+        {
+            return Ok(false);
+        }
+        entry.file_type().map(|kind| kind.is_dir())
     }) {
         if found.len() >= 200 {
             budget.truncated = true;
@@ -602,7 +692,12 @@ fn history(
 ) -> Result<Vec<Record>> {
     let mut records = claude(home, claude_root, &imported.claude, budget)?;
     let mut files = vec![];
-    codex_files(&codex_root.join("sessions"), 5, budget, &mut files);
+    codex_files(
+        &codex_root.join("sessions"),
+        CODEX_HISTORY_DEPTH,
+        budget,
+        &mut files,
+    );
     files.sort_by_key(|p| std::cmp::Reverse(modified(p)));
     for file in files {
         if !budget.next() {
@@ -917,6 +1012,9 @@ pub fn discover(path: Option<&str>) -> Result<Value> {
             if !c.worktree_paths.is_empty() {
                 project["worktreePaths"] = json!(c.worktree_paths);
             }
+            if !c.linked_worktree_paths.is_empty() {
+                project["linkedWorktreePaths"] = json!(c.linked_worktree_paths);
+            }
             project
         })
         .collect();
@@ -927,7 +1025,7 @@ pub fn discover(path: Option<&str>) -> Result<Value> {
         "projects":projects,
         "tools":{"claude":native::binary("claude").is_ok(),"codex":native::binary("codex").is_ok()},
         "truncated":budget.truncated,
-        "incomplete":budget.denied || budget.truncated
+        "incomplete":budget.incomplete()
     }))
 }
 
@@ -1465,6 +1563,82 @@ mod tests {
         }
     }
     #[test]
+    fn oversized_claude_config_reports_truncation() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path();
+        let root = home.join(".claude");
+        let config = home.join(".claude.json");
+        let project = home.join("project");
+        let mut data = json!({"projects": {project.to_str().unwrap(): {"lastSessionDate": 1}}});
+        fs::write(&config, serde_json::to_vec(&data).unwrap()).unwrap();
+        let mut budget = Budget::new();
+        let records = claude(home, &root, &BTreeSet::new(), &mut budget).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].cwd, project);
+        assert!(!budget.incomplete());
+
+        data["padding"] = json!("x".repeat(CLAUDE_CONFIG_LIMIT as usize));
+        fs::write(config, serde_json::to_vec(&data).unwrap()).unwrap();
+        let mut budget = Budget::new();
+        let records = claude(home, &root, &BTreeSet::new(), &mut budget).unwrap();
+        assert!(records.is_empty());
+        assert!(budget.truncated);
+        assert!(budget.incomplete());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn unavailable_linked_history_is_incomplete_until_access_returns() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path();
+        let claude = home.join(".claude");
+        let codex = home.join(".codex");
+        let imported = ImportedHistory::default();
+        let incomplete_scan = || {
+            let mut budget = Budget::new();
+            let records = history(home, &claude, &codex, &imported, &mut budget).unwrap();
+            assert!(records.is_empty());
+            budget.incomplete()
+        };
+        assert!(!incomplete_scan());
+
+        let offline = home.join("offline");
+        fs::create_dir(&claude).unwrap();
+        std::os::unix::fs::symlink(offline.join("projects"), claude.join("projects")).unwrap();
+        assert!(incomplete_scan());
+
+        fs::create_dir_all(offline.join("projects")).unwrap();
+        assert!(!incomplete_scan());
+
+        let codex_target = offline.join("codex");
+        std::os::unix::fs::symlink(&codex_target, &codex).unwrap();
+        assert!(incomplete_scan());
+
+        fs::create_dir_all(codex_target.join("sessions")).unwrap();
+        assert!(!incomplete_scan());
+    }
+    #[test]
+    fn unreadable_rollout_leaves_history_incomplete() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path();
+        let codex = home.join(".codex");
+        let sessions = codex.join("sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        for contents in [&[0xff][..], br#"{"type":"session_meta","payload":{"#] {
+            fs::write(sessions.join("rollout-damaged.jsonl"), contents).unwrap();
+            let mut budget = Budget::new();
+            let records = history(
+                home,
+                &home.join(".claude"),
+                &codex,
+                &ImportedHistory::default(),
+                &mut budget,
+            )
+            .unwrap();
+            assert!(records.is_empty());
+            assert!(budget.incomplete());
+        }
+    }
+    #[test]
     fn folder_project_cap_reports_truncation_without_removing_repositories() {
         let temp = tempfile::tempdir().unwrap();
         let home = fs::canonicalize(temp.path()).unwrap();
@@ -1585,7 +1759,11 @@ mod tests {
         fold_worktrees(&mut found, &home, &connected);
         assert_eq!(found.keys().collect::<Vec<_>>(), vec![&main]);
         assert_eq!(found[&main].sessions, 6);
-        assert_eq!(found[&main].worktree_paths, BTreeSet::from([live, stale]));
+        assert_eq!(
+            found[&main].worktree_paths,
+            BTreeSet::from([live.clone(), stale])
+        );
+        assert_eq!(found[&main].linked_worktree_paths, BTreeSet::from([live]));
     }
     #[test]
     fn recorded_remote_takes_precedence_over_t3_folder_names() {

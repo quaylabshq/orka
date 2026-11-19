@@ -5,6 +5,7 @@ import type { Snapshot } from "../../types.js";
 import {
   destinationCandidates,
   initialDraft,
+  readableSelection,
   type AccountProfile,
   type DiscoveredProject,
   type OnboardingDraft,
@@ -74,28 +75,36 @@ function restoredDiscoveryStep(
     : "select";
 }
 
-/** Retains exact selections and moves folded worktrees using native attribution. */
+function foldedProject(history: DiscoveryResult, path: string) {
+  if (history.incomplete || history.truncated) return;
+  const matches = history.projects.filter((row) =>
+    row.worktreePaths?.includes(path),
+  );
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+/** Retains saved choices, including rows that are temporarily unavailable. */
 function reconcile(
   before: OnboardingDraft,
   projects: DiscoveredProject[],
+  history: DiscoveryResult,
   extra: string[] = [],
 ) {
-  const listed = new Set(projects.map((row) => row.path));
+  const listed = new Map(projects.map((row) => [row.path, row]));
   const keep = new Set(extra);
   for (const path of before.selected) {
     if (listed.has(path)) {
       keep.add(path);
       continue;
     }
-    const matches = projects.filter((row) => row.worktreePaths?.includes(path));
-    if (matches.length === 1) keep.add(matches[0].path);
+    const folded = foldedProject(history, path);
+    const target = folded && listed.get(folded.path);
+    if (target && target.readable !== false) keep.add(target.path);
   }
   const rows = ranked(projects);
   return {
     projects: rows,
-    selected: rows
-      .filter((row) => row.readable !== false && keep.has(row.path))
-      .map((row) => row.path),
+    selected: rows.filter((row) => keep.has(row.path)).map((row) => row.path),
   };
 }
 
@@ -265,14 +274,6 @@ export function useOnboarding(
     ) => {
       const pickedPaths = new Set(pickedRows(before).map((row) => row.path));
       const incomplete = history.incomplete || history.truncated;
-      const foldCounts = new Map<string, number>();
-      if (!incomplete) {
-        for (const row of history.projects) {
-          for (const path of row.worktreePaths ?? []) {
-            foldCounts.set(path, (foldCounts.get(path) ?? 0) + 1);
-          }
-        }
-      }
       const rows = new Map(history.projects.map((row) => [row.path, row]));
       for (const pick of picks) {
         const latest = rows.get(pick.path);
@@ -292,12 +293,10 @@ export function useOnboarding(
           if (isPick) rows.set(saved.path, { ...latest, folderPick: true });
           continue;
         }
-        // History credit alone does not prove where a saved T3 selection belongs.
-        const uncreditedT3 =
-          foldCounts.get(saved.path) !== 1 &&
+        const savedT3 =
           /\/\.t3\/worktrees\/[^/]+\/[^/]+$/.test(saved.path) &&
           (saved.readable === false || selected.has(saved.path));
-        if (isPick || incomplete || uncreditedT3) {
+        if (isPick || incomplete || savedT3) {
           recheck.push(isPick ? { ...saved, folderPick: true } : saved);
         }
       }
@@ -312,8 +311,17 @@ export function useOnboarding(
         }).catch(() => null);
         for (const row of recheck) {
           const status = statuses?.[row.path];
-          if (status !== null)
-            rows.set(row.path, { ...row, readable: status ?? row.readable });
+          if (status === null) continue;
+          // Only a live Git link to a readable repository can replace this checkout.
+          if (status === true && !row.folderPick) {
+            const folded = foldedProject(history, row.path);
+            if (
+              folded?.linkedWorktreePaths?.includes(row.path) &&
+              rows.get(folded.path)?.readable !== false
+            )
+              continue;
+          }
+          rows.set(row.path, { ...row, readable: status ?? row.readable });
         }
       }
       return [...rows.values()];
@@ -334,7 +342,14 @@ export function useOnboarding(
       before.step !== start.step
     )
       return;
-    const next = reconcile(before, projects);
+    // The scan did not recheck rows the user chose after it started.
+    const listed = new Set(projects.map((row) => row.path));
+    const previous = new Set(start.selected);
+    if (
+      before.selected.some((path) => !previous.has(path) && !listed.has(path))
+    )
+      return;
+    const next = reconcile(before, projects, history);
     const step = restoredDiscoveryStep(before, next.projects);
     if (
       step === before.step &&
@@ -385,12 +400,15 @@ export function useOnboarding(
             ];
       const chosen = new Set(
         results.flatMap((result) =>
-          result.projects.length === 1 ? [result.projects[0].path] : [],
+          result.projects.length === 1 && result.projects[0].readable !== false
+            ? [result.projects[0].path]
+            : [],
         ),
       );
       const { projects, selected } = reconcile(
         before,
         discovered,
+        history,
         paths
           ? [...chosen].filter(
               (path) =>
@@ -434,7 +452,9 @@ export function useOnboarding(
     });
   const proceed = () =>
     void run(async () => {
-      const selected = current.current.selected;
+      const selected = readableSelection(current.current).map(
+        (project) => project.path,
+      );
       if (!selected.length) throw new Error("Choose at least one project.");
       const review = await command<
         Pick<OnboardingDraft, "catalog" | "matches">
@@ -479,8 +499,14 @@ export function useOnboarding(
   const sync = (retry = false) =>
     void run(async () => {
       if (!retry) {
+        // From here the native batch reads selected as the approved set to connect.
+        const selected = readableSelection(current.current).map(
+          (project) => project.path,
+        );
+        if (!selected.length) throw new Error("Choose at least one project.");
         await checkpoint({
           step: "syncing",
+          selected,
           reviewed: true,
           sharing: { ...current.current.sharing, env: false },
         });

@@ -48,6 +48,7 @@ export interface DiscoveredProject {
   relevance?: number;
   worktrees?: number;
   worktreePaths?: string[];
+  linkedWorktreePaths?: string[];
   // Set on rows that came from a folder pick, so a rescan checks them again.
   folderPick?: boolean;
   pendingChanges?: number;
@@ -97,6 +98,13 @@ export interface OnboardingDraft {
   completedAt?: string;
   deferred?: boolean;
 }
+export function readableSelection(draft: OnboardingDraft) {
+  const selected = new Set(draft.selected);
+  return draft.projects.filter(
+    (project) => project.readable !== false && selected.has(project.path),
+  );
+}
+
 export function destinationCandidates(
   draft: Pick<OnboardingDraft, "catalog" | "matches">,
   path: string,
