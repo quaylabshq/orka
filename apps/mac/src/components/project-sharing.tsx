@@ -106,7 +106,7 @@ export function ProjectSharingChoices({
       {context === "setup" && <legend>Share from this Mac</legend>}
       {context === "setup" && (
         <p id={`${id}-help`} className="project-sharing-help">
-          Choose automatic sharing below. Share individual items with the Orka
+          Share individual snapshots from an item’s menu or with the Orka
           plugin.
         </p>
       )}
@@ -170,7 +170,7 @@ export function ProjectSharingChoices({
           >
             {ENV_ENABLED && value.env
               ? "Review keys and recipients before publishing ENVs manually. ENV files never upload automatically."
-              : "Automatic sharing is off. Only items you explicitly share through the plugin will be sent."}
+              : "Automatic sharing is off. Only snapshots you explicitly share from Orka or through the plugin will be sent."}
           </p>
         )}
     </fieldset>

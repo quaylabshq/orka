@@ -35,6 +35,11 @@ test("modal counts unique project resources and preserves completed activity in 
     modal.getByRole("group", { name: "Writing guide", exact: true }),
   ).toContainText("Publication needs a fresh review");
   await expect(
+    modal
+      .getByRole("group", { name: "Writing guide", exact: true })
+      .getByRole("button", { name: "Review local copies" }),
+  ).toBeVisible();
+  await expect(
     modal.getByRole("group", { name: "Release checklist", exact: true }),
   ).toContainText("409: Resource changed");
   await expect(
@@ -64,10 +69,13 @@ test("modal counts unique project resources and preserves completed activity in 
   await page.getByRole("option", { name: "Docs", exact: true }).click();
   await expect(status).toHaveAttribute(
     "aria-label",
-    "Needs attention, 1 notification",
+    "Needs attention, 2 notifications",
   );
   await status.click();
   await expect(modal).toContainText("Docs access changed");
+  await expect(
+    modal.getByRole("group", { name: "Writing guide in Product", exact: true }),
+  ).toBeVisible();
   await expect(modal).not.toContainText("Release checklist");
 });
 

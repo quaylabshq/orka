@@ -443,6 +443,253 @@ fn governed_skill_auto_install_never_overwrites_an_untracked_or_divergent_copy()
 }
 
 #[test]
+fn untracked_skill_mirrors_need_one_review_and_keep_the_exact_local_copies() {
+    let f = governed_fixture();
+    let mut r = shared(&f, "skill", "matching-mirror", "Accepted version\n");
+    persist(&f, &r);
+    let id = r["resourceId"].as_str().unwrap().to_owned();
+    let agents = f.root.join(".agents/skills/matching-mirror");
+    let claude = f.root.join(".claude/skills/matching-mirror");
+    fs::create_dir_all(&agents).unwrap();
+    fs::create_dir_all(&claude).unwrap();
+    fs::write(agents.join("SKILL.md"), "Accepted version\n").unwrap();
+    fs::write(claude.join("SKILL.md"), "Claude-specific local edit\n").unwrap();
+    let shared_hash = indexer::manifest_hash(&r["files"]);
+    db::upsert(
+        &f.db,
+        "bindings",
+        &id,
+        f.project["id"].as_str().unwrap(),
+        &json!({"paths":[agents,claude],"guards":[shared_hash,shared_hash]}),
+    )
+    .unwrap();
+
+    indexer::scan(&f.db, &f.project).unwrap();
+    assert!(db::rows(&f.db, "SELECT value FROM drafts", &[])
+        .unwrap()
+        .is_empty());
+    let error = sync::materialize(&f.db, &f.project, &r).unwrap_err();
+    assert_eq!(error, crate::skill_reconciliation::LOCAL_EDITS);
+    sync::record_result(&f.db, &id, Err(error)).unwrap();
+    let preview = command(&f, "preview-install", json!({"resourceId":id})).unwrap();
+    assert_eq!(preview["dirty"], true);
+    assert_eq!(
+        command(
+            &f,
+            "keep-skill-copies",
+            json!({"resourceId":id,"token":preview["token"]})
+        )
+        .unwrap()["status"],
+        "kept_local"
+    );
+
+    indexer::scan(&f.db, &f.project).unwrap();
+    sync::materialize(&f.db, &f.project, &r).unwrap();
+    assert!(f.outbox().is_empty());
+    assert!(db::rows(&f.db, "SELECT json_quote(error) FROM errors", &[])
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        fs::read(agents.join("SKILL.md")).unwrap(),
+        b"Accepted version\n"
+    );
+    assert_eq!(
+        fs::read(claude.join("SKILL.md")).unwrap(),
+        b"Claude-specific local edit\n"
+    );
+
+    fs::write(claude.join("SKILL.md"), "New Claude work\n").unwrap();
+    assert!(command(
+        &f,
+        "keep-skill-copies",
+        json!({"resourceId":id,"token":preview["token"]})
+    )
+    .is_err());
+    assert_eq!(
+        sync::materialize(&f.db, &f.project, &r).unwrap_err(),
+        crate::skill_reconciliation::LOCAL_EDITS
+    );
+    let preview = command(&f, "preview-install", json!({"resourceId":id})).unwrap();
+    command(
+        &f,
+        "keep-skill-copies",
+        json!({"resourceId":id,"token":preview["token"]}),
+    )
+    .unwrap();
+    let accepted = b"New accepted version\n";
+    r["files"][0]["hash"] = json!(db::blob(accepted).unwrap());
+    r["files"][0]["size"] = json!(accepted.len());
+    r["revision"] = json!(2);
+    persist(&f, &r);
+    assert_eq!(
+        sync::materialize(&f.db, &f.project, &r).unwrap_err(),
+        crate::skill_reconciliation::LOCAL_EDITS
+    );
+    assert!(command(
+        &f,
+        "keep-skill-copies",
+        json!({"resourceId":id,"token":preview["token"]})
+    )
+    .is_err());
+    let preview = command(&f, "preview-install", json!({"resourceId":id})).unwrap();
+    command(
+        &f,
+        "apply-install",
+        json!({"resourceId":id,"token":preview["token"],"preserveLocal":true}),
+    )
+    .unwrap();
+    assert_eq!(fs::read(claude.join("SKILL.md")).unwrap(), accepted);
+    let drafts = db::rows(&f.db, "SELECT value FROM drafts", &[]).unwrap();
+    assert_eq!(drafts.len(), 2);
+    assert!(drafts.into_iter().any(|draft| db::blob_read(
+        draft["resource"]["files"][0]["hash"].as_str().unwrap()
+    )
+    .unwrap()
+        == b"New Claude work\n"));
+}
+
+#[test]
+fn known_base_skill_edits_merge_into_one_private_draft_without_changing_active_files() {
+    let f = governed_fixture();
+    let mut r = shared(
+        &f,
+        "skill",
+        "known-base",
+        "First line\n\nMiddle line\n\nLast line\n",
+    );
+    let id = r["resourceId"].as_str().unwrap().to_owned();
+    persist(&f, &r);
+    sync::materialize(&f.db, &f.project, &r).unwrap();
+    let agents = f.root.join(".agents/skills/known-base/SKILL.md");
+    let claude = f.root.join(".claude/skills/known-base/SKILL.md");
+    let local = b"Local first line\n\nMiddle line\n\nLast line\n";
+    let incoming = b"First line\n\nMiddle line\n\nShared last line\n";
+    fs::write(&claude, local).unwrap();
+    r["files"][0]["hash"] = json!(db::blob(incoming).unwrap());
+    r["files"][0]["size"] = json!(incoming.len());
+    r["revision"] = json!(2);
+    persist(&f, &r);
+
+    indexer::scan(&f.db, &f.project).unwrap();
+    for _ in 0..2 {
+        assert_eq!(
+            sync::materialize(&f.db, &f.project, &r).unwrap_err(),
+            crate::skill_reconciliation::LOCAL_EDITS
+        );
+    }
+    let drafts = db::rows(&f.db, "SELECT value FROM drafts", &[]).unwrap();
+    assert_eq!(drafts.len(), 1);
+    let draft = &drafts[0];
+    assert_eq!(draft["baseRevision"], 2);
+    assert_eq!(draft["automaticSharing"], false);
+    assert_eq!(draft["conflictReview"], true);
+    assert_eq!(
+        db::blob_read(draft["resource"]["files"][0]["hash"].as_str().unwrap()).unwrap(),
+        b"Local first line\n\nMiddle line\n\nShared last line\n"
+    );
+    assert_eq!(fs::read(&claude).unwrap(), local);
+    assert_eq!(
+        fs::read(&agents).unwrap(),
+        b"First line\n\nMiddle line\n\nLast line\n"
+    );
+    assert_eq!(indexer::binding(&f.db, &id).unwrap()["base"]["revision"], 1);
+    assert!(f.outbox().is_empty());
+
+    let old_id = draft["id"].as_str().unwrap();
+    fs::write(
+        &claude,
+        b"First line\n\nMiddle line\n\nConflicting last line\n",
+    )
+    .unwrap();
+    // A preview opened before the scanner sees a second edit is stale too.
+    assert!(command(
+        &f,
+        "submit-draft",
+        json!({"id":old_id,"reviewedFiles":draft["resource"]["files"],"reviewedRevision":2})
+    )
+    .unwrap_err()
+    .contains("review the update again"));
+    assert_eq!(
+        sync::materialize(&f.db, &f.project, &r).unwrap_err(),
+        crate::skill_reconciliation::LOCAL_EDITS
+    );
+    let retired = db::rows(&f.db, "SELECT value FROM drafts WHERE id=?", &[&old_id]).unwrap();
+    assert_eq!(retired[0]["status"], "dismissed");
+    assert_eq!(retired[0]["dismissalReason"], "superseded");
+    assert_eq!(retired[0]["resource"]["files"], draft["resource"]["files"]);
+
+    // When the original clean combination becomes valid again, its private
+    // draft returns without losing its saved bytes or duplicating the row.
+    fs::write(&claude, local).unwrap();
+    assert!(sync::materialize(&f.db, &f.project, &r).is_err());
+    let active = db::rows(&f.db, "SELECT value FROM drafts", &[]).unwrap();
+    assert_eq!(active.len(), 1);
+    assert_eq!(active[0]["id"], old_id);
+    assert_eq!(active[0]["status"], "local");
+}
+
+#[test]
+fn skill_update_already_containing_the_local_change_updates_both_mirrors() {
+    let f = governed_fixture();
+    let mut r = shared(
+        &f,
+        "skill",
+        "already-merged",
+        "First line\n\nMiddle line\n\nLast line\n",
+    );
+    persist(&f, &r);
+    sync::materialize(&f.db, &f.project, &r).unwrap();
+    let a = f.root.join(".agents/skills/already-merged/SKILL.md");
+    let b = f.root.join(".claude/skills/already-merged/SKILL.md");
+    fs::write(&b, b"Local first line\n\nMiddle line\n\nLast line\n").unwrap();
+    let accepted = b"Local first line\n\nMiddle line\n\nNew last line\n";
+    r["files"][0]["hash"] = json!(db::blob(accepted).unwrap());
+    r["files"][0]["size"] = json!(accepted.len());
+    r["revision"] = json!(2);
+    persist(&f, &r);
+    sync::materialize(&f.db, &f.project, &r).unwrap();
+    assert_eq!(fs::read(a).unwrap(), accepted);
+    assert_eq!(fs::read(b).unwrap(), accepted);
+    assert!(db::rows(&f.db, "SELECT value FROM drafts", &[])
+        .unwrap()
+        .is_empty());
+    assert!(f.outbox().is_empty());
+}
+
+#[test]
+fn reviewed_skill_install_applies_to_divergent_mirrors_on_the_same_shared_revision() {
+    let f = governed_fixture();
+    let r = shared(&f, "skill", "dual-edits", "Accepted version\n");
+    let id = r["resourceId"].as_str().unwrap();
+    persist(&f, &r);
+    sync::materialize(&f.db, &f.project, &r).unwrap();
+    let agents = f.root.join(".agents/skills/dual-edits/SKILL.md");
+    let claude = f.root.join(".claude/skills/dual-edits/SKILL.md");
+    fs::write(&agents, b"Agents local edit\n").unwrap();
+    fs::write(&claude, b"Claude local edit\n").unwrap();
+    indexer::scan(&f.db, &f.project).unwrap();
+    assert!(f.outbox().is_empty());
+    assert!(db::rows(&f.db, "SELECT value FROM drafts", &[])
+        .unwrap()
+        .is_empty());
+    let preview = command(&f, "preview-install", json!({"resourceId":id})).unwrap();
+    command(
+        &f,
+        "apply-install",
+        json!({"resourceId":id,"token":preview["token"],"preserveLocal":true}),
+    )
+    .unwrap();
+    assert_eq!(fs::read(agents).unwrap(), b"Accepted version\n");
+    assert_eq!(fs::read(claude).unwrap(), b"Accepted version\n");
+    assert_eq!(
+        db::rows(&f.db, "SELECT value FROM drafts", &[])
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[test]
 fn governed_skill_clean_deletions_apply_automatically() {
     let f = governed_fixture();
     let mut r = shared(&f, "skill", "automatic", "Shared skill\n");

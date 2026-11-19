@@ -21,11 +21,19 @@ import {
   retryTime,
 } from "./sync-queue.js";
 import { syncIssueRecovery } from "./sync-issues.js";
-import type { ProjectAttention } from "./sync-attention.js";
+import type {
+  AttentionItem,
+  ProjectAttention,
+  SyncReviewItem,
+} from "./sync-attention.js";
+import { useQueuedUploadReview } from "./resource-menu.js";
 
 export function SyncMenu({
   state,
   attention,
+  projectId,
+  reviews = [],
+  onReviewItem,
   busy,
   onSync,
   onRetry,
@@ -53,6 +61,9 @@ export function SyncMenu({
   skillUsagePartial?: boolean;
   state: Snapshot;
   attention: ProjectAttention;
+  projectId?: string;
+  reviews?: SyncReviewItem[];
+  onReviewItem?: (review: SyncReviewItem) => void;
   busy: boolean;
   onSync: () => void;
   onRetry: () => void;
@@ -64,6 +75,7 @@ export function SyncMenu({
   onOpenChange?: (open: boolean) => void;
   onReview?: () => void;
 }) {
+  const reviewUpload = useQueuedUploadReview();
   const memberName = useMemberLabel(state.user);
   const [localOpen, setLocalOpen] = useState(false);
   const open = controlledOpen ?? localOpen;
@@ -128,11 +140,18 @@ export function SyncMenu({
     actionError &&
     actionError !== attention.accountError &&
     !attention.items.some((item) => item.messages.includes(actionError));
-  const count =
-    attention.items.length +
+  const attentionItems = attention.items.filter(
+    (item) =>
+      !reviews.some(
+        (review) => review.projectId === projectId && review.item === item,
+      ),
+  );
+  const attentionCount =
+    attentionItems.length +
     Number(Boolean(attention.accountError)) +
     Number(Boolean(independentActionError)) +
     Number(Boolean(setup && !setup.deferred && !setupRunning));
+  const count = attentionCount + reviews.length;
   const historyCount =
     attention.historyRequests.length +
     attention.historyDrafts.length +
@@ -153,13 +172,15 @@ export function SyncMenu({
             ? "Changes pending"
             : !connected && state.sync?.online === false
               ? "Sync offline"
-              : count
+              : attentionCount
                 ? "Needs attention"
-                : connected
-                  ? state.sync?.lastSync
-                    ? "Up to date"
-                    : "Connected"
-                  : "Waiting to connect"));
+                : reviews.length
+                  ? "Needs review"
+                  : connected
+                    ? state.sync?.lastSync
+                      ? "Up to date"
+                      : "Connected"
+                    : "Waiting to connect"));
   const label = `${visibleStatus}${count ? `, ${count} ${count === 1 ? "notification" : "notifications"}` : ""}`;
   const compactStatus: Record<string, string> = {
     "Changes pending": "Pending",
@@ -216,6 +237,133 @@ export function SyncMenu({
         Cancel
       </Button>
     );
+  const attentionCard = (item: AttentionItem, review?: SyncReviewItem) => (
+    <section
+      className="sync-menu-notification"
+      key={item.key}
+      role="group"
+      aria-label={item.title}
+    >
+      <h4>{item.title}</h4>
+      {review && (
+        <p>
+          {projectName(review.projectId)} · {review.reason}
+        </p>
+      )}
+      {item.requests.length > 0 && (
+        <p>
+          {item.requests.length === 1
+            ? "A request is ready for your decision."
+            : `${item.requests.length} requests are ready for your decision.`}
+        </p>
+      )}
+      {item.binding && (
+        <p>
+          {item.binding.installationState === "locally_modified"
+            ? "Local edits are preserved. Review the shared update and local copies."
+            : "A local update needs review."}
+        </p>
+      )}
+      {item.draft && !item.binding && (
+        <p>Local changes are ready for review.</p>
+      )}
+      {item.messages.map((message) => (
+        <p key={message}>{message}</p>
+      ))}
+      {item.paths.length > 0 && (
+        <details>
+          <summary>
+            <ChevronRightIcon
+              className="sync-disclosure-chevron"
+              size={14}
+              aria-hidden="true"
+            />
+            Show affected copies ({item.paths.length})
+          </summary>
+          <ul>
+            {item.paths.map((path) => (
+              <li key={path}>{path}</li>
+            ))}
+          </ul>
+        </details>
+      )}
+      {item.messages.map(
+        (message) =>
+          syncIssueRecovery(message) && (
+            <small key={message}>{syncIssueRecovery(message)}</small>
+          ),
+      )}
+      {item.messages.some((message) =>
+        /unsupported.*version|unsupported.*format/i.test(message),
+      ) && (
+        <small>Requires compatible tool or transcript support in Orka.</small>
+      )}
+      {review && !review.uploadId && onReviewItem && (
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() => leave(() => onReviewItem(review))}
+        >
+          Review local copies
+        </Button>
+      )}
+      {item.conflicts.length > 0 ? (
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() => leave(() => onOpen(item.conflicts[0].resourceId))}
+        >
+          Review conflict
+        </Button>
+      ) : reviewUpload && item.uploads.some((upload) => upload.reviewable) ? (
+        <Button
+          variant="secondary"
+          size="sm"
+          disabled={busy}
+          onClick={() =>
+            leave(() =>
+              reviewUpload(
+                item.uploads.find((upload) => upload.reviewable)!.id,
+              ),
+            )
+          }
+        >
+          Review upload
+        </Button>
+      ) : item.requests.length > 0 || item.binding || item.draft ? (
+        onReview && (
+          <Button variant="secondary" size="sm" onClick={() => leave(onReview)}>
+            Review changes
+          </Button>
+        )
+      ) : item.uploads.length > 0 ? (
+        item.uploads.every(
+          (upload) =>
+            !/^4\d\d:/.test(upload.error ?? "") ||
+            /^(401|408|429):/.test(upload.error ?? ""),
+        ) ? (
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={busy}
+            onClick={onRetry}
+          >
+            Retry uploads
+          </Button>
+        ) : (
+          item.resourceId && (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => leave(() => onOpen(item.resourceId!))}
+            >
+              View change
+            </Button>
+          )
+        )
+      ) : null}
+    </section>
+  );
   return (
     <Popover.Root open={open} onOpenChange={setOpen}>
       <Popover.Trigger asChild>
@@ -393,7 +541,57 @@ export function SyncMenu({
                   ))}
                 </section>
               )}
-              {count > 0 && (
+              {reviews.length > 0 && (
+                <section
+                  className="sync-menu-queue"
+                  aria-label="Changes that need review"
+                >
+                  <h3>Needs review</h3>
+                  {reviews.map((review) => {
+                    if (review.projectId === projectId && review.showDetails)
+                      return attentionCard(review.item, review);
+                    const { uploadId } = review;
+                    const name = projectName(review.projectId);
+                    const detail = `${name} · ${review.reason}`;
+                    const reviewAction =
+                      uploadId && reviewUpload
+                        ? () => reviewUpload(uploadId)
+                        : onReviewItem && (() => onReviewItem(review));
+                    return (
+                      <div
+                        className="sync-queue-row"
+                        key={`${review.projectId}:${review.item.key}`}
+                        role="group"
+                        aria-label={`${review.item.title} in ${name}`}
+                      >
+                        <div className="sync-queue-project">
+                          <strong title={review.item.title}>
+                            {review.item.title}
+                          </strong>
+                          <small title={detail}>{detail}</small>
+                        </div>
+                        {reviewAction && (
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            className="sync-queue-action"
+                            aria-label={
+                              uploadId
+                                ? undefined
+                                : `Review ${review.item.title}`
+                            }
+                            disabled={uploadId ? busy : undefined}
+                            onClick={() => leave(reviewAction)}
+                          >
+                            {uploadId ? "Review upload" : "Review"}
+                          </Button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </section>
+              )}
+              {attentionCount > 0 && (
                 <h3 className="sync-menu-attention-heading">Needs attention</h3>
               )}
               {setup && (
@@ -468,114 +666,7 @@ export function SyncMenu({
                   <p>{attention.accountError}</p>
                 </section>
               )}
-              {attention.items.map((item) => (
-                <section
-                  className="sync-menu-notification"
-                  key={item.key}
-                  role="group"
-                  aria-label={item.title}
-                >
-                  <h4>{item.title}</h4>
-                  {item.requests.length > 0 && (
-                    <p>
-                      {item.requests.length === 1
-                        ? "A request is ready for your decision."
-                        : `${item.requests.length} requests are ready for your decision.`}
-                    </p>
-                  )}
-                  {item.binding && (
-                    <p>
-                      {item.binding.installationState === "locally_modified"
-                        ? "Local edits are preserved. Review the shared update and local copies."
-                        : "A local update needs review."}
-                    </p>
-                  )}
-                  {item.draft && !item.binding && (
-                    <p>Local changes are ready for review.</p>
-                  )}
-                  {item.messages.map((message) => (
-                    <p key={message}>{message}</p>
-                  ))}
-                  {item.paths.length > 0 && (
-                    <details>
-                      <summary>
-                        <ChevronRightIcon
-                          className="sync-disclosure-chevron"
-                          size={14}
-                          aria-hidden="true"
-                        />
-                        Show affected copies ({item.paths.length})
-                      </summary>
-                      <ul>
-                        {item.paths.map((path) => (
-                          <li key={path}>{path}</li>
-                        ))}
-                      </ul>
-                    </details>
-                  )}
-                  {item.messages.map(
-                    (message) =>
-                      syncIssueRecovery(message) && (
-                        <small key={message}>
-                          {syncIssueRecovery(message)}
-                        </small>
-                      ),
-                  )}
-                  {item.messages.some((message) =>
-                    /unsupported.*version|unsupported.*format/i.test(message),
-                  ) && (
-                    <small>
-                      Requires compatible tool or transcript support in Orka.
-                    </small>
-                  )}
-                  {item.conflicts.length > 0 ? (
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onClick={() =>
-                        leave(() => onOpen(item.conflicts[0].resourceId))
-                      }
-                    >
-                      Review conflict
-                    </Button>
-                  ) : item.requests.length > 0 || item.binding || item.draft ? (
-                    onReview && (
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        onClick={() => leave(onReview)}
-                      >
-                        Review changes
-                      </Button>
-                    )
-                  ) : item.uploads.length > 0 ? (
-                    item.uploads.every(
-                      (upload) =>
-                        !/^4\d\d:/.test(upload.error ?? "") ||
-                        /^(401|408|429):/.test(upload.error ?? ""),
-                    ) ? (
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        disabled={busy}
-                        onClick={onRetry}
-                      >
-                        Retry uploads
-                      </Button>
-                    ) : (
-                      item.resourceId && (
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          onClick={() => leave(() => onOpen(item.resourceId!))}
-                        >
-                          View change
-                        </Button>
-                      )
-                    )
-                  ) : null}
-                </section>
-              ))}
+              {attentionItems.map((item) => attentionCard(item))}
               {needsReconnect && (
                 <div className="sync-menu-notification">
                   <Button

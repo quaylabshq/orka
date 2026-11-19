@@ -81,15 +81,18 @@ export function skillReviewState(
   );
   const available = binding?.availableRevision;
   const installedRevision = binding?.base?.revision;
+  const copyConflict = Boolean(binding?.skillReviewFingerprint);
   const incoming =
     installation === "update_available" ||
     installation === "review_pending" ||
     (installation === "locally_modified" &&
-      available !== undefined &&
-      available !== installedRevision);
+      (copyConflict ||
+        (available !== undefined && available !== installedRevision)));
   return {
     binding,
-    outgoing: !pending && (actionable || installation === "locally_modified"),
+    outgoing:
+      !pending &&
+      (actionable || (installation === "locally_modified" && !copyConflict)),
     pending,
     incoming,
     incomingBlocked: incoming && installation === "locally_modified",

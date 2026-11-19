@@ -9,7 +9,7 @@ import type {
   ProjectResource,
   Snapshot,
 } from "../types.js";
-import { visibleRequest } from "../lib/features.js";
+import { actionableRequest, visibleRequest } from "../lib/features.js";
 
 export const bindingResourceId = (binding: Binding) =>
   binding.resourceId ?? binding.base?.resourceId;
@@ -59,6 +59,97 @@ export interface ProjectAttention {
   historyDrafts: LocalDraft[];
   activity: Activity[];
   accountIssues: Snapshot["errors"];
+}
+
+const skillConflictMessages = new Set([
+  "Local skill edits preserved; resolve them before applying the shared update",
+  "Skill copies differ between .agents/skills and .claude/skills. Review and align them to resume this skill's sync; both local copies are preserved.",
+]);
+const staleVersionMessage =
+  "409: Resource changed; refresh and review the exact version again";
+const needsPlanReview = (upload: Snapshot["outbox"][number]) =>
+  upload.kind === "plan" && upload.reviewable === true;
+
+export interface SyncReviewItem {
+  projectId: string;
+  item: AttentionItem;
+  reason:
+    | "Local skill copies need review"
+    | "Shared version changed"
+    | "Queued upload needs review";
+  uploadId?: string;
+  showDetails: boolean;
+}
+
+/** Find decisions across the active workspace, with the same deduplication as Requests. */
+export function syncReviewItems(
+  state: Snapshot,
+  selectedProjectId: string,
+  selectedAttention: ProjectAttention,
+): SyncReviewItem[] {
+  const skillSources = new Set(
+    state.errors
+      .filter(({ error }) => skillConflictMessages.has(error))
+      .map(({ source }) => source),
+  );
+  const candidates = new Set([
+    selectedProjectId,
+    ...state.bindings
+      .filter(({ skillReviewFingerprint }) => skillReviewFingerprint)
+      .map(bindingProjectId),
+    ...Array.from(skillSources, (source) => source.split(":", 1)[0]),
+    ...state.resources
+      .filter(({ resourceId }) => skillSources.has(resourceId))
+      .map(({ projectId }) => projectId),
+    ...state.outbox.filter(needsPlanReview).map(({ project }) => project),
+  ]);
+  return state.projects.flatMap(({ id }) => {
+    if (!candidates.has(id)) return [];
+    const { items } =
+      id === selectedProjectId
+        ? selectedAttention
+        : projectAttention(state, id);
+    return items.flatMap<SyncReviewItem>((item) => {
+      const hasOtherReview = Boolean(
+        item.requests.length || item.draft || item.conflicts.length,
+      );
+      if (
+        item.kind === "skill" &&
+        item.binding?.installationState !== "kept_local" &&
+        (item.binding?.skillReviewFingerprint ||
+          item.messages.some((m) => skillConflictMessages.has(m)))
+      )
+        return [
+          {
+            projectId: id,
+            item,
+            reason: "Local skill copies need review",
+            showDetails:
+              hasOtherReview ||
+              item.uploads.length > 0 ||
+              item.messages.some((m) => !skillConflictMessages.has(m)),
+          },
+        ];
+      const upload = item.uploads.find(needsPlanReview);
+      return upload
+        ? [
+            {
+              projectId: id,
+              item,
+              reason:
+                upload.error === staleVersionMessage
+                  ? "Shared version changed"
+                  : "Queued upload needs review",
+              uploadId: upload.id,
+              showDetails:
+                hasOtherReview ||
+                item.uploads.length > 1 ||
+                item.messages.some((m) => m !== upload.error),
+            },
+          ]
+        : [];
+    });
+  });
 }
 
 /** One attention item per resource, regardless of how many local records describe it. */
@@ -196,7 +287,7 @@ export function projectAttention(
     return result;
   };
   for (const request of requests) {
-    if (request.status !== "pending" || !request.canReview) continue;
+    if (!actionableRequest(request)) continue;
     const key = request.resourceId ?? `request:${request.id}`;
     item(key, request.resourceId, request.title).requests.push(request);
   }
