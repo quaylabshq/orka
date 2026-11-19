@@ -248,6 +248,32 @@ fn linked_common_dir(path: &Path) -> Option<PathBuf> {
     (directory != common).then_some(common)
 }
 
+fn is_bare_git_directory(directory: &Path) -> bool {
+    let Ok(config) = fs::File::open(directory.join("config")) else {
+        return false;
+    };
+    let mut in_core = false;
+    let mut bare = false;
+    for line in BufReader::new(config.take(1_000_000))
+        .lines()
+        .map_while(std::result::Result::ok)
+    {
+        let line = line.split(['#', ';']).next().unwrap_or_default().trim();
+        if line.starts_with('[') {
+            in_core = line.eq_ignore_ascii_case("[core]");
+        } else if in_core {
+            let (key, value) = line.split_once('=').unwrap_or((line, "true"));
+            if key.trim().eq_ignore_ascii_case("bare") {
+                bare = matches!(
+                    value.trim().trim_matches('"').to_ascii_lowercase().as_str(),
+                    "true" | "yes" | "on" | "1"
+                );
+            }
+        }
+    }
+    bare
+}
+
 #[derive(Default)]
 struct MainCheckouts(BTreeMap<PathBuf, BTreeSet<PathBuf>>);
 impl MainCheckouts {
@@ -269,7 +295,9 @@ impl MainCheckouts {
                 }
                 common
             };
-            checkouts.0.entry(common).or_default().insert(path);
+            if !is_bare_git_directory(&common) {
+                checkouts.0.entry(common).or_default().insert(path);
+            }
         }
         checkouts
     }
@@ -1662,6 +1690,12 @@ mod tests {
         assert_eq!(found[&submodule].worktrees, 0);
         assert_eq!(found[&checkout].worktrees, 0);
         assert!(!found.contains_key(&home.join("repos")));
+
+        let metadata = bare.parent().unwrap().to_path_buf();
+        let connected = BTreeMap::from([(metadata.clone(), 0)]);
+        fold_worktrees(&mut found, &home, &connected);
+        assert!(found.contains_key(&checkout));
+        assert!(!found.contains_key(&metadata));
     }
     #[test]
     fn claude_finds_cwd_after_metadata() {
