@@ -617,9 +617,17 @@ async fn rows_queued_before_the_deletion_are_never_rewritten() {
     for text in ["During the deletion\n", "Later during the deletion\n"] {
         f.edit_memory(text);
         assert!(matches!(f.run_job().await, Some(Outcome::Captured)));
-        // The earlier row may already be on its way; it stays exactly as it
-        // was, and a restore scan picks up the newer edit after it is sent.
+        // Keep the retry identity and a recoverable copy of the newer bytes.
         assert_eq!(f.outbox(), before);
+        let drafts = db::rows(
+            &f.db,
+            "SELECT value FROM drafts WHERE project=? AND json_extract(value,'$.status')='local'",
+            &[&f.id],
+        )
+        .unwrap();
+        assert_eq!(drafts.len(), 1);
+        let hash = drafts[0]["resource"]["files"][0]["hash"].as_str().unwrap();
+        assert_eq!(db::blob_read(hash).unwrap(), text.as_bytes());
     }
 }
 
@@ -801,4 +809,34 @@ async fn an_item_created_then_deleted_while_deleted_leaves_one_held_deletion() {
     // The created version's blob stays readable.
     db::blob_read(&created_hash).unwrap();
     f.assert_sent_nothing();
+}
+
+#[tokio::test]
+async fn a_new_embedded_plan_proposal_replaces_the_held_plan() {
+    let f = Capture::new(restorable());
+    let id = uuid::Uuid::new_v4().to_string();
+    let sessions = f.home.path().join(".claude/projects/deleted");
+    fs::create_dir_all(&sessions).unwrap();
+    let transcript = sessions.join(format!("{id}.jsonl"));
+    let mut records = vec![
+        json!({"type":"user","sessionId":id,"cwd":f.root,"version":"2.1.283","message":{"role":"user","content":"Plan the update"}}),
+    ];
+    let mut previous = None;
+    for text in ["# First proposal", "# Revised proposal"] {
+        records.push(json!({"type":"assistant","sessionId":id,"cwd":f.root,"message":{"role":"assistant","content":[{"type":"tool_use","name":"ExitPlanMode","input":{"plan":text}}]}}));
+        fs::write(&transcript, native::encode(&records)).unwrap();
+        assert!(matches!(f.run_job().await, Some(Outcome::Captured)));
+        let plans: Vec<_> = f
+            .outbox()
+            .into_iter()
+            .filter(|row| row["kind"] == "plan")
+            .collect();
+        assert_eq!(plans.len(), 1);
+        let hash = plans[0]["value"]["resource"]["files"][0]["hash"]
+            .as_str()
+            .unwrap();
+        assert_eq!(db::blob_read(hash).unwrap(), text.as_bytes());
+        assert_ne!(previous, Some(plans[0]["id"].clone()));
+        previous = Some(plans[0]["id"].clone());
+    }
 }

@@ -3120,3 +3120,64 @@ fn peer_archive_does_not_promote_a_delete_to_a_new_owned_copy() {
     let b = crate::repair::binding(&f.db, &base, b).unwrap();
     assert_eq!(b["paths"], json!([archived]));
 }
+
+#[test]
+fn deleted_skill_capture_coalesces_each_mirror_independently() {
+    let f = Fixture::new();
+    let first = f.root.join(".agents/skills/release");
+    let second = f.root.join(".claude/skills/release");
+    let first_file = first.join("SKILL.md");
+    let second_file = second.join("SKILL.md");
+    fs::create_dir_all(&first).unwrap();
+    fs::write(&first_file, "baseline").unwrap();
+    indexer::scan(&f.db, &f.project).unwrap();
+    f.accept(&f.resources()[0]);
+    assert_eq!(fs::read_to_string(&second_file).unwrap(), "baseline");
+
+    let mut deleted = f.project.clone();
+    deleted["deletedAt"] = json!("2026-11-18T00:00:00Z");
+    deleted["archivedAt"] = deleted["deletedAt"].clone();
+    deleted["purgeAfter"] = json!("2026-12-18T00:00:00Z");
+    db::upsert(
+        &f.db,
+        "projects",
+        deleted["id"].as_str().unwrap(),
+        "",
+        &deleted,
+    )
+    .unwrap();
+    deleted["captureOnly"] = json!(true);
+    fs::write(&first_file, "Codex variant").unwrap();
+    fs::write(&second_file, "Claude variant").unwrap();
+    indexer::scan(&f.db, &deleted).unwrap();
+
+    let pending = || -> Vec<(String, Value)> {
+        f.outbox()
+            .iter()
+            .map(|request| {
+                let hash = request["resource"]["files"][0]["hash"].as_str().unwrap();
+                (
+                    String::from_utf8(db::blob_read(hash).unwrap()).unwrap(),
+                    request["id"].clone(),
+                )
+            })
+            .collect()
+    };
+    let before = pending();
+    assert_eq!(before.len(), 2);
+    assert!(before.iter().any(|(text, _)| text == "Codex variant"));
+    let claude = before
+        .iter()
+        .find(|(text, _)| text == "Claude variant")
+        .unwrap();
+
+    fs::write(&first_file, "Updated Codex variant").unwrap();
+    indexer::scan(&f.db, &deleted).unwrap();
+    let after = pending();
+    assert_eq!(after.len(), 2);
+    assert!(after.contains(claude));
+    assert!(after
+        .iter()
+        .any(|(text, id)| text == "Updated Codex variant"
+            && !before.iter().any(|(_, old)| id == old)));
+}
