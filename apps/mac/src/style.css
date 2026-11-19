@@ -1127,6 +1127,9 @@
     @apply w-full border-separate border-spacing-0 rounded-xl border border-line text-left;
     table-layout: fixed;
   }
+  .resource-table-pagination {
+    @apply mt-3 flex items-center justify-end gap-2 text-body-sm text-secondary;
+  }
   .resource-table-col-repository,
   .resource-table-col-identity,
   .resource-table-col-updated {

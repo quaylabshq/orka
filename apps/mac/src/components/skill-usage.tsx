@@ -40,14 +40,20 @@ export function useProjectSkillUsage(
     () => ({ scope, projects: new Map<string, UsageEntry>() }),
     [scope],
   );
-  const key = JSON.stringify([
-    folders,
-    resources.map((skill) => [
-      skill.resourceId,
-      skill.logicalPath,
-      skill.sourceId,
-    ]),
-  ]);
+  const key = useMemo(
+    () =>
+      enabled
+        ? JSON.stringify([
+            folders,
+            resources.map((skill) => [
+              skill.resourceId,
+              skill.logicalPath,
+              skill.sourceId,
+            ]),
+          ])
+        : "",
+    [enabled, folders, resources],
+  );
   const entry = useMemo(() => {
     if (!enabled) return undefined;
     const cached = cache.projects.get(projectId);

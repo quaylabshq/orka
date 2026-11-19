@@ -12,7 +12,10 @@ import {
   resourceDisplayTitle,
   sessionFallbackTitle,
 } from "./resource-presentation.js";
-import { useSessionTitles } from "./use-session-titles.js";
+import {
+  useSessionTitles,
+  type SessionTitleCache,
+} from "./use-session-titles.js";
 import { skillSummaryKey, useSkillSummaries } from "./use-skill-summaries.js";
 import { useMemberLabel } from "./member-names.js";
 import "./project-home.css";
@@ -52,6 +55,7 @@ function updatedTime(value: string, now: number) {
 
 export function ProjectHome({
   scope,
+  titleCache,
   project,
   resources,
   user,
@@ -59,6 +63,7 @@ export function ProjectHome({
   onOpen,
 }: {
   scope: string;
+  titleCache: SessionTitleCache;
   project: Project;
   resources: Resource[];
   user?: string | null;
@@ -84,7 +89,7 @@ export function ProjectHome({
     [items],
   );
   // Reuse the reading views' bounded, cached metadata lookups for these six rows.
-  const sessionTitles = useSessionTitles(recent, true, scope);
+  const sessionTitles = useSessionTitles(recent, true, titleCache);
   const skillSummaries = useSkillSummaries(recent, scope);
   const pendingTitles = new Set(
     recent
