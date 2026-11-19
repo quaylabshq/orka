@@ -56,10 +56,10 @@ enum Kind {
 }
 impl Kind {
     fn of(path: &Path, home: &Path) -> Self {
-        if chat(path, home) {
-            Kind::Chat
-        } else if path.join(".git").exists() {
+        if path.join(".git").exists() {
             Kind::Project
+        } else if chat(path, home) {
+            Kind::Chat
         } else {
             Kind::Folder
         }
@@ -785,24 +785,44 @@ pub fn discover(path: Option<&str>) -> Result<Value> {
         .into_iter()
         // Chats stay available as folder picks, but never fill the history scan.
         .filter(|row| {
-            path.is_some()
-                || row.kind != Kind::Chat
-                || connected_folders.contains_key(&row.path)
+            path.is_some() || row.kind != Kind::Chat || connected_folders.contains_key(&row.path)
         })
         .map(|row| {
             let path = row.path;
             let c = row.candidate;
-            let display = path.strip_prefix(&home).map(|p| format!("~/{}", p.display())).unwrap_or_else(|_| path.display().to_string());
+            let display = path
+                .strip_prefix(&home)
+                .map(|p| format!("~/{}", p.display()))
+                .unwrap_or_else(|_| path.display().to_string());
             let relevance = (row.relevance * 10.0).round() / 10.0;
-            json!({"name":path.file_name().unwrap_or_default().to_string_lossy(),"path":path,"displayPath":display,"sources":c.tools,"lastActiveAt":c.last,"sessions":c.sessions,"worktrees":c.worktrees,"relevance":relevance,"readable":fs::read_dir(&path).is_ok(),"alreadyConnected":connected_folders.contains_key(&path),"pendingChanges":connected_folders.get(&path).copied().unwrap_or(0)})
+            let mut project = json!({
+                "name":path.file_name().unwrap_or_default().to_string_lossy(),
+                "path":path,
+                "displayPath":display,
+                "sources":c.tools,
+                "lastActiveAt":c.last,
+                "sessions":c.sessions,
+                "worktrees":c.worktrees,
+                "relevance":relevance,
+                "readable":fs::read_dir(&path).is_ok(),
+                "alreadyConnected":connected_folders.contains_key(&path),
+                "pendingChanges":connected_folders.get(&path).copied().unwrap_or(0)
+            });
+            if !c.worktree_paths.is_empty() {
+                project["worktreePaths"] = json!(c.worktree_paths);
+            }
+            project
         })
         .collect();
     if budget.truncated {
         eprintln!("Some history was skipped (onboarding discovery budget)");
     }
-    Ok(
-        json!({"projects":projects,"tools":{"claude":native::binary("claude").is_ok(),"codex":native::binary("codex").is_ok()},"truncated":budget.truncated}),
-    )
+    Ok(json!({
+        "projects":projects,
+        "tools":{"claude":native::binary("claude").is_ok(),"codex":native::binary("codex").is_ok()},
+        "truncated":budget.truncated,
+        "incomplete":budget.denied || budget.truncated
+    }))
 }
 
 pub fn normalize_remote(raw: &str) -> Option<String> {
@@ -1207,6 +1227,19 @@ mod tests {
             "/Users/test/Development/orka",
         ] {
             assert_ne!(Kind::of(Path::new(path), home), Kind::Chat, "{path}");
+        }
+    }
+    #[test]
+    fn git_checkouts_inside_conversation_roots_are_projects() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = fs::canonicalize(temp.path()).unwrap();
+        for root in ["Documents/Codex/2026-11-19", ".t3/scratch"] {
+            let project = home.join(root).join("repository");
+            fs::create_dir_all(project.join(".git")).unwrap();
+            let conversation = home.join(root).join("conversation");
+            fs::create_dir_all(&conversation).unwrap();
+            assert_eq!(Kind::of(&project, &home), Kind::Project);
+            assert_eq!(Kind::of(&conversation, &home), Kind::Chat);
         }
     }
     #[test]
