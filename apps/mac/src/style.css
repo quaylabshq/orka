@@ -803,6 +803,8 @@
   .session-launcher-popover {
     min-width: 240px;
     max-width: 340px;
+    max-height: var(--radix-popover-content-available-height);
+    overflow-y: auto;
   }
   .session-launcher-popover [role="menu"] {
     @apply flex flex-col gap-1;

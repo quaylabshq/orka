@@ -396,17 +396,26 @@ test("the session launcher stays compact while checking apps and keeps its split
   await page.evaluate(() => {
     const host = window as unknown as MenuWindow;
     const original = host.__TAURI_INTERNALS__.invoke;
-    const options: SessionLaunchOption[] = [
-      {
-        tool: "claude",
-        destination: "desktop",
-        label: "Claude Desktop",
-        isDefault: true,
-        mode: "resume",
+    const options: SessionLaunchOption[] = (
+      ["claude", "codex"] as const
+    ).flatMap((tool) =>
+      (["desktop", "terminal", "warp"] as const).map((destination) => ({
+        tool,
+        destination,
+        label:
+          destination === "desktop"
+            ? tool === "claude"
+              ? "Claude Desktop"
+              : "Codex"
+            : destination === "terminal"
+              ? "Terminal"
+              : "Warp",
+        isDefault: tool === "claude" && destination === "desktop",
+        mode: tool === "claude" ? "resume" : "handoff",
         available: true,
         reason: null,
-      },
-    ];
+      })),
+    );
     const launchOptions = new Promise((resolve) => {
       host.resourceMenu.finishLaunchOptions = () => resolve(options);
     });
@@ -477,6 +486,17 @@ test("the session launcher stays compact while checking apps and keeps its split
     exact: true,
   });
   await expect(fork).toBeVisible();
+  const firstOption = menu.getByRole("menuitem", {
+    name: "Open in Claude Desktop Default",
+    exact: true,
+  });
+  await expect(firstOption).toBeInViewport({ ratio: 1 });
+  await firstOption.press("End");
+  await page.keyboard.press("Tab");
+  const terminal = page.getByRole("combobox", { name: "Terminal application" });
+  await expect(terminal).toBeFocused();
+  await expect(terminal).toBeInViewport({ ratio: 1 });
+
   await page.keyboard.press("Escape");
   await expect(menu).toBeHidden();
   await expect(choose).toBeFocused();
