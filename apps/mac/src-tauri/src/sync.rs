@@ -18,6 +18,7 @@ use std::{
 
 const PLAN_REVISION_CONFLICT: &str =
     "409: Resource changed; refresh and review the exact version again";
+const PLAN_REVIEW_PENDING: &str = "Queued plan upload needs review";
 
 pub async fn api(method: &str, path: &str, body: Option<&Value>) -> Result<Value> {
     let owner = db::get(&db::open()?, "user")?;
@@ -1060,8 +1061,8 @@ fn materialize_install(
         return db::upsert(db, "bindings", id, project_id, &b);
     }
     let pending:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM outbox WHERE json_extract(value,'$.resource.resourceId')=? OR json_extract(value,'$.resourceId')=?)",params![id,id],|r|r.get(0)).map_err(|e|e.to_string())?;
-    if kind == "plan" && pending && stale_plan_upload(db, project_id, id)? {
-        return Err(PLAN_REVISION_CONFLICT.into());
+    if kind == "plan" && pending && plan_upload_needs_review(db, project_id, id)? {
+        return Err(PLAN_REVIEW_PENDING.into());
     }
     if pending || b["needsCopy"] == true {
         return Err("Local changes are queued; incoming version staged".into());
@@ -2407,23 +2408,32 @@ fn project_has_retryable_errors(db: &rusqlite::Connection, project: &str) -> Res
             project,
             crate::skill_reconciliation::LOCAL_EDITS,
             indexer::SKILL_MIRROR_REVIEW,
-            PLAN_REVISION_CONFLICT
+            PLAN_REVIEW_PENDING
         ],
         |row| row.get(0),
     )
     .map_err(|error| error.to_string())
 }
 
-fn stale_plan_upload(db: &rusqlite::Connection, project: &str, resource: &str) -> Result<bool> {
-    db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM outbox
-         WHERE project=? AND path='/v2/sync/push' AND error=?
-           AND json_extract(value,'$.resource.kind')='plan'
-           AND json_extract(value,'$.resource.resourceId')=?)",
-        params![project, PLAN_REVISION_CONFLICT, resource],
-        |row| row.get(0),
-    )
-    .map_err(|error| error.to_string())
+fn plan_upload_needs_review(
+    db: &rusqlite::Connection,
+    project: &str,
+    resource: &str,
+) -> Result<bool> {
+    let uploads = db::rows(
+        db,
+        "SELECT json_object('path',path,'error',error,'resource',json_extract(value,'$.resource'))
+         FROM outbox WHERE project=? AND error IS NOT NULL
+           AND json_extract(value,'$.resource.resourceId')=?",
+        &[&project, &resource],
+    )?;
+    Ok(uploads.iter().any(|upload| {
+        crate::upload_review::reviewable(
+            upload["path"].as_str().unwrap_or(""),
+            upload["error"].as_str(),
+            &upload["resource"],
+        )
+    }))
 }
 
 /// A rejected exact-version upload is already satisfied when the fresh feed
@@ -2455,10 +2465,10 @@ fn reconcile_shared_plan_uploads(db: &mut rusqlite::Connection, project: &str) -
             || ["resourceId", "source", "logicalPath", "title", "files"]
                 .iter()
                 .any(|key| input.get(*key).is_none_or(Value::is_null))
-            || !current["revision"]
+            || current["revision"]
                 .as_u64()
                 .zip(change["baseRevision"].as_u64())
-                .is_some_and(|(revision, base)| revision > base)
+                .is_none_or(|(revision, base)| revision <= base)
         {
             continue;
         }
@@ -3080,7 +3090,7 @@ mod queue_tests {
             db::rows(&db, "SELECT value FROM resources WHERE id='plan'", &[]).unwrap(),
             [accepted]
         );
-        assert!(stale_plan_upload(&db, "a", "plan").unwrap());
+        assert!(plan_upload_needs_review(&db, "a", "plan").unwrap());
     }
 
     #[test]
@@ -3089,7 +3099,7 @@ mod queue_tests {
         for (source, error) in [
             ("a:skills", crate::skill_reconciliation::LOCAL_EDITS),
             ("a:mirrors", indexer::SKILL_MIRROR_REVIEW),
-            ("a:plans", PLAN_REVISION_CONFLICT),
+            ("a:plans", PLAN_REVIEW_PENDING),
             ("b:pull", "Could not download an update"),
         ] {
             record_result(&db, source, Err(error.into())).unwrap();
@@ -3140,15 +3150,27 @@ mod queue_tests {
         )
         .unwrap();
 
+        db.execute(
+            "UPDATE outbox SET error='409: Unknown base revision' WHERE id='upload'",
+            [],
+        )
+        .unwrap();
         assert_eq!(
             materialize(&db, &project, &accepted).unwrap_err(),
-            PLAN_REVISION_CONFLICT
+            PLAN_REVIEW_PENDING
         );
+        reconcile_shared_plan_uploads(&mut db, "a").unwrap();
+        assert!(plan_upload_needs_review(&db, "a", "plan").unwrap());
+        db.execute(
+            "UPDATE outbox SET error=? WHERE id='upload'",
+            [PLAN_REVISION_CONFLICT],
+        )
+        .unwrap();
         reconcile_shared_plan_uploads(&mut db, "a").unwrap();
         materialize(&db, &project, &accepted).unwrap();
 
         assert_eq!(indexer::binding(&db, "plan").unwrap()["base"], accepted);
-        assert!(!stale_plan_upload(&db, "a", "plan").unwrap());
+        assert!(!plan_upload_needs_review(&db, "a", "plan").unwrap());
         assert_eq!(fs::metadata(path).unwrap().ino(), original_inode);
     }
 
