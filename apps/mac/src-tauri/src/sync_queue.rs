@@ -55,6 +55,8 @@ pub(crate) struct Job {
 #[derive(Debug)]
 pub(crate) enum Outcome {
     Synced,
+    /// No request was made because the project is no longer active.
+    Skipped,
     /// Finished with item errors or deferred uploads; retried with backoff.
     Deferred,
     /// Stopped early for foreground work; queued again as it was.
@@ -466,9 +468,10 @@ impl SyncQueue {
     }
 
     /// Success removes the job and restarts the project's timer, a cancel does
-    /// the same without the timer, a failure backs only that project off with
-    /// jitter, and a yielded job is ready again as it was. A request that
-    /// arrived while the job ran stays queued with its own `not_before`. A
+    /// the same without the timer, and a skip only removes the claimed job.
+    /// A failure backs that project off with jitter, and a yielded job is ready
+    /// again as it was. A request that arrived while the job ran stays queued
+    /// with its own `not_before`. A
     /// service outage also holds every other job due before then until the same
     /// time, so it costs one request per step.
     fn settle(
@@ -484,6 +487,10 @@ impl SyncQueue {
         // later request.
         Self::clear(db, project)?;
         match result {
+            Ok(Outcome::Skipped) => sql(db.execute(
+                "DELETE FROM sync_queue WHERE project=?1 AND not_before=?2",
+                params![project, RUNNING],
+            )),
             Ok(Outcome::Synced | Outcome::Cancelled) => {
                 let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
                 sql(tx.execute(
@@ -494,8 +501,7 @@ impl SyncQueue {
                     "UPDATE sync_queue SET attempts=0 WHERE project=?",
                     [project],
                 ))?;
-                // A skipped/archived project can finish without a request. A
-                // successful workspace job has actually reached the service.
+                // Only the workspace job establishes service-wide recovery.
                 if project == WORKSPACE {
                     sql(tx.execute("DELETE FROM meta WHERE key=?", [OUTAGE]))?;
                 }
@@ -602,6 +608,40 @@ mod tests {
 
     fn interval() -> Interval {
         Interval::from_config(&json!({"syncMinutes": 15}))
+    }
+
+    #[test]
+    fn a_skipped_job_preserves_history_and_requests_arriving_during_the_job() {
+        for requested_again in [false, true] {
+            let (_root, db) = queue_db(&["a"]);
+            let mut queue = SyncQueue::new(0);
+            queue.synced.insert("a".into(), 5);
+            db::set(&db, &cancelled_at_key("a"), &json!(2)).unwrap();
+            let outage = json!({"notBefore":MINUTE,"attempts":3});
+            db::set(&db, OUTAGE, &outage).unwrap();
+            SyncQueue::enqueue(&db, "a", Priority::User, "remove", 0).unwrap();
+            let job = SyncQueue::claim(&db, 0).unwrap().unwrap();
+            if requested_again {
+                SyncQueue::enqueue(&db, "a", Priority::User, "sync now", 1).unwrap();
+            }
+            queue
+                .settle(&db, job, &Ok(Outcome::Skipped), 10, &interval())
+                .unwrap();
+
+            let jobs = rows(&db);
+            if requested_again {
+                assert_eq!(jobs.len(), 1);
+                assert_eq!((jobs[0].not_before, jobs[0].attempts), (1, 3));
+            } else {
+                assert!(jobs.is_empty());
+            }
+            assert_eq!(queue.synced.get("a"), Some(&5));
+            assert_eq!(db::get(&db, &cancelled_at_key("a")).unwrap(), 2);
+            assert_eq!(db::get(&db, OUTAGE).unwrap(), outage);
+            assert!(db::get(&db, &claim_key("a")).unwrap().is_null());
+            assert!(db::get(&db, &cancel_key("a")).unwrap().is_null());
+            assert_eq!(SyncQueue::progress_project(&db).unwrap(), None);
+        }
     }
 
     #[test]

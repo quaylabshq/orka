@@ -2293,7 +2293,7 @@ async fn run_job(db: &mut rusqlite::Connection, job: &crate::sync_queue::Job) ->
     };
     let previous = db::get(db, "sync")?;
     let status = match &result {
-        Ok(Outcome::Yielded | Outcome::Cancelled) => previous,
+        Ok(Outcome::Yielded | Outcome::Cancelled | Outcome::Skipped) => previous,
         Ok(_) => json!({"online":true,"lastSync":db::now(),"updatedAt":db::now()}),
         Err(error) => {
             json!({"online":false,"lastSync":previous["lastSync"],"error":error,"updatedAt":db::now()})
@@ -2306,7 +2306,10 @@ async fn run_job(db: &mut rusqlite::Connection, job: &crate::sync_queue::Job) ->
     if !more || crate::projects::foreground_waiting()? {
         db::set(db, "syncProgress", &Value::Null)?;
     }
-    if !matches!(result, Ok(Outcome::Yielded | Outcome::Cancelled)) {
+    if !matches!(
+        result,
+        Ok(Outcome::Yielded | Outcome::Cancelled | Outcome::Skipped)
+    ) {
         let error = result.as_ref().err().map(String::as_str);
         let _ = crate::onboarding::reconcile_workspace_sync(db, error);
     }
@@ -2335,7 +2338,7 @@ async fn sync_job(db: &mut rusqlite::Connection, job: &crate::sync_queue::Job) -
         _ if job.project == WORKSPACE => pass.sync_workspace_global().await?,
         Some(p) => pass.sync_project(p).await?,
         // Removed or archived since it was queued.
-        None => return Ok(Outcome::Synced),
+        None => return Ok(Outcome::Skipped),
     };
     let errors: bool = pass
         .db
@@ -2964,6 +2967,56 @@ mod queue_tests {
                 vec![requests[0].clone(), requests[1].clone(), fresh]
             );
         }
+    }
+
+    #[tokio::test]
+    async fn removing_an_inactive_project_does_not_record_a_cloud_sync() {
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("ORKA_TEST_HOME", home.path());
+        let db = db::open().unwrap();
+        db::set(&db, "user", &json!(uuid::Uuid::new_v4().to_string())).unwrap();
+        let project = uuid::Uuid::new_v4().to_string();
+        db::upsert(
+            &db,
+            "projects",
+            &project,
+            "",
+            &json!({"id":project,"name":"Offline archive","role":"owner","archivedAt":"2026-11-19T00:00:00Z"}),
+        )
+        .unwrap();
+        let previous = json!({"online":false,"error":"503: Service unavailable","lastSync":"2026-11-18T00:00:00Z","updatedAt":"2026-11-18T01:00:00Z"});
+        let outage = json!({"notBefore":SyncQueue::now()+60_000,"attempts":3});
+        db::set(&db, "sync", &previous).unwrap();
+        db::set(&db, "syncOutage", &outage).unwrap();
+
+        crate::projects::project_command("remove".into(), json!({"projectId":project}))
+            .await
+            .unwrap();
+        assert_eq!(db::get(&db, "sync").unwrap(), previous);
+        // The real command queues a User job, which bypasses the outage hold.
+        // With no service configured, only the skipped-project path can finish.
+        assert_eq!(
+            SyncQueue::next(&db, SyncQueue::now())
+                .unwrap()
+                .unwrap()
+                .project,
+            project
+        );
+        let mut queue = SyncQueue::new(SyncQueue::now());
+        assert!(queue
+            .run_next(&Interval::from_config(&json!({})), run_job)
+            .await
+            .unwrap());
+        assert_eq!(db::get(&db, "sync").unwrap(), previous);
+        assert_eq!(db::get(&db, "syncOutage").unwrap(), outage);
+        assert!(SyncQueue::states(&db, SyncQueue::now())
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert!(db::get(&db, &format!("syncCancelledAt:{project}"))
+            .unwrap()
+            .is_null());
     }
 
     #[tokio::test]
