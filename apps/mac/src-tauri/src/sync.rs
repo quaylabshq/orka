@@ -111,8 +111,40 @@ pub(crate) async fn register_device(owner: &str, origin: &str, device: &str) -> 
     if capabilities["deviceHardware"] == 1 {
         registration["hardwareFamily"] = json!(crate::device_metadata::local_family(&db::open()?)?);
     }
-    api_at(owner, origin, "POST", "/v2/devices", Some(&registration)).await?;
-    Ok(())
+    post_device_registration(owner, origin, registration).await
+}
+
+pub(crate) async fn post_device_registration(
+    owner: &str,
+    origin: &str,
+    registration: Value,
+) -> Result<()> {
+    send_registration(registration, async |body| {
+        api_at(owner, origin, "POST", "/v2/devices", Some(body)).await?;
+        Ok(())
+    })
+    .await
+}
+
+async fn send_registration(
+    mut registration: Value,
+    mut post: impl AsyncFnMut(&Value) -> Result<()>,
+) -> Result<()> {
+    let Err(error) = post(&registration).await else {
+        return Ok(());
+    };
+    // During a rollout an older replica can reject the privateName field
+    // advertised by another replica. Retry the same ID with public metadata.
+    if error != "400: Invalid request" {
+        return Err(error);
+    }
+    match registration
+        .as_object_mut()
+        .and_then(|fields| fields.remove("privateName"))
+    {
+        Some(_) => post(&registration).await,
+        None => Err(error),
+    }
 }
 pub(crate) async fn upload(owner: &str, project: &str, resource: &Value) -> Result<()> {
     use crate::session_redaction::SessionRedactor;
@@ -2735,6 +2767,44 @@ async fn run_mode(foreground: bool) {
 #[cfg(test)]
 mod queue_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn mixed_replica_registration_retries_once_with_only_public_fields() {
+        let public = json!({"id":"device","name":"Mac","hardwareFamily":"laptop"});
+        let mut private = public.clone();
+        private["privateName"] = json!("Studio Mac");
+        for second in [Ok(()), Err("400: Invalid request".to_string())] {
+            let mut requests = Vec::new();
+            let result = send_registration(private.clone(), async |body| {
+                requests.push(body.clone());
+                match requests.len() {
+                    1 => Err("400: Invalid request".into()),
+                    2 => second.clone(),
+                    _ => panic!("retried a legacy registration"),
+                }
+            })
+            .await;
+            assert_eq!(requests, [private.clone(), public.clone()]);
+            assert_eq!(result, second);
+        }
+
+        for (body, response) in [
+            (public, Err("400: Invalid request".to_string())),
+            (private.clone(), Err("400: Invalid device".to_string())),
+            (private.clone(), Err("403: Forbidden".to_string())),
+            (private.clone(), Err("503: Service unavailable".to_string())),
+            (private, Ok(())),
+        ] {
+            let mut requests = Vec::new();
+            let result = send_registration(body.clone(), async |sent| {
+                requests.push(sent.clone());
+                response.clone()
+            })
+            .await;
+            assert_eq!(requests, [body]);
+            assert_eq!(result, response);
+        }
+    }
 
     #[test]
     fn archived_and_deleted_projects_hold_while_a_member_error_stays_terminal() {
