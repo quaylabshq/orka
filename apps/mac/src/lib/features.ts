@@ -7,6 +7,11 @@ export const visibleRequest = (
   request: Pick<ReviewRequest, "requestedClass">,
 ) => ENV_ENABLED || request.requestedClass !== "env";
 
+export const actionableRequest = (
+  request: Pick<ReviewRequest, "requestedClass" | "status" | "canReview">,
+) =>
+  visibleRequest(request) && request.status === "pending" && request.canReview;
+
 export const visibleManagementLog = (
   entry: Pick<ManagementLog, "category" | "action">,
 ) =>

@@ -132,7 +132,9 @@ export function SkillReviewOverlay({
   ]);
   const access = skillAccessMode(resource, state, project);
   const [phase, setPhase] = useState<Phase>({ status: "loading" });
-  const [busy, setBusy] = useState(false);
+  type ReviewAction = "install" | "keep" | "submit" | "refresh";
+  const [activeAction, setActiveAction] = useState<ReviewAction | null>(null);
+  const busy = activeAction !== null;
   const [stale, setStale] = useState(false);
   const [failure, setFailure] = useState("");
   const generation = useRef(0);
@@ -251,31 +253,42 @@ export function SkillReviewOverlay({
   }, [phase, signature]);
 
   const run = async (
+    kind: ReviewAction,
     action: () => Promise<void>,
     onError: (message: string) => void,
   ) => {
     if (busy) return;
-    setBusy(true);
+    setActiveAction(kind);
     setFailure("");
     try {
       await action();
     } catch (error) {
       onError(String(error));
     } finally {
-      setBusy(false);
+      setActiveAction(null);
     }
   };
-  const install = () =>
+  const finishIncoming = (action: "install" | "keep") =>
     run(
+      action,
       async () => {
         if (phase.status !== "ready" || !phase.token) return;
-        await call("apply-install", {
+        if (phase.signature !== latest.current.signature) {
+          setStale(true);
+          return;
+        }
+        const keep = action === "keep";
+        await call(keep ? "keep-skill-copies" : "apply-install", {
           resourceId: resource.resourceId,
           token: phase.token,
-          preserveLocal: true,
+          ...(keep ? {} : { preserveLocal: true }),
         });
         onNotice(
-          removal ? "Reviewed version removed" : "Reviewed version installed",
+          keep
+            ? "Local skill copies kept"
+            : removal
+              ? "Reviewed version removed"
+              : "Reviewed version installed",
         );
         await onRefresh();
         onClose();
@@ -287,6 +300,7 @@ export function SkillReviewOverlay({
     );
   const submit = () =>
     run(
+      "submit",
       async () => {
         if (phase.status !== "ready" || !phase.draft) return;
         if (stale || phase.signature !== latest.current.signature) {
@@ -319,6 +333,7 @@ export function SkillReviewOverlay({
     );
   const refreshDraft = () =>
     run(
+      "refresh",
       async () => {
         if (phase.status !== "ready") return;
         const draft = skillDraft(latest.current.state, latest.current.resource);
@@ -395,14 +410,18 @@ export function SkillReviewOverlay({
         : ready.dirty
           ? "Keep edits and install"
           : "Install update";
-    const busyLabel = outgoing
-      ? access === "publish"
-        ? "Publishing update"
-        : "Sending suggestion"
-      : removal
-        ? "Removing"
-        : "Installing";
+    const keeping = activeAction === "keep";
+    const busyLabel = keeping
+      ? "Keeping local copies"
+      : outgoing
+        ? access === "publish"
+          ? "Publishing update"
+          : "Sending suggestion"
+        : removal
+          ? "Removing"
+          : "Installing";
     const preserveEdits = !outgoing && ready.dirty;
+    const canKeep = preserveEdits && !removal && Boolean(ready.token);
     return (
       <>
         {busy && !outgoing ? (
@@ -412,19 +431,30 @@ export function SkillReviewOverlay({
         ) : (
           failure && <p className="review-footer-note">{failure}</p>
         )}
+        {canKeep && (
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={busy}
+            aria-busy={keeping || undefined}
+            onClick={() => void finishIncoming("keep")}
+          >
+            Keep local copies
+          </Button>
+        )}
         <Button
           size="sm"
           variant="primary"
           className="review-action"
           disabled={busy}
-          aria-busy={busy || undefined}
-          aria-label={busy ? busyLabel : undefined}
+          aria-busy={(busy && !keeping) || undefined}
+          aria-label={busy && !keeping ? busyLabel : undefined}
           aria-describedby={
             preserveEdits ? preservationDescriptionId : undefined
           }
-          onClick={() => void (outgoing ? submit() : install())}
+          onClick={() => void (outgoing ? submit() : finishIncoming("install"))}
         >
-          {busy ? (
+          {busy && !keeping ? (
             <>
               <span className="review-action-label" aria-hidden="true">
                 {outgoing ? label : `${busyLabel}…`}
@@ -434,7 +464,7 @@ export function SkillReviewOverlay({
                 aria-hidden="true"
               />
             </>
-          ) : failure ? (
+          ) : failure && !canKeep ? (
             "Try again"
           ) : (
             label
@@ -560,10 +590,13 @@ export function SkillReviewOverlay({
                     )}
                     {mode === "incoming" && loaded.otherCopies > 0 && (
                       <p className="review-note">
+                        {removal
+                          ? "Removing this skill also affects "
+                          : "Installing the shared version also updates "}
                         {loaded.otherCopies === 1
-                          ? "One other local copy"
-                          : `${loaded.otherCopies} other local copies`}{" "}
-                        on this Mac will be updated as well.
+                          ? "one other local copy"
+                          : `${loaded.otherCopies} other local copies`}
+                        {" on this Mac."}
                       </p>
                     )}
                     {loaded.changes.map((change, index) => (

@@ -464,6 +464,8 @@ async fn run(action: &str, input: &Value, progress: Option<&Channel<Value>>) -> 
     let db = db::open()?;
     let project = context(&db, input)?;
     match action {
+        "preview-upload" => crate::upload_review::preview(&db, input).await,
+        "retry-upload" => crate::upload_review::retry(&db, input).await,
         "paths" | "reveal" => {
             let paths = paths(&db, &project, input)?;
             if action == "reveal" {
@@ -569,6 +571,8 @@ pub(crate) async fn run_command(
 ) -> Result<Value> {
     let label = match action.as_str() {
         "preview-share" => Some("Preparing snapshot review"),
+        "preview-upload" => Some("Refreshing shared plan for review"),
+        "retry-upload" => Some("Queuing reviewed upload"),
         "preview-delete" => Some("Preparing deletion review"),
         "share" => Some("Preparing to share snapshot"),
         "delete" => Some("Preparing reviewed deletion"),

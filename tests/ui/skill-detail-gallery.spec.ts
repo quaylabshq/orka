@@ -345,7 +345,9 @@ test("approved removal", async ({ page }) => {
   await open(page, wide, { installation: "removal", open: false });
   await page.getByRole("button", { name: "Settings", exact: true }).click();
   await page.getByRole("button", { name: "Members", exact: true }).click();
-  await page.getByRole("button", { name: /Review pending requests/ }).click();
+  await page
+    .getByRole("button", { name: "View requests and history", exact: true })
+    .click();
   await page
     .getByRole("button", { name: "Review update", exact: true })
     .click();
