@@ -81,6 +81,55 @@ fn a_second_merge_without_a_flip_does_not_queue_again() {
 }
 
 #[test]
+fn an_owner_restore_receipt_unblocks_held_uploads_after_the_legacy_sweep() {
+    let f = Fixture::new();
+    let id = f.project["id"].as_str().unwrap();
+    let deleted = json!([{
+        "id":id, "name":"test", "role":"owner", "lifecycleRevision":1,
+        "deletedAt":"2026-01-01T00:00:00Z", "purgeAfter":future()
+    }]);
+    set_error(&f, "refused", id, "403: Project access denied");
+    set_error(&f, "conflict", id, "409: Project changed");
+    crate::projects::merge_catalog(&f.db, &deleted).unwrap();
+    assert_eq!(db::get(&f.db, "legacyDeniedRetry").unwrap(), json!(true));
+    assert_eq!(
+        error(&f, "refused").as_deref(),
+        Some("403: Project access denied")
+    );
+    assert_eq!(queue(&f, id), None);
+
+    let receipt = json!({"lifecycleRevision":2,"archivedAt":null,"deletedAt":null});
+    crate::projects::apply_restore_receipt(&f.db, id, &receipt).unwrap();
+
+    crate::projects::active(&f.db, id).unwrap();
+    assert_eq!(error(&f, "refused"), None);
+    assert_eq!(
+        error(&f, "conflict").as_deref(),
+        Some("409: Project changed")
+    );
+    assert_eq!(queue(&f, id), Some((2, "restore".to_string())));
+
+    // A retry of the same mutation receipt does not retry a fresh denial.
+    set_error(&f, "refused", id, "403: Project access denied");
+    crate::projects::apply_restore_receipt(&f.db, id, &receipt).unwrap();
+    assert_eq!(
+        error(&f, "refused").as_deref(),
+        Some("403: Project access denied")
+    );
+
+    // The old receipt cannot bring back a project deleted again elsewhere.
+    let mut deleted_again = deleted;
+    deleted_again[0]["lifecycleRevision"] = json!(3);
+    crate::projects::merge_catalog(&f.db, &deleted_again).unwrap();
+    crate::projects::apply_restore_receipt(&f.db, id, &receipt).unwrap();
+    assert!(crate::projects::active(&f.db, id).is_err());
+    assert_eq!(
+        error(&f, "refused").as_deref(),
+        Some("403: Project access denied")
+    );
+}
+
+#[test]
 fn the_legacy_access_denied_retry_runs_once_and_leaves_other_errors_alone() {
     let f = Fixture::new();
     let id = f.project["id"].as_str().unwrap().to_string();
