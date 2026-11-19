@@ -12,7 +12,20 @@ ref="refs/orka-secret-scan/fixture-$$"
 work=$(mktemp -d)
 trap 'git update-ref -d "$ref" 2>/dev/null || true; rm -rf "$work"' EXIT
 
-secret=$(openssl rand -hex 32)
+# The default generic-api-key rule in Gitleaks 8.30.1 uses entropy = 3.5.
+secret=$(python3 - <<'PY'
+from collections import Counter
+from hashlib import sha256
+from math import log2
+
+value = sha256(b"orka secret scan fixture").hexdigest()
+frequencies = [count / len(value) for count in Counter(value).values()]
+entropy = -sum(p * log2(p) for p in frequencies)
+if entropy <= 3.5:
+    raise SystemExit(f"Synthetic fixture entropy {entropy:.3f} must exceed 3.5 for generic-api-key (Gitleaks 8.30.1)")
+print(value)
+PY
+)
 manifest=pr-118/cf5ca64aa660d58ff2c62e487eae2d3bd71ab671/12264c70329c/capture.json
 blob=$(printf '{"images":{},"api_key":"%s"}\n' "$secret" | git hash-object -w --stdin)
 GIT_INDEX_FILE="$work/index" git update-index --add --cacheinfo "100644,$blob,$manifest"
@@ -33,7 +46,12 @@ python3 - "$work/report.json" "$commit" "$secret" <<'PY'
 import json, sys
 findings = json.load(open(sys.argv[1]))
 summary = [(f["Commit"][:12], f["File"], f["RuleID"]) for f in findings]
-if len(findings) != 1 or findings[0]["Commit"] != sys.argv[2] or findings[0]["Secret"] != sys.argv[3]:
-    sys.exit(f"Expected only the synthetic credential, found: {summary}")
+if (
+    len(findings) != 1
+    or findings[0]["Commit"] != sys.argv[2]
+    or findings[0]["Secret"] != sys.argv[3]
+    or findings[0]["RuleID"] != "generic-api-key"
+):
+    sys.exit(f"Expected only the synthetic generic-api-key finding, found: {summary}")
 print(f"Secret scan fixture ok: synthetic credential reported, nothing else: {summary}")
 PY
