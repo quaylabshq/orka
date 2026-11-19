@@ -80,7 +80,7 @@ export function SidebarUpdate({
   updates: DesktopUpdates;
   collapsed: boolean;
 }) {
-  const [dismissed, setDismissed] = useState(false);
+  const [dismissedVersion, setDismissedVersion] = useState<string>();
   const update = updates.status?.update;
   if (!update) return null;
   const { installing } = updates;
@@ -99,7 +99,7 @@ export function SidebarUpdate({
                 .closest(".sidebar-footer")
                 ?.querySelector<HTMLButtonElement>(".sidebar-bottom button")
                 ?.focus();
-              setDismissed(true);
+              setDismissedVersion(update.version);
             }
       }
     />
@@ -110,14 +110,18 @@ export function SidebarUpdate({
         <strong>Orka v{update.version}</strong>
         {collapsed ? <Popover.Close asChild>{close}</Popover.Close> : close}
       </div>
-      <p>Hurray! An update is available.</p>
+      <p>
+        {updates.status?.updateAudience === "early"
+          ? "Early access update"
+          : "Hurray! An update is available."}
+      </p>
       <UpdateInstallation updates={updates} />
       <UpdateChangelog version={update.version} updates={updates} />
     </>
   );
 
   if (!collapsed) {
-    return dismissed ? null : (
+    return dismissedVersion === update.version ? null : (
       <section className="sidebar-update-review" aria-label="Available update">
         {card}
       </section>
