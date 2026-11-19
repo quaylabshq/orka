@@ -714,15 +714,15 @@ fn credited_root(
             .chain(siblings.iter())
             .chain(claude.iter().map(|(main, _)| main))
             .filter(|root| remotes.key(root).as_ref() == Some(&key));
-        let selected = matching.next()?;
-        if matching.any(|root| root != selected) {
+        let selected = matching.next()?.clone();
+        if matching.any(|root| root != &selected) {
             return None;
         }
         let worktree = claude
             .map(|(_, checkout)| checkout)
             .or(t3)
             .or_else(|| worktree_below(path, &codex.join("worktrees"), 2));
-        return Some((selected.clone(), worktree));
+        return Some((selected, worktree));
     }
     if let Some((main, worktree)) = claude {
         return Some((main, Some(worktree)));
