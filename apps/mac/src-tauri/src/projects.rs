@@ -15,6 +15,18 @@ use std::{
 };
 
 pub const ACTIVE: &str = "coalesce(json_extract(value,'$.revoked'),0)=0 AND coalesce(json_extract(value,'$.hidden'),0)=0 AND json_extract(value,'$.archivedAt') IS NULL AND json_extract(value,'$.deletedAt') IS NULL";
+/// A deleted project that can still be restored. Only a soft-delete service
+/// (0.7.4 and later) publishes `purgeAfter`, so an older server never enables
+/// capture. An archive alone, an access removal, a hidden or detached copy and
+/// a purge all stop capture. The deadline is not compared with this Mac's
+/// clock: the window ends when the catalog delivers a purge tombstone or no
+/// longer lists the project, which detaches it.
+pub const CAPTURE_ONLY: &str = "coalesce(json_extract(value,'$.revoked'),0)=0 AND coalesce(json_extract(value,'$.hidden'),0)=0 AND json_extract(value,'$.detachedAt') IS NULL AND coalesce(json_extract(value,'$.purged'),0)=0 AND json_extract(value,'$.deletedAt') IS NOT NULL AND julianday(json_extract(value,'$.purgeAfter')) IS NOT NULL";
+/// Projects whose local edits are captured into the outbox: every `ACTIVE`
+/// project, plus a deleted one in its restore window, which captures without
+/// sending until it is restored.
+pub static CAPTURABLE: std::sync::LazyLock<String> =
+    std::sync::LazyLock::new(|| format!("(({ACTIVE}) OR ({CAPTURE_ONLY}))"));
 pub const CATALOG_PATH: &str = "/v2/projects?includeArchived=true&projectLifecycle=1";
 
 pub(crate) fn require_soft_delete(capabilities: &Value) -> Result<()> {
@@ -99,26 +111,59 @@ pub fn require_sharing(db: &Connection, id: &str, kind: &str) -> Result<()> {
     Ok(())
 }
 
+/// The capture-only counterpart of `require_sharing`: the project must be
+/// deleted but restorable, and the kind shared on this Mac.
+pub fn require_capture(db: &Connection, id: &str, kind: &str) -> Result<()> {
+    let project = db::rows(
+        db,
+        &format!("SELECT value FROM projects WHERE id=? AND {CAPTURE_ONLY}"),
+        &[&id],
+    )?
+    .into_iter()
+    .next()
+    .ok_or("Project can no longer be restored; local changes are not captured")?;
+    if !sharing_allowed(&project, kind) {
+        return Err(format!(
+            "Sharing for {kind} is off on this Mac. Enable it in Settings → Project sharing."
+        ));
+    }
+    Ok(())
+}
+
 /// Local project lifecycle work shared by the command and its tests.
 pub(crate) trait ProjectLifecycle {
-    /// Work that has not reached the service yet; deleting with it would lose
-    /// the only copy. The same check guards source removal.
-    fn queued_changes(&self, project: &str) -> Result<bool>;
+    /// Work that must be sent before deleting, leaving or removing a source.
+    /// Purge can preserve never-sent captures from the current deletion as drafts.
+    fn queued_changes(&self, project: &str, purging: bool) -> Result<bool>;
     /// Records a server soft delete without touching the local copy, so a
     /// restore keeps its folders and queue.
     fn mark_deleted(&self, project: &str, receipt: &Value) -> Result<()>;
-    /// Detaches the project, then removes its local state. The user's files
-    /// stay on disk.
+    /// Detaches the project, retaining an exportable entry for local drafts
+    /// from a recoverable deletion.
     fn purge_local(&self, project: &str) -> Result<()>;
     /// Ends this Mac's access but keeps the local copy as an inactive project.
     fn leave(&self, project: &str) -> Result<()>;
 }
 
 impl ProjectLifecycle for Connection {
-    fn queued_changes(&self, project: &str) -> Result<bool> {
+    fn queued_changes(&self, project: &str, purging: bool) -> Result<bool> {
         self.query_row(
-            "SELECT EXISTS(SELECT 1 FROM outbox WHERE project=?1 UNION ALL SELECT 1 FROM meta WHERE key LIKE 'env:%:pending:%' AND json_extract(value,'$.header.manifest.projectId')=?1 AND json_extract(value,'$.sourceRemoval') IS NULL)",
-            [project],
+            "SELECT EXISTS(
+                SELECT 1 FROM outbox WHERE project=?1 AND NOT (
+                    ?2 AND path='/v2/sync/push' AND error IS NULL AND EXISTS (
+                        SELECT 1 FROM meta marker JOIN projects ON projects.id=outbox.project
+                        WHERE marker.key='heldCapture:'||outbox.id
+                        AND json_extract(marker.value,'$.projectId')=outbox.project
+                        AND json_extract(marker.value,'$.heldCapture')=1
+                        AND json_extract(marker.value,'$.deletedAt')=json_extract(projects.value,'$.deletedAt')
+                        AND NOT EXISTS (SELECT 1 FROM meta WHERE key='sessionOutboxRedaction:'||outbox.id)
+                    )
+                )
+                UNION ALL SELECT 1 FROM meta WHERE key LIKE 'env:%:pending:%'
+                AND json_extract(value,'$.header.manifest.projectId')=?1
+                AND json_extract(value,'$.sourceRemoval') IS NULL
+            )",
+            rusqlite::params![project, purging],
             |row| row.get(0),
         )
         .map_err(|e| e.to_string())
@@ -148,6 +193,24 @@ impl ProjectLifecycle for Connection {
 
     fn purge_local(&self, project: &str) -> Result<()> {
         self.detach_project(project)?;
+        let has_drafts: bool = self
+            .query_row(
+                "SELECT EXISTS(
+                SELECT 1 FROM projects JOIN drafts ON drafts.project=projects.id
+                WHERE projects.id=? AND json_extract(projects.value,'$.purgeAfter') IS NOT NULL
+                AND json_extract(drafts.value,'$.status')='local'
+            )",
+                [project],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if has_drafts {
+            self.execute(
+                "UPDATE projects SET value=json_set(value,'$.purged',json('true'),'$.purgeAfter',NULL) WHERE id=?",
+                [project],
+            ).map_err(|error| error.to_string())?;
+            return Ok(());
+        }
         remove_local(self, project)
     }
 
@@ -418,6 +481,11 @@ pub fn remove_local(db: &Connection, id: &str) -> Result<()> {
         .map_err(|e| e.to_string())?;
     // Keep signed trust pins, but discard encrypted pending publications for this project.
     tx.execute("DELETE FROM meta WHERE key LIKE 'env:%' AND (json_extract(value,'$.header.manifest.projectId')=? OR json_extract(value,'$.projectId')=?)",[id,id]).map_err(|e| e.to_string())?;
+    tx.execute(
+        "DELETE FROM meta WHERE key GLOB 'heldCapture:*' AND json_extract(value,'$.projectId')=?",
+        [id],
+    )
+    .map_err(|e| e.to_string())?;
     tx.execute("DELETE FROM meta WHERE (key LIKE 'share-preview:%' OR key LIKE 'selected-share:%' OR key LIKE 'resource-delete:%') AND json_extract(value,'$.projectId')=?",[id]).map_err(|e|e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
     env::clear();
@@ -460,7 +528,7 @@ pub async fn project_command(action: String, input: Value) -> Result<Value> {
             }
             let source_id = input["sourceId"].as_str().ok_or("Choose a source folder")?;
             uuid::Uuid::parse_str(source_id).map_err(|_| "Invalid source folder")?;
-            if db.queued_changes(id)? {
+            if db.queued_changes(id, false)? {
                 return Err("Sync queued changes and finish pending ENV publications before removing a source folder".into());
             }
             if sync::api_as(&owner, "GET", "/v2/projects/capabilities", None).await?
@@ -527,7 +595,7 @@ pub async fn project_command(action: String, input: Value) -> Result<Value> {
         }
         "leave" => {
             active(&db, id)?;
-            if db.queued_changes(id)? {
+            if db.queued_changes(id, false)? {
                 return Err("Sync queued changes and finish pending ENV publications before leaving this project".into());
             }
             let expected = input["expectedPolicyRevision"]
@@ -552,7 +620,9 @@ pub async fn project_command(action: String, input: Value) -> Result<Value> {
                     return Err("This service does not support shared project renaming. Update the server and try again.".into());
                 }
             }
-            if matches!(action.as_str(), "delete" | "purge") && db.queued_changes(id)? {
+            if matches!(action.as_str(), "delete" | "purge")
+                && db.queued_changes(id, action == "purge")?
+            {
                 return Err("Sync queued changes and finish pending ENV publications before deleting this project".into());
             }
             if matches!(action.as_str(), "delete" | "purge") {
