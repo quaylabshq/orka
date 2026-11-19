@@ -33,6 +33,11 @@ const deleted = project({
   deletedAt: "2026-01-01T00:00:00Z",
   purgeAfter: "2026-01-31T00:00:00Z",
 });
+const deadline = new Intl.DateTimeFormat(undefined, {
+  day: "numeric",
+  month: "short",
+  year: "numeric",
+}).format(new Date(deleted.purgeAfter!));
 
 function renderBanner(value: Project) {
   const run = vi.fn(async (action: () => Promise<unknown>) => {
@@ -49,7 +54,7 @@ function renderBanner(value: Project) {
 test("each inactive state gets its own sidebar badge", () => {
   expect(inactiveBadge(archived)).toBe("Archived by owner");
   expect(inactiveBadge(deleted)).toBe(
-    "Deleted by owner, restorable until Jan 31, 2026",
+    `Deleted by owner, restorable until ${deadline}`,
   );
   expect(
     inactiveBadge(project({ deletedAt: "2026-01-01T00:00:00Z", purged: true })),
@@ -64,17 +69,17 @@ test("each inactive state gets its own sidebar badge", () => {
     "Deleted by owner",
   );
   expect(inactiveMessage(archived)).toContain("archived by its owner");
-  expect(inactiveMessage(deleted)).toBe(
-    "This project is deleted by its owner. Orka keeps capturing your changes on this Mac. Changes are uploaded if restored by Jan 31, 2026, kept as local drafts if not.",
+  expect(inactiveMessage(deleted)).toContain(
+    `Sync can resume if the project is restored by ${deadline}.`,
   );
   expect(inactiveMessage({ ...deleted, heldChanges: 3 })).toContain(
-    "3 held, uploaded if restored by Jan 31, 2026, kept as local drafts if not.",
+    `3 changes are queued to sync if restored by ${deadline}.`,
   );
   expect(inactiveMessage({ ...deleted, heldChanges: 1 })).toContain(
-    "1 held, uploaded if restored by Jan 31, 2026",
+    `1 change is queued to sync if restored by ${deadline}.`,
   );
-  expect(inactiveMessage({ ...deleted, heldChanges: 0 })).toContain(
-    "Changes are uploaded if restored by Jan 31, 2026",
+  expect(inactiveMessage({ ...deleted, heldChanges: 0 })).not.toContain(
+    "queued to sync",
   );
   // A server before 0.7.4 sends no purgeAfter, so capture is off and the old
   // sentence stays.
@@ -118,13 +123,19 @@ test("export writes the project to the path the user picks", async () => {
 });
 
 test("the removal warning counts all pending changes, not just restorable uploads", () => {
-  renderBanner({ ...deleted, heldChanges: 1, pendingChanges: 2 });
+  renderBanner({
+    ...deleted,
+    heldChanges: 1,
+    pendingChanges: 2,
+    pendingEnvPublications: 1,
+  });
   fireEvent.click(screen.getByRole("button", { name: "Remove from this Mac" }));
   expect(
     screen.getByRole("dialog", { name: "Remove from this Mac?" }),
   ).toBeTruthy();
+  expect(screen.getByText(/2 pending changes on this Mac/)).toBeTruthy();
   expect(
-    screen.getByText(/2 changes held on this Mac will be lost\./),
+    screen.getByText(/The export excludes 1 encrypted ENV publication/),
   ).toBeTruthy();
 });
 
@@ -141,13 +152,13 @@ test("removing from this Mac explains export and retained local drafts", async (
     "Saved local drafts and your project folders stay on disk",
   );
   expect(removalWarning({ ...deleted, pendingChanges: 3 })).toContain(
-    "3 changes held on this Mac will be lost.",
+    "3 pending changes on this Mac.",
   );
   expect(removalWarning({ ...deleted, pendingChanges: 1 })).toContain(
-    "1 change held on this Mac will be lost.",
+    "1 pending change on this Mac.",
   );
-  expect(removalWarning(deleted)).not.toContain("will be lost");
-  expect(removalWarning(archived)).not.toContain("will be lost");
+  expect(removalWarning(deleted)).not.toContain("encrypted ENV");
+  expect(removalWarning(archived)).not.toContain("encrypted ENV");
   fireEvent.click(screen.getByRole("button", { name: "Remove" }));
   await waitFor(() => expect(run).toHaveBeenCalledTimes(1));
   expect(mocks.invoke).toHaveBeenCalledWith("project_command", {

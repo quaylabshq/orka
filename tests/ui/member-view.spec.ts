@@ -1,6 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
 import { memberViewCalls, memberViewFixture } from "./fixtures/member-view.js";
 
+test.use({ locale: "en-US", timezoneId: "UTC" });
+
 const badges = [
   ["Archived notes", "Archived by owner"],
   ["Deleted notes", "Deleted by owner, restorable until Jan 31, 2026"],
@@ -49,7 +51,7 @@ test("an inactive project explains the pause and offers export and removal", asy
     banner.getByRole("heading", { name: "Sync paused" }),
   ).toBeVisible();
   await expect(banner).toContainText(
-    "Orka keeps capturing your changes on this Mac. 3 held, uploaded if restored by Jan 31, 2026, kept as local drafts if not.",
+    "3 changes are queued to sync if restored by Jan 31, 2026.",
   );
   await page.screenshot({
     animations: "disabled",
@@ -77,9 +79,11 @@ test("an inactive project explains the pause and offers export and removal", asy
     "Remove from this Mac?",
   );
   await expect(confirm).toContainText("local drafts");
+  await expect(confirm).toContainText("4 pending changes on this Mac.");
   await expect(confirm).toContainText(
-    "4 changes held on this Mac will be lost.",
+    "The export excludes 1 encrypted ENV publication.",
   );
+
   await page.getByRole("button", { name: "Remove", exact: true }).click();
   await expect
     .poll(async () =>
@@ -242,9 +246,9 @@ test("a deleted project with nothing held hides the count", async ({
     .click();
   const banner = page.locator(".inactive-project-banner");
   await expect(banner).toContainText(
-    "This project is deleted by its owner. Orka keeps capturing your changes on this Mac. Changes are uploaded if restored by Jan 31, 2026, kept as local drafts if not.",
+    "Sync can resume if the project is restored by Jan 31, 2026.",
   );
-  await expect(banner).not.toContainText(" held,");
+  await expect(banner).not.toContainText("queued to sync");
 });
 
 test("an archived project keeps its own banner and warning", async ({
@@ -268,9 +272,7 @@ test("an archived project keeps its own banner and warning", async ({
     name: "Remove from this Mac?",
     exact: true,
   });
-  await expect(dialog).toContainText(
-    "2 changes held on this Mac will be lost.",
-  );
+  await expect(dialog).toContainText("2 pending changes on this Mac.");
   await expect(dialog).toContainText("local drafts");
 });
 
@@ -283,7 +285,7 @@ test("the removal warning uses a singular change count", async ({ page }) => {
     .click();
   const banner = page.locator(".inactive-project-banner");
   await expect(banner).toContainText(
-    "1 held, uploaded if restored by Jan 31, 2026",
+    "1 change is queued to sync if restored by Jan 31, 2026",
   );
   await banner
     .getByRole("button", { name: "Remove from this Mac", exact: true })
@@ -292,5 +294,5 @@ test("the removal warning uses a singular change count", async ({ page }) => {
     name: "Remove from this Mac?",
     exact: true,
   });
-  await expect(dialog).toContainText("1 change held on this Mac will be lost.");
+  await expect(dialog).toContainText("1 pending change on this Mac.");
 });

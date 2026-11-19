@@ -63,6 +63,8 @@ export interface Project {
   heldChanges?: number;
   /** Pending local changes that removal discards, including failed uploads. */
   pendingChanges?: number;
+  /** Pending encrypted publications included in the removal count and excluded from export. */
+  pendingEnvPublications?: number;
   purged?: boolean | null;
   revoked?: boolean | null;
   detachedAt?: string | null;

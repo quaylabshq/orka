@@ -17,7 +17,7 @@ function restoreDeadline(project: Project): string | null {
   if (!value) return null;
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return null;
-  return date.toLocaleDateString("en-US", {
+  return date.toLocaleDateString(undefined, {
     day: "numeric",
     month: "short",
     year: "numeric",
@@ -59,8 +59,10 @@ export function inactiveMessage(project: Project): string {
       if (!deadline) return reason;
       const held = changeCount(project.heldChanges);
       const waiting =
-        held > 0 ? `${held} held, uploaded` : "Changes are uploaded";
-      return `${reason} Orka keeps capturing your changes on this Mac. ${waiting} if restored by ${deadline}, kept as local drafts if not.`;
+        held > 0
+          ? `${held} ${held === 1 ? "change is" : "changes are"} queued to sync if restored by ${deadline}.`
+          : `Sync can resume if the project is restored by ${deadline}.`;
+      return `${reason} Orka keeps capturing your changes on this Mac. ${waiting} Captured edits become local drafts if the project is purged.`;
     }
     case "purged":
       return "This project was permanently deleted. Its shared content is no longer available.";
@@ -74,9 +76,12 @@ export function inactiveMessage(project: Project): string {
 /** Local removal clears the reading cache and queue, while retaining drafts. */
 export function removalWarning(project?: Project): string {
   const pending = changeCount(project?.pendingChanges);
-  const lost =
-    pending > 0
-      ? ` ${pending} ${pending === 1 ? "change" : "changes"} held on this Mac will be lost.`
-      : "";
-  return `Export first to keep pending changes and private content.${lost} Removing this project clears its cached files and pending changes on this Mac. Saved local drafts and your project folders stay on disk.`;
+  const included = pending
+    ? `${pending} pending ${pending === 1 ? "change" : "changes"}`
+    : "pending changes";
+  const encrypted = changeCount(project?.pendingEnvPublications);
+  const env = encrypted
+    ? ` The export excludes ${encrypted} encrypted ENV ${encrypted === 1 ? "publication" : "publications"}.`
+    : "";
+  return `Export first to save captured project content.${env} Removing this project clears cached files and ${included} on this Mac. Saved local drafts and your project folders stay on disk.`;
 }

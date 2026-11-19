@@ -13,8 +13,9 @@ use std::{
 };
 use uuid::Uuid;
 
-const PENDING_CHANGES: &str = "(SELECT count(*) FROM outbox WHERE project=projects.id)
-    +(SELECT count(*) FROM meta WHERE ? AND key LIKE 'env:%:pending:%'
+const PENDING_UPLOADS: &str = "(SELECT count(*) FROM outbox WHERE project=projects.id)";
+const PENDING_ENV_PUBLICATIONS: &str =
+    "(SELECT count(*) FROM meta WHERE ? AND key LIKE 'env:%:pending:%'
       AND json_extract(value,'$.sourceRemoval') IS NULL
       AND json_extract(value,'$.header.manifest.projectId')=projects.id)";
 
@@ -54,7 +55,8 @@ pub fn snapshot() -> Result<Value> {
     let mut inactive = db::rows(
         &db,
         &format!(
-            "SELECT json_set(value,'$.pendingChanges',{PENDING_CHANGES}) FROM projects WHERE coalesce(json_extract(value,'$.hidden'),0)=0 AND NOT ({}) ORDER BY json_extract(value,'$.name')",
+            "SELECT json_set(value,'$.pendingChanges',{PENDING_UPLOADS},'$.pendingEnvPublications',{PENDING_ENV_PUBLICATIONS})
+             FROM projects WHERE coalesce(json_extract(value,'$.hidden'),0)=0 AND NOT ({}) ORDER BY json_extract(value,'$.name')",
             projects::ACTIVE
         ),
         // Removing an inactive copy discards pending publications even if ENV is disabled.
@@ -62,6 +64,11 @@ pub fn snapshot() -> Result<Value> {
     )?;
     // Only the changes eligible for upload are advertised in the banner.
     for project in &mut inactive {
+        // ENV publications stay outside the ZIP but are discarded by removal.
+        project["pendingChanges"] = json!(
+            project["pendingChanges"].as_i64().unwrap_or(0)
+                + project["pendingEnvPublications"].as_i64().unwrap_or(0)
+        );
         project["heldChanges"] = json!(crate::indexer::held_count(
             &db,
             project["id"].as_str().unwrap_or_default()
@@ -115,7 +122,7 @@ pub fn snapshot() -> Result<Value> {
         "profile":crate::profiles::current(), "onboarding":onboarding, "accountProfile":db::get(&db,"accountProfile")?,
         "user":db::get(&db,"user")?, "config":db::get(&db,"config")?,
         "projects":projects, "inactive":inactive, "deletedProjects":deleted_projects, "archivedProjects":archived_projects, "localSkills":local_skills,
-        "managedProjects":db::rows(&db,&format!("SELECT json_set(value,'$.pendingChanges',{PENDING_CHANGES}) FROM projects ORDER BY json_extract(value,'$.name')"),&[&crate::env::enabled()])?,
+        "managedProjects":db::rows(&db,&format!("SELECT json_set(value,'$.pendingChanges',{PENDING_UPLOADS}+{PENDING_ENV_PUBLICATIONS}) FROM projects ORDER BY json_extract(value,'$.name')"),&[&crate::env::enabled()])?,
         "resources":resources, "bindings":scoped("bindings")?, "conflicts":scoped("conflicts")?,
         "drafts":scoped("drafts")?,
         "governance":db::rows(&db,&format!("SELECT json_object('projectId',substr(key,12),'catalog',json(value)) FROM meta WHERE key LIKE 'governance:%' AND substr(key,12) IN ({visible})"),&[])?,

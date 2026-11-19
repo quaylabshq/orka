@@ -919,6 +919,7 @@ async fn held_count_covers_captured_and_unsent_rows_but_not_failed_ones() {
     let snapshot = crate::commands::snapshot().unwrap();
     assert_eq!(snapshot["inactive"][0]["heldChanges"], 2);
     assert_eq!(snapshot["inactive"][0]["pendingChanges"], 4);
+    assert_eq!(snapshot["inactive"][0]["pendingEnvPublications"], 1);
     // A restore releases the marker just before upload, but the row is still
     // local work waiting, so it stays counted until it leaves the outbox.
     f.restore();
@@ -1008,4 +1009,39 @@ async fn export_keeps_held_changes_when_the_deleted_project_folder_is_missing() 
         .read_to_end(&mut exported)
         .unwrap();
     assert_eq!(exported, b"Held before the folder went missing\n");
+}
+
+#[test]
+fn deleted_project_export_includes_the_latest_edit_behind_a_pending_request() {
+    use std::io::Read;
+
+    let f = Capture::new(json!({}));
+    f.edit_memory("Queued before deletion\n");
+    indexer::scan(&f.db, &f.project()).unwrap();
+    let queued = f.outbox();
+    let mut project = f.project();
+    for (key, value) in restorable().as_object().unwrap() {
+        project[key] = value.clone();
+    }
+    db::upsert(&f.db, "projects", &f.id, "", &project).unwrap();
+    f.edit_memory("Latest edit while deleted\n");
+
+    let path = f.home.path().join("project.zip");
+    bundles::export_project(&f.db, &f.id, &path).unwrap();
+    assert_eq!(f.outbox(), queued);
+    let mut zip = zip::ZipArchive::new(fs::File::open(path).unwrap()).unwrap();
+    let header: Value = serde_json::from_reader(zip.by_name("project.json").unwrap()).unwrap();
+    assert_eq!(header["pendingChanges"], 1);
+    assert_eq!(header["drafts"], 1);
+    let draft = db::rows(&f.db, "SELECT value FROM drafts WHERE project=?", &[&f.id])
+        .unwrap()
+        .remove(0);
+    let id = draft["id"].as_str().unwrap();
+    let hash = draft["resource"]["files"][0]["hash"].as_str().unwrap();
+    let mut bytes = Vec::new();
+    zip.by_name(&format!("drafts/{id}/blobs/{hash}"))
+        .unwrap()
+        .read_to_end(&mut bytes)
+        .unwrap();
+    assert_eq!(bytes, b"Latest edit while deleted\n");
 }

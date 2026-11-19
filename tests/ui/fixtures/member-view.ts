@@ -21,6 +21,7 @@ export async function memberViewFixture(
     /** Changes held for the deleted project; 3 by default. */
     heldChanges?: number;
     pendingChanges?: number;
+    pendingEnvPublications?: number;
   } = {},
 ) {
   await page.addInitScript((options) => {
@@ -41,6 +42,7 @@ export async function memberViewFixture(
         purgeAfter: "2026-01-31T00:00:00Z",
         heldChanges: options.heldChanges ?? 3,
         pendingChanges: options.pendingChanges ?? 4,
+        pendingEnvPublications: options.pendingEnvPublications ?? 1,
         lifecycleRevision: 7,
       },
       {
