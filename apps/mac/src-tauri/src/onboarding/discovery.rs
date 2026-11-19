@@ -258,15 +258,18 @@ impl MainCheckouts {
         if directory == common {
             return None;
         }
-        if common.file_name()? == ".git" && common.is_dir() {
-            return common.parent().map(Path::to_path_buf);
-        }
         // An external Git directory has no backlink to its primary checkout.
-        let mut matches = self.0.get(&common)?.iter();
-        match (matches.next(), matches.next()) {
-            (Some(only), None) => Some(only.clone()),
-            _ => None,
+        if let Some(matches) = self.0.get(&common) {
+            let mut matches = matches.iter();
+            return match (matches.next(), matches.next()) {
+                (Some(only), None) => Some(only.clone()),
+                _ => None,
+            };
         }
+        if common.file_name()? != ".git" || !common.is_dir() {
+            return None;
+        }
+        common.parent().map(Path::to_path_buf)
     }
 }
 /// Worktrees connect to their main checkout, so they are one project, not two.
@@ -1443,7 +1446,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let home = fs::canonicalize(temp.path()).unwrap();
         let main = home.join("Development/orka");
-        let metadata = home.join("metadata/orka.git");
+        let metadata = home.join("metadata/.git");
         let feature = home.join("feature");
         fs::create_dir_all(&main).unwrap();
         fs::create_dir_all(metadata.join("worktrees/feature")).unwrap();
@@ -1455,7 +1458,7 @@ mod tests {
         .unwrap();
         fs::write(
             feature.join(".git"),
-            "gitdir: ../metadata/orka.git/worktrees/feature\n",
+            "gitdir: ../metadata/.git/worktrees/feature\n",
         )
         .unwrap();
         fs::write(metadata.join("worktrees/feature/commondir"), "../..\n").unwrap();
