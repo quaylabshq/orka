@@ -11,8 +11,8 @@
       "name": "@portable/protocol",
       "version": "0.7.4",
       "file": "portable-protocol-0.7.4.tgz",
-      "sha256": "a522b2931d348a83e6ca1766c9b19fd85d6629c0d2d978852aaa8ec6e694c519",
-      "integrity": "sha512-cKAoqcx9hG5xHyv6mm7tUprbUzv++v4CWjYrZhxThaYWM/4z9GvuunHfKUteg7+d/IxBezSsD9N9HOy4qUb9nw=="
+      "sha256": "efc469f171dcdb1356c9e498a5d60313cb9cccb8abd4857ce9ae82b9239ed872",
+      "integrity": "sha512-r0sgBgf0RPmXuHzoLWkAM0NEt4kKonsORrmmHA6GhLieIQUVmfFtgr7ziM0W+P8hhQxbNNT5wwN5/1LYx8r/qQ=="
     }
   ]
 }
