@@ -5,6 +5,7 @@ import {
   type LibraryWindow,
 } from "./fixtures/resource-library.js";
 import { skillFixture } from "./fixtures/skill-detail.js";
+import type { SessionLaunchOption } from "../../apps/mac/src/components/use-resource-actions.js";
 import type { Snapshot, SyncProgress } from "../../apps/mac/src/types.js";
 
 interface MenuControls {
@@ -28,6 +29,7 @@ interface MenuControls {
   failShare?: () => void;
   resourceVersion: number;
   deleted: string[];
+  finishLaunchOptions?: () => void;
 }
 type MenuWindow = LibraryWindow & {
   resourceMenu: MenuControls;
@@ -380,6 +382,129 @@ test("every shared session action has an icon in both menu entry points", async 
     actions.length,
   );
   await page.keyboard.press("Escape");
+});
+
+test("the session launcher stays compact while checking apps and keeps its split actions keyboard accessible", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 900, height: 640 });
+  const title =
+    "Review the synthetic session and continue iterating on the workspace "
+      .repeat(4)
+      .trim();
+  await menuFixture(page, { emptyLocal: true, teammateSessionTitle: title });
+  await page.evaluate(() => {
+    const host = window as unknown as MenuWindow;
+    const original = host.__TAURI_INTERNALS__.invoke;
+    const options: SessionLaunchOption[] = [
+      {
+        tool: "claude",
+        destination: "desktop",
+        label: "Claude Desktop",
+        isDefault: true,
+        mode: "resume",
+        available: true,
+        reason: null,
+      },
+    ];
+    const launchOptions = new Promise((resolve) => {
+      host.resourceMenu.finishLaunchOptions = () => resolve(options);
+    });
+    host.__TAURI_INTERNALS__.invoke = (command, args) =>
+      command === "session_launch_options"
+        ? launchOptions
+        : original(command, args);
+  });
+  await collection(page, "Sessions");
+  await page
+    .getByRole("button", { name: "Shared with me", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Collapse sidebar", exact: true })
+    .click();
+  await resourceMenu(page, title, "Continue or fork in…");
+  const dialog = page.getByRole("dialog", {
+    name: "Continue or fork session",
+    exact: true,
+  });
+  await expect(dialog).toBeVisible();
+  const initialBounds = (await dialog.boundingBox())!;
+  expect(initialBounds.height).toBeLessThan(240);
+  const open = dialog.getByRole("button", {
+    name: "Open in Claude Desktop",
+    exact: true,
+  });
+  const close = dialog.getByRole("button", {
+    name: "Close session launcher",
+    exact: true,
+  });
+  const choose = dialog.getByRole("button", {
+    name: "Choose how to open session",
+    exact: true,
+  });
+  await expect(
+    dialog.getByRole("button", {
+      name: "Fork and open in Claude Desktop",
+      exact: true,
+    }),
+  ).toBeDisabled();
+  const closeBounds = await close.boundingBox();
+  const chooseBounds = await choose.boundingBox();
+  const sessionTitle = dialog.getByText(title, { exact: true });
+  expect(
+    await sessionTitle.evaluate((element) => ({
+      clamped: element.scrollHeight > element.clientHeight,
+      horizontalOverflow: element.scrollWidth > element.clientWidth,
+    })),
+  ).toEqual({ clamped: true, horizontalOverflow: false });
+  await page.evaluate(() => {
+    (window as unknown as MenuWindow).resourceMenu.finishLaunchOptions?.();
+  });
+  await expect(open).toBeEnabled();
+  expect(await dialog.boundingBox()).toEqual(initialBounds);
+  expect(await close.boundingBox()).toEqual(closeBounds);
+  expect(await choose.boundingBox()).toEqual(chooseBounds);
+  const splitBounds = (await dialog
+    .locator(".session-launcher")
+    .boundingBox())!;
+  expect(splitBounds.width).toBeLessThan(initialBounds.width * 0.75);
+
+  await choose.focus();
+  await choose.press("Enter");
+  const menu = page.getByRole("menu", { name: "Open session", exact: true });
+  const fork = menu.getByRole("menuitem", {
+    name: "Fork and open in Claude Desktop",
+    exact: true,
+  });
+  await expect(fork).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(menu).toBeHidden();
+  await expect(choose).toBeFocused();
+
+  await open.focus();
+  await open.press("Enter");
+  const resumeCalls = () =>
+    page.evaluate(() =>
+      (window as unknown as MenuWindow).library.calls
+        .filter((call) => call.command === "resume_session")
+        .map((call) => call.args),
+    );
+  const target = {
+    id: "session-teammate",
+    tool: "claude",
+    destination: "desktop",
+  };
+  await expect.poll(resumeCalls).toEqual([target]);
+  await expect(choose).toBeEnabled();
+  await choose.press("Enter");
+  await fork.press("Enter");
+  await expect.poll(resumeCalls).toEqual([target, { ...target, fork: true }]);
+
+  await close.click();
+  await expect(dialog).toBeHidden();
+  await expect(
+    page.getByRole("button", { name: title, exact: true }),
+  ).toBeFocused();
 });
 
 test("local and teammate sessions expose useful actions without mutation of another owner's history", async ({

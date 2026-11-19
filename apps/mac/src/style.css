@@ -788,8 +788,7 @@
   }
   .session-launcher {
     @apply inline-flex shrink-0 items-center;
-    border-radius: var(--radius-control);
-    background: var(--surface-tertiary);
+    gap: 1px;
   }
   .session-launcher .session-launcher-open {
     border-top-right-radius: 0;
@@ -1533,6 +1532,19 @@
   }
   .modal .actions {
     @apply justify-end;
+  }
+  .session-launch-heading {
+    @apply mb-2 flex items-center justify-between gap-3;
+  }
+  .modal.session-launch-dialog .session-launch-heading h2 {
+    @apply m-0 text-heading-xs;
+  }
+  .modal.session-launch-dialog .session-launch-title {
+    @apply mb-6 line-clamp-2 text-body-sm;
+    overflow-wrap: anywhere;
+  }
+  .modal.session-launch-dialog .session-launch-alert {
+    color: var(--red-text);
   }
   .modal.create-project-modal {
     @apply w-[520px] overflow-hidden border-0 p-6;
