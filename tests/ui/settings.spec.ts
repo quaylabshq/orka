@@ -584,8 +584,8 @@ for (const state of ["empty", "unavailable"] as const)
     await expect(
       settings.getByText(
         state === "empty"
-          ? "No Macs are registered to your account."
-          : "Registered Macs are unavailable.",
+          ? "No Macs have synced in the last 30 days."
+          : "Couldn’t load your Macs.",
         { exact: false },
       ),
     ).toBeVisible();

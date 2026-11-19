@@ -104,11 +104,11 @@ pub(crate) async fn api_at(
 }
 
 pub(crate) async fn register_device(owner: &str, origin: &str, device: &str) -> Result<()> {
-    let mut registration = json!({"id":device,"name":crate::device_metadata::local_name()});
-    if api_at(owner, origin, "GET", "/v2/projects/capabilities", None)
+    let capabilities = api_at(owner, origin, "GET", "/v2/projects/capabilities", None)
         .await
-        .is_ok_and(|caps| caps["deviceHardware"] == 1)
-    {
+        .unwrap_or(Value::Null);
+    let mut registration = crate::device_metadata::registration(device, &capabilities);
+    if capabilities["deviceHardware"] == 1 {
         registration["hardwareFamily"] = json!(crate::device_metadata::local_family(&db::open()?)?);
     }
     api_at(owner, origin, "POST", "/v2/devices", Some(&registration)).await?;
@@ -1853,7 +1853,8 @@ impl<'a> SyncPass<'a> {
             .into_iter()
             .filter(|q| {
                 if q["path"] == crate::selective_sharing::QUEUE_PATH {
-                    crate::selective_sharing::authorized(db, q).unwrap_or(false)
+                    crate::selective_sharing::authorized_origin(db, q)
+                        .is_ok_and(|origin| origin.is_some())
                 } else {
                     crate::projects::sharing_allowed(
                         p,

@@ -128,10 +128,17 @@ fn selected_share_freezes_one_snapshot_deduplicates_and_never_enables_future_tur
         queued["value"]["resource"]["files"],
         local["resource"]["files"]
     );
-    assert!(selective_sharing::authorized(&f.db, &queued).unwrap());
+    assert_eq!(
+        selective_sharing::authorized_origin(&f.db, &queued)
+            .unwrap()
+            .as_deref(),
+        Some("https://selected.example")
+    );
     let mut tampered = queued.clone();
     tampered["value"]["resource"]["title"] = json!("Different snapshot");
-    assert!(!selective_sharing::authorized(&f.db, &tampered).unwrap());
+    assert!(selective_sharing::authorized_origin(&f.db, &tampered)
+        .unwrap()
+        .is_none());
     indexer::scan(&f.db, &f.project).unwrap();
     assert_eq!(f.outbox().len(), 1);
     assert_eq!(
@@ -247,8 +254,21 @@ fn selected_requests_survive_governance_localization_and_respect_account_changes
     )
     .unwrap()
     .remove(0);
+    let config = db::get(&f.db, "config").unwrap();
+    db::set(
+        &f.db,
+        "config",
+        &json!({"apiUrl":"https://another.example"}),
+    )
+    .unwrap();
+    assert!(selective_sharing::authorized_origin(&f.db, &queued)
+        .unwrap()
+        .is_none());
+    db::set(&f.db, "config", &config).unwrap();
     db::set(&f.db, "user", &json!(uuid::Uuid::new_v4().to_string())).unwrap();
-    assert!(!selective_sharing::authorized(&f.db, &queued).unwrap());
+    assert!(selective_sharing::authorized_origin(&f.db, &queued)
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test]

@@ -94,20 +94,20 @@ export function SettingsDeviceScreen({ state }: { state: Snapshot }) {
     <>
       <SettingsHeading
         title="Devices"
-        description="Macs registered to your account."
+        description="Macs that have synced with your account."
       />
       <LoadingRegion
         id="settings-devices"
-        label="Loading registered Macs…"
+        label="Loading your Macs…"
         data={query.data}
         sample={samples}
         loading={!query.data && query.loading}
         empty={query.data?.length === 0}
-        emptyMessage={<p>No Macs are registered to your account.</p>}
+        emptyMessage={<p>No Macs have synced in the last 30 days.</p>}
         error={
           !query.data && query.error ? (
             <p role="alert">
-              Registered Macs are unavailable.{" "}
+              Couldn’t load your Macs.{" "}
               <Button size="sm" onClick={() => void query.refresh()}>
                 Retry
               </Button>
@@ -125,14 +125,14 @@ export function SettingsDeviceScreen({ state }: { state: Snapshot }) {
       </LoadingRegion>
       {query.error && query.data && (
         <p role="alert">
-          Couldn’t refresh registered Macs.{" "}
+          Couldn’t refresh your Macs.{" "}
           <Button size="sm" onClick={() => void query.refresh()}>
             Retry
           </Button>
         </p>
       )}
       {query.extended && (
-        <p>Still checking registered Macs. You can use the other settings.</p>
+        <p>Still checking your Macs. You can use the other settings.</p>
       )}
     </>
   );

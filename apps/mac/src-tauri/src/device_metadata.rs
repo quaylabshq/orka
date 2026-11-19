@@ -218,21 +218,32 @@ pub fn stable_id(account: &Uuid) -> Option<String> {
     ))
 }
 
-fn display_name(reported: &str) -> String {
+fn display_name(reported: &str) -> Option<String> {
     let name: String = reported.trim().chars().take(100).collect();
-    if name.is_empty() {
-        "Mac".into()
-    } else {
-        name
-    }
+    (!name.is_empty()).then_some(name)
 }
 
-/// The name the user gave this Mac in System Settings, for their device list.
-pub fn local_name() -> String {
-    let reported = local_probes()
-        .then(|| probe("/usr/sbin/scutil", &["--get", "ComputerName"]))
-        .flatten();
-    display_name(reported.as_deref().unwrap_or(""))
+/// Older services include the registration name in other members' presence data.
+fn registration_with_name(
+    device: &str,
+    capabilities: &Value,
+    computer_name: impl FnOnce() -> Option<String>,
+) -> Value {
+    let mut registration = json!({"id":device,"name":"Mac"});
+    if capabilities["privateDeviceNames"] == 1 {
+        if let Some(name) = computer_name().as_deref().and_then(display_name) {
+            registration["privateName"] = json!(name);
+        }
+    }
+    registration
+}
+
+pub fn registration(device: &str, capabilities: &Value) -> Value {
+    registration_with_name(device, capabilities, || {
+        local_probes()
+            .then(|| probe("/usr/sbin/scutil", &["--get", "ComputerName"]))
+            .flatten()
+    })
 }
 
 #[derive(Default)]
@@ -376,9 +387,34 @@ mod tests {
     }
     #[test]
     fn device_name_is_trimmed_bounded_and_never_empty() {
-        assert_eq!(display_name(" Studio Mac\n"), "Studio Mac");
-        assert_eq!(display_name("  \n"), "Mac");
-        assert_eq!(display_name(&"é".repeat(140)).chars().count(), 100);
+        assert_eq!(display_name(" Studio Mac\n").as_deref(), Some("Studio Mac"));
+        assert_eq!(display_name("  \n"), None);
+        assert_eq!(display_name(&"é".repeat(140)).unwrap().chars().count(), 100);
+    }
+    #[test]
+    fn registration_probes_the_computer_name_only_for_owner_private_services() {
+        for caps in [
+            Value::Null,
+            json!({"deviceHardware":1}),
+            json!({"selectedSharing":1}),
+            json!({"privateDeviceNames":true}),
+            json!({"privateDeviceNames":"1"}),
+            json!({"privateDeviceNames":0}),
+        ] {
+            let registration =
+                registration_with_name("device", &caps, || panic!("unexpected probe"));
+            assert_eq!(registration, json!({"id":"device","name":"Mac"}));
+        }
+        let caps = json!({"privateDeviceNames":1});
+        let registration = registration_with_name("device", &caps, || Some("Studio Mac".into()));
+        assert_eq!(
+            registration,
+            json!({"id":"device","name":"Mac","privateName":"Studio Mac"})
+        );
+        assert_eq!(
+            registration_with_name("device", &caps, || None),
+            json!({"id":"device","name":"Mac"})
+        );
     }
     #[test]
     fn all_mac_families_use_hardware_names_and_identifiers() {

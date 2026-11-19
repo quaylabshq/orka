@@ -174,50 +174,50 @@ pub fn queue(db: &Connection, project: &Value, input: &Value) -> Result<Value> {
     Ok(receipt)
 }
 
-pub fn authorized(db: &Connection, queued: &Value) -> Result<bool> {
+pub fn authorized_origin(db: &Connection, queued: &Value) -> Result<Option<String>> {
     if queued["path"] != QUEUE_PATH {
-        return Ok(false);
+        return Ok(None);
     }
     let id = queued["id"].as_str().ok_or("Missing request")?;
     let receipt = db::get(db, &format!("selected-share:{id}"))?;
-    Ok(receipt["status"] == "queued"
+    let config = db::get(db, "config")?;
+    let Some(origin) = config["apiUrl"].as_str() else {
+        return Ok(None);
+    };
+    let authorized = receipt["status"] == "queued"
         && receipt["accountId"] == db::get(db, "user")?
         && receipt["serviceOrigin"]
             .as_str()
             .map(|s| s.trim_end_matches('/'))
-            == db::get(db, "config")?["apiUrl"]
-                .as_str()
-                .map(|s| s.trim_end_matches('/'))
+            == Some(origin.trim_end_matches('/'))
         && receipt["projectId"] == queued["project"]
         && queued["value"]["projectId"] == queued["project"]
-        && receipt["payloadHash"] == db::digest(queued["value"].to_string().as_bytes()))
+        && receipt["payloadHash"] == db::digest(queued["value"].to_string().as_bytes());
+    Ok(authorized.then(|| origin.to_owned()))
 }
 
 pub async fn send(db: &Connection, owner: &str, queued: &Value) -> Result<Value> {
-    if !authorized(db, queued)? {
-        return Err("Selected share authorization no longer matches this snapshot".into());
-    }
-    if sync::api_as(owner, "GET", "/v2/projects/capabilities", None).await?["selectedSharing"] != 1
-    {
+    let origin = authorized_origin(db, queued)?
+        .ok_or("Selected share authorization no longer matches this snapshot")?;
+    let capabilities =
+        sync::api_at(owner, &origin, "GET", "/v2/projects/capabilities", None).await?;
+    if capabilities["selectedSharing"] != 1 {
         return Err("Update the Orka service to support one-off sharing. The selected snapshot is queued on this Mac.".into());
     }
-    sync::api_as(
-        owner,
-        "POST",
-        "/v2/devices",
-        Some(
-            &json!({"id":queued["value"]["deviceId"],"name":crate::device_metadata::local_name()}),
-        ),
-    )
-    .await?;
+    let device = queued["value"]["deviceId"]
+        .as_str()
+        .ok_or("Missing device")?;
+    let registration = crate::device_metadata::registration(device, &capabilities);
+    sync::api_at(owner, &origin, "POST", "/v2/devices", Some(&registration)).await?;
     crate::repair::upload(
         owner,
         queued["project"].as_str().ok_or("Missing project")?,
         &queued["value"]["resource"],
     )
     .await?;
-    sync::api_as(
+    sync::api_at(
         owner,
+        &origin,
         "POST",
         "/v2/sharing/selected",
         Some(&queued["value"]),
