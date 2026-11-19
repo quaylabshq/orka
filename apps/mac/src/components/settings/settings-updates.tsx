@@ -58,7 +58,11 @@ export function SettingsUpdates({ updates }: { updates: DesktopUpdates }) {
           ) : unsupported ? (
             <p>{status.message}</p>
           ) : status?.update ? (
-            <p>Ready when you are. Orka will restart to finish updating.</p>
+            <p>
+              {status.updateAudience === "early"
+                ? "Early access update. Orka will restart to finish updating."
+                : "Ready when you are. Orka will restart to finish updating."}
+            </p>
           ) : (
             <p>Orka checks when it opens and every four hours while running.</p>
           )}

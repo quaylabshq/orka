@@ -11,6 +11,7 @@ export interface DesktopRelease {
 interface UpdateStatus {
   installedVersion: string;
   update?: DesktopRelease;
+  updateAudience?: "early" | "public";
   release?: DesktopRelease;
   message?: string;
   supported?: boolean;
@@ -22,64 +23,102 @@ interface UpdateProgress {
   totalBytes?: number;
 }
 
-export function useDesktopUpdates() {
-  const [status, setStatus] = useState<UpdateStatus>();
+export function useDesktopUpdates(scope: string, owner: string | null) {
+  const [result, setResult] = useState<{
+    scope: string;
+    status: UpdateStatus;
+    checkedAt?: Date;
+  }>();
+  const status = result?.scope === scope ? result.status : undefined;
+  const checkedAt = result?.scope === scope ? result.checkedAt : undefined;
   const [checking, setChecking] = useState(isTauri);
-  const [checkedAt, setCheckedAt] = useState<Date>();
   const [error, setError] = useState("");
   const [installing, setInstalling] = useState(false);
   const [progress, setProgress] = useState<UpdateProgress>();
   const [actionError, setActionError] = useState("");
-  const checkingRef = useRef(false);
+  const checkingRef = useRef<{ scope: string } | null>(null);
   const installingRef = useRef(false);
   const active = useRef(true);
 
-  const check = useCallback(async (manual = false) => {
-    if (!isTauri() || checkingRef.current || installingRef.current) return;
-    checkingRef.current = true;
-    setChecking(true);
-    setError("");
-    try {
-      const next = await invoke<UpdateStatus>("update_status", { manual });
-      if (!active.current) return;
-      if (next.message && next.supported !== false) {
-        setError(next.message);
-        setStatus((previous) => previous ?? next);
-      } else {
-        setStatus(next);
-        if (next.supported !== false) setCheckedAt(new Date());
-      }
-    } catch (reason) {
-      if (active.current)
+  const check = useCallback(
+    async (manual = false) => {
+      if (
+        !isTauri() ||
+        checkingRef.current?.scope === scope ||
+        installingRef.current
+      )
+        return;
+      const request = { scope };
+      checkingRef.current = request;
+      setChecking(true);
+      setError("");
+      try {
+        const next = await invoke<UpdateStatus>("update_status", {
+          manual,
+          owner,
+        });
+        if (!active.current || checkingRef.current !== request) return;
+        if (next.message && next.supported !== false) {
+          setError(next.message);
+          setResult((previous) =>
+            previous?.scope === scope &&
+            previous.status.updateAudience !== "early"
+              ? previous
+              : { scope, status: next },
+          );
+        } else {
+          setResult({
+            scope,
+            status: next,
+            checkedAt: next.supported === false ? undefined : new Date(),
+          });
+        }
+      } catch (reason) {
+        if (!active.current || checkingRef.current !== request) return;
+        setResult((previous) =>
+          previous?.status.updateAudience === "early" ? undefined : previous,
+        );
         setError(
           typeof reason === "string"
             ? reason
             : "Couldn’t check for updates. Check your connection and try again.",
         );
-    } finally {
-      checkingRef.current = false;
-      if (active.current) setChecking(false);
-    }
+      } finally {
+        if (checkingRef.current === request) {
+          checkingRef.current = null;
+          if (active.current) setChecking(false);
+        }
+      }
+    },
+    [owner, scope],
+  );
+
+  useEffect(() => {
+    if (isTauri()) void invoke("update_ready").catch(() => {});
   }, []);
 
   useEffect(() => {
     active.current = true;
     if (!isTauri()) {
-      setStatus({
-        installedVersion: "",
-        supported: false,
-        message: "Install the Orka desktop app to check for updates.",
+      setResult({
+        scope,
+        status: {
+          installedVersion: "",
+          supported: false,
+          message: "Install the Orka desktop app to check for updates.",
+        },
       });
       return;
     }
-    void invoke("update_ready").catch(() => {});
+    setActionError("");
     void check();
     const timer = window.setInterval(() => void check(), 4 * 60 * 60 * 1000);
     return () => {
       active.current = false;
+      checkingRef.current = null;
       window.clearInterval(timer);
     };
-  }, [check]);
+  }, [check, scope]);
 
   const install = async () => {
     const update = status?.update;
@@ -99,6 +138,7 @@ export function useDesktopUpdates() {
       await invoke("update_install", {
         version: update.version,
         sha256: update.sha256,
+        owner,
       });
     } catch (reason) {
       if (active.current)

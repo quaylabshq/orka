@@ -139,6 +139,7 @@ test("the collapsed sidebar anchors the review beside its icon and shows install
       args: {
         version: available.update.version,
         sha256: available.update.sha256,
+        owner: "owner",
       },
     },
   ]);
@@ -300,6 +301,35 @@ test("available release notes are collapsed, keyboard expandable, and link to th
   await notes.locator("summary").focus();
   await page.keyboard.press("Space");
   await expect(notes).not.toHaveAttribute("open");
+});
+
+test("early access is labeled and cleared when the release is no longer offered", async ({
+  page,
+}, info) => {
+  const settings = await settingsFixture(page, {
+    update: { ...available, updateAudience: "early" },
+  });
+  await settings.getByRole("button", { name: "Updates", exact: true }).click();
+  const review = page.getByRole("region", { name: "Available update" });
+  const panel = updatesPanel(page);
+  await expect(
+    review.getByText("Early access update", { exact: true }),
+  ).toBeVisible();
+  await expect(panel.getByText(/^Early access update/)).toBeVisible();
+  await page.screenshot({
+    path: info.outputPath("early-access-update.png"),
+    animations: "disabled",
+  });
+  await page.evaluate(() => {
+    (window as any).settingsControls.update = { installedVersion: "0.3.0" };
+  });
+  await panel
+    .getByRole("button", { name: "Check for Updates", exact: true })
+    .click();
+  await expect(review).toHaveCount(0);
+  await expect(
+    panel.getByText("Orka is up to date", { exact: true }),
+  ).toBeVisible();
 });
 
 test("an installed release keeps its verified notes without offering an installation", async ({

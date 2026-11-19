@@ -28,11 +28,13 @@ struct Installation {
     let state: URL
     let team: String
     let feed: Feed?
+    let rollout: Rollout?
     let files = FileManager.default
     let makeSession: () -> URLSession
 
     init(app: URL, info: [String: Any], supportDirectory: URL? = nil,
-         makeSession: @escaping () -> URLSession = networkSession) throws {
+         makeSession: @escaping () -> URLSession = networkSession, rollout: Rollout? = nil) throws {
+        self.rollout = rollout
         self.makeSession = makeSession
         let parent = canonicalPath(app.deletingLastPathComponent())
         self.app = URL(fileURLWithPath: "\(parent)/\(app.lastPathComponent)", isDirectory: true)
@@ -81,7 +83,26 @@ struct Installation {
         return backup
     }
 
-    func install(_ release: Release, replacing current: InstalledBuild,
+    func refreshOffer(current: InstalledBuild, bypassCache: Bool = false, token: String? = nil) async throws
+        -> (Policy, UpdateOffer?) {
+        guard let feed else { throw UpdateError("Updates are unavailable for this build.") }
+        async let rolloutOffer = try? rollout?.offer(key: feed.key, token: token)
+        let policy = try await feed.refresh(bypassCache: bypassCache)
+        func eligible(_ offer: UpdateOffer) -> Bool {
+            (policy.release.map { compareVersion(offer.release.version, $0.version) == .orderedDescending } ?? true) &&
+                feed.candidate(offer.release, policy: policy, current: current) != nil
+        }
+        if let offer = await rolloutOffer {
+            if eligible(offer) { return (policy, offer) }
+            // A preview requiring a newer macOS or data epoch can coexist with
+            // a public approval that has not reached the legacy feed yet.
+            if offer.audience == .early, let publicOffer = try? await rollout?.offer(key: feed.key, token: nil),
+               eligible(publicOffer) { return (policy, publicOffer) }
+        }
+        return (policy, feed.candidate(policy, current: current).map { UpdateOffer(release: $0) })
+    }
+
+    func install(_ release: Release, replacing current: InstalledBuild, token: String? = nil,
                  progress: @escaping (UpdateProgress) -> Void = { _ in }) async throws {
         guard let feed else { throw UpdateError("Updates are unavailable for this build.") }
         let transaction = try FileLock(state.appendingPathComponent("installer.lock"), operation: LOCK_EX | LOCK_NB)
@@ -109,12 +130,14 @@ struct Installation {
         }
         progress(UpdateProgress(phase: "restarting"))
         try await replace(with: next, current: current, keepPrevious: true) {
-            let policy = try await feed.refresh(bypassCache: true)
-            guard feed.candidate(policy, current: current) == release else {
+            let (_, offer) = try await refreshOffer(current: current, bypassCache: true, token: token)
+            guard offer?.release == release else {
                 throw UpdateError("This update has changed or been withdrawn. Check for updates again.")
             }
         } validateCached: {
-            guard let policy = feed.cached(), feed.candidate(policy, current: current) == release,
+            guard let policy = feed.cached(),
+                  feed.candidate(release, policy: policy, current: current) == release,
+                  policy.release.map({ $0 == release || compareVersion(release.version, $0.version) == .orderedDescending }) ?? true,
                   policy.expires > Int64(Date().timeIntervalSince1970) else {
                 throw UpdateError("This update is no longer available. Check for updates again.")
             }
@@ -167,19 +190,26 @@ struct Installation {
               try app.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink == false else {
             throw UpdateError("The installed app changed during this update. Review the update again.")
         }
-        // Withdrawal can change while Orka and the sync agent are stopping.
-        try await refreshPolicy()
+        var backup: URL?
+        defer { if let backup { try? files.removeItem(at: backup) } }
         if keepPrevious, LaunchHealth.isHealthy(self, version: current.version),
            !CrashRecord.load(self, version: current.version).repeated,
            feed?.cached()?.allows(current.version) == true, (try? verify(app)) != nil {
-            try savePrevious()
+            backup = try stagePrevious()
         }
+        // Audience and withdrawal can change while Orka is stopping or saving the backup.
+        try await refreshPolicy()
         // Stage on the installation volume. The original or replacement is always at the normal path.
         let policyLock = try FileLock(state.appendingPathComponent("policy.lock"), operation: LOCK_SH)
         try withExtendedLifetime(policyLock) {
             try validateCached()
             guard renamex_np(next.path, app.path, UInt32(RENAME_SWAP)) == 0 else {
                 throw UpdateError("macOS couldn’t replace Orka. Check that you can write to its Applications folder.")
+            }
+            // A failed install leaves the existing backup intact. If publishing
+            // the new backup fails, the replacement and the old backup are still valid.
+            if let backup, feed?.cached()?.allows(current.version) == true {
+                try? publishPrevious(backup)
             }
         }
     }
@@ -199,14 +229,22 @@ struct Installation {
         return dir
     }
 
-    private func savePrevious() throws {
-        let old = previous.deletingLastPathComponent()
+    private func stagePrevious() throws -> URL {
         let fresh = state.appendingPathComponent(".previous-\(UUID().uuidString)")
         try files.createDirectory(at: fresh, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
-        defer { try? files.removeItem(at: fresh) }
-        let copy = fresh.appendingPathComponent("Orka.app")
-        try run("/usr/bin/ditto", [app.path, copy.path])
-        try verify(copy)
+        do {
+            let copy = fresh.appendingPathComponent("Orka.app")
+            try run("/usr/bin/ditto", [app.path, copy.path])
+            try verify(copy)
+            return fresh
+        } catch {
+            try? files.removeItem(at: fresh)
+            throw error
+        }
+    }
+
+    private func publishPrevious(_ fresh: URL) throws {
+        let old = previous.deletingLastPathComponent()
         if files.fileExists(atPath: old.path) {
             guard renamex_np(fresh.path, old.path, UInt32(RENAME_SWAP)) == 0 else {
                 throw UpdateError("Orka couldn’t save a copy of the previous version.")

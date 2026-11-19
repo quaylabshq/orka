@@ -11,6 +11,7 @@ struct RecoveryTests {
         defer { try? files.removeItem(at: scratch) }
         try policyTests(scratch)
         try await statusTests(scratch)
+        try await rolloutTests(scratch)
         try lockTests(scratch)
         try launchTests(scratch)
         if CommandLine.arguments.count == 3, CommandLine.arguments[1] == "--plugin-app" {
@@ -159,6 +160,91 @@ struct RecoveryTests {
         try require(unavailable.supported == false && unavailable.installedVersion == "0.3.0",
                     "unsupported builds remain distinguishable from a failed network check")
         print("manual cache bypass, verified current release notes, withdrawal, and status errors passed")
+    }
+
+    static func rolloutTests(_ scratch: URL) async throws {
+        let app = scratch.appendingPathComponent("rollout/Orka.app")
+        let contents = app.appendingPathComponent("Contents")
+        try FileManager.default.createDirectory(at: contents, withIntermediateDirectories: true)
+        try (["CFBundleIdentifier": desktopID, "CFBundleShortVersionString": "0.3.0",
+              "OrkaUpdateDataEpoch": 1] as NSDictionary).write(to: contents.appendingPathComponent("Info.plist"))
+        let key = Curve25519.Signing.PrivateKey()
+        let info: [String: Any] = ["OrkaUpdateTeam": "ABCDEFGHIJ", "OrkaUpdateFeed": "https://example.invalid/macos.json",
+                                  "OrkaUpdatePublicKey": key.publicKey.rawRepresentation.base64EncodedString()]
+        let keyMismatch = Curve25519.Signing.PrivateKey()
+        let archive = URL(string: "https://github.com/quaylabshq/orka/releases/download/v0.4.0/Orka-update.zip")!
+        let release = Release(version: "0.4.0", notes: "Early access", url: archive, sha256: String(repeating: "a", count: 64),
+                              size: 42, architectures: ["arm64", "x86_64"], minimumMacOS: "12.0.0", dataEpoch: 1)
+        let stable = Release(version: "0.3.1", notes: "Stable", url: archive, sha256: release.sha256, size: 42,
+                             architectures: release.architectures, minimumMacOS: "12.0.0", dataEpoch: 1)
+        let signedPolicy = { (sequence: Int, withdrawn: [String]) in
+            try signed(Policy(schema: 1, sequence: sequence, expires: Int64(Date().timeIntervalSince1970) + 60,
+                              release: stable, withdrawn: withdrawn, minimumVersion: "0.0.0"), key)
+        }
+        let reply = { (audience: String, signingKey: Curve25519.Signing.PrivateKey, offeredRelease: Release) in
+            let payload = try JSONSerialization.data(withJSONObject: [
+                "schema": 1, "purpose": "orka-desktop-rollout",
+                "release": JSONSerialization.jsonObject(with: JSONEncoder().encode(offeredRelease))
+            ])
+            let manifest = SignedPolicy(payload: payload, signature: try signingKey.signature(for: payload))
+            return try JSONSerialization.data(withJSONObject: [
+                "audience": audience, "manifest": JSONSerialization.jsonObject(with: JSONEncoder().encode(manifest))
+            ])
+        }
+        let feedSession = {
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.protocolClasses = [PolicyProtocol.self]
+            return URLSession(configuration: configuration)
+        }
+        let approvalSession = {
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.protocolClasses = [RolloutProtocol.self]
+            return URLSession(configuration: configuration)
+        }
+        let installation = try Installation(app: app, info: info, supportDirectory: scratch, makeSession: feedSession,
+                                            rollout: Rollout(makeSession: approvalSession))
+        defer {
+            PolicyProtocol.response = Data()
+            PolicyProtocol.requests = []
+            RolloutProtocol.response = Data()
+            RolloutProtocol.request = nil
+        }
+        PolicyProtocol.response = try signedPolicy(1, [])
+        RolloutProtocol.response = try reply("early", key, release)
+        var result = await status(for: installation)
+        try require(result.update == stable, "an anonymous request never surfaces an early-access release")
+        result = await status(for: installation, token: "cloud-account")
+        try require(result.update == release && result.updateAudience == .early, "an eligible account sees its signed release")
+        try require(RolloutProtocol.request?.value(forHTTPHeaderField: "Authorization") == "Bearer cloud-account",
+                    "the rollout request authenticates only to the Cloud endpoint")
+        try require(PolicyProtocol.requests.allSatisfy { $0.value(forHTTPHeaderField: "Authorization") == nil },
+                    "the signed public feed never receives account credentials")
+        RolloutProtocol.response = Data("{\"manifest\":null}".utf8)
+        result = await status(for: installation, token: "cloud-account")
+        try require(result.update == stable, "a removed or paused offer is not retained")
+        RolloutProtocol.response = try reply("public", keyMismatch, release)
+        result = await status(for: installation)
+        try require(result.update == stable, "a forged approval cannot displace the signed public feed")
+        RolloutProtocol.response = try reply("public", key, release)
+        result = await status(for: installation)
+        try require(result.update == release && result.updateAudience == .public, "an approved public release needs no session")
+        let large = Release(version: release.version, notes: String(repeating: "\u{01}", count: 2400), url: archive,
+                            sha256: release.sha256, size: release.size, architectures: release.architectures,
+                            minimumMacOS: release.minimumMacOS, dataEpoch: release.dataEpoch)
+        RolloutProtocol.response = try reply("public", key, large)
+        try require(RolloutProtocol.response.count > 16_384, "JSON base64 expands the signed notes")
+        result = await status(for: installation)
+        try require(result.update == large, "the API envelope limit accommodates escaped notes")
+        let incompatible = Release(version: "0.5.0", notes: "Needs a newer macOS", url: archive, sha256: release.sha256,
+                                   size: release.size, architectures: release.architectures, minimumMacOS: "999.0.0", dataEpoch: 1)
+        RolloutProtocol.authenticatedResponse = try reply("early", key, incompatible)
+        result = await status(for: installation, token: "cloud-account")
+        try require(result.update == large, "an incompatible preview preserves the compatible public approval")
+        RolloutProtocol.authenticatedResponse = nil
+        PolicyProtocol.response = try signedPolicy(2, [release.version])
+        result = await status(for: installation, token: "cloud-account")
+        try require(result.update == stable, "the signed global withdrawal overrides a rollout approval")
+        print("rollout audience, credential isolation, tampered manifests, fallback, and withdrawal passed")
     }
 
     static func pluginMaintenanceTests(_ source: URL, scratch: URL) async throws {
@@ -314,6 +400,24 @@ final class PolicyProtocol: URLProtocol {
         let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: Self.response)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+}
+
+final class RolloutProtocol: URLProtocol {
+    static var response = Data()
+    static var request: URLRequest?
+    static var authenticatedResponse: Data?
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        Self.request = request
+        let http = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+        client?.urlProtocol(self, didReceive: http, cacheStoragePolicy: .notAllowed)
+        let body = request.value(forHTTPHeaderField: "Authorization") == nil ? Self.response : Self.authenticatedResponse ?? Self.response
+        client?.urlProtocol(self, didLoad: body)
         client?.urlProtocolDidFinishLoading(self)
     }
     override func stopLoading() {}
