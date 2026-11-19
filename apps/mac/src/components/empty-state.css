@@ -47,6 +47,13 @@
   letter-spacing: var(--heading-xs-letter-spacing);
 }
 
+.empty-state--compact .empty-state-title {
+  font-size: var(--label-md-font-size);
+  font-weight: var(--label-md-font-weight);
+  line-height: var(--label-md-line-height);
+  letter-spacing: var(--label-md-letter-spacing);
+}
+
 .empty-state--workspace .empty-state-title {
   font-size: var(--heading-sm-font-size);
   font-weight: var(--heading-sm-font-weight);
@@ -56,11 +63,12 @@
 
 .empty-state .empty-state-description {
   max-width: 36ch;
-  margin: 6px 0 0;
+  margin: 6px auto 0;
   color: var(--text-secondary);
   font-size: var(--body-sm-font-size);
   line-height: var(--body-sm-line-height);
   letter-spacing: var(--body-sm-letter-spacing);
+  text-wrap: balance;
 }
 
 .empty-state-actions {

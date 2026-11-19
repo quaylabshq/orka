@@ -89,6 +89,7 @@ export function ResourceIndex({
   const memberName = useMemberLabel(user);
   const { notify } = useToasts();
   const discoveryErrors = discoveryResult?.errors ?? [];
+  const discoveryFailed = !resources.length && discoveryErrors.length > 0;
   const [refreshRequest, setRefreshRequest] = useState<{
     result: typeof discoveryResult;
   } | null>(null);
@@ -223,11 +224,15 @@ export function ResourceIndex({
                   ? `Checking local ${collectionNoun(kind)}…`
                   : refreshFailed
                     ? `Couldn’t refresh local ${collectionNoun(kind)}`
-                    : `Some local ${collectionNoun(kind)} couldn’t be checked`}
+                    : discoveryFailed
+                      ? `Couldn’t check local ${collectionNoun(kind)}`
+                      : `Some local ${collectionNoun(kind)} couldn’t be checked`}
               </p>
-              <p className="resource-discovery-message">
-                Previously discovered items are still available.
-              </p>
+              {resources.length > 0 && (
+                <p className="resource-discovery-message">
+                  Previously discovered items are still available.
+                </p>
+              )}
               {!refreshing &&
                 discoveryErrors.map((error, index) => (
                   <p className="resource-discovery-message" key={index}>
@@ -270,15 +275,8 @@ export function ResourceIndex({
           >
             <div />
           </LoadingRegion>
-        ) : !visible.length ? (
-          !resources.length && discoveryErrors.length > 0 ? (
-            <EmptyState
-              title={`Local ${collectionNoun(kind)} could not be checked.`}
-              icon={TriangleAlertIcon}
-              size="compact"
-              announce
-            />
-          ) : filtered ? (
+        ) : discoveryFailed ? null : !visible.length ? (
+          filtered ? (
             <EmptyState
               illustration="search"
               size="compact"
@@ -341,7 +339,7 @@ const emptyDescriptions: Record<Resource["kind"], string> = {
   session: "Start a chat in Claude Code or Codex from a connected folder.",
   memory: "Project instructions and memories found by Orka appear here.",
   plan: "Plans saved by your coding tools for this project appear here.",
-  skill: "Bring a skill from Codex or Claude into this project.",
+  skill: "Import a skill from Codex or Claude.",
 };
 
 function ResourceEmptyState({
@@ -360,7 +358,6 @@ function ResourceEmptyState({
     return (
       <EmptyState
         title={`Access to shared ${noun} is restricted.`}
-        description="Ask a project owner about access."
         icon={LockIcon}
         size="compact"
         announce
@@ -370,8 +367,7 @@ function ResourceEmptyState({
   if (ownership === "shared") {
     return (
       <EmptyState
-        title={`No ${noun} have been shared with you yet`}
-        description="Items shared with you by project members appear here."
+        title={`No ${noun} shared with you yet`}
         illustration={kind}
         announce
       />
@@ -385,7 +381,7 @@ function ResourceEmptyState({
       description={
         connected
           ? emptyDescriptions[kind]
-          : `Connect this Mac to find ${noun} from your local tools.`
+          : "Items from connected folders appear here."
       }
       illustration={kind}
       announce

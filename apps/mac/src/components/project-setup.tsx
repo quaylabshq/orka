@@ -301,7 +301,7 @@ export function ProjectEmptyState({
         illustration="project"
         size="workspace"
         title="Start with a project"
-        description="Create a project to organize your work, or join one with an invite."
+        description="Create a project or use an invite to join your team."
         actions={
           <>
             <Button onClick={onCreate} variant="primary" size="lg">
