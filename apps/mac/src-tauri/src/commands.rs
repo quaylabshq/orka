@@ -624,7 +624,7 @@ pub async fn session_display_title(id: String) -> Result<Option<String>> {
             return Err("Session unavailable".into());
         }
         let records = crate::history::resource_records(&resource)?;
-        crate::session_presentation::title(&native::encode(&records))
+        Ok(crate::session_presentation::title(&records))
     })
     .await
     .map_err(|error| error.to_string())?

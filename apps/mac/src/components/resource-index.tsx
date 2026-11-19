@@ -307,6 +307,7 @@ export function ResourceIndex({
             conflicted={conflicted}
             loading={loading}
             focusResource={focusResource}
+            pageKey={JSON.stringify(filters)}
             filtered={filtered || ownership !== "all"}
             onOpen={onOpen}
           />

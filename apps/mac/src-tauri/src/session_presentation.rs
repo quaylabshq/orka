@@ -53,20 +53,11 @@ pub fn request_text(text: &str) -> Option<String> {
     ))
 }
 
-pub fn title(bytes: &[u8]) -> crate::db::Result<Option<String>> {
-    for line in bytes
-        .split(|b| *b == b'\n')
-        .filter(|line| !line.iter().all(u8::is_ascii_whitespace))
-    {
-        let record: Value =
-            serde_json::from_slice(line).map_err(|_| "Cannot read session preview")?;
-        if let Some(title) =
-            crate::session_translation::user_text(&record).and_then(|text| request_text(&text))
-        {
-            return Ok(Some(title));
-        }
-    }
-    Ok(None)
+pub fn title(records: &[Value]) -> Option<String> {
+    records
+        .iter()
+        .filter_map(crate::session_translation::user_text)
+        .find_map(|text| request_text(&text))
 }
 
 /// One readable conversation turn. `index` is stable within a transcript revision,
@@ -137,10 +128,7 @@ mod tests {
             json!({"type":"response_item","payload":{"role":"user","content":[{"type":"input_text","text":"<environment_context>local cwd</environment_context>"}]}}),
             json!({"type":"response_item","payload":{"role":"user","content":[{"type":"input_text","text":"<in-app-browser-context>local page</in-app-browser-context>\n## My request:\nFix the session list"}]}}),
         ];
-        assert_eq!(
-            title(&crate::native::encode(&records)).unwrap().as_deref(),
-            Some("Fix the session list")
-        );
+        assert_eq!(title(&records).as_deref(), Some("Fix the session list"));
     }
     #[test]
     fn ignores_tool_results_and_claude_commands() {
@@ -150,10 +138,7 @@ mod tests {
             json!({"type":"user","isMeta":true,"message":{"role":"user","content":"Injected instructions"}}),
             json!({"type":"user","message":{"role":"user","content":"Review our pricing\nHere are the details"}}),
         ];
-        assert_eq!(
-            title(&crate::native::encode(&records)).unwrap().as_deref(),
-            Some("Review our pricing")
-        );
+        assert_eq!(title(&records).as_deref(), Some("Review our pricing"));
     }
     #[test]
     fn conversation_preserves_body_and_omits_tools_and_setup() {
@@ -207,7 +192,6 @@ mod tests {
             Some("मेमोरी सूची ठीक करो".into())
         );
         assert!(request_text(&"word ".repeat(60)).unwrap().chars().count() <= 121);
-        assert_eq!(title(b"{\"type\":\"session_meta\"}\n").unwrap(), None);
-        assert!(title(b"invalid json\n").is_err());
+        assert_eq!(title(&[json!({"type": "session_meta"})]), None);
     }
 }
