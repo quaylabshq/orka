@@ -201,7 +201,15 @@ pub async fn send(db: &Connection, owner: &str, queued: &Value) -> Result<Value>
     {
         return Err("Update the Orka service to support one-off sharing. The selected snapshot is queued on this Mac.".into());
     }
-    sync::api_as(owner,"POST","/v2/devices",Some(&json!({"id":queued["value"]["deviceId"],"name":std::env::var("HOSTNAME").unwrap_or("Mac".into())}))).await?;
+    sync::api_as(
+        owner,
+        "POST",
+        "/v2/devices",
+        Some(
+            &json!({"id":queued["value"]["deviceId"],"name":crate::device_metadata::local_name()}),
+        ),
+    )
+    .await?;
     crate::repair::upload(
         owner,
         queued["project"].as_str().ok_or("Missing project")?,

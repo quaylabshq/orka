@@ -104,8 +104,7 @@ pub(crate) async fn api_at(
 }
 
 pub(crate) async fn register_device(owner: &str, origin: &str, device: &str) -> Result<()> {
-    let mut registration =
-        json!({"id":device,"name":std::env::var("HOSTNAME").unwrap_or("Mac".into())});
+    let mut registration = json!({"id":device,"name":crate::device_metadata::local_name()});
     if api_at(owner, origin, "GET", "/v2/projects/capabilities", None)
         .await
         .is_ok_and(|caps| caps["deviceHardware"] == 1)

@@ -72,6 +72,8 @@ snapshot. Capability fallback also protects self-hosted services upgraded later.
 
 ## Native modules
 
+A new account store derives its sync device identity from this Mac's hardware UUID, the account and the profile, so clearing local data or reinstalling returns to the same Devices row instead of registering another Mac. Only the derived value is sent. Stores created before this change keep their saved identity, and named development profiles remain separate devices. Encrypted ENV device keys are a separate identity and are unaffected.
+
 `indexer.rs`, `plans.rs`, and session readers discover scoped native content. `sync.rs` handles exchange and local materialization. `codex_import.rs` and `claude_import.rs` preserve native identities. `env/` owns dotenv parsing, encryption, device approval, and guarded file writes. `db.rs` and `auth.rs` isolate local persistence and credentials.
 
 Keep `com.orka.v1`, the existing Tauri bundle identifier, Keychain service names, and protocol versions stable unless a reviewed migration accompanies a change. Desktop account caches and credentials are bound to the selected service. Authentication secrets and administrative server credentials never belong in the React interface or desktop build.

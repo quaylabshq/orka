@@ -215,7 +215,15 @@ pub fn device(db: &Connection) -> Result<String> {
     if let Some(s) = v.as_str() {
         return Ok(s.into());
     }
-    let id = Uuid::new_v4().to_string();
+    // An account store lives in a folder named for its account. Guest and
+    // standalone stores, or a Mac that cannot be identified, stay random.
+    let account = db
+        .path()
+        .and_then(|path| Path::new(path).parent()?.file_name()?.to_str())
+        .and_then(|name| Uuid::parse_str(name).ok());
+    let id = account
+        .and_then(|account| crate::device_metadata::stable_id(&account))
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
     set(db, "device", &json!(id))?;
     Ok(id)
 }
