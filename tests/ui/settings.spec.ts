@@ -592,9 +592,7 @@ for (const state of ["empty", "unavailable"] as const)
     await button(settings, "Devices").click();
     await expect(
       settings.getByText(
-        state === "empty"
-          ? "No Macs have synced in the last 30 days."
-          : "Couldn’t load your Macs.",
+        state === "empty" ? "No Macs to show." : "Couldn’t load your Macs.",
         { exact: false },
       ),
     ).toBeVisible();

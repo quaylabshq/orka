@@ -103,7 +103,7 @@ export function SettingsDeviceScreen({ state }: { state: Snapshot }) {
         sample={samples}
         loading={!query.data && query.loading}
         empty={query.data?.length === 0}
-        emptyMessage={<p>No Macs have synced in the last 30 days.</p>}
+        emptyMessage={<p>No Macs to show.</p>}
         error={
           !query.data && query.error ? (
             <p role="alert">
