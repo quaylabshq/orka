@@ -1035,19 +1035,21 @@ fn refresh_catalog(
 }
 
 pub fn scan(db: &rusqlite::Connection, project: &Value) -> Result<()> {
-    scan_with_status(db, project, false)
+    scan_with_status(db, project, false).map(|_| ())
 }
 
 pub(crate) fn scan_with_progress(db: &rusqlite::Connection, project: &Value) -> Result<()> {
-    scan_with_status(db, project, true)
+    scan_with_status(db, project, true).map(|_| ())
 }
 
-fn scan_with_status(
+/// Records per-source errors and reports whether all attached content was captured.
+pub(crate) fn scan_with_status(
     db: &rusqlite::Connection,
     project: &Value,
     report_progress: bool,
-) -> Result<()> {
+) -> Result<bool> {
     let mut failures = Vec::new();
+    let mut complete = true;
     for source in crate::sources::views(project) {
         let result = scan_source(db, &source, report_progress, None);
         let key = format!(
@@ -1059,13 +1061,29 @@ fn scan_with_status(
             failures.push(error.clone());
         }
         crate::sync::record_result(db, &key, result)?;
+        if project["captureOnly"] == true {
+            let id = project["id"].as_str().ok_or("Missing project ID")?;
+            let prefix = match source["sourceId"].as_str() {
+                Some(source_id) => format!("{id}:{source_id}:scan:*"),
+                None => format!("{id}:scan:*"),
+            };
+            // Individual files can fail independently of a source scan.
+            let has_errors: bool = db
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM errors WHERE source GLOB ?)",
+                    [&prefix],
+                    |row| row.get(0),
+                )
+                .map_err(|error| error.to_string())?;
+            complete &= !has_errors;
+        }
     }
     // Other repositories still scan when one checkout is missing. Filesystem
     // application validates each source independently after the project pull.
     if !project["sources"].is_array() && !failures.is_empty() {
         return Err(failures.join("; "));
     }
-    Ok(())
+    Ok(complete && failures.is_empty())
 }
 
 fn scan_source(

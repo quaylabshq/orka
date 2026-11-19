@@ -50,6 +50,7 @@ impl Capture {
         service.set_nonblocking(true).unwrap();
         let url = format!("http://127.0.0.1:{}", service.local_addr().unwrap().port());
         db::set(&db, "config", &json!({"apiUrl":url})).unwrap();
+        let db = db::open().unwrap();
         let id = uuid::Uuid::new_v4().to_string();
         let mut project = json!({"id":id,"name":"Deleted","role":"member","path":root});
         for (key, value) in lifecycle.as_object().unwrap() {
@@ -1189,4 +1190,31 @@ async fn busy_deleted_project_export_reports_that_it_used_cached_content() {
         .as_str()
         .unwrap();
     assert_eq!(db::blob_read(hash).unwrap(), b"New on disk\n");
+}
+
+#[test]
+fn export_warns_when_one_repository_is_missing_and_captures_the_rest() {
+    let f = Capture::new(restorable());
+    let ready = uuid::Uuid::new_v4();
+    let missing = uuid::Uuid::new_v4();
+    let mut project = f.project();
+    project["sources"] = json!([
+        {"id": ready, "name": "Attached", "path": f.root},
+        {"id": missing, "name": "Missing", "path": f.home.path().join("missing")}
+    ]);
+    db::upsert(&f.db, "projects", &f.id, &f.id, &project).unwrap();
+    f.edit_memory("Edit from the available repository\n");
+
+    let cache = db::CacheScope::current().unwrap();
+    let path = f.home.path().join("project.zip");
+    assert!(export_project_with_capture(&cache, &f.id, &path).unwrap());
+    let rows = f.outbox();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["value"]["resource"]["sourceId"], ready.to_string());
+    let hash = rows[0]["value"]["resource"]["files"][0]["hash"]
+        .as_str()
+        .unwrap();
+    let id = rows[0]["id"].as_str().unwrap();
+    let mut zip = zip::ZipArchive::new(fs::File::open(path).unwrap()).unwrap();
+    assert!(zip.by_name(&format!("pending/{id}/blobs/{hash}")).is_ok());
 }

@@ -13,7 +13,7 @@ import {
   inactiveMessage,
   removalWarning,
 } from "./project-inactive.js";
-import { ToastProvider } from "./toasts.js";
+import { ToastProvider, ToastViewport } from "./toasts.js";
 
 const mocks = vi.hoisted(() => ({ invoke: vi.fn(), save: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
@@ -46,6 +46,7 @@ function renderBanner(value: Project) {
   render(
     <ToastProvider scope="test">
       <InactiveProject project={value} busy={false} run={run} />
+      <ToastViewport modal />
     </ToastProvider>,
   );
   return run;

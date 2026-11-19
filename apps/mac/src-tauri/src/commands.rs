@@ -955,10 +955,13 @@ pub(crate) fn export_project_with_capture(
                 return Err("The Orka account or service changed during export. Export again from the project.".into());
             }
             let db = cache.open()?;
-            if let Err(error) = sync::capture_held(&db, project_id) {
-                let _ = sync::record_result(&db, project_id, Err(error));
-                cached_only = true;
-            }
+            cached_only = match sync::capture_held(&db, project_id) {
+                Ok(complete) => !complete,
+                Err(error) => {
+                    let _ = sync::record_result(&db, project_id, Err(error));
+                    true
+                }
+            };
         } else {
             cached_only = true;
         }

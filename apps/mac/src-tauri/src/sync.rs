@@ -1735,7 +1735,7 @@ impl<'a> SyncPass<'a> {
             return Ok(Break(()));
         }
         match scan_held(self.db, p) {
-            Ok(()) => {
+            Ok(_) => {
                 self.db
                     .execute("DELETE FROM errors WHERE source=?", [project])
                     .map_err(|e| e.to_string())?;
@@ -2940,18 +2940,18 @@ fn prepare_local(db: &rusqlite::Connection, project: &Value) -> Result<()> {
 }
 
 /// Scans a deleted project's files into the outbox as held captures.
-fn scan_held(db: &rusqlite::Connection, project: &Value) -> Result<()> {
+fn scan_held(db: &rusqlite::Connection, project: &Value) -> Result<bool> {
     indexer::clear_orphan_held_captures(db)?;
     let mut capture = project.clone();
     capture["captureOnly"] = json!(true);
     capture["deferAutomaticSharing"] = json!(true);
-    indexer::scan(db, &capture)
+    indexer::scan_with_status(db, &capture, false)
 }
 
 /// Captures changes made while a project is deleted but still restorable, so an
 /// export taken before a restore contains them. A copy the catalog has detached
 /// is left alone and keeps exporting what it has.
-pub fn capture_held(db: &rusqlite::Connection, project: &str) -> Result<()> {
+pub fn capture_held(db: &rusqlite::Connection, project: &str) -> Result<bool> {
     let saved = db::rows(
         db,
         &format!(
@@ -2963,7 +2963,7 @@ pub fn capture_held(db: &rusqlite::Connection, project: &str) -> Result<()> {
     .into_iter()
     .next();
     let Some(saved) = saved else {
-        return Ok(());
+        return Ok(true);
     };
     prepare_local(db, &saved)?;
     scan_held(db, &saved)
