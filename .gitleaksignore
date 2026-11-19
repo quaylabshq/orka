@@ -1,4 +1,3 @@
-# Verified SHA-256 image checksum in a historical PR #118 screenshot manifest.
-# Scope is one immutable finding; scripts/check-secret-scan.sh verifies that
-# other findings still fail the scan.
+# Verified SHA-256 of a PR screenshot, misidentified from its filename.
+# Scope is one immutable historical capture manifest; scanner rules stay active.
 34180091f125faac06b218351b1318812eb7332e:pr-118/cf5ca64aa660d58ff2c62e487eae2d3bd71ab671/12264c70329c/capture.json:generic-api-key:1
