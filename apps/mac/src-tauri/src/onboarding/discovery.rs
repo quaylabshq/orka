@@ -455,8 +455,9 @@ fn resolve(records: Vec<Record>, home: &Path, found: &mut BTreeMap<PathBuf, Cand
             None => missing.push(record),
         }
     }
+    let mut remotes = Remotes::default();
     for record in missing {
-        if let Some(path) = credited_root(&record, home, found) {
+        if let Some(path) = credited_root(&record, home, found, &mut remotes) {
             found
                 .entry(path)
                 .or_default()
@@ -464,11 +465,31 @@ fn resolve(records: Vec<Record>, home: &Path, found: &mut BTreeMap<PathBuf, Cand
         }
     }
 }
+/// Remote identities of discovered projects, read once per scan.
+#[derive(Default)]
+struct Remotes {
+    keys: BTreeMap<PathBuf, Option<String>>,
+    reads: usize,
+}
+impl Remotes {
+    fn key(&mut self, root: &Path) -> Option<String> {
+        if let Some(key) = self.keys.get(root) {
+            return key.clone();
+        }
+        self.reads += 1;
+        let key = root
+            .to_str()
+            .and_then(|root| remote_key(root).ok().flatten());
+        self.keys.insert(root.to_path_buf(), key.clone());
+        key
+    }
+}
 /// A deleted worktree still belongs to the repository it came from.
 fn credited_root(
     record: &Record,
     home: &Path,
     found: &BTreeMap<PathBuf, Candidate>,
+    remotes: &mut Remotes,
 ) -> Option<PathBuf> {
     let path = record.cwd.to_str()?;
     // Claude Code keeps its worktrees inside the repository they belong to.
@@ -488,7 +509,8 @@ fn credited_root(
                     entries
                         .flatten()
                         .map(|entry| entry.path())
-                        .filter_map(|path| main_checkout(&path)),
+                        .filter_map(|path| main_checkout(&path))
+                        .filter(|main| usable_root(main, home)),
                 );
             }
             match live.len() {
@@ -509,10 +531,9 @@ fn credited_root(
     }
     let key = normalize_remote(record.remote.as_deref()?)?;
     let key = db::digest(format!("orka-remote-v1:{key}").as_bytes());
-    let mut matched = found.keys().filter(|root| {
-        root.to_str()
-            .is_some_and(|root| remote_key(root).ok().flatten() == Some(key.clone()))
-    });
+    let mut matched = found
+        .keys()
+        .filter(|root| remotes.key(root).as_ref() == Some(&key));
     match (matched.next(), matched.next()) {
         (Some(only), None) => Some(only.clone()),
         _ => None,
@@ -848,6 +869,53 @@ mod tests {
         assert_eq!(found.keys().collect::<Vec<_>>(), vec![&main]);
         assert_eq!(found[&main].sessions, 2);
         assert!(found[&main].tools.contains("codex"));
+    }
+    #[test]
+    fn remote_identities_are_read_once_per_project() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = fs::canonicalize(temp.path()).unwrap();
+        let mut found = BTreeMap::new();
+        for name in ["a", "b", "c"] {
+            let project = home.join("Development").join(name);
+            fs::create_dir_all(project.join(".git")).unwrap();
+            fs::write(
+                project.join(".git/config"),
+                format!("[remote \"origin\"]\n url = git@github.com:owner/{name}.git\n"),
+            )
+            .unwrap();
+            found.insert(project, Candidate::default());
+        }
+        let mut remotes = Remotes::default();
+        for index in 0..50 {
+            let record = Record {
+                cwd: home.join(format!(".codex/worktrees/{index}/b")),
+                tool: Some("codex"),
+                last: 20,
+                sessions: 1,
+                remote: Some("https://github.com/owner/b.git".into()),
+            };
+            assert_eq!(
+                credited_root(&record, &home, &found, &mut remotes),
+                Some(home.join("Development/b"))
+            );
+        }
+        assert_eq!(remotes.reads, 3);
+    }
+    #[test]
+    fn a_sibling_checkout_outside_usable_roots_is_not_credited() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = fs::canonicalize(temp.path()).unwrap();
+        fs::create_dir_all(home.join(".git")).unwrap();
+        let _live = linked_worktree(&home, &home, "live");
+        let name = home.file_name().unwrap();
+        let records = vec![history_record(
+            &home.join(".t3/worktrees").join(name).join("gone"),
+            20,
+            2,
+        )];
+        let mut found = BTreeMap::new();
+        resolve(records, &home, &mut found);
+        assert!(found.is_empty());
     }
     #[test]
     fn worktrees_fold_into_their_main_checkout() {
