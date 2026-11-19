@@ -238,12 +238,30 @@ pub fn take_callback() -> Result<Option<String>> {
     )
 }
 
+/// Consumes a request from another process to bring this profile forward.
+fn take_focus_request(root: &std::path::Path) -> bool {
+    fs::remove_file(root.join("focus")).is_ok()
+}
+
+/// Brings this profile forward when another process asks, without the webview.
+///
+/// WebKit suspends the page of a minimized window, so `profile_events` stops
+/// polling and a callback routed here would wait unseen. Revealing the window
+/// natively wakes the page, which then takes the callback.
+pub fn watch_focus_requests(app: tauri::AppHandle) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        if db::root().is_ok_and(|root| take_focus_request(&root)) {
+            let _ = crate::menu_bar::open_main(&app);
+        }
+    });
+}
+
 #[tauri::command]
 pub fn profile_events(app: tauri::AppHandle) -> Result<Option<String>> {
-    let focus = db::root()?.join("focus");
+    let focus = take_focus_request(&db::root()?);
     let callback = take_callback()?;
-    if focus.exists() || callback.is_some() {
-        let _ = fs::remove_file(focus);
+    if focus || callback.is_some() {
         let _ = crate::menu_bar::open_main(&app);
     }
     Ok(callback)
@@ -251,6 +269,16 @@ pub fn profile_events(app: tauri::AppHandle) -> Result<Option<String>> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_focus_request_is_taken_once() {
+        let root = tempfile::tempdir().unwrap();
+        assert!(!super::take_focus_request(root.path()));
+        std::fs::write(root.path().join("focus"), b"").unwrap();
+        assert!(super::take_focus_request(root.path()));
+        assert!(!root.path().join("focus").exists());
+        assert!(!super::take_focus_request(root.path()));
+    }
+
     #[test]
     fn profile_names_cannot_escape_storage_or_arguments() {
         for name in ["default", "alice", "wt-feature-123"] {

@@ -265,6 +265,7 @@ fn main() {
             _app.manage(plugin_broker::start().map_err(std::io::Error::other)?);
             onboarding::resume_sync();
             sync::start_foreground();
+            profiles::watch_focus_requests(_app.handle().clone());
             Ok(())
         })
         .invoke_handler(|invoke| {
