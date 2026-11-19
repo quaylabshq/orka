@@ -13,7 +13,7 @@
   height: 8px;
   flex-shrink: 0;
   border-radius: var(--radius-detail);
-  background: var(--surface-stroke);
+  background: var(--border-default);
 }
 
 .skill-card-description-skeleton > span:nth-child(2) {

@@ -27,7 +27,7 @@
 
 .collection-skeleton-rows {
   overflow: hidden;
-  border: 1px solid var(--surface-stroke);
+  border: 1px solid var(--border-default);
   border-radius: var(--radius-surface);
 }
 
@@ -38,7 +38,7 @@
   gap: 32px;
   height: 56px;
   padding: 0 20px;
-  border-bottom: 1px solid var(--surface-stroke);
+  border-bottom: 1px solid var(--border-default);
 }
 
 .collection-skeleton-title {
@@ -53,7 +53,7 @@
   display: block;
   height: 10px;
   border-radius: var(--radius-control);
-  background: var(--surface-stroke);
+  background: var(--border-default);
   filter: blur(0.75px);
 }
 
@@ -171,7 +171,7 @@
   input:focus-visible,
   select:focus-visible,
   summary:focus-visible {
-    outline: 2px solid var(--focus-ring);
+    outline: 2px solid var(--border-focus);
     outline-offset: 4px;
   }
   input:not([type="checkbox"]),
@@ -180,20 +180,20 @@
   }
   select {
     border-radius: var(--field-radius);
-    background: var(--field-surface);
-    color: var(--field-text);
-    transition: background 120ms ease;
+    background: var(--surface-tertiary);
+    color: var(--text-primary);
+    transition: box-shadow 120ms ease;
   }
   select:hover:not(:disabled) {
-    background: var(--field-interaction-hover);
+    box-shadow: inset 0 0 0 100vmax var(--state-hover);
   }
   select:focus-visible {
-    outline: 1px solid var(--field-focus-ring);
+    outline: 1px solid var(--border-focus);
     outline-offset: 2px;
   }
   select:disabled {
-    background: var(--field-surface-disabled);
-    color: var(--field-text-disabled);
+    background: var(--surface-secondary);
+    color: var(--text-disabled);
   }
   input::placeholder {
     @apply text-muted;
@@ -236,7 +236,7 @@
     height: 8px;
   }
   ::-webkit-scrollbar-thumb {
-    background: var(--scrollbar-thumb);
+    background: var(--text-disabled);
     border: 2px solid var(--surface-primary);
     border-radius: 8px;
   }
@@ -301,8 +301,8 @@
       color 120ms ease;
   }
   .sync-status .dot.connected {
-    background: var(--status-connected);
-    border-color: var(--status-connected);
+    background: var(--green-text);
+    border-color: var(--green-text);
   }
   .sidebar .sync-status {
     border-radius: var(--radius-control);
@@ -338,7 +338,7 @@
   }
   .sidebar .project-selector {
     width: 100%;
-    border: 1px solid var(--surface-stroke);
+    border: 1px solid var(--border-default);
     border-radius: var(--radius-control);
     padding: 8px 10px;
     height: 38px;
@@ -414,7 +414,7 @@
   }
   .sidebar .project-selector[data-selected="true"]:hover,
   .sidebar .project-selector[data-state="open"] {
-    @apply bg-hover;
+    box-shadow: inset 0 0 0 100vmax var(--state-hover);
   }
   .project-selector svg {
     @apply shrink-0 text-secondary;
@@ -475,7 +475,7 @@
     @apply bg-selected text-foreground;
   }
   .project-menu-item:focus-visible {
-    outline: 1px solid var(--focus-ring);
+    outline: 1px solid var(--border-focus);
     outline-offset: -1px;
   }
   .project-menu-item-inactive {
@@ -510,7 +510,7 @@
     @apply flex h-6 items-center justify-center text-secondary;
   }
   .project-selector:hover:not(:disabled) {
-    @apply bg-hover;
+    box-shadow: inset 0 0 0 100vmax var(--state-hover);
   }
   .project-section:hover:not(:disabled),
   .project-section:hover:not(:disabled) small,
@@ -719,8 +719,8 @@
     @apply min-w-0 truncate text-right;
   }
   .sync-menu-health .dot.connected {
-    background: var(--status-connected);
-    border-color: var(--status-connected);
+    background: var(--green-text);
+    border-color: var(--green-text);
   }
   .navigation-action {
     @apply relative z-10 inline-flex h-9 w-full shrink-0 items-center justify-start gap-2 overflow-hidden rounded-lg bg-transparent px-2.5 py-2 text-label-sm text-muted;
@@ -831,7 +831,7 @@
     content: "";
     height: 10px;
     border-radius: var(--radius-control);
-    background: var(--surface-stroke);
+    background: var(--border-default);
   }
   .session-launcher-skeleton span[aria-hidden]::before {
     width: 14px;
@@ -852,7 +852,7 @@
   .session-launcher-separator {
     @apply mx-2 my-1;
     height: 1px;
-    background: var(--surface-stroke);
+    background: var(--border-default);
   }
   .session-launcher-host {
     @apply flex items-center justify-between gap-3 px-3 py-2 text-body-xs text-secondary;
@@ -880,7 +880,7 @@
     color: var(--text-secondary);
   }
   .segmented-control .ui-button[aria-pressed="true"] {
-    background: var(--interaction-selected);
+    background: var(--state-pressed);
     color: var(--text-primary);
   }
   .session-preview-status {
@@ -892,10 +892,10 @@
   }
   .skill-card {
     @apply flex min-w-0 flex-col items-start gap-2 rounded-xl border border-line bg-surface-secondary p-4 text-left;
-    transition: background-color 120ms ease;
+    transition: box-shadow 120ms ease;
   }
   .skill-card:hover {
-    @apply bg-hover;
+    box-shadow: inset 0 0 0 100vmax var(--state-hover);
   }
   .skill-card:focus-visible {
     outline-offset: -2px;
@@ -1107,7 +1107,7 @@
     margin-left: 0;
   }
   .index-toolbar .index-toolbar-sort[data-state="open"] {
-    background: var(--interaction-selected);
+    background: var(--state-pressed);
   }
   .index-sort-menu [role="menu"] {
     @apply flex flex-col gap-1;
@@ -1126,6 +1126,9 @@
     --resource-cell-padding: 16px;
     @apply w-full border-separate border-spacing-0 rounded-xl border border-line text-left;
     table-layout: fixed;
+  }
+  .resource-table-pagination {
+    @apply mt-3 flex items-center justify-end gap-2 text-body-sm text-secondary;
   }
   .resource-table-col-repository,
   .resource-table-col-identity,
@@ -1284,7 +1287,7 @@
     transform: none;
   }
   .resource-actions-popover .ui-button:hover:not(:disabled) {
-    background: var(--interaction-hover);
+    background: var(--state-hover);
     transform: none;
   }
   .content {
@@ -1364,7 +1367,7 @@
   }
   .markdown-content a:focus-visible,
   .markdown-table:focus-visible {
-    outline: 1px solid var(--focus-ring);
+    outline: 1px solid var(--border-focus);
     outline-offset: 3px;
   }
   .markdown-content code {
@@ -1516,13 +1519,11 @@
   }
   .overlay-backdrop {
     @apply fixed inset-0 z-10;
-    background: var(--overlay-scrim);
+    background: var(--state-scrim);
   }
   .modal {
     @apply fixed left-1/2 top-1/2 z-20 max-h-[90vh] w-[440px] max-w-[calc(100vw-48px)] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-xl border border-line bg-panel p-7;
     box-shadow: var(--shadow-modal);
-    --button-secondary-bg: var(--surface-tertiary);
-    --button-secondary-bg-hover: var(--interaction-hover);
   }
   .modal h2 {
     @apply mb-6;
@@ -1537,7 +1538,6 @@
     @apply w-[520px] overflow-hidden border-0 p-6;
     border-radius: var(--radius-overlay);
     background: var(--surface-secondary);
-    --field-surface: var(--surface-tertiary);
   }
   .create-project-form {
     @apply flex flex-col;
@@ -1828,7 +1828,7 @@
   width: 100%;
   color: var(--text-primary);
   background: var(--surface-tertiary);
-  border: 1px solid var(--surface-stroke);
+  border: 1px solid var(--border-default);
   border-radius: var(--radius-control);
   padding: 8px;
 }
@@ -1872,7 +1872,7 @@
   flex-wrap: wrap;
   gap: 8px;
   padding-block: 12px;
-  border-bottom: 1px solid var(--surface-stroke);
+  border-bottom: 1px solid var(--border-default);
 }
 .governance-row > span {
   flex: 1;
@@ -1909,7 +1909,7 @@
   margin: 0;
 }
 .changes-review-body > [role="alert"] {
-  color: var(--status-error);
+  color: var(--red-text);
 }
 .changes-review-modal .governance-files {
   max-height: none;
@@ -1973,7 +1973,7 @@
   @apply text-body-xs;
 }
 .member-list {
-  border: 1px solid var(--surface-stroke);
+  border: 1px solid var(--border-default);
   border-radius: var(--radius-control);
   margin-block: 16px;
   overflow: hidden;
@@ -2003,7 +2003,7 @@
 .permission-card,
 .permission-review {
   padding: 20px;
-  border: 1px solid var(--surface-stroke);
+  border: 1px solid var(--border-default);
   border-radius: var(--radius-control);
   background: var(--surface-secondary);
 }
@@ -2070,7 +2070,7 @@
   padding: 10px 12px;
   background: var(--surface-tertiary);
   color: var(--text-primary);
-  border: 1px solid var(--surface-stroke);
+  border: 1px solid var(--border-default);
   border-radius: var(--radius-control);
   cursor: pointer;
   font: inherit;
@@ -2094,7 +2094,7 @@
   gap: 16px;
 }
 .management-back {
-  outline: 1px solid var(--surface-stroke);
+  outline: 1px solid var(--border-default);
   outline-offset: -1px;
   margin-left: auto;
 }
@@ -2105,7 +2105,7 @@
   padding-right: 12px;
 }
 .member-list-entry + .member-list-entry {
-  border-top: 1px solid var(--surface-stroke);
+  border-top: 1px solid var(--border-default);
 }
 .member-list-entry .member-row {
   flex: 1;
@@ -2118,10 +2118,10 @@
   z-index: 5;
 }
 .management-danger {
-  color: var(--text-danger);
+  color: var(--red-text);
 }
 .management-danger:hover:not(:disabled) {
-  color: var(--text-danger);
+  color: var(--red-text);
 }
 .management-logs > * + * {
   margin-top: 20px;
@@ -2131,7 +2131,7 @@
   align-items: flex-start;
   gap: 12px;
   padding-block: 16px;
-  border-bottom: 1px solid var(--surface-stroke);
+  border-bottom: 1px solid var(--border-default);
 }
 .management-log-entry > svg {
   flex-shrink: 0;
@@ -2188,7 +2188,7 @@
   top: 0;
   left: 0;
   pointer-events: none;
-  background: var(--interaction-hover);
+  background: var(--state-hover);
 }
 .project-hover-highlight {
   z-index: 0;
@@ -2278,7 +2278,6 @@
   flex-wrap: wrap;
   justify-content: center;
   gap: 8px;
-  --button-secondary-bg: var(--surface-tertiary);
 }
 .inactive-project-banner > .project-lifecycle-feedback {
   width: 100%;
@@ -2352,7 +2351,7 @@
   color: var(--text-primary);
 }
 .repository-menu-option:focus-visible {
-  outline: 1px solid var(--focus-ring);
+  outline: 1px solid var(--border-focus);
 }
 .sync-status--header .sync-status-indicator {
   display: grid;
@@ -2362,12 +2361,12 @@
   border-radius: 50%;
 }
 .sync-status--header .sync-status-indicator.connected {
-  background: #4ade801f;
+  background: var(--green-surface);
 }
 .workspace-header .sync-status:hover,
 .workspace-header .workspace-repository-filter:hover,
 .workspace-header .workspace-repository-filter[data-state="open"] {
-  background: var(--interaction-hover);
+  box-shadow: inset 0 0 0 100vmax var(--state-hover);
 }
 .sidebar-collapsed .project-selector {
   flex: 1 1 auto;

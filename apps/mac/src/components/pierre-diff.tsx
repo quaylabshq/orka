@@ -14,14 +14,14 @@ registerCustomTheme("orka-dark", async () => ({
   colors: {
     "editor.foreground": "var(--text-primary)",
     "editor.background": "var(--surface-tertiary)",
-    "terminal.ansiRed": "var(--diff-removed)",
-    "terminal.ansiGreen": "var(--diff-added)",
+    "terminal.ansiRed": "var(--red-text)",
+    "terminal.ansiGreen": "var(--green-text)",
   },
   tokenColors: [
     { scope: ["comment"], settings: { foreground: "var(--text-tertiary)" } },
     {
       scope: ["string", "markup.inline"],
-      settings: { foreground: "var(--code-string)" },
+      settings: { foreground: "var(--brand-copper)" },
     },
     {
       scope: [
@@ -34,7 +34,7 @@ registerCustomTheme("orka-dark", async () => ({
         "markup.heading",
         "meta.mapping.key.yaml",
       ],
-      settings: { foreground: "var(--code-keyword)" },
+      settings: { foreground: "var(--blue-text)" },
     },
     {
       scope: [
@@ -42,13 +42,13 @@ registerCustomTheme("orka-dark", async () => ({
         "punctuation.definition.heading.markdown",
         "punctuation.definition.list.begin.markdown",
       ],
-      settings: { foreground: "var(--code-punctuation)" },
+      settings: { foreground: "var(--text-tertiary)" },
     },
     { scope: "markup.bold", settings: { fontStyle: "bold" } },
     { scope: "markup.italic", settings: { fontStyle: "italic" } },
     {
       scope: "markup.underline.link",
-      settings: { foreground: "var(--code-keyword)", fontStyle: "underline" },
+      settings: { foreground: "var(--blue-text)", fontStyle: "underline" },
     },
   ],
 }));
@@ -74,24 +74,24 @@ const options: FileDiffOptions<undefined, undefined> = {
       --diffs-gap-block: 0px;
       --diffs-gap-inline: 12px;
       --diffs-bg-context-override: var(--surface-tertiary);
-      --diffs-bg-context-gutter-override: var(--interaction-hover);
-      --diffs-bg-separator-override: var(--interaction-hover);
+      --diffs-bg-context-gutter-override: var(--border-default);
+      --diffs-bg-separator-override: var(--border-default);
       --diffs-fg-number-override: var(--text-tertiary);
-      --diffs-addition-color-override: var(--diff-added);
-      --diffs-deletion-color-override: var(--diff-removed);
-      --diffs-bg-addition-emphasis-override: var(--diff-added-emphasis);
-      --diffs-bg-deletion-emphasis-override: var(--diff-removed-emphasis);
+      --diffs-addition-color-override: var(--green-text);
+      --diffs-deletion-color-override: var(--red-text);
+      --diffs-bg-addition-emphasis-override: var(--green-surface);
+      --diffs-bg-deletion-emphasis-override: var(--red-surface);
     }
     [data-code] { padding-block: 0; }
     [data-column-number] { font-size: 12px; }
-    [data-line-type="change-addition"] { background-color: var(--diff-added-bg); }
-    [data-line-type="change-deletion"] { background-color: var(--diff-removed-bg); }
-    [data-column-number][data-line-type="change-addition"] { color: var(--diff-added); }
-    [data-column-number][data-line-type="change-deletion"] { color: var(--diff-removed); }
-    [data-line-type="change-addition"] [data-diff-span] { background-color: var(--diff-added-emphasis); }
-    [data-line-type="change-deletion"] [data-diff-span] { background-color: var(--diff-removed-emphasis); }
+    [data-line-type="change-addition"] { background-color: var(--green-surface); }
+    [data-line-type="change-deletion"] { background-color: var(--red-surface); }
+    [data-column-number][data-line-type="change-addition"] { color: var(--green-text); }
+    [data-column-number][data-line-type="change-deletion"] { color: var(--red-text); }
+    [data-line-type="change-addition"] [data-diff-span] { background-color: var(--green-surface); }
+    [data-line-type="change-deletion"] [data-diff-span] { background-color: var(--red-surface); }
     [data-separator] { font-size: 12px; }
-    [data-expand-button]:focus-visible { outline: 1px solid var(--focus-ring); outline-offset: -2px; }
+    [data-expand-button]:focus-visible { outline: 1px solid var(--border-focus); outline-offset: -2px; }
   `,
   onPostRender(node, _instance, phase) {
     if (phase === "unmount") return;

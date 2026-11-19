@@ -8,7 +8,7 @@
   );
   overflow-y: auto;
   padding: 5px;
-  border: 1px solid var(--surface-stroke);
+  border: 1px solid var(--border-default);
   border-radius: var(--radius-control);
   background: var(--surface-secondary);
   color: var(--text-primary);
@@ -38,7 +38,7 @@
 }
 
 .item-menu-action[data-danger]:not([data-disabled]) {
-  color: var(--text-danger);
+  color: var(--red-text);
 }
 
 .item-menu-label {
@@ -60,7 +60,7 @@
 .item-menu-separator {
   height: 1px;
   margin: 5px 4px;
-  background: var(--surface-stroke);
+  background: var(--border-default);
 }
 
 .resource-item-shell {
@@ -118,7 +118,7 @@
   flex: 0 0 84px;
   overflow: hidden;
   padding: 12px;
-  border: 1px solid var(--surface-stroke);
+  border: 1px solid var(--border-default);
   border-radius: var(--radius-control);
   background: var(--surface-secondary);
 }
@@ -206,7 +206,7 @@
   flex-direction: column;
   min-height: 78px;
   overflow: hidden;
-  border: 1px solid var(--surface-stroke);
+  border: 1px solid var(--border-default);
   border-radius: var(--radius-control);
 }
 
@@ -246,7 +246,7 @@
   align-items: flex-start;
   gap: 8px;
   padding: 10px 12px;
-  border-top: 1px solid var(--surface-stroke);
+  border-top: 1px solid var(--border-default);
   font-size: var(--body-xs-font-size);
   line-height: var(--body-xs-line-height);
 }
@@ -254,7 +254,7 @@
 .resource-command-files:focus-visible,
 .resource-command-paths ul:focus-visible,
 .resource-command-workspace:focus-visible {
-  outline: 2px solid var(--focus-ring);
+  outline: 2px solid var(--border-focus);
   outline-offset: -2px;
 }
 
@@ -286,7 +286,7 @@
   overflow-y: auto;
   margin: 8px 0 0;
   padding: 10px 12px;
-  border: 1px solid var(--surface-stroke);
+  border: 1px solid var(--border-default);
   border-radius: var(--radius-control);
   color: var(--text-secondary);
   font-size: var(--body-xs-font-size);
@@ -302,7 +302,7 @@
 .resource-command-progress {
   flex: 0 0 84px;
   padding: 12px;
-  border: 1px solid var(--surface-stroke);
+  border: 1px solid var(--border-default);
   border-radius: var(--radius-control);
   background: var(--surface-tertiary);
 }
@@ -354,7 +354,7 @@
   overflow: hidden;
   margin-top: 12px;
   border-radius: 999px;
-  background: var(--surface-stroke);
+  background: var(--border-default);
 }
 
 .resource-command-progress-track > span {
@@ -395,7 +395,7 @@
 }
 
 .modal.resource-command-dialog p[role="alert"] {
-  color: var(--text-danger);
+  color: var(--red-text);
 }
 
 .modal.resource-command-dialog .actions {
@@ -403,7 +403,7 @@
   justify-content: space-between;
   margin-top: 16px;
   padding-top: 16px;
-  border-top: 1px solid var(--surface-stroke);
+  border-top: 1px solid var(--border-default);
 }
 
 .resource-command-main-actions {
@@ -430,7 +430,7 @@
 
 /* Ring the item a context menu belongs to, as Finder does. */
 [data-item-menu-open]:not(.resource-detail, tr) {
-  outline: 2px solid var(--focus-ring);
+  outline: 2px solid var(--border-focus);
   outline-offset: -2px;
 }
 

@@ -193,3 +193,65 @@ test("Home and Skills placeholders stop breathing when reduced motion changes", 
     await expectFadingPlaceholder(placeholder);
   }
 });
+
+test("Sessions reuses ready and in-flight Home titles and retries failed reads", async ({
+  page,
+}) => {
+  await metadataLoadingFixture(page);
+  const titleCalls = () =>
+    page.evaluate(() =>
+      (window as unknown as MetadataWindow).metadata.calls
+        .filter(({ command }) => command === "session_display_title")
+        .map(({ id }) => id),
+    );
+  await page.evaluate(() =>
+    (window as unknown as MetadataWindow).metadata.finishes["session-1"](),
+  );
+  await expect(
+    page.getByRole("button", { name: /^Session decisions 1/ }),
+  ).toBeVisible();
+
+  const sessions = page.getByRole("button", { name: /^Sessions/ });
+  await sessions.click();
+  const table = page.getByRole("table");
+  await expect(
+    table.getByRole("button", { name: "Session decisions 1", exact: true }),
+  ).toBeEnabled();
+  await expect(
+    table.getByRole("button", { name: "Project session 2", exact: true }),
+  ).toBeEnabled();
+  await expect(table).toHaveAttribute("aria-busy", "true");
+
+  await expect.poll(titleCalls).toContain("session-3");
+  expect((await titleCalls()).sort()).toEqual([
+    "session-1",
+    "session-2",
+    "session-3",
+  ]);
+  await page.evaluate(() => {
+    const state = (window as unknown as MetadataWindow).metadata;
+    state.failIds.push("session-2");
+    state.finishes["session-2"]();
+    state.finishes["session-3"]();
+    state.held = false;
+  });
+  await expect(
+    page.getByText("Some session titles are unavailable."),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Retry", exact: true }).click();
+  await expect(table).toHaveAttribute("aria-busy", "false");
+  await expect(table).toContainText("Session decisions 2");
+  await expect(
+    page.getByText("Some session titles are unavailable."),
+  ).toHaveCount(0);
+
+  await page.getByRole("button", { name: /^Home/ }).click();
+  await sessions.click();
+  await expect(table).toHaveAttribute("aria-busy", "false");
+  expect((await titleCalls()).sort()).toEqual([
+    "session-1",
+    "session-2",
+    "session-2",
+    "session-3",
+  ]);
+});
