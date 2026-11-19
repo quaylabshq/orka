@@ -1,6 +1,7 @@
 use crate::{
     db::{self, Result},
     indexer, memory_context, packages, projects, sync,
+    sync_queue::{Priority, SyncQueue},
 };
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
@@ -328,6 +329,84 @@ pub fn detach_legacy_memory(db: &Connection, project: &Value) -> Result<()> {
     }
     Ok(())
 }
+/// The one-time teardown for a project this Mac can no longer reach. Every
+/// queued upload that could still become a private draft is preserved by
+/// `reset`, then the remaining queue and per-project sync state are cleared.
+/// `detachedAt` makes repeated catalog merges a no-op.
+pub(crate) trait DetachProject {
+    fn detach_project(&self, project_id: &str) -> Result<()>;
+}
+
+impl DetachProject for Connection {
+    fn detach_project(&self, project_id: &str) -> Result<()> {
+        let project = db::rows(
+            self,
+            "SELECT value FROM projects WHERE id=?",
+            &[&project_id],
+        )?
+        .into_iter()
+        .next()
+        .ok_or("Project unavailable")?;
+        if project["detachedAt"].is_string() {
+            return Ok(());
+        }
+        reset(self, project_id, &json!([]))?;
+        // `reset` captures queue entries that still have a local resource row.
+        // Preserve anything else before clearing the project's queue outright.
+        for queued in db::rows(self,"SELECT json_object('id',id,'path',path,'value',json(value)) FROM outbox WHERE project=?", &[&project_id])? {
+            let resource_id = queued["value"]["resource"]["resourceId"]
+                .as_str()
+                .or_else(|| queued["value"]["resourceId"].as_str());
+            let paths = match resource_id {
+                Some(id) => indexer::binding(self, id)?["paths"].clone(),
+                None => Value::Null,
+            };
+            preserve_queued(self, &project, &queued, &paths)?;
+        }
+        self.execute("DELETE FROM outbox WHERE project=?", [project_id])
+            .map_err(|e| e.to_string())?;
+        self.execute("DELETE FROM sync_queue WHERE project=?", [project_id])
+            .map_err(|e| e.to_string())?;
+        self.execute("DELETE FROM cursors WHERE project=?", [project_id])
+            .map_err(|e| e.to_string())?;
+        for prefix in ["governance", "requests", "policyRevision", "presence"] {
+            self.execute(
+                "DELETE FROM meta WHERE key=?",
+                [format!("{prefix}:{project_id}")],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        self.execute(
+            "UPDATE projects SET value=json_set(value,'$.revoked',json('true'),'$.detachedAt',json_quote(?)) WHERE id=?",
+            params![db::now(), project_id],
+        )
+        .map_err(|e| e.to_string())?;
+        crate::env::clear();
+        Ok(())
+    }
+}
+
+fn preserve_queued(db: &Connection, project: &Value, queued: &Value, paths: &Value) -> Result<()> {
+    if queued["value"]["resource"]["files"].is_array() {
+        capture(db, project, &queued["value"]["resource"], paths)?;
+    } else if matches!(
+        queued["path"].as_str(),
+        Some("/v2/sessions/copy" | "/v2/sessions/resolve")
+    ) {
+        let snapshot = sync::queued_session_snapshot(db, &queued["value"])?;
+        if queued["path"] == "/v2/sessions/resolve" && snapshot.is_none() {
+            return Err(
+                "The queued session selection is unavailable; local work was preserved".into(),
+            );
+        }
+        if let Some(snapshot) = snapshot {
+            capture(db, project, &snapshot, paths)?;
+        }
+    }
+    sync::clear_session_copy(db, queued["id"].as_str().ok_or("Missing request ID")?)?;
+    Ok(())
+}
+
 pub fn reset(db: &Connection, project_id: &str, events: &Value) -> Result<()> {
     let project = db::rows(db, "SELECT value FROM projects WHERE id=?", &[&project_id])?
         .into_iter()
@@ -431,14 +510,7 @@ fn reset_source(db: &Connection, project_id: &str, events: &Value, p: &Value) ->
         let b = indexer::binding(db, id)?;
         crate::local_resources::remember_origin(db, p, &r, &b)?;
         for queued in db::rows(db,"SELECT json_object('id',id,'path',path,'value',json(value)) FROM outbox WHERE project=? AND (json_extract(value,'$.resource.resourceId')=? OR json_extract(value,'$.resourceId')=?)",&[&project_id,&id,&id])? {
-            if queued["value"]["resource"]["files"].is_array() {
-                capture(db,p,&queued["value"]["resource"],&b["paths"])?;
-            } else if queued["path"] == "/v2/sessions/copy" {
-                if let Some(snapshot) = sync::queued_session_snapshot(db, &queued["value"])? {
-                    capture(db,p,&snapshot,&b["paths"])?;
-                }
-                sync::clear_session_copy(db, queued["id"].as_str().ok_or("Missing request ID")?)?;
-            }
+            preserve_queued(db, p, &queued, &b["paths"])?;
             db.execute("DELETE FROM outbox WHERE id=?",[queued["id"].as_str()]).map_err(|e|e.to_string())?;
         }
         // Capture dirty local files before removing Orka-managed copies from agent discovery.
@@ -475,6 +547,19 @@ fn reset_source(db: &Connection, project_id: &str, events: &Value, p: &Value) ->
                     }
                     .map_err(|e| e.to_string())?;
                 }
+            }
+        }
+        let user = db::get(db, "user")?;
+        for conflict in db::rows(
+            db,
+            "SELECT value FROM conflicts WHERE project=? AND json_extract(value,'$.resourceId')=?",
+            &[&project_id, &id],
+        )? {
+            // A rejected upload has left the outbox already. Keep this user's
+            // candidate before access teardown drops the conflict cache, but
+            // never turn another member's candidate into private local work.
+            if user.is_string() && conflict["author"] == user {
+                capture(db, p, &conflict["candidate"], &b["paths"])?;
             }
         }
         for table in ["resources", "bindings"] {
@@ -905,7 +990,7 @@ pub async fn governance_command(action: String, input: Value) -> Result<Value> {
             | "policy-operation"
             | "migration-preview"
     ) {
-        db::set(&db, "syncRequest", &json!(Uuid::new_v4().to_string()))?;
+        SyncQueue::request(&db, project_id, Priority::User, "governance")?;
     }
     Ok(result)
 }

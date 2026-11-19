@@ -271,7 +271,7 @@ for (const code of [403, 409])
           exact: true,
         }),
       ).toHaveCount(0);
-      await expect(button(settings, "Add Member")).toHaveCount(0);
+      await expect(button(settings, "Invite member")).toHaveCount(0);
     } else
       await expect(
         settings.getByRole("combobox", {

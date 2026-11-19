@@ -1,5 +1,5 @@
-import { test, expect } from "@playwright/test";
-import { settingsFixture } from "./fixtures/settings.js";
+import { test, expect, type Page } from "@playwright/test";
+import { settingsCalls, settingsFixture } from "./fixtures/settings.js";
 
 for (const [role, width, height] of [
   ["owner", 1160, 768],
@@ -97,6 +97,154 @@ test("a confirmed missing email does not revive the cached account email", async
   });
   await expect(self.locator("p")).toHaveCount(0);
   await expect(self.getByText("Morgan Taylor", { exact: true })).toBeVisible();
+});
+
+test("Members uses invite wording for the invite action and pending invites", async ({
+  page,
+}) => {
+  const settings = await settingsFixture(page, {
+    pendingInvites: [
+      { email: "teammate@example.com", expiresAt: "2026-11-14T12:00:00Z" },
+    ],
+  });
+  await settings.getByRole("button", { name: "Members", exact: true }).click();
+  const pending = settings.getByRole("region", {
+    name: "Pending invites",
+    exact: true,
+  });
+  await expect(
+    pending.getByRole("heading", { name: "Pending invites (1)", exact: true }),
+  ).toBeVisible();
+  await expect(settings.getByText("Pending invitations")).toHaveCount(0);
+  await expect(
+    settings.getByRole("button", { name: "Add Member", exact: true }),
+  ).toHaveCount(0);
+  await settings
+    .getByRole("button", { name: "Invite member", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog", {
+    name: "Invite member",
+    exact: true,
+  });
+  await expect(dialog).toBeVisible();
+  await expect(
+    dialog.getByRole("button", { name: "Copy invite link", exact: true }),
+  ).toBeVisible();
+  await expect(
+    dialog.getByRole("button", { name: "Copy joining link", exact: true }),
+  ).toHaveCount(0);
+});
+
+const email = "teammate@example.com";
+const invites = [{ email, expiresAt: "2026-11-14T12:00:00Z" }];
+const pendingRow = (settings: Awaited<ReturnType<typeof settingsFixture>>) =>
+  settings
+    .getByRole("region", { name: "Pending invites", exact: true })
+    .getByRole("listitem")
+    .filter({ hasText: email });
+const inviteAction = async (page: Page, action: "Resend" | "Revoke") => {
+  await page
+    .getByRole("button", { name: `Actions for invite to ${email}` })
+    .click();
+  await page.getByRole("menuitem", { name: action, exact: true }).click();
+};
+const inviteActions = async (page: Page) => {
+  await page
+    .getByRole("button", { name: `Actions for invite to ${email}` })
+    .click();
+  const items = await page.getByRole("menuitem").allInnerTexts();
+  await page.keyboard.press("Escape");
+  return items;
+};
+
+test("Resend sends the invite again to the same address", async ({ page }) => {
+  const settings = await settingsFixture(page, {
+    emailInvites: true,
+    pendingInvites: invites,
+  });
+  await settings.getByRole("button", { name: "Members", exact: true }).click();
+  await inviteAction(page, "Resend");
+  await expect(settings.getByRole("status")).toHaveText(
+    `Invite sent again to ${email}.`,
+  );
+  const sends = (await settingsCalls(page)).filter(
+    (call) => call.command === "cloud_action" && call.args.action === "invite",
+  );
+  expect(sends.map((call) => call.args.input.email)).toEqual([email]);
+  await expect(pendingRow(settings).getByText("Pending")).toBeVisible();
+});
+
+test("Resend shows the service's rate limit message", async ({ page }) => {
+  const message =
+    "An invite was just sent to this address. Wait a minute before sending it again.";
+  const settings = await settingsFixture(page, {
+    pendingInvites: invites,
+    emailInviteError: `429: ${message}`,
+  });
+  await settings.getByRole("button", { name: "Members", exact: true }).click();
+  await inviteAction(page, "Resend");
+  await expect(settings.getByRole("alert")).toHaveText(message);
+  await expect(pendingRow(settings).getByText("Pending")).toBeVisible();
+});
+
+test("an unconfirmed delivery keeps Resend without claiming the email was not delivered", async ({
+  page,
+}) => {
+  const settings = await settingsFixture(page, {
+    pendingInvites: invites,
+    emailInviteError:
+      "503: Invitation email delivery could not be confirmed. Try again in a minute or use a joining link.",
+  });
+  await settings.getByRole("button", { name: "Members", exact: true }).click();
+  await inviteAction(page, "Resend");
+  await expect(settings.getByRole("alert")).toHaveText(
+    "Invitation email delivery could not be confirmed. Try again in a minute or use a joining link.",
+  );
+  await expect(
+    pendingRow(settings).getByText("Delivery unconfirmed", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    pendingRow(settings).getByText("Not delivered", { exact: true }),
+  ).toHaveCount(0);
+  expect(await inviteActions(page)).toEqual(["Resend", "Revoke"]);
+});
+
+test("Revoke asks first, then removes the invite", async ({ page }) => {
+  const settings = await settingsFixture(page, { pendingInvites: invites });
+  await settings.getByRole("button", { name: "Members", exact: true }).click();
+  await inviteAction(page, "Revoke");
+  const dialog = page.getByRole("dialog", { name: "Revoke invite?" });
+  await dialog.getByRole("button", { name: "Stay" }).click();
+  await expect(pendingRow(settings)).toBeVisible();
+  await inviteAction(page, "Revoke");
+  await dialog.getByRole("button", { name: "Revoke invite" }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(settings.getByRole("status")).toHaveText(
+    `Invite to ${email} revoked.`,
+  );
+  await expect(
+    settings.getByRole("region", { name: "Pending invites" }),
+  ).toHaveCount(0);
+});
+
+test("an older service hides Revoke and asks for an update", async ({
+  page,
+}) => {
+  const settings = await settingsFixture(page, {
+    pendingInvites: invites,
+    revokeMissing: true,
+  });
+  await settings.getByRole("button", { name: "Members", exact: true }).click();
+  await inviteAction(page, "Revoke");
+  await page
+    .getByRole("dialog", { name: "Revoke invite?" })
+    .getByRole("button", { name: "Revoke invite" })
+    .click();
+  await expect(settings.getByRole("alert")).toContainText(
+    "Revoking invites needs an updated Orka service.",
+  );
+  await expect(pendingRow(settings)).toBeVisible();
+  expect(await inviteActions(page)).toEqual(["Resend"]);
 });
 
 test("a policy change during the initial Members read obtains the latest catalog", async ({

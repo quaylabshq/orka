@@ -51,11 +51,17 @@ Project invites also have a browser entry point, separate from authentication.
 With `PUBLIC_URL` configured, `/v2/invites` retains `token` and adds
 `url: <PUBLIC_URL>/join/<token>`. The anonymous GET/HEAD preview never consumes
 the invite or creates membership; it displays an escaped project name and an
-explicit **Open Orka** link carrying the configured service origin. No script,
+explicit **Join project** link carrying the configured service origin. No script,
 third-party resource, caching, referrer, or indexing is allowed. Invalid links
 return 400 and expired, consumed, or archived-project invites return 410.
 Only authenticated `/v2/join` redeems an invite, with the existing single-use,
 expiry, governance and membership rules. Both editions share the implementation.
+Signed-out desktop clients can preview a usable invite with
+`POST /v2/invites/preview` and `{token}`. It returns `{projectName, expiresAt}`;
+malformed tokens return 400 and every unusable state returns the same 410, so it
+cannot be used to probe tokens. The token stays in the request body, so it never
+appears in a URL or access log. The response omits the invited email, inviter and
+project id, and previewing never consumes the invite.
 Without `PUBLIC_URL`, responses remain token-only for desktop compatibility.
 Deploy this backend with the updated desktop for service-bound browser handoff;
 older desktops continue using `token`. No migration or provider changes are needed.
@@ -141,7 +147,9 @@ services use `RESEND_API_KEY`/`RESEND_FROM`; self-hosted services use `SMTP_HOST
 `SMTP_PORT` (default 587), `SMTP_FROM`, and optional `SMTP_USER`/`SMTP_PASSWORD`. The shared Compose definition passes
 SMTP settings to both GoTrue and the API. Port 465 uses implicit TLS; other ports
 negotiate STARTTLS when available. No new provider keys or desktop secrets are
-introduced, and project invitations do not require magic-link sign-in.
+introduced, and project invitations do not require magic-link sign-in. See
+[email delivery](email-delivery.md) for the settings that select the provider and
+from address, and for the DNS records receiving mail providers check.
 
 Migration `003_email_invitations.sql` adds a nullable recipient and delivery
 cooldown records. Existing links keep a null recipient. Email invitations require
@@ -149,10 +157,12 @@ the matching confirmed account email from GoTrue, expire after 24 hours, and are
 consumed only by authenticated joining after sharing review. Previewing an email
 link does not accept it. Send attempts are limited to one per recipient/project per
 minute and 30 per project per hour; consumption does not reset them. Invitations
-and cooldowns commit before contacting the provider. Failed or ambiguous sends
-retain the recipient-bound token until expiry so an accepted email cannot become
-invalid when the requester disconnects. Retry after the cooldown or use a joining
-link. Provider acceptance does not prove mailbox delivery.
+and cooldowns commit before contacting the provider. A resend replaces older links
+only after the provider accepts it. If the provider rejects the resend, the old
+links remain valid and the rejected link is removed. If acceptance is unclear,
+both links stay valid until expiry or a successful resend. A failed first send
+keeps its token. Retry after the cooldown or use a joining link. Provider
+acceptance does not prove mailbox delivery.
 
 Invitations retain the configured signup policy and do not provision or merge
 accounts. With signup disabled, operators still create accounts. Deploy the Go

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { Snapshot, SyncProgress } from "../types.js";
+import type { Snapshot, SyncProgress, SyncQueueEntry } from "../types.js";
 import type { ActionFeedback } from "./use-resource-actions.js";
+import { queueEntries } from "./sync-queue.js";
 
 const empty: Snapshot = {
   user: null,
@@ -23,6 +24,11 @@ const empty: Snapshot = {
 /** Reads native state and serializes user actions independently of navigation. */
 export function useWorkspace() {
   const [state, setState] = useState(empty);
+  const [queue, setQueue] = useState<{
+    scope: string;
+    entries: SyncQueueEntry[];
+  } | null>(null);
+  const queueGeneration = useRef(0);
   const [hasSnapshot, setHasSnapshot] = useState(false);
   const [project, setProject] = useState("");
   const [error, setError] = useState("");
@@ -65,7 +71,8 @@ export function useWorkspace() {
       setHasSnapshot(true);
       setRefreshError("");
       setProject((selected) =>
-        next.projects.some((item) => item.id === selected)
+        next.projects.some((item) => item.id === selected) ||
+        (next.inactive ?? []).some((item) => item.id === selected)
           ? selected
           : (next.projects[0]?.id ?? ""),
       );
@@ -164,6 +171,36 @@ export function useWorkspace() {
   const user = state.user;
   const apiUrl = state.config?.apiUrl;
   const running = state.daemon?.running;
+  const queueScope = JSON.stringify([profile, user, apiUrl, running]);
+  const queueScopeRef = useRef(queueScope);
+  queueScopeRef.current = queueScope;
+  const refreshQueue = useCallback(async () => {
+    if (
+      !active.current ||
+      !user ||
+      !running ||
+      queueScopeRef.current !== queueScope
+    )
+      return;
+    const current = ++queueGeneration.current;
+    try {
+      const next = queueEntries(await invoke("sync_queue_state"));
+      if (
+        !active.current ||
+        current !== queueGeneration.current ||
+        queueScopeRef.current !== queueScope
+      )
+        return;
+      setQueue((previous) =>
+        previous?.scope === queueScope &&
+        JSON.stringify(previous.entries) === JSON.stringify(next)
+          ? previous
+          : { scope: queueScope, entries: next },
+      );
+    } catch {
+      // The queue panel is descriptive; sync progress still drives the status.
+    }
+  }, [queueScope, user, running]);
   useEffect(() => {
     if (!user || !running) return;
     let stopped = false;
@@ -174,32 +211,37 @@ export function useWorkspace() {
           user: string | null;
           progress: SyncProgress | null;
         }>("sync_progress");
-        if (stopped || result.user !== user || result.progress === undefined)
-          return;
-        setState((current) =>
-          current.profile === profile &&
-          current.user === user &&
-          current.config?.apiUrl === apiUrl &&
-          JSON.stringify(current.syncProgress ?? null) !==
-            JSON.stringify(result.progress)
-            ? { ...current, syncProgress: result.progress }
-            : current,
-        );
+        if (!stopped && result.user === user && result.progress !== undefined)
+          setState((current) =>
+            current.profile === profile &&
+            current.user === user &&
+            current.config?.apiUrl === apiUrl &&
+            JSON.stringify(current.syncProgress ?? null) !==
+              JSON.stringify(result.progress)
+              ? { ...current, syncProgress: result.progress }
+              : current,
+          );
       } catch {
         // The full snapshot poll still refreshes state and reports read errors.
-      } finally {
-        if (!stopped) timer = window.setTimeout(() => void poll(), 500);
       }
+      // The queue rides the same poll and pauses with the window.
+      if (!document.hidden && !stopped) await refreshQueue();
+      // Schedule after completion so a slow native read cannot pile up polls.
+      if (!stopped) timer = window.setTimeout(() => void poll(), 500);
     };
     void poll();
     return () => {
       stopped = true;
+      queueGeneration.current += 1;
       window.clearTimeout(timer);
+      setQueue(null);
     };
-  }, [profile, user, apiUrl, running]);
+  }, [profile, user, apiUrl, running, refreshQueue]);
 
   return {
     state,
+    queue: queue?.scope === queueScope ? queue.entries : [],
+    refreshQueue,
     hasSnapshot,
     project,
     setProject,

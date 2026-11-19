@@ -20,6 +20,8 @@ assert.deepEqual(
     "005_source_removal.sql",
     "006_github_authorization_completion.sql",
     "007_session_retention.sql",
+    "008_project_soft_delete.sql",
+    "009_project_tombstones.sql",
   ],
 );
 const forbidden = files.filter((path) => {

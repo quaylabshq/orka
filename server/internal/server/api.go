@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Authenticate func(context.Context, string) (string, error)
@@ -43,16 +44,20 @@ func readJSON(w http.ResponseWriter, r *http.Request) (any, error) {
 	return decode(data)
 }
 func writeError(w http.ResponseWriter, err error) {
-	status, message := 500, "Service unavailable"
+	status, message, code := 500, "Service unavailable", ""
 	var failure *HTTPError
 	if errors.As(err, &failure) {
-		status = failure.Status
+		status, code = failure.Status, failure.Code
 		if status != 500 {
 			message = failure.Message
 		}
 	}
 	w.WriteHeader(status)
-	_, _ = w.Write(jsonBytes(Object{"error": message}))
+	body := Object{"error": message}
+	if code != "" {
+		body["code"] = code
+	}
+	_, _ = w.Write(jsonBytes(body))
 	if status == 500 {
 		log.Print("request_failed")
 	}
@@ -123,7 +128,8 @@ func (a *API) handle(w http.ResponseWriter, r *http.Request) (any, bool, error) 
 	}
 	if path == "/email-template" && method == http.MethodGet {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, err := w.Write([]byte("<html><body>" + desktopEmailHTML("{{ .ConfirmationURL }}", "{{ .Token }}") + "</body></html>"))
+		body := desktopEmailHTML("{{ .ConfirmationURL }}", "{{ .Token }}")
+		_, err := io.WriteString(w, body.document())
 		return nil, true, err
 	}
 	if path == "/health" {
@@ -132,6 +138,10 @@ func (a *API) handle(w http.ResponseWriter, r *http.Request) (any, bool, error) 
 	}
 	if strings.HasPrefix(path, "/join/") && a.Settings.PublicURL != "" {
 		return nil, true, a.invitePage(w, r)
+	}
+	if path == "/v2/invites/preview" {
+		result, err := a.previewInvite(w, r)
+		return result, false, err
 	}
 	if path == "/auth/confirm" && a.AuthURL != "" {
 		if method == http.MethodGet && a.Settings.DashboardURL != "" {
@@ -167,7 +177,7 @@ func (a *API) handle(w http.ResponseWriter, r *http.Request) (any, bool, error) 
 		}
 		return parsed, nil
 	}
-	scoped := []string{"/v2/sync/push", "/v2/sharing/selected", "/v2/sessions/resolve", "/v2/sessions/copy", "/v2/presence", "/v2/env/action", "/v2/governance/action", "/v2/projects/action", "/v2/projects/sources", "/v2/projects/sources/remove", "/v2/invites", "/v2/github/action"}
+	scoped := []string{"/v2/sync/push", "/v2/sharing/selected", "/v2/sessions/resolve", "/v2/sessions/copy", "/v2/presence", "/v2/env/action", "/v2/governance/action", "/v2/projects/action", "/v2/projects/sources", "/v2/projects/sources/remove", "/v2/invites", "/v2/invites/revoke", "/v2/github/action"}
 	project := r.URL.Query().Get("projectId")
 	if strings.HasPrefix(path, "/v2/blobs/") {
 		parts := strings.Split(path, "/")
@@ -196,7 +206,7 @@ func (a *API) handle(w http.ResponseWriter, r *http.Request) (any, bool, error) 
 			return nil, false, bad("Invalid request")
 		}
 		_, err = s.read(r.Context(), func(q *Queries) any {
-			row := q.One("select 1 from orka.projects p join orka.members m on m.project_id=p.id where p.id=$1 and m.user_id=$2 and p.governed", project, user)
+			row := q.One("select 1 from orka.projects p join orka.members m on m.project_id=p.id where p.id=$1 and m.user_id=$2 and p.governed and p.archived_at is null", project, user)
 			q.Require(row == nil, 409, "Update Orka to use this project's resource permissions")
 			return nil
 		})
@@ -266,7 +276,9 @@ func (a *API) handle(w http.ResponseWriter, r *http.Request) (any, bool, error) 
 		}
 		return tx(func(q *Queries) any { return s.putProfile(q, user, input) })
 	case path == "/v2/projects/capabilities" && method == http.MethodGet:
-		return Object{"lifecycle": 1, "governance": 1, "sources": 1, "sourcesRemoval": 1, "rename": 1, "rolePolicies": 1, "policyOperations": 1, "deviceHardware": 1, "selectedSharing": 1, "resourceDeletion": 1, "sessionLatestOnly": 1}, false, nil
+		return read(func(q *Queries) any {
+			return Object{"lifecycle": 1, "softDelete": 1, "projectTombstones": 1, "projectRestoreWindowDays": projectRestoreWindowDays(q), "governance": 1, "sources": 1, "sourcesRemoval": 1, "rename": 1, "rolePolicies": 1, "policyOperations": 1, "deviceHardware": 1, "selectedSharing": 1, "resourceDeletion": 1, "sessionLatestOnly": 1, "sessionUploadReconcile": 1}
+		})
 	case path == "/v2/projects/sources/remove" && method == http.MethodPost:
 		input, err := contract("removeProjectSource")
 		if err != nil {
@@ -294,25 +306,27 @@ func (a *API) handle(w http.ResponseWriter, r *http.Request) (any, bool, error) 
 		if err != nil {
 			return nil, false, err
 		}
-		shape := map[string]Field{"requestId": uuidField(), "projectId": uuidField(), "action": enumField("archive", "restore", "delete", "rename"), "expectedRevision": intField(0), "confirmation": optional(strField(0, 100)), "name": optional(trimmed(strField(1, 100)))}
-		if text(field(raw, "action")) == "set-remote" {
-			shape = map[string]Field{"action": enumField("set-remote"), "projectId": uuidField(), "remoteKey": contractField("digest")}
+		action := text(field(raw, "action"))
+		var input Object
+		if action == "set-remote" {
+			input, err = parseObject(raw, map[string]Field{"action": enumField("set-remote"), "projectId": uuidField(), "remoteKey": contractField("digest")})
+		} else {
+			input, err = contract("projectLifecycleAction")
 		}
-		input, err := parseObject(raw, shape)
 		if err != nil {
 			return nil, false, err
 		}
-		if text(input["action"]) != "set-remote" && ((text(input["action"]) == "rename") != (input["name"] != nil)) {
+		if (action == "rename") != (input["name"] != nil) {
 			return nil, false, bad("Invalid request")
 		}
 		result, handled, err := tx(func(q *Queries) any { return s.mutateProject(q, user, input) })
-		if err == nil && text(input["action"]) == "delete" {
+		if err == nil && action == "purge" {
 			s.cleanupBlobs(r.Context())
 		}
 		return result, handled, err
 	case path == "/v2/projects" && method == http.MethodGet:
 		return read(func(q *Queries) any {
-			return values(s.listProjects(q, user, r.URL.Query().Get("includeArchived") == "true"))
+			return values(s.projectCatalog(q, user, r.URL.Query().Get("includeArchived") == "true", r.URL.Query().Get("projectLifecycle") == "1"))
 		})
 	case path == "/v2/projects" && method == http.MethodPost:
 		one := intField(1)
@@ -343,13 +357,53 @@ func (a *API) handle(w http.ResponseWriter, r *http.Request) (any, bool, error) 
 		// Provider acceptance must never precede the invitation's database commit.
 		invitation := object(result)
 		token := text(invitation["token"])
-		if err = a.sendInvitation(r.Context(), email, text(invitation["projectName"]), a.Settings.PublicURL+"/join/"+token, bytesHash([]byte(token))); err != nil {
+		expiresAt, err := time.Parse(time.RFC3339Nano, text(invitation["expiresAt"]))
+		if err != nil {
 			return nil, false, err
 		}
+		invite := invitationEmail{To: email, Project: text(invitation["projectName"]), Link: a.Settings.PublicURL + "/join/" + token, InviterName: text(invitation["inviterName"]), InviterEmail: text(invitation["inviterEmail"]), ExpiresAt: expiresAt}
+		hash := bytesHash([]byte(token))
+		deliveryErr := a.sendInvitation(r.Context(), invite, hash)
+		if previous := stringsOf(invitation["previousInviteHashes"]); len(previous) > 0 {
+			remove := previous
+			if deliveryErr != nil {
+				var rejection *invitationDeliveryRejected
+				if !errors.As(deliveryErr, &rejection) {
+					return nil, false, deliveryErr
+				}
+				remove = []string{hash}
+			}
+			// Finish a confirmed delivery or rejection even if the caller disconnects.
+			ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
+			defer cancel()
+			_, cleanupErr := s.transaction(ctx, func(q *Queries) any {
+				q.Exec("delete from orka.invites where token_hash=any($1)", remove)
+				return nil
+			})
+			if cleanupErr != nil {
+				if deliveryErr == nil {
+					return nil, false, cleanupErr
+				}
+				log.Print("rejected_invite_cleanup_failed")
+			}
+		}
+		if deliveryErr != nil {
+			return nil, false, deliveryErr
+		}
 		return Object{"sent": true, "email": email}, false, nil
+	case path == "/v2/invites/revoke" && method == http.MethodPost:
+		input, err := contract("revokeInvite")
+		if err != nil {
+			return nil, false, err
+		}
+		email, err := normalizeInvitationEmail(text(input["email"]))
+		if err != nil {
+			return nil, false, err
+		}
+		return tx(func(q *Queries) any { return s.revokeInvites(q, user, text(input["projectId"]), email) })
 	case path == "/v2/join" && method == http.MethodPost:
 		input, err := parse(map[string]Field{"token": strField(48, 48)})
-		if err != nil || !regexp.MustCompile(`^[a-f0-9]{48}$`).MatchString(text(input["token"])) {
+		if err != nil || !inviteToken.MatchString(text(input["token"])) {
 			return nil, false, bad("Invalid request")
 		}
 		return tx(func(q *Queries) any {
@@ -388,6 +442,12 @@ func (a *API) handle(w http.ResponseWriter, r *http.Request) (any, bool, error) 
 			return nil, false, err
 		}
 		return tx(func(q *Queries) any { return s.copySession(q, user, input) })
+	case path == "/v2/sessions/reconcile" && method == http.MethodPost:
+		input, err := parse(scopeShape(map[string]Field{"deviceId": uuidField(), "id": uuidField()}))
+		if err != nil {
+			return nil, false, err
+		}
+		return tx(func(q *Queries) any { return s.reconcileSessionUpload(q, user, input) })
 	case path == "/v2/sharing/selected" && method == http.MethodPost:
 		input, err := contract("change")
 		if err != nil {
@@ -491,17 +551,23 @@ func (a *API) createInvite(q *Queries, user, project, email string) any {
 	s, origin := a.Store, a.Settings.PublicURL
 	p := q.One("select name from orka.projects where id=$1 for update", project)
 	s.member(q, user, project)
-	if !q.Require(q.One("select 1 from orka.members m join orka.projects p on p.id=m.project_id where m.project_id=$1 and m.user_id=$2 and (m.role='owner' or (m.role='admin' and p.role_policies is not null))", project, user) != nil, 403, "Only project owners can invite members") {
+	if !q.Require(s.managesInvites(q, user, project), 403, "Only project owners can invite members") {
 		return nil
 	}
 	if email != "" {
 		if !q.Require(a.invitationEmailAvailable(), 409, "Email invitations are unavailable on this service. Use a joining link.") {
 			return nil
 		}
+		if !q.Require(q.One("select 1 from orka.members m join orka.env_profiles p on p.user_id=m.user_id where m.project_id=$1 and lower(p.email)=$2", project, email) == nil, 409, email+" is already a member of this project.") {
+			return nil
+		}
 		q.Exec("delete from orka.invitation_deliveries where project_id=$1 and created_at<=now()-interval '1 hour'", project)
 		recent := q.One("select 1 from orka.invitation_deliveries where project_id=$1 and email_hash=$2 and created_at>now()-interval '60 seconds'", project, bytesHash([]byte(email)))
+		if !q.Require(recent == nil, 429, "An invite was just sent to this address. Wait a minute before sending it again.") {
+			return nil
+		}
 		volume := q.One("select count(*) as count from orka.invitation_deliveries where project_id=$1", project)
-		if !q.Require(recent == nil && number(volume["count"]) < 30, 429, "Invitation limit reached. Wait before sending another email or use a joining link.") {
+		if !q.Require(number(volume["count"]) < 30, 429, "This project reached its hourly limit for email invites. Try again later or use a joining link.") {
 			return nil
 		}
 	}
@@ -510,13 +576,16 @@ func (a *API) createInvite(q *Queries, user, project, email string) any {
 		return nil
 	}
 	hash := bytesHash([]byte(token))
-	q.Exec("insert into orka.invites(token_hash,project_id,expires_at,email) values($1,$2,now()+interval '1 day',$3)", hash, project, choose(email == "", nil, email))
+	invite := q.One("insert into orka.invites(token_hash,project_id,expires_at,email) values($1,$2,now()+interval '1 day',$3) returning expires_at", hash, project, choose(email == "", nil, email))
 	if email != "" {
 		q.Exec("insert into orka.invitation_deliveries(token_hash,project_id,email_hash) values($1,$2,$3)", hash, project, bytesHash([]byte(email)))
 	}
 	s.appendLog(q, project, Object{"action": "invite.created", "actor": user}, true, nil)
 	if email != "" {
-		return Object{"token": token, "projectName": p["name"]}
+		inviter := q.One("select coalesce(profile.display_name,p.label) as name,p.email from orka.members m left join orka.env_profiles p on p.user_id=m.user_id left join orka.profiles profile on profile.user_id=m.user_id where m.user_id=$1 and m.project_id=$2", user, project)
+		// Remember which links this send can replace without touching later invites.
+		previous := q.One("select array(select token_hash from orka.invites where project_id=$1 and email=$2 and token_hash<>$3) as hashes", project, email, hash)
+		return Object{"token": token, "projectName": p["name"], "inviterName": inviter["name"], "inviterEmail": inviter["email"], "expiresAt": invite["expires_at"], "previousInviteHashes": previous["hashes"]}
 	}
 	result := Object{"token": token}
 	if origin != "" {
@@ -524,32 +593,124 @@ func (a *API) createInvite(q *Queries, user, project, email string) any {
 	}
 	return result
 }
-func (s *Store) joinProject(q *Queries, user, token string, supported bool, verifiedEmail func() (string, error)) any {
-	hash := bytesHash([]byte(token))
-	candidate := q.One("select project_id,email from orka.invites where token_hash=$1", hash)
-	if !q.Require(candidate != nil, 400, "Invite expired or already used") {
+
+// managesInvites reports whether user may send and revoke the project's
+// invites: the owner, or an admin when role policies are on.
+func (s *Store) managesInvites(q *Queries, user, project string) bool {
+	return q.One("select 1 from orka.members m join orka.projects p on p.id=m.project_id where m.project_id=$1 and m.user_id=$2 and (m.role='owner' or (m.role='admin' and p.role_policies is not null))", project, user) != nil
+}
+
+// revokeInvites deletes every invite sent to email in project. Revoking an
+// address with no invites succeeds with a count of zero so retries are safe.
+func (s *Store) revokeInvites(q *Queries, user, project, email string) any {
+	q.One("select id from orka.projects where id=$1 for update", project)
+	s.member(q, user, project)
+	if !q.Require(s.managesInvites(q, user, project), 403, "Only project owners can revoke invites.") {
 		return nil
 	}
-	if email := text(candidate["email"]); email != "" {
+	row := q.One("with removed as (delete from orka.invites where project_id=$1 and email=$2 returning expires_at) select count(*) filter (where expires_at>now()) as count from removed", project, email)
+	revoked := number(row["count"])
+	if revoked > 0 {
+		s.appendLog(q, project, Object{"action": "invite.revoked", "actor": user}, true, nil)
+	}
+	return Object{"email": email, "revoked": revoked}
+}
+
+// Invite states shared by the join API and the /join page.
+const (
+	inviteUsed               = "This invite was already used or is no longer valid. Ask the project owner for a new invite."
+	inviteExpired            = "This invite has expired. Ask the project owner for a new invite."
+	inviteArchived           = "This project is archived, so its invites no longer work."
+	invitePreviewUnavailable = "This invite is no longer valid. Ask the project owner for a new invite."
+)
+
+// storedInvite is an invite token's row and its project's state.
+type storedInvite struct {
+	Project, Name, Email, ExpiresAt string
+	Found, Expired, Archived        bool
+}
+
+func (s *Store) storedInvite(q *Queries, token string) storedInvite {
+	row := q.One("select i.project_id,i.email,p.name,i.expires_at,i.expires_at<=now() as expired,p.archived_at is not null as archived from orka.invites i join orka.projects p on p.id=i.project_id where i.token_hash=$1", bytesHash([]byte(token)))
+	return storedInvite{Project: text(row["project_id"]), Name: text(row["name"]), Email: text(row["email"]), ExpiresAt: text(row["expires_at"]), Found: row != nil, Expired: flag(row["expired"]), Archived: flag(row["archived"])}
+}
+
+// preview is the signed-out project view of a usable invite.
+func (i storedInvite) preview() (Object, error) {
+	if i.unavailable() != "" {
+		return nil, &HTTPError{Status: 410, Message: invitePreviewUnavailable}
+	}
+	return Object{"projectName": i.Name, "expiresAt": i.ExpiresAt}, nil
+}
+
+func (a *API) previewInvite(w http.ResponseWriter, r *http.Request) (any, error) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		return nil, &HTTPError{Status: 405, Message: "Method not allowed"}
+	}
+	raw, err := readJSON(w, r)
+	if err != nil {
+		return nil, err
+	}
+	input, err := parseObject(raw, map[string]Field{"token": strField(48, 48)})
+	if err != nil || !inviteToken.MatchString(text(input["token"])) {
+		return nil, bad("Invalid request")
+	}
+	result, err := a.Store.read(r.Context(), func(q *Queries) any {
+		return a.Store.storedInvite(q, text(input["token"]))
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result.(storedInvite).preview()
+}
+
+// unavailable says why the invite can't be used, or "" when it can.
+func (i storedInvite) unavailable() string {
+	switch {
+	case !i.Found:
+		return inviteUsed
+	case i.Expired:
+		return inviteExpired
+	case i.Archived:
+		return inviteArchived
+	}
+	return ""
+}
+
+func (s *Store) joinProject(q *Queries, user, token string, supported bool, verifiedEmail func() (string, error)) any {
+	hash := bytesHash([]byte(token))
+	invite := s.storedInvite(q, token)
+	// Expiry comes before the email binding; project state comes after it so only the bound account learns it.
+	if !q.Require(invite.Found && !invite.Expired, 400, invite.unavailable()) {
+		return nil
+	}
+	if invite.Email != "" {
 		address, err := verifiedEmail()
-		if !q.Check(err) || !q.Require(address == email, 403, "Sign in with the verified email address this invitation was sent to.") {
+		if !q.Check(err) || !q.Require(address == invite.Email, 403, "This invite was sent to "+invite.Email+". Sign in with that verified email address to join.") {
 			return nil
 		}
 	}
-	project := text(candidate["project_id"])
+	project := invite.Project
+	if !q.Require(!invite.Archived, 400, inviteArchived) {
+		return nil
+	}
 	p := q.One("select id,governed from orka.projects where id=$1 and archived_at is null for update", project)
-	if !q.Require(p != nil, 403, "Project access denied") || !q.Require(!flag(p["governed"]) || supported, 409, "Update Orka to join a project with resource permissions") {
+	if !q.Require(p != nil, 400, inviteArchived) || !q.Require(!flag(p["governed"]) || supported, 409, "Update Orka to join a project with resource permissions") {
 		return nil
 	}
-	invite := q.One("delete from orka.invites where token_hash=$1 and expires_at>now() returning project_id", hash)
-	if !q.Require(invite != nil, 400, "Invite expired or already used") {
+	// Joins serialize on the project lock, so this sees any redemption that committed while waiting.
+	if !q.Require(q.One("select 1 from orka.invites where token_hash=$1 and expires_at>now()", hash) != nil, 400, inviteUsed) {
 		return nil
 	}
-	added := q.One("insert into orka.members values($1,$2,'member') on conflict do nothing returning user_id", project, user)
-	if added != nil {
-		s.appendLog(q, project, Object{"action": "member.joined", "actor": user, "subject": user}, true, nil)
-		q.Exec("update orka.projects set policy_revision=policy_revision+1 where id=$1 and governed", project)
+	// Existing members keep the invite unused so it stays valid for its recipient and for retries.
+	if q.One("select 1 from orka.members where project_id=$1 and user_id=$2", project, user) != nil {
+		return Object{"id": project}
 	}
+	q.Exec("delete from orka.invites where token_hash=$1", hash)
+	q.Exec("insert into orka.members values($1,$2,'member') on conflict do nothing", project, user)
+	s.appendLog(q, project, Object{"action": "member.joined", "actor": user, "subject": user}, true, nil)
+	q.Exec("update orka.projects set policy_revision=policy_revision+1 where id=$1 and governed", project)
 	return Object{"id": project}
 }
 func (s *Store) shareSelected(ctx context.Context, user string, input Object) (any, error) {

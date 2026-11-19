@@ -13,6 +13,7 @@ import type { Project } from "../../types.js";
 export const settingsSections = {
   account: { label: "Profile", icon: UserIcon },
   devices: { label: "Devices", icon: MonitorIcon },
+  projects: { label: "Projects", icon: FolderIcon },
   updates: { label: "Updates", icon: DownloadIcon },
   connections: { label: "Connectors", icon: PlugIcon },
   sync: { label: "Sync & startup", icon: RefreshCwIcon },
@@ -24,7 +25,7 @@ export const settingsSections = {
 } as const;
 export type SettingsSection = keyof typeof settingsSections;
 const groups = {
-  Account: ["account", "devices"],
+  Account: ["account", "devices", "projects"],
   "This Mac": ["sync", "connections", "updates"],
   Project: ["general", "members", "permissions"],
 } as const;

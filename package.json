@@ -1,6 +1,6 @@
 {
   "name": "orka",
-  "version": "0.3.13",
+  "version": "0.3.14",
   "private": true,
   "type": "module",
   "workspaces": [
@@ -57,7 +57,7 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@portable/protocol": "file:vendor/portable-protocol-0.7.3.tgz"
+    "@portable/protocol": "file:vendor/portable-protocol-0.7.4.tgz"
   },
   "overrides": {
     "@typescript-eslint/typescript-estree": {

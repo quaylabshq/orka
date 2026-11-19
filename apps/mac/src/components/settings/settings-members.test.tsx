@@ -118,7 +118,7 @@ test("after a restart, members show from the catalog with no loading state", asy
   expect(screen.getByText("Bob")).toBeTruthy();
 
   expect(
-    await screen.findByRole("button", { name: "Add Member" }),
+    await screen.findByRole("button", { name: "Invite member" }),
   ).toBeTruthy();
 
   // Reopening the tab keeps the confirmed list and owner controls on screen
@@ -126,7 +126,7 @@ test("after a restart, members show from the catalog with no loading state", asy
   rerender(tree(false));
   rerender(tree(true));
   expect(screen.getByText("Bob")).toBeTruthy();
-  expect(screen.getByRole("button", { name: "Add Member" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Invite member" })).toBeTruthy();
   expect(reads()).toHaveLength(2);
   expect(loadingCommits).not.toContain(true);
 });
@@ -271,7 +271,7 @@ test("a failed policy refresh keeps confirmed members and owner controls", async
     requests[0].resolve(catalog(member("alice", "Confirmed member"))),
   );
   expect(
-    await screen.findByRole("button", { name: "Add Member" }),
+    await screen.findByRole("button", { name: "Invite member" }),
   ).toBeTruthy();
   rerender(tree(2));
   await waitFor(() => expect(requests).toHaveLength(2));
@@ -281,5 +281,5 @@ test("a failed policy refresh keeps confirmed members and owner controls", async
     "Couldn’t refresh members.",
   );
   expect(screen.getByText("Confirmed member")).toBeTruthy();
-  expect(screen.getByRole("button", { name: "Add Member" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Invite member" })).toBeTruthy();
 });

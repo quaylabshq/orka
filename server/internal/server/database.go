@@ -32,11 +32,18 @@ func (q *Queries) Check(err error) bool {
 	return q.err == nil
 }
 func (q *Queries) Require(ok bool, status int, message string) bool {
+	return q.RequireCode(ok, status, "", message)
+}
+
+// RequireCode is Require with a machine-readable code for clients that branch on
+// why a request was refused. Status and message stay exactly as Require's, so an
+// older client that ignores the code sees no change.
+func (q *Queries) RequireCode(ok bool, status int, code, message string) bool {
 	if q.err != nil {
 		return false
 	}
 	if !ok {
-		q.err = &HTTPError{Status: status, Message: message}
+		q.err = &HTTPError{Status: status, Code: code, Message: message}
 		return false
 	}
 	return true

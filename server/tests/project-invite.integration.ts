@@ -22,6 +22,7 @@ for (const mode of ["cloud", "self-hosted"] as const) {
       committed: boolean;
     }[] = [];
     let failDelivery = false;
+    let rejectedLink: string | undefined;
     let deliveryAccepted: (() => void) | undefined;
     let deliveryResponse: Promise<void> | undefined;
     let releaseDelivery = () => {};
@@ -44,13 +45,14 @@ for (const mode of ["cloud", "self-hosted"] as const) {
         const chunks: Buffer[] = [];
         for await (const chunk of req) chunks.push(Buffer.from(chunk));
         const message = JSON.parse(Buffer.concat(chunks).toString());
-        if (failDelivery) {
-          res.writeHead(503).end(JSON.stringify({ message: "unavailable" }));
-          return;
-        }
         const url = String(message.text).match(
           /https:\/\/team.example\/join\/[a-f0-9]{48}/,
         )![0];
+        if (failDelivery) {
+          rejectedLink = new URL(url).pathname;
+          res.writeHead(503).end(JSON.stringify({ message: "unavailable" }));
+          return;
+        }
         const hash = createHash("sha256")
           .update(url.split("/").at(-1)!)
           .digest("hex");
@@ -180,7 +182,12 @@ for (const mode of ["cloud", "self-hosted"] as const) {
         ).rowCount,
         0,
       );
-      assert.equal((await post("/v2/join", { token }, stranger)).status, 403);
+      const wrongAccount = await post("/v2/join", { token }, stranger);
+      assert.equal(wrongAccount.status, 403);
+      assert.deepEqual(await wrongAccount.json(), {
+        error:
+          "This invite was sent to person@example.com. Sign in with that verified email address to join.",
+      });
       verified = false;
       assert.equal((await post("/v2/join", { token }, recipient)).status, 403);
       verified = true;
@@ -246,6 +253,104 @@ for (const mode of ["cloud", "self-hosted"] as const) {
         ).status,
         200,
       );
+      // Resending replaces older links, and revoking removes the newest one.
+      const cooldown = {
+        error:
+          "An invite was just sent to this address. Wait a minute before sending it again.",
+      };
+      const advancePastCooldown = () =>
+        pool.query(
+          "update orka.invitation_deliveries set created_at=now()-interval '61 seconds' where project_id=$1",
+          [projectId],
+        );
+      const resend = async () => {
+        await advancePastCooldown();
+        const response = await post("/v2/invites", {
+          projectId,
+          email: "resend@example.com",
+        });
+        assert.equal(response.status, 200);
+        return deliveries.at(-1)!.url.split("/").at(-1)!;
+      };
+      const firstLink = await resend();
+      const tooSoon = await post("/v2/invites", {
+        projectId,
+        email: "resend@example.com",
+      });
+      assert.equal(tooSoon.status, 429);
+      assert.deepEqual(await tooSoon.json(), cooldown);
+      await advancePastCooldown();
+      failDelivery = true;
+      const rejectedResend = await post("/v2/invites", {
+        projectId,
+        email: "resend@example.com",
+      });
+      failDelivery = false;
+      assert.equal(rejectedResend.status, 503);
+      assert.equal((await fetch(base + `/join/${firstLink}`)).status, 200);
+      assert.ok(rejectedLink);
+      assert.notEqual(rejectedLink, `/join/${firstLink}`);
+      assert.equal((await fetch(base + rejectedLink)).status, 410);
+
+      const newestLink = await resend();
+      assert.notEqual(firstLink, newestLink);
+      assert.equal((await fetch(base + `/join/${firstLink}`)).status, 410);
+      assert.equal((await fetch(base + `/join/${newestLink}`)).status, 200);
+      recipientEmail = "resend@example.com";
+      const replaced = await post("/v2/join", { token: firstLink }, recipient);
+      assert.equal(replaced.status, 400);
+      assert.deepEqual(await replaced.json(), {
+        error:
+          "This invite was already used or is no longer valid. Ask the project owner for a new invite.",
+      });
+      const pendingResends = async () =>
+        (
+          (await catalog()).pendingInvites as {
+            email: string;
+            expiresAt: string;
+          }[]
+        ).filter((invite) => invite.email === "resend@example.com").length;
+      assert.equal(await pendingResends(), 1);
+      assert.equal(
+        (
+          await pool.query(
+            "select 1 from orka.invites where project_id=$1 and email='resend@example.com'",
+            [projectId],
+          )
+        ).rowCount,
+        1,
+      );
+      const revoke = (email: string, user = owner) =>
+        post("/v2/invites/revoke", { projectId, email }, user);
+      assert.equal((await revoke("invalid")).status, 400);
+      for (const user of [stranger, recipient]) {
+        const denied = await revoke("resend@example.com", user);
+        assert.equal(denied.status, 403);
+      }
+      const memberRevoke = await revoke("resend@example.com", recipient);
+      assert.deepEqual(await memberRevoke.json(), {
+        error: "Only project owners can revoke invites.",
+      });
+      const revoked = await revoke(" Resend@Example.com ");
+      assert.equal(revoked.status, 200);
+      assert.deepEqual(await revoked.json(), {
+        email: "resend@example.com",
+        revoked: 1,
+      });
+      assert.equal(await pendingResends(), 0);
+      const revokedJoin = await post(
+        "/v2/join",
+        { token: newestLink },
+        recipient,
+      );
+      assert.equal(revokedJoin.status, 400);
+      assert.equal((await fetch(base + `/join/${newestLink}`)).status, 410);
+      const again = await revoke("resend@example.com");
+      assert.equal(again.status, 200);
+      assert.deepEqual(await again.json(), {
+        email: "resend@example.com",
+        revoked: 0,
+      });
       failDelivery = true;
       assert.equal(
         (await post("/v2/invites", { projectId, email: "failed@example.com" }))
@@ -262,11 +367,12 @@ for (const mode of ["cloud", "self-hosted"] as const) {
         1,
       );
       failDelivery = false;
-      assert.equal(
-        (await post("/v2/invites", { projectId, email: "failed@example.com" }))
-          .status,
-        429,
-      );
+      const retry = await post("/v2/invites", {
+        projectId,
+        email: "failed@example.com",
+      });
+      assert.equal(retry.status, 429);
+      assert.deepEqual(await retry.json(), cooldown);
       await pool.query(
         "update orka.invitation_deliveries set created_at=now()-interval '61 seconds' where project_id=$1 and email_hash=$2",
         [
@@ -285,10 +391,29 @@ for (const mode of ["cloud", "self-hosted"] as const) {
         [projectId],
       );
       recipientEmail = "failed@example.com";
-      assert.equal(
-        (await post("/v2/join", { token: expiredToken }, recipient)).status,
-        400,
+      // Expiry wins over the email binding for every account.
+      for (const user of [recipient, stranger]) {
+        const expired = await post("/v2/join", { token: expiredToken }, user);
+        assert.equal(expired.status, 400);
+        assert.deepEqual(await expired.json(), {
+          error:
+            "This invite has expired. Ask the project owner for a new invite.",
+        });
+      }
+      await pool.query(
+        "insert into orka.env_profiles(user_id,label,email) values($1,'Recipient','Failed@Example.com') on conflict(user_id) do update set email=excluded.email",
+        [recipient],
       );
+      const sentBefore = deliveries.length;
+      const existing = await post("/v2/invites", {
+        projectId,
+        email: "failed@example.com",
+      });
+      assert.equal(existing.status, 409);
+      assert.deepEqual(await existing.json(), {
+        error: "failed@example.com is already a member of this project.",
+      });
+      assert.equal(deliveries.length, sentBefore);
       const link = await (await post("/v2/invites", { projectId })).json();
       assert.equal(
         (await post("/v2/join", { token: link.token }, stranger)).status,
@@ -298,11 +423,15 @@ for (const mode of ["cloud", "self-hosted"] as const) {
         "insert into orka.invitation_deliveries(token_hash,project_id,email_hash) select md5(n::text||$1::text),$1::uuid,'other' from generate_series(1,30) n",
         [projectId],
       );
-      assert.equal(
-        (await post("/v2/invites", { projectId, email: "limited@example.com" }))
-          .status,
-        429,
-      );
+      const capped = await post("/v2/invites", {
+        projectId,
+        email: "limited@example.com",
+      });
+      assert.equal(capped.status, 429);
+      assert.deepEqual(await capped.json(), {
+        error:
+          "This project reached its hourly limit for email invites. Try again later or use a joining link.",
+      });
       assert.equal((await post("/v2/invites", { projectId })).status, 200);
     } finally {
       releaseDelivery();
@@ -346,6 +475,21 @@ for (const mode of ["cloud", "self-hosted"] as const) {
             "X-Orka-Governance": "1",
           },
           body: JSON.stringify({ action: "catalog", input: { projectId } }),
+        },
+      );
+      return { status: response.status, value: await response.json() };
+    };
+    const revoke = async (projectId: string, user: string) => {
+      const response = await fetch(
+        `http://127.0.0.1:${address.port}/v2/invites/revoke`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${user}`,
+            "Content-Type": "application/json",
+            "X-Orka-Governance": "1",
+          },
+          body: JSON.stringify({ projectId, email: "pending@example.com" }),
         },
       );
       return { status: response.status, value: await response.json() };
@@ -403,6 +547,25 @@ for (const mode of ["cloud", "self-hosted"] as const) {
           [],
         );
         assert.equal((await catalog(projectId, outsider)).status, 403);
+        // Anyone who can send an invite can revoke it.
+        const denied = {
+          status: 403,
+          value: { error: "Only project owners can revoke invites." },
+        };
+        assert.deepEqual(await revoke(projectId, member), denied);
+        assert.deepEqual(
+          await revoke(projectId, admin),
+          roles
+            ? {
+                status: 200,
+                value: { email: "pending@example.com", revoked: 2 },
+              }
+            : denied,
+        );
+        assert.deepEqual(
+          (await catalog(projectId)).value.pendingInvites,
+          roles ? [] : expected,
+        );
         const unrelated = await store.createProject(owner, "Other project");
         projects.push(unrelated);
         assert.deepEqual((await catalog(unrelated)).value.pendingInvites, []);
@@ -534,13 +697,25 @@ for (const mode of ["cloud", "self-hosted"] as const) {
         attempts.map((response) => response.status).sort(),
         [200, 400],
       );
-      assert.equal((await fetch(base + path)).status, 410);
+      const used = await fetch(base + path);
+      assert.equal(used.status, 410);
+      assert.match(await used.text(), /already used or is no longer valid/);
+      // Members redeeming a link succeed without using it up.
+      const spare = await (await post("/v2/invites", { projectId })).json();
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const again = await post("/v2/join", { token: spare.token });
+        assert.equal(again.status, 200);
+        assert.deepEqual(await again.json(), { id: projectId });
+      }
+      assert.equal((await fetch(base + `/join/${spare.token}`)).status, 200);
       const expired = await (await post("/v2/invites", { projectId })).json();
       await pool.query(
         "update orka.invites set expires_at=now()-interval '1 second' where project_id=$1",
         [projectId],
       );
-      assert.equal((await fetch(base + `/join/${expired.token}`)).status, 410);
+      const expiredPage = await fetch(base + `/join/${expired.token}`);
+      assert.equal(expiredPage.status, 410);
+      assert.match(await expiredPage.text(), /This invite has expired/);
       assert.equal(
         (await post("/v2/join", { token: expired.token }, member)).status,
         400,
@@ -552,7 +727,18 @@ for (const mode of ["cloud", "self-hosted"] as const) {
       );
       const unavailable = await fetch(base + `/join/${archived.token}`);
       assert.equal(unavailable.status, 410);
-      assert.doesNotMatch(await unavailable.text(), /orka:\/\/join/);
+      const archivedHtml = await unavailable.text();
+      assert.doesNotMatch(archivedHtml, /orka:\/\/join/);
+      assert.match(archivedHtml, /This project is archived/);
+      const archivedJoin = await post(
+        "/v2/join",
+        { token: archived.token },
+        randomUUID(),
+      );
+      assert.equal(archivedJoin.status, 400);
+      assert.deepEqual(await archivedJoin.json(), {
+        error: "This project is archived, so its invites no longer work.",
+      });
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
       await pool.end();

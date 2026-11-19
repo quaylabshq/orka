@@ -10,7 +10,12 @@ import {
   type ProjectCall,
 } from "./project-permissions.js";
 
-function description(entry: ManagementLog) {
+// Newer servers can send invite.revoked before the vendored protocol includes it.
+function description(
+  entry: Omit<ManagementLog, "action"> & {
+    action: ManagementLog["action"] | "invite.revoked";
+  },
+): string {
   const actor = displayText(entry.actorName),
     subject = displayText(entry.subjectName ?? "a member");
   const category =
@@ -47,11 +52,15 @@ function description(entry: ManagementLog) {
     case "project.source_removed":
       return `${actor} removed a source folder from the project`;
     case "invite.created":
-      return `${actor} created a member invitation`;
+      return `${actor} created a member invite`;
+    case "invite.revoked":
+      return `${actor} revoked a member invite`;
     case "access.granted":
       return `${actor} updated access for ${subject}`;
     case "env.replaced":
       return `${actor} replaced an ENV set`;
+    default:
+      return `${actor} updated the project`;
   }
 }
 export function ProjectLogs({ call }: { call: ProjectCall }) {

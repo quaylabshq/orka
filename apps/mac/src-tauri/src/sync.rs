@@ -2,6 +2,8 @@ use crate::{
     auth,
     db::{self, Result},
     indexer, native, packages,
+    sync_queue::{Outcome, Priority, SyncQueue, WORKSPACE},
+    sync_schedule::Interval,
 };
 use fs2::FileExt;
 use rusqlite::params;
@@ -9,6 +11,7 @@ use serde_json::{json, Value};
 use std::{
     collections::HashSet,
     fs,
+    ops::ControlFlow::{self, Break, Continue},
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -91,10 +94,10 @@ pub(crate) async fn api_at(
         )
     })?;
     if !status.is_success() {
-        return Err(format!(
-            "{}: {}",
+        return Err(SyncError::message(
             status.as_u16(),
-            value["error"].as_str().unwrap_or("Service unavailable")
+            &value,
+            "Service unavailable",
         ));
     }
     Ok(value)
@@ -136,10 +139,9 @@ pub(crate) async fn upload(owner: &str, project: &str, resource: &Value) -> Resu
             .await
             .map_err(|_| "Blob upload failed; retry retained")?;
         if !response.status().is_success() {
-            return Err(format!(
-                "{}: Blob upload rejected",
-                response.status().as_u16()
-            ));
+            let status = response.status().as_u16();
+            let body = response.json().await.unwrap_or(Value::Null);
+            return Err(SyncError::message(status, &body, "Blob upload rejected"));
         }
     }
     Ok(())
@@ -223,6 +225,10 @@ pub fn apply_event(db: &rusqlite::Connection, event: &Value) -> Result<()> {
 
 fn copy_state_key(id: &str) -> String {
     format!("sessionCopy:{id}")
+}
+
+fn outbox_redaction_key(id: &str) -> String {
+    format!("sessionOutboxRedaction:{id}")
 }
 
 fn copy_source_snapshot(base: &Value) -> Result<Value> {
@@ -313,6 +319,47 @@ pub(crate) fn queue_session_copy(
     Ok(request)
 }
 
+fn selected_resolution_snapshot(db: &rusqlite::Connection, input: &Value) -> Result<Option<Value>> {
+    let source = if input["selected"] == "candidate" {
+        db::rows(db,"SELECT json_extract(value,'$.candidate') FROM conflicts WHERE id=? AND project=? AND json_extract(value,'$.resourceId')=?",&[&input["conflictId"].as_str(),&input["projectId"].as_str(),&input["resourceId"].as_str()])?
+            .into_iter()
+            .next()
+    } else if input["selected"] == "current" {
+        db::rows(db,"SELECT value FROM resources WHERE id=? AND project=? AND json_extract(value,'$.revision')=?",&[&input["resourceId"].as_str(),&input["projectId"].as_str(),&input["expectedRevision"].as_i64()])?
+            .into_iter()
+            .next()
+    } else {
+        None
+    };
+    Ok(source.filter(|source| {
+        source["kind"] == "session"
+            && source["resourceId"] == input["resourceId"]
+            && source["projectId"] == input["projectId"]
+    }))
+}
+
+/// A resolution's wire body names a version but carries no files. Freeze that
+/// selection locally so a later pull or project removal cannot replace it.
+pub(crate) fn queue_session_resolution(db: &rusqlite::Connection, input: &Value) -> Result<()> {
+    let tx = db
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
+    let source = selected_resolution_snapshot(&tx, input)?
+        .ok_or("The selected session version is unavailable; refresh before resolving")?;
+    indexer::queue(
+        &tx,
+        input["projectId"].as_str().ok_or("Missing project")?,
+        "/v2/sessions/resolve",
+        input,
+    )?;
+    db::set(
+        &tx,
+        &copy_state_key(input["id"].as_str().ok_or("Missing request ID")?),
+        &json!({"source":source,"resolution":input}),
+    )?;
+    tx.commit().map_err(|error| error.to_string())
+}
+
 /// Freeze the wire body before its first attempt. A service upgrade must not
 /// change the identity of an uncertain legacy request.
 pub(crate) fn prepare_session_copy(
@@ -365,6 +412,18 @@ pub(crate) fn queued_session_snapshot(
         Some(request) => db::get(db, &copy_state_key(request))?,
         None => Value::Null,
     };
+    if input["conflictId"].is_string() {
+        if state["resolution"] == *input
+            && state["source"]["kind"] == "session"
+            && state["source"]["resourceId"] == input["resourceId"]
+            && state["source"]["projectId"] == input["projectId"]
+        {
+            return Ok(Some(state["source"].clone()));
+        }
+        // Old queued resolutions have no frozen local snapshot. A selected
+        // current version must still have precisely the observed revision.
+        return selected_resolution_snapshot(db, input);
+    }
     let mut wire = input["sourceSnapshot"].clone();
     if wire.is_object() {
         wire["projectId"] = input["projectId"].clone();
@@ -388,8 +447,11 @@ pub(crate) fn queued_session_snapshot(
 }
 
 pub(crate) fn clear_session_copy(db: &rusqlite::Connection, id: &str) -> Result<()> {
-    db.execute("DELETE FROM meta WHERE key=?", [copy_state_key(id)])
-        .map_err(|error| error.to_string())?;
+    db.execute(
+        "DELETE FROM meta WHERE key IN (?,?)",
+        params![copy_state_key(id), outbox_redaction_key(id)],
+    )
+    .map_err(|error| error.to_string())?;
     Ok(())
 }
 
@@ -443,6 +505,181 @@ pub(crate) fn replace_unavailable_session_copy(
     Ok(true)
 }
 
+/// Stage old snapshots once. Their original request bodies remain frozen until
+/// the service acknowledges or cancels their potentially accepted operation.
+const OUTBOX_REDACTION_KEY: &str = "sessionOutboxRedactionPrepared";
+
+fn redact_session_snapshot(snapshot: &mut Value) -> Result<()> {
+    if snapshot["kind"] != "session" {
+        return Ok(());
+    }
+    if let Some(title) = snapshot["title"].as_str() {
+        snapshot["title"] = json!(crate::session_redaction::SessionRedactor::text(title));
+    }
+    if snapshot["files"]
+        .as_array()
+        .is_some_and(|files| !files.is_empty())
+    {
+        snapshot["files"] = json!(crate::history::redacted_files(
+            &snapshot["source"],
+            &snapshot["files"]
+        )?);
+    }
+    Ok(())
+}
+
+/// Prepare redacted replacements without changing an uncertain request's identity.
+/// Even a local 422 can follow an earlier accepted request whose response was lost.
+pub(crate) fn rebuild_unredacted_outbox(db: &rusqlite::Connection) -> Result<()> {
+    rebuild_unredacted_outbox_for(db, None)
+}
+
+fn project_redaction_key(project: &str) -> String {
+    format!("{OUTBOX_REDACTION_KEY}:{project}")
+}
+
+fn rebuild_unredacted_outbox_for(db: &rusqlite::Connection, project: Option<&str>) -> Result<()> {
+    if db::get(db, OUTBOX_REDACTION_KEY)? == true {
+        return Ok(());
+    }
+    let key = project.map_or_else(|| OUTBOX_REDACTION_KEY.to_string(), project_redaction_key);
+    if db::get(db, &key)? == true {
+        return Ok(());
+    }
+    let tx = db
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
+    let previously_rebuilt = db::get(&tx, "sessionOutboxRedacted")? == true;
+    let rows = db::rows(
+        &tx,
+        "SELECT json_object('id',id,'project',project,'path',path,'value',json(value),'error',error) FROM outbox WHERE (?1 IS NULL OR project=?1) AND (path='/v2/sessions/copy' OR (path='/v2/sync/push' AND json_extract(value,'$.resource.kind')='session')) ORDER BY rowid",
+        &[&project],
+    )?;
+    for row in rows {
+        let project_id = row["project"].as_str().ok_or("Missing project")?;
+        // A project job may have completed this migration before the first
+        // workspace job. Its later requests already use the current format.
+        if project.is_none() && db::get(&tx, &project_redaction_key(project_id))? == true {
+            continue;
+        }
+        let id = row["id"].as_str().ok_or("Missing request ID")?;
+        let mut value = row["value"].clone();
+        let mut state = db::get(&tx, &copy_state_key(id))?;
+        let rebuilt = if row["path"] == "/v2/sessions/copy" {
+            (|| {
+                let mut source = queued_session_snapshot(&tx, &value)?
+                    .ok_or("The selected session snapshot is unavailable")?;
+                redact_session_snapshot(&mut source)?;
+                value["sourceSnapshot"] = copy_source_snapshot(&source)?;
+                state["source"] = source;
+                Ok::<_, String>(())
+            })()
+        } else {
+            redact_session_snapshot(&mut value["resource"])
+        };
+        let replacement = match rebuilt {
+            Ok(())
+                if previously_rebuilt
+                    || value != row["value"]
+                    || row["error"] == "409: Retry ID reused with different content" =>
+            {
+                json!({"value":value,"state":state})
+            }
+            Ok(()) => continue,
+            Err(_) => json!({"drop":true}),
+        };
+        db::set(&tx, &outbox_redaction_key(id), &replacement)?;
+    }
+    db::set(&tx, &key, &json!(true))?;
+    tx.commit().map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+/// Called only after the service has fenced the old ID against delayed uploads.
+/// UPDATE preserves rowid, so later edits cannot overtake this replacement.
+pub(crate) fn replace_redacted_outbox(
+    db: &rusqlite::Connection,
+    queued: &mut Value,
+) -> Result<bool> {
+    let id = queued["id"].as_str().ok_or("Missing request ID")?;
+    let project = queued["project"].as_str().ok_or("Missing project")?;
+    let replacement = db::get(db, &outbox_redaction_key(id))?;
+    if !replacement.is_object() {
+        return Err("The queued session replacement is unavailable".into());
+    }
+    let tx = db
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
+    if db::rows(&tx, "SELECT value FROM outbox WHERE id=?", &[&id])?.first()
+        != Some(&queued["value"])
+    {
+        return Err("The queued session changed; retry was preserved".into());
+    }
+    if replacement["drop"] == true {
+        tx.execute("DELETE FROM outbox WHERE id=?", [id])
+            .map_err(|error| error.to_string())?;
+        let push = queued["path"] == "/v2/sync/push";
+        let resource = if push {
+            queued["value"]["resource"]["resourceId"].as_str()
+        } else {
+            queued["value"]["resourceId"].as_str()
+        };
+        if let Some(resource) = resource {
+            let mut binding = indexer::binding(&tx, resource)?;
+            let rebind = if push {
+                binding["lastSeenHash"].is_string()
+            } else {
+                binding["copyRequest"] == id
+            };
+            if rebind {
+                if push {
+                    // Keep a string so a teammate's session stays on the copy path.
+                    binding["lastSeenHash"] = json!("");
+                } else {
+                    binding["copyRequest"] = Value::Null;
+                }
+                db::upsert(&tx, "bindings", resource, project, &binding)?;
+            }
+        }
+        clear_session_copy(&tx, id)?;
+        tx.commit().map_err(|error| error.to_string())?;
+        return Ok(false);
+    }
+    let new_id = uuid::Uuid::new_v4().to_string();
+    let mut value = replacement["value"].clone();
+    value["id"] = json!(new_id);
+    if tx
+        .execute(
+            "UPDATE outbox SET id=?,value=?,error=NULL WHERE id=?",
+            params![new_id, value.to_string(), id],
+        )
+        .map_err(|error| error.to_string())?
+        != 1
+    {
+        return Err("The queued session changed; retry was preserved".into());
+    }
+    if queued["path"] == "/v2/sessions/copy" {
+        let mut state = replacement["state"].clone();
+        // The reconciliation capability requires exact cached-snapshot copying.
+        state["negotiate"] = json!(false);
+        db::set(&tx, &copy_state_key(&new_id), &state)?;
+        let resource = value["resourceId"]
+            .as_str()
+            .ok_or("Missing copied resource")?;
+        let mut binding = indexer::binding(&tx, resource)?;
+        if binding["copyRequest"] == id {
+            binding["copyRequest"] = json!(new_id);
+            db::upsert(&tx, "bindings", resource, project, &binding)?;
+        }
+    }
+    clear_session_copy(&tx, id)?;
+    tx.commit().map_err(|error| error.to_string())?;
+    queued["id"] = json!(new_id);
+    queued["value"] = value;
+    queued["error"] = Value::Null;
+    Ok(true)
+}
+
 pub(crate) fn acknowledge_session(
     db: &rusqlite::Connection,
     project: &str,
@@ -490,7 +727,7 @@ pub(crate) fn acknowledge_session(
             )?;
         }
     }
-    if path == "/v2/sessions/copy" {
+    if matches!(path, "/v2/sessions/copy" | "/v2/sessions/resolve") {
         clear_session_copy(db, input["id"].as_str().ok_or("Missing request ID")?)?;
     }
     Ok(())
@@ -999,11 +1236,11 @@ pub(crate) fn progress(
     completed: usize,
     total: Option<usize>,
 ) -> Result<()> {
-    db::set(
-        db,
-        "syncProgress",
-        &json!({"label":label,"detail":detail,"completed":completed,"total":total}),
-    )
+    let mut value = json!({"label":label,"detail":detail,"completed":completed,"total":total});
+    if let Some(project) = SyncQueue::progress_project(db)? {
+        value["projectId"] = json!(project);
+    }
+    db::set(db, "syncProgress", &value)
 }
 
 pub struct Summary {
@@ -1174,17 +1411,44 @@ async fn cycle() -> Result<bool> {
         WorkspaceSync::Yielded => true,
     })
 }
+struct SyncSlot {
+    _file: fs::File,
+}
+
+impl SyncSlot {
+    async fn acquire(base: &Path) -> Result<Self> {
+        fs::create_dir_all(base).map_err(|e| e.to_string())?;
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(base.join("sync-slot.lock"))
+            .map_err(|e| e.to_string())?;
+        loop {
+            match FileExt::try_lock_exclusive(&file) {
+                Ok(()) => return Ok(Self { _file: file }),
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
+                Err(e) => return Err(e.to_string()),
+            }
+        }
+    }
+}
+
 async fn workspace_cycle(
     preparation: Result<()>,
     scope: Option<(&str, &str)>,
     project_filter: Option<&str>,
     connection: Option<&crate::plugin_connection::Binding>,
 ) -> Result<WorkspaceSync> {
+    let _slot = SyncSlot::acquire(&db::base_root()?).await?;
     let _lock = crate::projects::lock()?;
     if let Some(connection) = connection {
         connection.check_current()?;
     }
     let mut db = db::open()?;
+    SyncQueue::clear_progress_scope(&db)?;
     let user = db::get(&db, "user")?;
     let owner = user.as_str().ok_or("Sign in required")?.to_string();
     if let Some((expected, service)) = scope {
@@ -1310,55 +1574,164 @@ fn preflight_project(db: &rusqlite::Connection, project: &Value, retry_only: boo
     Ok(())
 }
 
-async fn sync_workspace(
-    db: &mut rusqlite::Connection,
-    owner: &str,
-    project_filter: Option<&str>,
-) -> Result<WorkspaceSync> {
-    if crate::projects::foreground_waiting()? {
-        return Ok(WorkspaceSync::Yielded);
-    }
-    if let Some(id) = project_filter {
-        let project = crate::governance::project(db, id)?;
-        crate::governance::block_legacy_retry(db, &project)?;
-        for source in crate::sources::views(&project) {
-            crate::repair::project_state(db, &source)?;
-        }
-        packages::recover_project_installations(db, &project)?;
+/// Each sync stage either carries on or breaks so the cycle yields the
+/// workspace lock to a waiting foreground operation.
+type Stage = Result<ControlFlow<()>>;
+
+/// A stage boundary. A cancelled project's job stops here, between requests and
+/// transactions, so nothing is cut in half and nothing already sent is undone.
+fn boundary(db: &rusqlite::Connection, project: &str) -> Stage {
+    Ok(if SyncQueue::cancelled(db, project)? {
+        Break(())
     } else {
-        crate::repair::workspace(db)?;
-        packages::recover_installations(db)?;
-    }
-    let device = db::device(db)?;
-    for binding in db::rows(
-        db,
-        &format!("SELECT value FROM bindings WHERE json_extract(value,'$.needsCopy')=1 AND project IN (SELECT id FROM projects WHERE {})",crate::projects::ACTIVE),
-        &[],
-    )? {
-        if project_filter.is_some_and(|id| binding["base"]["projectId"] != id) {
-            continue;
+        Continue(())
+    })
+}
+
+/// How much a project's sync does. A plugin retry only resends what is already
+/// queued: it validates sources without scanning and prepares no new sharing.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ProjectMode {
+    Full,
+    RetryOnly,
+}
+
+/// One sync cycle. `sync_workspace_global` holds the workspace-wide stages and
+/// `sync_project` one project's stages. A whole-workspace cycle interleaves the
+/// same stages stage by stage across projects, in `sync_workspace`.
+struct SyncPass<'a> {
+    db: &'a mut rusqlite::Connection,
+    owner: &'a str,
+    project_filter: Option<&'a str>,
+    mode: ProjectMode,
+    device: Option<String>,
+    blocked: HashSet<String>,
+    held: HashSet<String>,
+    deferred: HashSet<Value>,
+}
+
+impl<'a> SyncPass<'a> {
+    fn new(
+        db: &'a mut rusqlite::Connection,
+        owner: &'a str,
+        project_filter: Option<&'a str>,
+    ) -> Self {
+        Self {
+            db,
+            owner,
+            project_filter,
+            mode: if project_filter.is_some() {
+                ProjectMode::RetryOnly
+            } else {
+                ProjectMode::Full
+            },
+            device: None,
+            blocked: HashSet::new(),
+            held: HashSet::new(),
+            deferred: HashSet::new(),
         }
-        if binding["copyRequest"].is_null() {
-            queue_session_copy(db, &binding, &device)?;
+    }
+
+    fn device(&mut self) -> Result<String> {
+        if self.device.is_none() {
+            self.device = Some(db::device(self.db)?);
         }
+        Ok(self.device.clone().unwrap_or_default())
     }
-    let local = db::rows(
-        db,
-        &format!(
-            "SELECT value FROM projects WHERE {}",
-            crate::projects::ACTIVE
-        ),
-        &[],
-    )?
-    .into_iter()
-    .filter(|p| project_filter.is_none_or(|id| p["id"] == id))
-    .collect::<Vec<_>>();
-    if project_filter.is_none() {
-        crate::history::clear_missing_session_errors(db)?;
+
+    async fn sync_workspace_global(&mut self) -> Stage {
+        if self.prepare().await?.is_break() || self.connect().await?.is_break() {
+            return Ok(Break(()));
+        }
+        self.finish().await.map(Continue)
     }
-    for p in &local {
+
+    async fn sync_project(&mut self, p: &Value) -> Stage {
+        let project = p["id"].as_str().ok_or("Missing project")?;
+        if boundary(self.db, project)?.is_break()
+            || self.prepare_project(p)?.is_break()
+            || boundary(self.db, project)?.is_break()
+            || self.preflight(p)?.is_break()
+            || boundary(self.db, project)?.is_break()
+        {
+            return Ok(Break(()));
+        }
+        // Include continuations discovered by this scan in the same project job.
+        self.prepare_copies(Some(project))?;
+        if boundary(self.db, project)?.is_break()
+            || self.authorize(p).await?.is_break()
+            || boundary(self.db, project)?.is_break()
+            || self.drain_outbox(p).await?.is_break()
+            || self.pull_project(p).await?.is_break()
+            || boundary(self.db, project)?.is_break()
+        {
+            return Ok(Break(()));
+        }
+        crate::codex_skills::retry_project(self.db, project)?;
+        Ok(Continue(()))
+    }
+
+    fn prepare_project(&mut self, project: &Value) -> Stage {
         if crate::projects::foreground_waiting()? {
-            return Ok(WorkspaceSync::Yielded);
+            return Ok(Break(()));
+        }
+        for source in crate::sources::views(project) {
+            crate::repair::project_state(self.db, &source)?;
+        }
+        packages::recover_project_installations(self.db, project)?;
+        rebuild_unredacted_outbox_for(
+            self.db,
+            Some(project["id"].as_str().ok_or("Missing project")?),
+        )?;
+        Ok(Continue(()))
+    }
+
+    /// Repairs local state and queues pending session copies before any project syncs.
+    async fn prepare(&mut self) -> Stage {
+        let project_filter = self.project_filter;
+        let db = &mut *self.db;
+        if crate::projects::foreground_waiting()? {
+            return Ok(Break(()));
+        }
+        if let Some(id) = project_filter {
+            let project = crate::governance::project(db, id)?;
+            crate::governance::block_legacy_retry(db, &project)?;
+            if self.prepare_project(&project)?.is_break() {
+                return Ok(Break(()));
+            }
+        } else {
+            crate::repair::workspace(db)?;
+            packages::recover_installations(db)?;
+            rebuild_unredacted_outbox(db)?;
+        }
+        self.prepare_copies(project_filter)?;
+        if project_filter.is_none() {
+            crate::history::clear_missing_session_errors(self.db)?;
+        }
+        Ok(Continue(()))
+    }
+
+    fn prepare_copies(&mut self, project_filter: Option<&str>) -> Result<()> {
+        let device = self.device()?;
+        let db = &mut *self.db;
+        for binding in db::rows(
+            db,
+            &format!("SELECT value FROM bindings WHERE json_extract(value,'$.needsCopy')=1 AND (?1 IS NULL OR project=?1) AND project IN (SELECT id FROM projects WHERE {})",crate::projects::ACTIVE),
+            &[&project_filter],
+        )? {
+            if binding["copyRequest"].is_null() {
+                queue_session_copy(db, &binding, &device)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Scans (or, for a retry, validates) one project's local files.
+    fn preflight(&mut self, p: &Value) -> Stage {
+        let db = &mut *self.db;
+        let retry_only = self.mode == ProjectMode::RetryOnly;
+        if crate::projects::foreground_waiting()? {
+            return Ok(Break(()));
         }
         progress(
             db,
@@ -1367,9 +1740,9 @@ async fn sync_workspace(
             0,
             None,
         )?;
-        match preflight_project(db, p, project_filter.is_some()) {
+        match preflight_project(db, p, retry_only) {
             Ok(()) => {
-                if project_filter.is_none() {
+                if !retry_only {
                     db::set(
                         db,
                         &format!("firstScan:{}", p["id"].as_str().unwrap_or("")),
@@ -1383,43 +1756,40 @@ async fn sync_workspace(
                 db.execute("INSERT INTO errors VALUES(?,?) ON CONFLICT(source) DO UPDATE SET error=excluded.error",params![p["id"].as_str(),error]).map_err(|e|e.to_string())?;
             }
         }
+        Ok(Continue(()))
     }
-    if crate::projects::foreground_waiting()? {
-        return Ok(WorkspaceSync::Yielded);
-    }
-    progress(db, "Connecting to sync service", None, 0, None)?;
-    let origin = db::get(db, "config")?["apiUrl"]
-        .as_str()
-        .ok_or("Configure the service")?
-        .to_string();
-    register_device(owner, &origin, &device).await?;
-    let projects = api_as(owner, "GET", "/v2/projects?includeArchived=true", None).await?;
-    crate::projects::merge_catalog(db, &projects)?;
-    let local = db::rows(
-        db,
-        &format!(
-            "SELECT value FROM projects WHERE {}",
-            crate::projects::ACTIVE
-        ),
-        &[],
-    )?
-    .into_iter()
-    .filter(|p| project_filter.is_none_or(|id| p["id"] == id))
-    .collect::<Vec<_>>();
-    let mut blocked_projects = HashSet::new();
-    for p in &local {
+
+    /// Registers this Mac and merges the account's project catalog.
+    async fn connect(&mut self) -> Stage {
+        let device = self.device()?;
+        let db = &mut *self.db;
+        let owner = self.owner;
         if crate::projects::foreground_waiting()? {
-            return Ok(WorkspaceSync::Yielded);
+            return Ok(Break(()));
+        }
+        progress(db, "Connecting to sync service", None, 0, None)?;
+        let origin = db::get(db, "config")?["apiUrl"]
+            .as_str()
+            .ok_or("Configure the service")?
+            .to_string();
+        register_device(owner, &origin, &device).await?;
+        let projects = api_as(owner, "GET", crate::projects::CATALOG_PATH, None).await?;
+        crate::projects::merge_catalog(db, &projects)?;
+        Ok(Continue(()))
+    }
+
+    /// Refreshes a governed project's permissions; a failure blocks its uploads and pull.
+    async fn authorize(&mut self, p: &Value) -> Stage {
+        let db = &mut *self.db;
+        let owner = self.owner;
+        let retry_only = self.mode == ProjectMode::RetryOnly;
+        if crate::projects::foreground_waiting()? {
+            return Ok(Break(()));
         }
         if p["governed"] == true {
             let id = p["id"].as_str().ok_or("Missing project")?;
             let result: Result<()> = async {
                 let local = crate::governance::project(db, id)?;
-                if project_filter.is_none() {
-                    crate::governance::localize_outbox(db, &local)?;
-                } else {
-                    crate::governance::block_legacy_retry(db, &local)?;
-                }
                 let catalog = api_as(
                     owner,
                     "POST",
@@ -1428,187 +1798,275 @@ async fn sync_workspace(
                 )
                 .await?;
                 db::set(db, &format!("governance:{id}"), &catalog)?;
-                if project_filter.is_none() {
+                // A lifecycle refusal must leave queued work unchanged. Only
+                // prepare legacy knowledge after current access is confirmed.
+                if !retry_only {
+                    crate::governance::localize_outbox(db, &local)?;
+                } else {
+                    crate::governance::block_legacy_retry(db, &local)?;
+                }
+                if !retry_only {
                     crate::context_sharing::approve_own_pending(db, owner, &local, &catalog)
                         .await?;
                 }
                 Ok(())
             }
             .await;
-            if result.as_ref().is_err_and(|e| service_error(e)) {
-                return result.map(|_| WorkspaceSync::Complete(false));
-            }
-            if result.is_err() {
-                blocked_projects.insert(id.to_string());
-            }
-            record_result(db, &format!("{id}:permissions"), result)?;
+            return self.record_authorization(id, result);
         }
+        Ok(Continue(()))
     }
-    let queued=db::rows(db,&format!("SELECT json_object('sequence',rowid,'id',id,'project',project,'path',path,'value',json(value),'error',error) FROM outbox WHERE project IN (SELECT id FROM projects WHERE {}) AND (error IS NULL OR error NOT GLOB '4[0-9][0-9]:*' OR substr(error,1,3) IN ('401','408','429')) ORDER BY rowid",crate::projects::ACTIVE),&[])?;
-    let queued: Vec<_> = queued
-        .into_iter()
-        .filter(|q| {
-            !blocked_projects.contains(q["project"].as_str().unwrap_or(""))
-                && local.iter().any(|p| {
-                    p["id"] == q["project"]
-                        && (if q["path"] == crate::selective_sharing::QUEUE_PATH {
-                            crate::selective_sharing::authorized(db, q).unwrap_or(false)
-                        } else {
-                            crate::projects::sharing_allowed(
-                                p,
-                                crate::projects::queued_kind(
-                                    q["path"].as_str().unwrap_or(""),
-                                    &q["value"],
-                                ),
-                            )
-                        })
-                })
-        })
-        .collect();
-    let mut deferred: HashSet<_> = queued
-        .iter()
-        .filter(|q| {
-            let error = q["error"].as_str().unwrap_or("");
-            consolidation_pending(q, error) || error.starts_with("Local upload: ")
-        })
-        .map(|q| q["id"].clone())
-        .collect();
-    let cursor = db::get(db, "syncUploadCursor")?.as_i64().unwrap_or(0);
-    let uploads = select_uploads(&queued, cursor);
-    for (index, q) in uploads.iter().enumerate() {
-        if crate::projects::foreground_waiting()? {
-            return Ok(WorkspaceSync::Yielded);
+
+    fn record_authorization(&mut self, project: &str, result: Result<()>) -> Stage {
+        if result.as_ref().is_err_and(|e| service_error(e)) {
+            return result.map(Continue);
         }
-        let project_name = local
-            .iter()
-            .find(|p| p["id"] == q["project"])
-            .and_then(|p| crate::projects::display_name(p));
-        let mut input = q["value"].clone();
-        let resource_name = input["resource"]["title"]
-            .as_str()
-            .or(input["resource"]["logicalPath"].as_str());
-        let detail = [project_name, resource_name]
+        let result = if result.as_ref().is_err_and(|error| SyncError(error).holds()) {
+            // The catalog may have changed since the workspace refresh. Preserve
+            // pending work and wait quietly for the project to become active.
+            self.held.insert(project.to_string());
+            Ok(())
+        } else {
+            if result.is_err() {
+                self.blocked.insert(project.to_string());
+            }
+            result
+        };
+        record_result(self.db, &format!("{project}:permissions"), result)?;
+        Ok(Continue(()))
+    }
+
+    /// Sends this project's queued changes from its own upload cursor.
+    async fn drain_outbox(&mut self, p: &Value) -> Stage {
+        let device = self.device()?;
+        let db = &mut *self.db;
+        let owner = self.owner;
+        let deferred = &mut self.deferred;
+        let held = &mut self.held;
+        let project = p["id"].as_str().ok_or("Missing project")?;
+        if self.blocked.contains(project) || held.contains(project) {
+            return Ok(Continue(()));
+        }
+        let blocked_projects = &mut self.blocked;
+        let mut outbox = ProjectOutbox::open(db, project)?;
+        let queued: Vec<_> = outbox
+            .queued(db)?
             .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .join(" · ");
-        progress(
-            db,
-            "Uploading changes",
-            Some(&detail),
-            index,
-            Some(uploads.len()),
-        )?;
-        let result = async {
-            if q["path"] == "/v2/sessions/copy" {
-                let id = input["id"].as_str().ok_or("Missing request ID")?;
-                if db::get(db, &copy_state_key(id))?["negotiate"] == true {
+            .filter(|q| {
+                if q["path"] == crate::selective_sharing::QUEUE_PATH {
+                    crate::selective_sharing::authorized(db, q).unwrap_or(false)
+                } else {
+                    crate::projects::sharing_allowed(
+                        p,
+                        crate::projects::queued_kind(q["path"].as_str().unwrap_or(""), &q["value"]),
+                    )
+                }
+            })
+            .collect();
+        deferred.extend(
+            queued
+                .iter()
+                .filter(|q| {
+                    let error = q["error"].as_str().unwrap_or("");
+                    consolidation_pending(q, error) || error.starts_with("Local upload: ")
+                })
+                .map(|q| q["id"].clone()),
+        );
+        let uploads = outbox.batch(&queued);
+        for (index, original) in uploads.iter().enumerate() {
+            let mut q = (*original).clone();
+            if crate::projects::foreground_waiting()? || SyncQueue::cancelled(db, project)? {
+                return Ok(Break(()));
+            }
+            let project_name = crate::projects::display_name(p);
+            let mut input = q["value"].clone();
+            let resource_name = input["resource"]["title"]
+                .as_str()
+                .or(input["resource"]["logicalPath"].as_str());
+            let detail = [project_name, resource_name]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(" · ");
+            progress(
+                db,
+                "Uploading changes",
+                Some(&detail),
+                index,
+                Some(uploads.len()),
+            )?;
+            let result = async {
+                let id = q["id"].as_str().ok_or("Missing request ID")?;
+                if db::get(db, &outbox_redaction_key(id))?.is_object() {
                     let capabilities =
                         api_as(owner, "GET", "/v2/projects/capabilities", None).await?;
-                    input =
-                        prepare_session_copy(db, &input, capabilities["sessionLatestOnly"] == 1)?;
+                    if capabilities["sessionUploadReconcile"] != 1
+                        || (q["path"] == "/v2/sessions/copy"
+                            && capabilities["sessionLatestOnly"] != 1)
+                    {
+                        // A permission-feed reset would discard an initial upload
+                        // absent from the server snapshot before its ID is fenced.
+                        blocked_projects
+                            .insert(q["project"].as_str().ok_or("Missing project")?.to_string());
+                        return Err(
+                            "409: Update the service to safely rebuild queued session uploads"
+                                .into(),
+                        );
+                    }
+                    let outcome = api_as(
+                        owner,
+                        "POST",
+                        "/v2/sessions/reconcile",
+                        Some(&json!({"projectId":q["project"],"deviceId":device,"id":id})),
+                    )
+                    .await?;
+                    match outcome["status"].as_str() {
+                        Some("accepted") => return Ok(Some(outcome["receipt"].clone())),
+                        Some("cancelled") => {
+                            deferred.remove(&q["id"]);
+                            if !replace_redacted_outbox(db, &mut q)? {
+                                return Ok(None);
+                            }
+                            input = q["value"].clone();
+                        }
+                        _ => {
+                            return Err(
+                                "The service returned an invalid session reconciliation".into()
+                            )
+                        }
+                    }
                 }
-                if input["sourceSnapshot"].is_object() {
+                if q["path"] == "/v2/sessions/copy" {
+                    let id = input["id"].as_str().ok_or("Missing request ID")?;
+                    if db::get(db, &copy_state_key(id))?["negotiate"] == true {
+                        let capabilities =
+                            api_as(owner, "GET", "/v2/projects/capabilities", None).await?;
+                        input = prepare_session_copy(
+                            db,
+                            &input,
+                            capabilities["sessionLatestOnly"] == 1,
+                        )?;
+                    }
+                    if input["sourceSnapshot"].is_object() {
+                        crate::repair::upload(
+                            owner,
+                            q["project"].as_str().ok_or("Missing project")?,
+                            &input["sourceSnapshot"],
+                        )
+                        .await?;
+                    }
+                }
+                if q["path"] == crate::selective_sharing::QUEUE_PATH {
+                    return crate::selective_sharing::send(db, owner, &q)
+                        .await
+                        .map(Some);
+                }
+                if q["path"] == crate::context_sharing::QUEUE_PATH {
+                    crate::context_sharing::upload(db, owner, &q).await?;
+                } else if input["resource"]["files"].is_array() {
                     crate::repair::upload(
                         owner,
                         q["project"].as_str().ok_or("Missing project")?,
-                        &input["sourceSnapshot"],
+                        &input["resource"],
                     )
                     .await?;
                 }
-            }
-            if q["path"] == crate::selective_sharing::QUEUE_PATH {
-                return crate::selective_sharing::send(db, owner, q).await;
-            }
-            if q["path"] == crate::context_sharing::QUEUE_PATH {
-                crate::context_sharing::upload(db, owner, q).await?;
-            } else if input["resource"]["files"].is_array() {
-                crate::repair::upload(
-                    owner,
-                    q["project"].as_str().ok_or("Missing project")?,
-                    &input["resource"],
-                )
-                .await?;
-            }
-            if q["path"] == crate::global_skills::IMPORT_PATH
-                || q["path"] == crate::context_sharing::QUEUE_PATH
-            {
-                return crate::context_sharing::share(db, owner, q).await;
-            }
-            api_as(
-                owner,
-                "POST",
-                q["path"].as_str().ok_or("Missing upload path")?,
-                Some(&input),
-            )
-            .await
-        }
-        .await;
-        match result {
-            Ok(receipt) => {
-                let tx = db.transaction().map_err(|e| e.to_string())?;
-                if q["path"] == crate::selective_sharing::QUEUE_PATH {
-                    crate::selective_sharing::complete(&tx, q, &receipt)?;
-                } else if q["path"] == crate::global_skills::IMPORT_PATH
+                if q["path"] == crate::global_skills::IMPORT_PATH
                     || q["path"] == crate::context_sharing::QUEUE_PATH
                 {
-                    crate::context_sharing::complete(&tx, q, &receipt)?;
-                } else {
-                    apply_event(&tx, &receipt["event"])?;
+                    return crate::context_sharing::share(db, owner, &q).await.map(Some);
                 }
-                acknowledge_session(
-                    &tx,
-                    q["project"].as_str().ok_or("Missing project")?,
+                api_as(
+                    owner,
+                    "POST",
                     q["path"].as_str().ok_or("Missing upload path")?,
-                    &input,
-                    &receipt,
-                )?;
-                tx.execute("DELETE FROM outbox WHERE id=?", [q["id"].as_str()])
-                    .map_err(|e| e.to_string())?;
-                tx.commit().map_err(|e| e.to_string())?;
-                deferred.remove(&q["id"]);
-            }
-            Err(error) => {
-                if q["path"] == "/v2/sessions/copy"
-                    && error == "409: Cached session revision unavailable"
-                    && api_as(owner, "GET", "/v2/projects/capabilities", None).await?
-                        ["sessionLatestOnly"]
-                        == 1
-                    && replace_unavailable_session_copy(db, &input, &device)?
-                {
-                    deferred.remove(&q["id"]);
-                    db::set(db, "syncUploadCursor", &q["sequence"])?;
-                    continue;
-                }
-                db.execute(
-                    "UPDATE outbox SET error=? WHERE id=?",
-                    params![error, q["id"].as_str()],
+                    Some(&input),
                 )
-                .map_err(|e| e.to_string())?;
-                if consolidation_pending(q, &error) || error.starts_with("Local upload: ") {
-                    deferred.insert(q["id"].clone());
-                } else if terminal_error(&error) {
+                .await
+                .map(Some)
+            }
+            .await;
+            match result {
+                Ok(receipt) => {
+                    let tx = db.transaction().map_err(|e| e.to_string())?;
+                    if let Some(receipt) = receipt {
+                        if q["path"] == crate::selective_sharing::QUEUE_PATH {
+                            crate::selective_sharing::complete(&tx, &q, &receipt)?;
+                        } else if q["path"] == crate::global_skills::IMPORT_PATH
+                            || q["path"] == crate::context_sharing::QUEUE_PATH
+                        {
+                            crate::context_sharing::complete(&tx, &q, &receipt)?;
+                        } else {
+                            apply_event(&tx, &receipt["event"])?;
+                        }
+                        acknowledge_session(
+                            &tx,
+                            q["project"].as_str().ok_or("Missing project")?,
+                            q["path"].as_str().ok_or("Missing upload path")?,
+                            &input,
+                            &receipt,
+                        )?;
+                    }
+                    clear_session_copy(&tx, q["id"].as_str().ok_or("Missing request ID")?)?;
+                    tx.execute("DELETE FROM outbox WHERE id=?", [q["id"].as_str()])
+                        .map_err(|e| e.to_string())?;
+                    tx.commit().map_err(|e| e.to_string())?;
                     deferred.remove(&q["id"]);
-                } else {
-                    return Err(error);
+                }
+                Err(error) => {
+                    if q["path"] == "/v2/sessions/copy"
+                        && error == "409: Cached session revision unavailable"
+                        && api_as(owner, "GET", "/v2/projects/capabilities", None).await?
+                            ["sessionLatestOnly"]
+                            == 1
+                        && replace_unavailable_session_copy(db, &input, &device)?
+                    {
+                        deferred.remove(&q["id"]);
+                        outbox.advance(db, &q["sequence"])?;
+                        continue;
+                    }
+                    if outbox.fail(db, &q, &error)? {
+                        // Archived or deleted: keep the row for a restore and let
+                        // the project's job back off without an error.
+                        held.insert(project.to_string());
+                        return Ok(Continue(()));
+                    }
+                    if consolidation_pending(&q, &error) || error.starts_with("Local upload: ") {
+                        deferred.insert(q["id"].clone());
+                    } else if terminal_error(&error) {
+                        deferred.remove(&q["id"]);
+                    } else {
+                        return Err(error);
+                    }
                 }
             }
+            outbox.advance(db, &q["sequence"])?;
+            progress(
+                db,
+                "Uploading changes",
+                Some(&detail),
+                index + 1,
+                Some(uploads.len()),
+            )?;
         }
-        db::set(db, "syncUploadCursor", &q["sequence"])?;
-        progress(
-            db,
-            "Uploading changes",
-            Some(&detail),
-            index + 1,
-            Some(uploads.len()),
-        )?;
+        Ok(Continue(()))
     }
-    for p in &local {
-        if crate::projects::foreground_waiting()? {
-            return Ok(WorkspaceSync::Yielded);
+
+    /// Rescans one project, pulls its changes and applies them on this Mac.
+    async fn pull_project(&mut self, p: &Value) -> Stage {
+        if boundary(&*self.db, p["id"].as_str().unwrap_or(""))?.is_break() {
+            return Ok(Break(()));
         }
-        if blocked_projects.contains(p["id"].as_str().unwrap_or("")) {
-            continue;
+        let db = &mut *self.db;
+        let owner = self.owner;
+        let retry_only = self.mode == ProjectMode::RetryOnly;
+        if crate::projects::foreground_waiting()? {
+            return Ok(Break(()));
+        }
+        if self.blocked.contains(p["id"].as_str().unwrap_or(""))
+            || self.held.contains(p["id"].as_str().unwrap_or(""))
+        {
+            return Ok(Continue(()));
         }
         progress(
             db,
@@ -1618,16 +2076,16 @@ async fn sync_workspace(
             None,
         )?;
         let project = p["id"].as_str().ok_or("Missing project")?;
-        let scan = preflight_project(db, p, project_filter.is_some());
+        let scan = preflight_project(db, p, retry_only);
         let scanned = scan.is_ok();
         record_result(db, project, scan)?;
         // A failed project preflight must not run permission-reset filesystem
         // cleanup against an unavailable or replaced folder.
         if !scanned {
-            continue;
+            return Ok(Continue(()));
         }
         if crate::projects::foreground_waiting()? {
-            return Ok(WorkspaceSync::Yielded);
+            return Ok(Break(()));
         }
         let result = pull(
             owner,
@@ -1636,17 +2094,22 @@ async fn sync_workspace(
             crate::projects::display_name(p).unwrap_or("Project"),
         )
         .await;
+        if result.as_ref().is_err_and(|error| SyncError(error).holds()) {
+            // Archived or deleted: hold the project's next attempt quietly.
+            self.held.insert(project.to_string());
+            return Ok(Continue(()));
+        }
         if result.as_ref().is_err_and(|e| service_error(e)) {
-            return result.map(|_| WorkspaceSync::Complete(false));
+            return result.map(Continue);
         }
         let pulled = result.is_ok();
         record_result(db, &format!("{project}:pull"), result)?;
         if !pulled {
-            continue;
+            return Ok(Continue(()));
         }
         // Prepare unsent context only after pending approvals and accepted
         // revisions have arrived; exact-base resources must not freeze early.
-        if project_filter.is_none() {
+        if !retry_only {
             record_result(
                 db,
                 &format!("{project}:sharing"),
@@ -1662,8 +2125,8 @@ async fn sync_workspace(
             &[&project],
         )?;
         for (index, r) in resources.iter().enumerate() {
-            if crate::projects::foreground_waiting()? {
-                return Ok(WorkspaceSync::Yielded);
+            if crate::projects::foreground_waiting()? || SyncQueue::cancelled(db, project)? {
+                return Ok(Break(()));
             }
             let detail = format!(
                 "{} · {}",
@@ -1692,7 +2155,7 @@ async fn sync_workspace(
                 Ok(())
             }.await;
             if result.as_ref().is_err_and(|e| service_error(e)) {
-                return result.map(|_| WorkspaceSync::Complete(false));
+                return result.map(Continue);
             }
             record_result(db, id, result)?;
             progress(
@@ -1720,19 +2183,180 @@ async fn sync_workspace(
             &format!("{project}:memory-index"),
             indexer::memory_index(db, p),
         )?;
+        Ok(Continue(()))
     }
-    progress(db, "Finishing sync", None, 0, None)?;
-    if let Some(project) = project_filter {
-        crate::codex_skills::retry_project(db, project)?;
-    } else {
-        crate::codex_skills::retry(db)?;
+
+    /// Retries pending Codex skill refreshes and records the account's devices.
+    async fn finish(&mut self) -> Result<()> {
+        let db = &mut *self.db;
+        let owner = self.owner;
+        let project_filter = self.project_filter;
+        progress(db, "Finishing sync", None, 0, None)?;
+        if let Some(project) = project_filter {
+            crate::codex_skills::retry_project(db, project)?;
+        } else {
+            crate::codex_skills::retry(db)?;
+        }
+        let devices = api_as(owner, "GET", "/v2/devices", None).await?;
+        crate::device_metadata::update_devices(db, &devices)?;
+        Ok(())
     }
-    let devices = api_as(owner, "GET", "/v2/devices", None).await?;
-    crate::device_metadata::update_devices(db, &devices)?;
+}
+
+async fn sync_workspace(
+    db: &mut rusqlite::Connection,
+    owner: &str,
+    project_filter: Option<&str>,
+) -> Result<WorkspaceSync> {
+    let mut pass = SyncPass::new(db, owner, project_filter);
+    if pass.prepare().await?.is_break() {
+        return Ok(WorkspaceSync::Yielded);
+    }
+    let selected = |project: &Value| project_filter.is_none_or(|id| project["id"] == id);
+    // Refresh the catalog before scanning, so a project that was archived or
+    // deleted meanwhile is not scanned one more time. A failed connection keeps
+    // its error for the end, because local work must not wait for the network.
+    let connected = pass.connect().await;
+    let local = db::rows(
+        pass.db,
+        &format!(
+            "SELECT value FROM projects WHERE {}",
+            crate::projects::ACTIVE
+        ),
+        &[],
+    )?
+    .into_iter()
+    .filter(selected)
+    .collect::<Vec<_>>();
+    for p in &local {
+        if pass.preflight(p)?.is_break() {
+            return Ok(WorkspaceSync::Yielded);
+        }
+    }
+    if connected?.is_break() {
+        return Ok(WorkspaceSync::Yielded);
+    }
+    for p in &local {
+        if pass.authorize(p).await?.is_break() {
+            return Ok(WorkspaceSync::Yielded);
+        }
+    }
+    for p in &local {
+        if pass.drain_outbox(p).await?.is_break() {
+            return Ok(WorkspaceSync::Yielded);
+        }
+    }
+    for p in &local {
+        if pass.pull_project(p).await?.is_break() {
+            return Ok(WorkspaceSync::Yielded);
+        }
+    }
+    pass.finish().await?;
+    let db = pass.db;
     let has_errors: bool = db
         .query_row("SELECT EXISTS(SELECT 1 FROM errors)", [], |r| r.get(0))
         .map_err(|e| e.to_string())?;
-    Ok(WorkspaceSync::Complete(!deferred.is_empty() || has_errors))
+    Ok(WorkspaceSync::Complete(
+        !pass.deferred.is_empty() || !pass.held.is_empty() || has_errors,
+    ))
+}
+
+/// Runs ready queue jobs one at a time, releasing the shared sync slot and the
+/// workspace lock between jobs, until none is ready or foreground work waits.
+async fn drain_queue(queue: &mut SyncQueue, interval: &Interval) {
+    let Ok(base) = db::base_root() else { return };
+    loop {
+        let next = db::open().and_then(|db| SyncQueue::next(&db, SyncQueue::now()));
+        let Ok(Some(job)) = next else { return };
+        if job.project == WORKSPACE {
+            // Onboarding takes the workspace lock itself, so it resumes outside a job.
+            let _ = crate::onboarding::resume_pending_connections().await;
+        }
+        let Ok(_slot) = SyncSlot::acquire(&base).await else {
+            return;
+        };
+        if !matches!(queue.run_next(interval, run_job).await, Ok(true)) {
+            return;
+        }
+    }
+}
+
+/// One queue job, in full-scan mode: the workspace-wide steps or one project's.
+async fn run_job(db: &mut rusqlite::Connection, job: &crate::sync_queue::Job) -> Result<Outcome> {
+    let result = sync_job(db, job).await;
+    // A request already in flight may fail after Cancel was pressed. Its error
+    // must not turn the cancelled run into another retry or connectivity error.
+    let result = if SyncQueue::cancelled(db, &job.project)? {
+        Ok(Outcome::Cancelled)
+    } else {
+        result
+    };
+    let previous = db::get(db, "sync")?;
+    let status = match &result {
+        Ok(Outcome::Yielded | Outcome::Cancelled | Outcome::Skipped) => previous,
+        Ok(_) => json!({"online":true,"lastSync":db::now(),"updatedAt":db::now()}),
+        Err(error) => {
+            json!({"online":false,"lastSync":previous["lastSync"],"error":error,"updatedAt":db::now()})
+        }
+    };
+    db::set(db, "sync", &status)?;
+    // Stop showing progress before giving up the workspace lock. Settlement
+    // also invalidates claim-bound progress before the next job starts.
+    let more = SyncQueue::next(db, SyncQueue::now())?.is_some();
+    if !more || crate::projects::foreground_waiting()? {
+        db::set(db, "syncProgress", &Value::Null)?;
+    }
+    if !matches!(
+        result,
+        Ok(Outcome::Yielded | Outcome::Cancelled | Outcome::Skipped)
+    ) {
+        let error = result.as_ref().err().map(String::as_str);
+        let _ = crate::onboarding::reconcile_workspace_sync(db, error);
+    }
+    result
+}
+
+async fn sync_job(db: &mut rusqlite::Connection, job: &crate::sync_queue::Job) -> Result<Outcome> {
+    let owner = db::get(db, "user")?
+        .as_str()
+        .ok_or("Sign in required")?
+        .to_string();
+    if job.project == WORKSPACE {
+        let _ = crate::account_profile::flush_pending().await;
+        progress(db, "Preparing sync", None, 0, None)?;
+    }
+    let project = db::rows(
+        db,
+        &format!(
+            "SELECT value FROM projects WHERE id=? AND {}",
+            crate::projects::ACTIVE
+        ),
+        &[&job.project],
+    )?;
+    let mut pass = SyncPass::new(db, &owner, None);
+    let flow = match project.first() {
+        _ if job.project == WORKSPACE => pass.sync_workspace_global().await?,
+        Some(p) => pass.sync_project(p).await?,
+        // Removed or archived since it was queued.
+        None => return Ok(Outcome::Skipped),
+    };
+    let errors: bool = pass
+        .db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM errors WHERE source=?1 OR substr(source,1,length(?1)+1)=?1||':' OR source IN (SELECT id FROM resources WHERE project=?1))",
+            [&job.project],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(if SyncQueue::cancelled(pass.db, &job.project)? {
+        Outcome::Cancelled
+    } else if flow.is_break() {
+        Outcome::Yielded
+    } else if !pass.deferred.is_empty() || !pass.held.is_empty() || errors {
+        Outcome::Deferred
+    } else {
+        Outcome::Synced
+    })
 }
 
 pub(crate) fn record_result(
@@ -1802,6 +2426,74 @@ fn consolidation_pending(queued: &Value, error: &str) -> bool {
         .is_some_and(|code| (100..=599).contains(&code))
 }
 
+/// One project's outbox and the position its next upload batch starts from.
+/// Each project keeps its own cursor, so projects can drain independently.
+struct ProjectOutbox<'p> {
+    project: &'p str,
+    cursor_key: String,
+    cursor: i64,
+}
+
+impl<'p> ProjectOutbox<'p> {
+    /// Before cursors were per project, one key held the whole outbox's position.
+    const LEGACY_CURSOR: &'static str = "syncUploadCursor";
+
+    fn open(db: &rusqlite::Connection, project: &'p str) -> Result<Self> {
+        Self::migrate(db)?;
+        let cursor_key = format!("{}:{project}", Self::LEGACY_CURSOR);
+        let cursor = db::get(db, &cursor_key)?.as_i64().unwrap_or(0);
+        Ok(Self {
+            project,
+            cursor_key,
+            cursor,
+        })
+    }
+
+    /// Every project resumes from the old shared position once, so no project
+    /// restarts its rotation from the beginning.
+    fn migrate(db: &rusqlite::Connection) -> Result<()> {
+        let legacy = db::get(db, Self::LEGACY_CURSOR)?;
+        if legacy.is_null() {
+            return Ok(());
+        }
+        let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
+        tx.execute(
+            "INSERT OR IGNORE INTO meta(key,value) SELECT ?1 || ':' || id, ?2 FROM projects",
+            params![Self::LEGACY_CURSOR, legacy.to_string()],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM meta WHERE key=?", [Self::LEGACY_CURSOR])
+            .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())
+    }
+
+    /// Queued rows that may be sent now, oldest first.
+    fn queued(&self, db: &rusqlite::Connection) -> Result<Vec<Value>> {
+        db::rows(db, "SELECT json_object('sequence',rowid,'id',id,'project',project,'path',path,'value',json(value),'error',error) FROM outbox WHERE project=? AND (EXISTS(SELECT 1 FROM meta WHERE key='sessionOutboxRedaction:'||outbox.id) OR error IS NULL OR error NOT GLOB '4[0-9][0-9]:*' OR substr(error,1,3) IN ('401','408','429')) ORDER BY rowid", &[&self.project])
+    }
+
+    fn batch<'q>(&self, queued: &'q [Value]) -> Vec<&'q Value> {
+        select_uploads(queued, self.cursor)
+    }
+
+    fn advance(&mut self, db: &rusqlite::Connection, sequence: &Value) -> Result<()> {
+        self.cursor = sequence.as_i64().unwrap_or(self.cursor);
+        db::set(db, &self.cursor_key, sequence)
+    }
+
+    /// Records a failed send. An archived or deleted project keeps its row with
+    /// no error, so a restore sends it again; every other failure is recorded.
+    fn fail(&self, db: &rusqlite::Connection, queued: &Value, error: &str) -> Result<bool> {
+        let held = SyncError(error).holds();
+        db.execute(
+            "UPDATE outbox SET error=? WHERE id=?",
+            params![(!held).then_some(error), queued["id"].as_str()],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(held)
+    }
+}
+
 fn select_uploads(queued: &[Value], cursor: i64) -> Vec<&Value> {
     let mut resources = HashSet::new();
     // A later operation must never overtake its resource's oldest eligible edit,
@@ -1823,12 +2515,97 @@ fn select_uploads(queued: &[Value], cursor: i64) -> Vec<&Value> {
     uploads
 }
 
-pub fn terminal_error(error: &str) -> bool {
-    let code = error
-        .split_once(':')
-        .and_then(|(s, _)| s.parse::<u16>().ok());
-    matches!(code, Some(400..=499)) && !matches!(code, Some(401 | 408 | 429))
+/// A failed response as the outbox records it: `"<status>: <message>"`, with the
+/// server's access `code` between the two when the response carries one.
+pub(crate) struct SyncError<'a>(&'a str);
+
+impl<'a> SyncError<'a> {
+    /// The codes that close a project to this Mac. Other endpoints send codes
+    /// too, so only these keep the extra token in the recorded message.
+    const ACCESS: [&'static str; 3] = ["project_archived", "project_deleted", "not_member"];
+
+    /// Formats a rejected response. An access code stays a leading token so a
+    /// project that is archived or deleted can be told apart from a caller's
+    /// error; every other code keeps the plain `"<status>: <message>"` shape.
+    fn message(status: u16, body: &Value, fallback: &str) -> String {
+        let message = body["error"].as_str().unwrap_or(fallback);
+        match body["code"]
+            .as_str()
+            .filter(|code| Self::ACCESS.contains(code))
+        {
+            Some(code) => format!("{status}: {code}: {message}"),
+            None => format!("{status}: {message}"),
+        }
+    }
+
+    fn status(&self) -> Option<u16> {
+        self.0
+            .split_once(':')
+            .and_then(|(status, _)| status.parse().ok())
+    }
+
+    /// The server's access code, when it reports one. Older servers send none,
+    /// so only the status and the message decide.
+    fn access(&self) -> Option<&'a str> {
+        let (_, rest) = self.0.split_once(": ")?;
+        let (code, _) = rest.split_once(": ")?;
+        Self::ACCESS.into_iter().find(|known| *known == code)
+    }
+
+    /// Work for an archived or deleted project is held, not failed: a restore
+    /// within the window sends it again.
+    fn holds(&self) -> bool {
+        matches!(self.access(), Some("project_archived" | "project_deleted"))
+    }
+
+    fn terminal(&self) -> bool {
+        matches!(self.status(), Some(400..=499)) && !matches!(self.status(), Some(401 | 408 | 429))
+    }
 }
+
+pub fn terminal_error(error: &str) -> bool {
+    SyncError(error).terminal()
+}
+
+/// The presence heartbeat: one post per active project, each one independent.
+struct Presence;
+
+impl Presence {
+    /// Every active project's presence body, with the sessions open on this Mac.
+    fn bodies(db: &rusqlite::Connection) -> Result<Vec<Value>> {
+        let device = db::device(db)?;
+        let mut bodies = Vec::new();
+        for p in db::rows(
+            db,
+            &format!(
+                "SELECT value FROM projects WHERE {}",
+                crate::projects::ACTIVE
+            ),
+            &[],
+        )? {
+            let project = p["id"].as_str().ok_or("Missing project")?;
+            let mut ids = Vec::new();
+            if crate::projects::sharing_allowed(&p, "session") {
+                for b in db::rows(db,"SELECT value FROM bindings WHERE project=? AND json_extract(value,'$.base.kind')='session'",&[&project])? {if let Some(id) = b["nativeId"].as_str() {if native::active(db,id,b["base"]["source"].as_str().unwrap_or("")){ids.push(b["base"]["resourceId"].clone());}}}
+            }
+            bodies.push(json!({"projectId":project,"deviceId":device,"sessions":ids}));
+        }
+        Ok(bodies)
+    }
+
+    /// Posts each body in turn. One project's failure says nothing about the
+    /// others, so presence moves on instead of stopping the heartbeat.
+    async fn send(bodies: Vec<Value>, post: impl AsyncFn(Value) -> Result<()>) -> Result<()> {
+        for body in bodies {
+            if crate::projects::foreground_waiting()? {
+                break;
+            }
+            let _ = post(body).await;
+        }
+        Ok(())
+    }
+}
+
 async fn heartbeat() -> Result<()> {
     if crate::projects::foreground_waiting()? {
         return Ok(());
@@ -1837,31 +2614,13 @@ async fn heartbeat() -> Result<()> {
     let db = db::open()?;
     let user = db::get(&db, "user")?;
     let owner = user.as_str().ok_or("Sign in required")?;
-    for p in db::rows(
-        &db,
-        &format!(
-            "SELECT value FROM projects WHERE {}",
-            crate::projects::ACTIVE
-        ),
-        &[],
-    )? {
-        if crate::projects::foreground_waiting()? {
-            return Ok(());
-        }
-        let project = p["id"].as_str().ok_or("Missing project")?;
-        let mut ids = Vec::new();
-        if crate::projects::sharing_allowed(&p, "session") {
-            for b in db::rows(&db,"SELECT value FROM bindings WHERE project=? AND json_extract(value,'$.base.kind')='session'",&[&project])?{if let Some(id)=b["nativeId"].as_str(){if native::active(&db,id,b["base"]["source"].as_str().unwrap_or("")){ids.push(b["base"]["resourceId"].clone());}}}
-        }
-        api_as(
-            owner,
-            "POST",
-            "/v2/presence",
-            Some(&json!({"projectId":project,"deviceId":db::device(&db)?,"sessions":ids})),
-        )
-        .await?;
-    }
-    Ok(())
+    let bodies = Presence::bodies(&db)?;
+    Presence::send(bodies, async |body| {
+        api_as(owner, "POST", "/v2/presence", Some(&body))
+            .await
+            .map(|_| ())
+    })
+    .await
 }
 pub(crate) fn foreground_enabled(db: &rusqlite::Connection) -> Result<bool> {
     let enabled = db::get(db, "background")?.as_bool().unwrap_or_else(|| {
@@ -1902,11 +2661,7 @@ async fn run_mode(foreground: bool) {
         return;
     }
     let executable_identity = db::executable_identity().unwrap_or_default();
-    let mut next = Instant::now();
-    let mut last_request = String::new();
-    let mut last_user = String::new();
-    let mut last_sync = Instant::now();
-    let mut retry = 30;
+    let mut queue = SyncQueue::new(SyncQueue::now());
     let mut beat = Instant::now();
     let mut network_poll = Instant::now();
     let mut network = String::new();
@@ -1923,13 +2678,7 @@ async fn run_mode(foreground: bool) {
             return;
         }
         let cfg = db::get(&db, "config").unwrap_or(json!({}));
-        let interval =
-            Duration::from_secs(cfg["syncMinutes"].as_u64().unwrap_or(15).clamp(1, 1440) * 60);
-        let request = db::get(&db, "syncRequest")
-            .unwrap_or(Value::Null)
-            .as_str()
-            .unwrap_or("")
-            .to_string();
+        let interval = Interval::from_config(&cfg);
         let user = db::get(&db, "user")
             .unwrap_or(Value::Null)
             .as_str()
@@ -1950,8 +2699,6 @@ async fn run_mode(foreground: bool) {
         } else {
             false
         };
-        let requested = request != last_request || user != last_user || reconnect;
-        let due = Instant::now() >= next || last_sync.elapsed() >= interval;
         db::set(
             &db,
             "daemon",
@@ -1963,20 +2710,18 @@ async fn run_mode(foreground: bool) {
             .and_then(|db| crate::onboarding::snapshot(&db))
             .is_ok_and(|value| value["active"] == true);
         let onboarding_sync = crate::onboarding::sync_running().unwrap_or(false);
-        if !onboarding_active && !onboarding_sync && !user.is_empty() && (requested || due) {
-            last_request = request;
-            last_user = user.clone();
-            match cycle().await {
-                Ok(false) => {
-                    last_sync = Instant::now();
-                    next = Instant::now() + interval;
-                    retry = 30;
+        if !user.is_empty() && !onboarding_active && !onboarding_sync {
+            let queued = db::open().and_then(|db| {
+                let now = SyncQueue::now();
+                SyncQueue::recover(&db, now)?;
+                SyncQueue::accept_request(&db, now)?;
+                if reconnect {
+                    SyncQueue::enqueue_all(&db, Priority::Local, "network", now)?;
                 }
-                Ok(true) | Err(_) => {
-                    next = Instant::now() + Duration::from_secs(retry);
-                    retry = (retry * 2).min(interval.as_secs());
-                    last_sync = Instant::now();
-                }
+                queue.enqueue_due(&db, now, &interval)
+            });
+            if queued.is_ok() {
+                drain_queue(&mut queue, &interval).await;
             }
         }
         if !onboarding_active && !user.is_empty() && Instant::now() >= beat {
@@ -1990,6 +2735,422 @@ async fn run_mode(foreground: bool) {
 #[cfg(test)]
 mod queue_tests {
     use super::*;
+
+    #[test]
+    fn archived_and_deleted_projects_hold_while_a_member_error_stays_terminal() {
+        for code in ["project_archived", "project_deleted"] {
+            let error = format!("403: {code}: Project is unavailable");
+            assert!(SyncError(&error).holds(), "{error}");
+            assert!(terminal_error(&error), "{error}");
+        }
+        for error in ["403: not_member: Not a member", "403: Forbidden"] {
+            assert!(!SyncError(error).holds(), "{error}");
+            assert!(terminal_error(error), "{error}");
+        }
+        // A service message that happens to look like a code is not one.
+        assert!(!SyncError("403: Project: deleted").holds());
+        // The formatted message keeps the status parsers working.
+        let reply = json!({"error":"Project is deleted","code":"project_deleted"});
+        let error = SyncError::message(403, &reply, "Service unavailable");
+        assert_eq!(error, "403: project_deleted: Project is deleted");
+        assert_eq!(SyncError(&error).status(), Some(403));
+        assert!(!service_error(&error));
+        let older = SyncError::message(403, &json!({"error":"Forbidden"}), "Rejected");
+        assert_eq!(older, "403: Forbidden");
+        assert!(terminal_error(&older));
+        // Other endpoints send codes too; they keep the plain message shape that
+        // the UI already parses.
+        let other = SyncError::message(
+            409,
+            &json!({"error":"Already invited","code":"already_member"}),
+            "Rejected",
+        );
+        assert_eq!(other, "409: Already invited");
+        assert_eq!(SyncError(&other).access(), None);
+        assert!(!SyncError(&other).holds());
+    }
+
+    #[tokio::test]
+    async fn governance_lifecycle_refusals_hold_pending_work_without_permission_errors() {
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("ORKA_TEST_HOME", home.path());
+        db::open().unwrap();
+        for code in ["project_archived", "project_deleted"] {
+            let (_root, mut db) = outbox_db(&["a"]);
+            enqueue(&db, "a", "memory");
+            let before = db::rows(&db, "SELECT value FROM outbox", &[]).unwrap();
+            record_result(
+                &db,
+                "a:permissions",
+                Err("403: stale permission error".into()),
+            )
+            .unwrap();
+            let mut pass = SyncPass::new(&mut db, "owner", None);
+            let error = format!("403: {code}: Project is unavailable");
+            assert!(pass
+                .record_authorization("a", Err(error))
+                .unwrap()
+                .is_continue());
+            assert!(pass.held.contains("a"));
+            assert!(!pass.blocked.contains("a"));
+            let project = json!({"id":"a"});
+            // No service configuration is available: these stages must skip the
+            // held project before trying any upload or pull.
+            assert!(pass.drain_outbox(&project).await.unwrap().is_continue());
+            assert!(pass.pull_project(&project).await.unwrap().is_continue());
+            assert_eq!(
+                db::rows(pass.db, "SELECT value FROM outbox", &[]).unwrap(),
+                before
+            );
+            assert!(
+                db::rows(pass.db, "SELECT json_quote(error) FROM errors", &[])
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+    }
+
+    #[test]
+    fn governance_member_refusals_and_outages_keep_their_existing_behavior() {
+        for error in ["403: not_member: Not a member", "403: Forbidden"] {
+            let (_root, mut db) = outbox_db(&["a"]);
+            let mut pass = SyncPass::new(&mut db, "owner", None);
+            assert!(pass
+                .record_authorization("a", Err(error.into()))
+                .unwrap()
+                .is_continue());
+            assert!(pass.blocked.contains("a"));
+            assert!(!pass.held.contains("a"));
+            assert_eq!(
+                db::rows(pass.db, "SELECT json_quote(error) FROM errors", &[]).unwrap(),
+                [json!(error)]
+            );
+            assert!(pass
+                .record_authorization("a", Ok(()))
+                .unwrap()
+                .is_continue());
+            assert!(
+                db::rows(pass.db, "SELECT json_quote(error) FROM errors", &[])
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        let (_root, mut db) = outbox_db(&["a"]);
+        let mut pass = SyncPass::new(&mut db, "owner", None);
+        assert_eq!(
+            pass.record_authorization("a", Err("503: Service unavailable".into()))
+                .unwrap_err(),
+            "503: Service unavailable"
+        );
+        assert!(pass.held.is_empty());
+        assert!(pass.blocked.is_empty());
+    }
+
+    #[test]
+    fn held_rows_keep_no_error_so_a_restore_sends_them_again() {
+        let (_root, db) = outbox_db(&["a"]);
+        enqueue(&db, "a", "memory");
+        let outbox = ProjectOutbox::open(&db, "a").unwrap();
+        let row = outbox.queued(&db).unwrap().remove(0);
+        let saved = || {
+            db.query_row("SELECT error FROM outbox", [], |r| {
+                r.get::<_, Option<String>>(0)
+            })
+            .unwrap()
+        };
+        for code in ["project_archived", "project_deleted"] {
+            db.execute("UPDATE outbox SET error='403: project_deleted: stale'", [])
+                .unwrap();
+            let error = format!("403: {code}: Project is unavailable");
+            assert!(outbox.fail(&db, &row, &error).unwrap(), "{error}");
+            // Held, not failed: the row stays queued for a restore.
+            assert_eq!(saved(), None);
+            assert_eq!(outbox.queued(&db).unwrap().len(), 1);
+        }
+        // A member-only refusal keeps today's terminal behaviour.
+        let error = "403: not_member: Not a member";
+        assert!(!outbox.fail(&db, &row, error).unwrap());
+        assert_eq!(saved().as_deref(), Some(error));
+        assert!(outbox.queued(&db).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_presence_heartbeat_continues_past_a_project_error() {
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("ORKA_TEST_HOME", home.path());
+        db::open().unwrap();
+        let bodies = ["a", "b", "c"]
+            .into_iter()
+            .map(|id| json!({"projectId":id}))
+            .collect();
+        let seen = std::sync::Mutex::new(Vec::new());
+        Presence::send(bodies, async |body| {
+            let id = body["projectId"].as_str().unwrap().to_string();
+            seen.lock().unwrap().push(id.clone());
+            if id == "a" {
+                return Err("403: project_deleted: Project is deleted".into());
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+        assert_eq!(*seen.lock().unwrap(), ["a", "b", "c"]);
+    }
+
+    #[tokio::test]
+    async fn project_and_retry_prepare_session_redaction_without_rebuilding_other_projects() {
+        for retry_only in [false, true] {
+            let home = tempfile::tempdir().unwrap();
+            std::env::set_var("ORKA_TEST_HOME", home.path());
+            let mut db = db::open().unwrap();
+            let owner = uuid::Uuid::new_v4().to_string();
+            db::set(&db, "user", &json!(owner)).unwrap();
+            // An older candidate may have changed bytes under a used request
+            // ID. Even safe rows from that candidate must be reconciled once.
+            db::set(&db, "sessionOutboxRedacted", &json!(true)).unwrap();
+            let secret = "sk-abcdefghijklmnopqrstuvwx";
+            let bytes = native::encode(&[
+                json!({"type":"user","message":{"role":"user","content":format!("Use {secret}")}}),
+            ]);
+            let hash = db::blob(&bytes).unwrap();
+            let mut requests = Vec::new();
+            for project in ["a", "b"] {
+                db::upsert(&db, "projects", project, "", &json!({"id":project})).unwrap();
+                let input = json!({"id":format!("old-{project}"),"projectId":project,"resource":{"resourceId":format!("session-{project}"),"kind":"session","source":"claude","title":format!("Use {secret}"),"files":[{"path":"session.jsonl","hash":hash,"size":bytes.len()}]}});
+                indexer::queue(&db, project, "/v2/sync/push", &input).unwrap();
+                requests.push(input);
+            }
+            db.execute("UPDATE outbox SET error='422: Session upload blocked'", [])
+                .unwrap();
+            let project = json!({"id":"a"});
+            let mut pass = SyncPass::new(&mut db, &owner, retry_only.then_some("a"));
+            let prepared = if retry_only {
+                pass.prepare().await
+            } else {
+                pass.prepare_project(&project)
+            };
+            assert!(prepared.unwrap().is_continue());
+            assert_eq!(db::get(pass.db, OUTBOX_REDACTION_KEY).unwrap(), Value::Null);
+            assert_eq!(db::get(pass.db, &project_redaction_key("a")).unwrap(), true);
+            let replacement = db::get(pass.db, &outbox_redaction_key("old-a")).unwrap();
+            assert!(!replacement["value"]["resource"]["title"]
+                .as_str()
+                .unwrap()
+                .contains(secret));
+            assert_eq!(
+                db::get(pass.db, &outbox_redaction_key("old-b")).unwrap(),
+                Value::Null
+            );
+            // A terminal error cannot hide a row that still needs server-side
+            // reconciliation. Its original ID and bytes remain untouched.
+            let a = ProjectOutbox::open(pass.db, "a").unwrap();
+            assert_eq!(a.queued(pass.db).unwrap()[0]["value"], requests[0]);
+            assert!(ProjectOutbox::open(pass.db, "b")
+                .unwrap()
+                .queued(pass.db)
+                .unwrap()
+                .is_empty());
+
+            let fresh = json!({"id":"fresh-a","projectId":"a","resource":{"resourceId":"new-a","kind":"session","source":"claude","title":"Safe new request","files":[]}});
+            indexer::queue(pass.db, "a", "/v2/sync/push", &fresh).unwrap();
+            rebuild_unredacted_outbox(pass.db).unwrap();
+            assert_eq!(db::get(pass.db, OUTBOX_REDACTION_KEY).unwrap(), true);
+            assert!(db::get(pass.db, &outbox_redaction_key("old-b"))
+                .unwrap()
+                .is_object());
+            assert_eq!(
+                db::get(pass.db, &outbox_redaction_key("fresh-a")).unwrap(),
+                Value::Null
+            );
+            assert_eq!(
+                db::rows(pass.db, "SELECT value FROM outbox ORDER BY rowid", &[]).unwrap(),
+                vec![requests[0].clone(), requests[1].clone(), fresh]
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn removing_an_inactive_project_does_not_record_a_cloud_sync() {
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("ORKA_TEST_HOME", home.path());
+        let db = db::open().unwrap();
+        db::set(&db, "user", &json!(uuid::Uuid::new_v4().to_string())).unwrap();
+        let project = uuid::Uuid::new_v4().to_string();
+        db::upsert(
+            &db,
+            "projects",
+            &project,
+            "",
+            &json!({"id":project,"name":"Offline archive","role":"owner","archivedAt":"2026-11-19T00:00:00Z"}),
+        )
+        .unwrap();
+        let previous = json!({"online":false,"error":"503: Service unavailable","lastSync":"2026-11-18T00:00:00Z","updatedAt":"2026-11-18T01:00:00Z"});
+        let outage = json!({"notBefore":SyncQueue::now()+60_000,"attempts":3});
+        db::set(&db, "sync", &previous).unwrap();
+        db::set(&db, "syncOutage", &outage).unwrap();
+
+        crate::projects::project_command("remove".into(), json!({"projectId":project}))
+            .await
+            .unwrap();
+        assert_eq!(db::get(&db, "sync").unwrap(), previous);
+        // The real command queues a User job, which bypasses the outage hold.
+        // With no service configured, only the skipped-project path can finish.
+        assert_eq!(
+            SyncQueue::next(&db, SyncQueue::now())
+                .unwrap()
+                .unwrap()
+                .project,
+            project
+        );
+        let mut queue = SyncQueue::new(SyncQueue::now());
+        assert!(queue
+            .run_next(&Interval::from_config(&json!({})), run_job)
+            .await
+            .unwrap());
+        assert_eq!(db::get(&db, "sync").unwrap(), previous);
+        assert_eq!(db::get(&db, "syncOutage").unwrap(), outage);
+        assert!(SyncQueue::states(&db, SyncQueue::now())
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert!(db::get(&db, &format!("syncCancelledAt:{project}"))
+            .unwrap()
+            .is_null());
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_job_does_not_retry_a_late_job_error() {
+        for requested_again in [false, true] {
+            let home = tempfile::tempdir().unwrap();
+            std::env::set_var("ORKA_TEST_HOME", home.path());
+            let db = db::open().unwrap();
+            let previous = json!({"online":true,"lastSync":"2026-11-19T00:00:00Z"});
+            db::set(&db, "sync", &previous).unwrap();
+            let project = uuid::Uuid::new_v4().to_string();
+            SyncQueue::request(&db, &project, Priority::User, "sync now").unwrap();
+            let app = db::open().unwrap();
+            let mut queue = SyncQueue::new(SyncQueue::now());
+            assert!(queue
+                .run_next(&Interval::from_config(&json!({})), async |db, job| {
+                    SyncQueue::cancel(&app, &project)?;
+                    if requested_again {
+                        SyncQueue::request(&app, &project, Priority::Local, "new change")?;
+                    }
+                    // No signed-in user: sync_job returns an error before its
+                    // final cancellation check, just as a failed request can.
+                    run_job(db, job).await
+                })
+                .await
+                .unwrap());
+            assert_eq!(db::get(&db, "sync").unwrap(), previous);
+            let pending = SyncQueue::next(&db, SyncQueue::now()).unwrap();
+            assert_eq!(pending.is_some(), requested_again);
+            if let Some(job) = pending {
+                assert_eq!(job.project, project);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn another_profile_waits_for_the_shared_sync_slot() {
+        let base = tempfile::tempdir().unwrap();
+        let first = SyncSlot::acquire(base.path()).await.unwrap();
+        let mut second = std::pin::pin!(SyncSlot::acquire(base.path()));
+        tokio::select! {
+            biased;
+            _ = &mut second => panic!("second profile entered an occupied slot"),
+            _ = std::future::ready(()) => {}
+        }
+        drop(first);
+        tokio::time::timeout(Duration::from_secs(2), second)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn project_jobs_prepare_new_session_copies_without_preparing_other_projects() {
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("ORKA_TEST_HOME", home.path());
+        std::env::set_var("CODEX_HOME", home.path().join(".codex"));
+        std::env::set_var("CLAUDE_CONFIG_DIR", home.path().join(".claude"));
+        let root = home.path().join("project");
+        fs::create_dir(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let mut db = db::open().unwrap();
+        let owner = uuid::Uuid::new_v4().to_string();
+        db::set(&db, "user", &json!(owner)).unwrap();
+        let project = json!({"id":uuid::Uuid::new_v4().to_string(),"name":"Project","path":root});
+        let project_id = project["id"].as_str().unwrap();
+        db::upsert(&db, "projects", project_id, "", &project).unwrap();
+
+        let native_id = uuid::Uuid::new_v4().to_string();
+        let resource = uuid::Uuid::new_v4().to_string();
+        let directory = native::claude_home().unwrap().join("projects/test");
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join(format!("{native_id}.jsonl"));
+        let bytes = native::encode(&[
+            json!({"type":"user","cwd":root,"sessionId":native_id,"version":"2.1.286","message":{"role":"user","content":"A teammate session continued here"}}),
+        ]);
+        fs::write(&path, &bytes).unwrap();
+        let base = json!({"resourceId":resource,"projectId":project_id,"owner":uuid::Uuid::new_v4().to_string(),"revision":1,"kind":"session","source":"claude","logicalPath":format!("claude/{native_id}"),"title":"Peer session","deleted":false,"files":[{"path":"session.jsonl","hash":db::blob(&bytes).unwrap(),"size":bytes.len(),"executable":false}]});
+        let binding = json!({"nativeId":native_id,"paths":[path],"lastSeenHash":"before-the-local-edit","base":base});
+        db::upsert(&db, "bindings", &resource, project_id, &binding).unwrap();
+
+        // An unrelated project has an unavailable copy source. It must neither
+        // block this project nor acquire a request as a side effect of its job.
+        let other_project = uuid::Uuid::new_v4().to_string();
+        let other_resource = uuid::Uuid::new_v4().to_string();
+        db::upsert(
+            &db,
+            "projects",
+            &other_project,
+            "",
+            &json!({"id":other_project}),
+        )
+        .unwrap();
+        let other = json!({"needsCopy":true,"base":{"resourceId":other_resource,"projectId":other_project,"revision":0}});
+        db::upsert(&db, "bindings", &other_resource, &other_project, &other).unwrap();
+
+        let mut pass = SyncPass::new(&mut db, &owner, None);
+        // No service is configured: the first network attempt fails, after
+        // preparation has durably frozen this project's copy for retry.
+        assert_eq!(
+            pass.sync_project(&project).await.unwrap_err(),
+            "Configure the service"
+        );
+        let copy = indexer::binding(pass.db, &resource).unwrap();
+        assert_eq!(copy["needsCopy"], true);
+        assert!(copy["copyRequest"].is_string());
+        let queued = db::rows(
+            pass.db,
+            "SELECT json_object('project',project,'path',path,'value',json(value)) FROM outbox",
+            &[],
+        )
+        .unwrap();
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0]["project"], project_id);
+        assert_eq!(queued[0]["path"], "/v2/sessions/copy");
+        assert_eq!(queued[0]["value"]["id"], copy["copyRequest"]);
+        assert_eq!(queued[0]["value"]["expectedRevision"], 1);
+        assert!(indexer::binding(pass.db, &other_resource).unwrap()["copyRequest"].is_null());
+
+        assert_eq!(
+            pass.sync_project(&project).await.unwrap_err(),
+            "Configure the service"
+        );
+        assert_eq!(
+            indexer::binding(pass.db, &resource).unwrap()["copyRequest"],
+            copy["copyRequest"]
+        );
+        assert_eq!(
+            db::rows(pass.db, "SELECT value FROM outbox", &[])
+                .unwrap()
+                .len(),
+            1
+        );
+    }
 
     fn queued(sequence: i64, resource: &str) -> Value {
         json!({"sequence":sequence,"id":format!("request-{sequence}"),"project":"project","path":"/v2/sync/push","value":{"resource":{"resourceId":resource,"kind":"memory"}}})
@@ -2067,6 +3228,164 @@ mod queue_tests {
         assert_eq!(next[0]["sequence"], 101);
         assert_eq!(next[1]["sequence"], 1);
         assert_eq!(select_uploads(&queue, 1000)[0]["sequence"], 1);
+    }
+
+    fn outbox_db(projects: &[&str]) -> (tempfile::TempDir, rusqlite::Connection) {
+        let root = tempfile::tempdir().unwrap();
+        let db = db::open_at(root.path()).unwrap();
+        for id in projects {
+            db.execute(
+                "INSERT INTO projects VALUES(?,?)",
+                params![id, json!({"id": id}).to_string()],
+            )
+            .unwrap();
+        }
+        (root, db)
+    }
+
+    fn enqueue(db: &rusqlite::Connection, project: &str, resource: &str) -> i64 {
+        let value = json!({"resource":{"resourceId":resource,"kind":"memory"}});
+        db.execute(
+            "INSERT INTO outbox VALUES(?,?,'/v2/sync/push',?,NULL)",
+            params![
+                format!("{project}-{resource}-{}", db.last_insert_rowid() + 1),
+                project,
+                value.to_string()
+            ],
+        )
+        .unwrap();
+        db.last_insert_rowid()
+    }
+
+    fn batch(db: &rusqlite::Connection, project: &str) -> Vec<i64> {
+        let outbox = ProjectOutbox::open(db, project).unwrap();
+        let queued = outbox.queued(db).unwrap();
+        outbox
+            .batch(&queued)
+            .iter()
+            .map(|q| q["sequence"].as_i64().unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn project_upload_cursors_start_from_the_old_global_cursor() {
+        let (_root, db) = outbox_db(&["a", "b"]);
+        db::set(&db, "syncUploadCursor", &json!(7)).unwrap();
+        db::set(&db, "syncUploadCursor:b", &json!(3)).unwrap();
+        assert_eq!(ProjectOutbox::open(&db, "a").unwrap().cursor, 7);
+        assert!(db::get(&db, "syncUploadCursor").unwrap().is_null());
+        // A cursor the project already owns is never replaced by the old one.
+        assert_eq!(db::get(&db, "syncUploadCursor:b").unwrap(), 3);
+        db::set(&db, "syncUploadCursor:a", &json!(9)).unwrap();
+        assert_eq!(ProjectOutbox::open(&db, "a").unwrap().cursor, 9);
+        // A project added after the migration starts from the beginning.
+        assert_eq!(ProjectOutbox::open(&db, "c").unwrap().cursor, 0);
+    }
+
+    #[test]
+    fn project_batches_reconcile_fenced_terminal_rows_without_overtaking_them() {
+        let (_root, db) = outbox_db(&["a", "b"]);
+        let fenced = enqueue(&db, "a", "session");
+        let later = enqueue(&db, "a", "session");
+        let other = enqueue(&db, "a", "independent");
+        let terminal = enqueue(&db, "a", "terminal");
+        let peer = enqueue(&db, "b", "peer-session");
+        for sequence in [fenced, later, peer] {
+            db.execute(
+                "UPDATE outbox SET value=json_set(value,'$.resource.kind','session') WHERE rowid=?",
+                [sequence],
+            )
+            .unwrap();
+        }
+        for sequence in [fenced, terminal, peer] {
+            db.execute(
+                "UPDATE outbox SET error='422: Session upload blocked' WHERE rowid=?",
+                [sequence],
+            )
+            .unwrap();
+        }
+        for sequence in [fenced, peer] {
+            let id: String = db
+                .query_row("SELECT id FROM outbox WHERE rowid=?", [sequence], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            db::set(&db, &outbox_redaction_key(&id), &json!({"drop":true})).unwrap();
+        }
+        assert_eq!(batch(&db, "a"), vec![fenced, other]);
+        assert_eq!(batch(&db, "b"), vec![peer]);
+        // A rotated cursor still cannot let a later edit of the same session
+        // overtake the fenced request while its service outcome is unknown.
+        let mut outbox = ProjectOutbox::open(&db, "a").unwrap();
+        outbox.advance(&db, &json!(other)).unwrap();
+        assert_eq!(batch(&db, "a"), vec![fenced, other]);
+        db.execute("DELETE FROM outbox WHERE rowid=?", [fenced])
+            .unwrap();
+        assert_eq!(batch(&db, "a"), vec![later, other]);
+    }
+
+    #[test]
+    fn projects_drain_independently_without_overtaking_a_resource() {
+        let (_root, db) = outbox_db(&["a", "b"]);
+        let a1 = enqueue(&db, "a", "shared");
+        let b1 = enqueue(&db, "b", "note");
+        let a2 = enqueue(&db, "a", "independent");
+        let a3 = enqueue(&db, "a", "shared");
+        let b2 = enqueue(&db, "b", "other");
+        assert_eq!(batch(&db, "a"), vec![a1, a2]);
+        assert_eq!(batch(&db, "b"), vec![b1, b2]);
+        // A rotates past its first edit; its later edit of the same resource
+        // still waits behind it, and B's batch does not move.
+        let mut a = ProjectOutbox::open(&db, "a").unwrap();
+        a.advance(&db, &json!(a1)).unwrap();
+        assert_eq!(batch(&db, "a"), vec![a2, a1]);
+        assert_eq!(batch(&db, "b"), vec![b1, b2]);
+        db.execute("DELETE FROM outbox WHERE rowid=?", [a1])
+            .unwrap();
+        assert_eq!(batch(&db, "a"), vec![a2, a3]);
+        let mut b = ProjectOutbox::open(&db, "b").unwrap();
+        b.advance(&db, &json!(b2)).unwrap();
+        assert_eq!(batch(&db, "b"), vec![b1, b2]);
+        assert_eq!(batch(&db, "a"), vec![a2, a3]);
+    }
+
+    #[test]
+    fn only_a_cancelled_project_stops_at_a_stage_boundary() {
+        let (_root, db) = outbox_db(&[]);
+        let project = uuid::Uuid::new_v4().to_string();
+        assert!(boundary(&db, &project).unwrap().is_continue());
+        SyncQueue::mark_cancelled(&db, &project).unwrap();
+        assert!(boundary(&db, &project).unwrap().is_break());
+        assert!(boundary(&db, &uuid::Uuid::new_v4().to_string())
+            .unwrap()
+            .is_continue());
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_job_stops_before_its_next_request_and_keeps_the_outbox() {
+        let (_root, db) = outbox_db(&[]);
+        let project = uuid::Uuid::new_v4().to_string();
+        db.execute(
+            "INSERT INTO projects VALUES(?,?)",
+            params![project, json!({"id": project}).to_string()],
+        )
+        .unwrap();
+        db::set(&db, "user", &json!(uuid::Uuid::new_v4().to_string())).unwrap();
+        let mut db = db;
+        enqueue(&db, &project, "memory");
+        enqueue(&db, &project, "skill");
+        SyncQueue::request(&db, &project, Priority::User, "sync now").unwrap();
+        let job = SyncQueue::next(&db, i64::MAX - 1).unwrap().unwrap();
+        SyncQueue::mark_cancelled(&db, &project).unwrap();
+        let outcome = sync_job(&mut db, &job).await;
+        assert!(matches!(outcome, Ok(Outcome::Cancelled)), "{outcome:?}");
+        // Nothing already sent is rolled back and nothing unsent is dropped.
+        assert_eq!(
+            db::rows(&db, "SELECT value FROM outbox", &[])
+                .unwrap()
+                .len(),
+            2
+        );
     }
 
     #[test]

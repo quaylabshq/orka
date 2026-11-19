@@ -108,6 +108,15 @@ fn selected_share_freezes_one_snapshot_deduplicates_and_never_enables_future_tur
         selective_sharing::queue(&f.db, &f.project, &request).unwrap(),
         receipt
     );
+    assert_eq!(
+        db::rows(
+            &f.db,
+            "SELECT json_object('project',project,'priority',priority,'reason',reason) FROM sync_queue",
+            &[]
+        )
+        .unwrap(),
+        [json!({"project":f.project["id"],"priority":2,"reason":"share"})]
+    );
     let queued = db::rows(
         &f.db,
         "SELECT json_object('id',id,'project',project,'path',path,'value',json(value)) FROM outbox",

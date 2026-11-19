@@ -56,6 +56,12 @@ export interface Project {
   rolePolicies?: RolePolicies | null;
   policyRevision?: number;
   lifecycleRevision?: number;
+  archivedAt?: string | null;
+  deletedAt?: string | null;
+  purgeAfter?: string | null;
+  purged?: boolean | null;
+  revoked?: boolean | null;
+  detachedAt?: string | null;
 }
 export interface Binding {
   resourceId?: string;
@@ -69,10 +75,21 @@ export interface Binding {
 }
 export type ServiceMode = "cloud" | "self-hosted";
 export interface SyncProgress {
+  /** Present only for progress produced by this project's active queue claim. */
+  projectId?: string;
   label: string;
   detail?: string | null;
   completed?: number;
   total?: number | null;
+}
+/** One queued project from `sync_queue_state`; the workspace `*` row is not sent. */
+export interface SyncQueueEntry {
+  projectId: string;
+  state: "queued" | "running" | "waiting";
+  reason: string;
+  attempts: number;
+  notBefore: string | null;
+  cancelRequested?: boolean;
 }
 export interface Snapshot {
   onboarding?: import("./components/onboarding/model.js").OnboardingInfo;
@@ -98,6 +115,10 @@ export interface Snapshot {
     selfHostedUrl?: string;
   } | null;
   projects: Project[];
+  /** Archived, deleted, or unreachable projects that stay visible as read-only. */
+  inactive?: Project[];
+  deletedProjects?: Project[];
+  archivedProjects?: Project[];
   resources: ProjectResource[];
   bindings: Binding[];
   conflicts: SessionConflict[];

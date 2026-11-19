@@ -43,6 +43,8 @@ mod settings_lifecycle;
 mod skill_usage;
 mod sources;
 mod sync;
+mod sync_queue;
+mod sync_schedule;
 #[cfg(test)]
 mod tests;
 mod updates;
@@ -308,8 +310,11 @@ fn main() {
                 commands::retry_sign_in_storage,
                 commands::sign_out,
                 commands::sync_now,
+                commands::cancel_sync,
+                commands::sync_queue_state,
                 commands::sync_progress,
                 commands::cloud_action,
+                commands::invite_preview,
                 commands::connect_project,
                 sources::connect_project_sources,
                 repositories::repository_command,
@@ -325,6 +330,7 @@ fn main() {
                 commands::session_launch_options,
                 commands::session_handoff_prompt,
                 commands::export_bundle,
+                commands::export_project,
                 commands::import_bundle,
                 global_skills::scan_global_skills,
                 global_skills::add_global_skill,

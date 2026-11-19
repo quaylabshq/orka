@@ -11,6 +11,24 @@ export * from "./role-policies.js";
 export const VERSION = 2 as const;
 export const uuid = z.uuid();
 export const digest = z.string().regex(/^[a-f0-9]{64}$/);
+export const projectLifecycleAction = z
+  .object({
+    requestId: uuid,
+    projectId: uuid,
+    action: z.enum(["archive", "restore", "delete", "purge", "rename"]),
+    expectedRevision: z.number().int().min(0),
+    confirmation: z.string().max(100).optional(),
+    name: z.string().trim().min(1).max(100).optional(),
+  })
+  .strict();
+export const projectTombstone = z
+  .object({
+    id: uuid,
+    deletedAt: z.iso.datetime({ offset: true }),
+    purged: z.literal(true),
+  })
+  .strict();
+export type ProjectTombstone = z.infer<typeof projectTombstone>;
 export const relativePath = z
   .string()
   .min(1)

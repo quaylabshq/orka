@@ -286,6 +286,22 @@ async function fixture(
                               actorName: "Saket Rao",
                               subjectName: "Mira Shah",
                             },
+                        ...(!args.input?.before
+                          ? [
+                              {
+                                id: "revoked-invite-log",
+                                at: "2026-10-19T00:00:00Z",
+                                action: "invite.revoked",
+                                actorName: "Saket Rao",
+                              },
+                              {
+                                id: "future-log",
+                                at: "2026-10-19T00:00:00Z",
+                                action: "project.future_action",
+                                actorName: "Mira Shah",
+                              },
+                            ]
+                          : []),
                       ],
                       next: args.input?.before ? null : "older-logs",
                     };
@@ -517,6 +533,12 @@ test("Settings Members opens activity logs, paginates, and returns to Members", 
     .click();
   const logs = page.getByRole("region", { name: "Activity logs", exact: true });
   await expect(logs).toContainText("Saket Rao approved Mira Shah's request");
+  await expect
+    .soft(logs.getByText("Saket Rao revoked a member invite", { exact: true }))
+    .toBeVisible();
+  await expect
+    .soft(logs.getByText("Mira Shah updated the project", { exact: true }))
+    .toBeVisible();
   await logs
     .getByRole("button", { name: "View more logs", exact: true })
     .click();

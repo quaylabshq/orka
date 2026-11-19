@@ -404,10 +404,24 @@ func desktopSignInCallback(location, redirect string) (string, bool) {
 	return callback.String(), true
 }
 
+// emailHTML is an email body fragment with any dynamic values already escaped.
+type emailHTML string
+
+func (body emailHTML) document() string {
+	return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Orka</title>
+</head>
+<body style="font-family: sans-serif; line-height: 1.5; margin: 24px;">` + string(body) + `</body>
+</html>`
+}
+
 const desktopEmailExpiry = "The link and code expire in 10 minutes. Use either once. If you did not request this email, ignore it."
 
-func desktopEmailHTML(link, code string) string {
-	return `<p>Open this link on the Mac where you requested it:</p><p><a href="` + link + `">Sign in to Orka</a></p><p>Or enter this code in Orka:</p><h1>` + code + `</h1><p>` + desktopEmailExpiry + `</p>`
+func desktopEmailHTML(link, code string) emailHTML {
+	return emailHTML(`<p>Open this link on the Mac where you requested it:</p><p><a href="` + link + `">Sign in to Orka</a></p><p>Or enter this code in Orka:</p><h1>` + code + `</h1><p>` + desktopEmailExpiry + `</p>`)
 }
 
 func (a *API) emailHook(ctx context.Context, payload []byte, headers http.Header) error {
@@ -448,13 +462,13 @@ func (a *API) emailHook(ctx context.Context, payload []byte, headers http.Header
 	content := desktopEmailHTML(escapedLink, token)
 	if target != SafeDesktopRedirect(target) {
 		plain = "Open this link in the browser where you requested it:\n" + link + "\n\nThis link expires in 10 minutes and can be used once. If you did not request it, ignore this email."
-		content = `<p>Open this link in the browser where you requested it:</p><p><a href="` + escapedLink + `">Sign in to Orka</a></p><p>This link expires in 10 minutes and can be used once. If you did not request it, ignore this email.</p>`
+		content = emailHTML(`<p>Open this link in the browser where you requested it:</p><p><a href="` + escapedLink + `">Sign in to Orka</a></p><p>This link expires in 10 minutes and can be used once. If you did not request it, ignore this email.</p>`)
 	}
 	base := a.Environment["RESEND_API_URL"]
 	if base == "" {
 		base = "https://api.resend.com"
 	}
-	response, err := requestHTTP(ctx, http.MethodPost, strings.TrimSuffix(base, "/")+"/emails", jsonBytes(Object{"from": a.Environment["RESEND_FROM"], "to": address, "subject": "Sign in to Orka", "text": plain, "html": content}), http.Header{"Authorization": []string{"Bearer " + a.Environment["RESEND_API_KEY"]}, "Content-Type": []string{"application/json"}, "Idempotency-Key": []string{"orka-auth-" + bytesHash(payload)}}, 4*time.Second)
+	response, err := requestHTTP(ctx, http.MethodPost, strings.TrimSuffix(base, "/")+"/emails", jsonBytes(Object{"from": a.Environment["RESEND_FROM"], "to": address, "subject": "Sign in to Orka", "text": plain, "html": content.document()}), http.Header{"Authorization": []string{"Bearer " + a.Environment["RESEND_API_KEY"]}, "Content-Type": []string{"application/json"}, "Idempotency-Key": []string{"orka-auth-" + bytesHash(payload)}}, 4*time.Second)
 	if err != nil {
 		return &HTTPError{Status: 503, Message: "Sign-in email could not be sent. Try again shortly."}
 	}

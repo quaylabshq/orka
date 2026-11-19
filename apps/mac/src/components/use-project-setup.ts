@@ -1,10 +1,17 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { ProjectSharing } from "../types.js";
+import type { Project, ProjectSharing } from "../types.js";
 import type { ProjectSetupMode } from "./project-setup.js";
 import { defaultSharing } from "./project-sharing.js";
-import { parseProjectInvite, sameServiceUrl } from "./project-invite.js";
+import { hasConnectedSource } from "./project-sources.js";
+import {
+  joinErrorMessage,
+  parseProjectInvite,
+  sameServiceUrl,
+} from "./project-invite.js";
+import { useInvitePreview } from "./use-invite-preview.js";
+import { useToastNotice } from "./toasts.js";
 import { useSourceFolders } from "./source-folders.js";
 
 export async function connectProject(
@@ -29,7 +36,9 @@ export function useProjectSetup(
   onError: (message: string) => void,
   apiUrl?: string,
   onRepositorySetup?: (id: string) => void,
+  existingProjects: readonly Project[] = [],
 ) {
+  const setNotice = useToastNotice();
   const [repositoryEnabled, setRepositoryEnabled] = useState(false);
   const [sourceChoice, setSourceChoice] = useState<"github" | "folder" | null>(
     null,
@@ -51,13 +60,20 @@ export function useProjectSetup(
   const selection = useSourceFolders();
   const [sharing, setSharing] = useState<ProjectSharing>(defaultSharing);
   let inviteService: string | undefined;
+  let inviteToken = "";
   if (dialog === "join") {
     try {
-      inviteService = parseProjectInvite(input).serviceUrl;
+      const invite = parseProjectInvite(input);
+      inviteService = invite.serviceUrl;
+      inviteToken = invite.token;
     } catch {
       // Partial input is validated when the form is submitted.
     }
   }
+  const invitePreview = useInvitePreview(
+    inviteToken,
+    inviteService ?? apiUrl ?? "",
+  );
   const serviceMismatch = Boolean(
     inviteService && apiUrl && !sameServiceUrl(inviteService, apiUrl),
   );
@@ -72,28 +88,52 @@ export function useProjectSetup(
   };
   const submit = async () => {
     if (!dialog) return;
-    const invite = dialog === "join" ? parseProjectInvite(input) : null;
-    if (
-      invite?.serviceUrl &&
-      (!apiUrl || !sameServiceUrl(invite.serviceUrl, apiUrl))
-    )
-      throw new Error(
-        `Sign in to ${invite.serviceUrl} before joining this project.`,
-      );
-    const result = await invoke<{ id: string; repositorySetup?: boolean }>(
-      "cloud_action",
-      {
+    const creating = dialog === "create";
+    let invite: ReturnType<typeof parseProjectInvite> | null = null;
+    if (!creating) {
+      try {
+        invite = parseProjectInvite(input);
+      } catch (error) {
+        onError(error instanceof Error ? error.message : String(error));
+        return;
+      }
+      if (
+        invite.serviceUrl &&
+        (!apiUrl || !sameServiceUrl(invite.serviceUrl, apiUrl))
+      ) {
+        onError(`Sign in to ${invite.serviceUrl} before joining this project.`);
+        return;
+      }
+    }
+    let result: { id: string; repositorySetup?: boolean };
+    try {
+      result = await invoke("cloud_action", {
         action: dialog,
-        input:
-          dialog === "create"
-            ? { name: input.trim(), sharing }
-            : { ...invite, sharing },
-      },
-    );
+        input: creating
+          ? { name: input.trim(), sharing }
+          : { ...invite, sharing },
+      });
+    } catch (error) {
+      if (creating) throw error;
+      // The dialog shows the reason on its own line, without the native
+      // bridge's status prefix.
+      onError(joinErrorMessage(error));
+      return;
+    }
+    // The service keeps the invite when the account already belongs to the
+    // project, so a known project id means this join changed nothing. Open it
+    // instead of asking for folders this Mac already has.
+    const known = creating
+      ? undefined
+      : existingProjects.find((item) => item.id === result.id);
     onProject(result.id);
     setDialog(null);
     setInput("");
-    if (dialog === "create") {
+    if (known) {
+      setNotice("You’re already in this project");
+      if (hasConnectedSource(known)) return;
+    }
+    if (creating) {
       if (sourceMode === "folder" && selection.folders.length)
         await invoke("connect_project_sources", {
           id: result.id,
@@ -124,6 +164,7 @@ export function useProjectSetup(
     selection,
     sharing,
     inviteService,
+    invite: invitePreview,
     serviceMismatch,
     setSharing,
     show,

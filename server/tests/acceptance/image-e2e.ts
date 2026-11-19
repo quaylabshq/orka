@@ -449,8 +449,18 @@ try {
     }
   }
   assert.equal((await post(invitePath, {})).status, 405);
+  // An existing member's redemption leaves the link valid for its recipient.
   assert.equal(
     (await post("/v2/join", { token: invite.token }, other.access_token))
+      .status,
+    200,
+  );
+  assert.equal((await fetch(base + invitePath)).status, 200);
+  const newcomer = managed
+    ? await emailAccount("newcomer@example.test", undefined, true)
+    : (await passwordAccount("newcomer@example.test")).session;
+  assert.equal(
+    (await post("/v2/join", { token: invite.token }, newcomer.access_token))
       .status,
     200,
   );
@@ -499,6 +509,7 @@ try {
     members: { email: string }[];
   };
   assert.deepEqual(catalog.members.map((member) => member.email).sort(), [
+    "newcomer@example.test",
     "other@example.test",
     "owner@example.test",
   ]);

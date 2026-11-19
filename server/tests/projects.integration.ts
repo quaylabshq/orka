@@ -121,7 +121,11 @@ await test("shared project names are owner-only, validated, revisioned, and retr
     );
     assert.equal(
       (
-        await api("/v2/projects?includeArchived=true", undefined, member)
+        await api(
+          "/v2/projects?includeArchived=true&projectLifecycle=1",
+          undefined,
+          member,
+        )
       ).value.find((p: { id: string }) => p.id === projectId).lifecycleRevision,
       3,
     );
@@ -247,7 +251,10 @@ await test("project lifecycle: owner permissions, archive boundaries, restoratio
         (await api("/v2/projects/action", "POST", action, user)).status,
         403,
       );
-    assert.equal((await api("/v2/projects/capabilities")).value.lifecycle, 1);
+    const capabilities = (await api("/v2/projects/capabilities")).value;
+    assert.equal(capabilities.lifecycle, 1);
+    assert.equal(capabilities.softDelete, 1);
+    assert.equal(capabilities.projectRestoreWindowDays, 7);
     assert.equal((await fetch(url + "/v2/projects/capabilities")).status, 401);
 
     if (process.env.ORKA_ENV_NATIVE_BIN) {
@@ -298,13 +305,18 @@ await test("project lifecycle: owner permissions, archive boundaries, restoratio
       ),
     );
     const catalog = (
-      await api("/v2/projects?includeArchived=true", "GET", undefined, member)
+      await api(
+        "/v2/projects?includeArchived=true&projectLifecycle=1",
+        "GET",
+        undefined,
+        member,
+      )
     ).value;
     assert.ok(catalog.find((p: { id: string }) => p.id === project).archivedAt);
     assert.equal(
       (
         await api(
-          "/v2/projects?includeArchived=true",
+          "/v2/projects?includeArchived=true&projectLifecycle=1",
           "GET",
           undefined,
           outsider,
@@ -383,6 +395,130 @@ await test("project lifecycle: owner permissions, archive boundaries, restoratio
       (await api("/v2/projects/action", "POST", deletion, member)).status,
       403,
     );
+    const pendingInvite = await api("/v2/invites", "POST", {
+      projectId: project,
+    });
+    assert.equal(pendingInvite.status, 200);
+    const deleted = await api("/v2/projects/action", "POST", deletion);
+    assert.equal(deleted.status, 200);
+    assert.deepEqual(
+      await api("/v2/projects/action", "POST", deletion),
+      deleted,
+    );
+    const list = async (query = "", user = owner.device.owner) => {
+      const result = await api(`/v2/projects${query}`, "GET", undefined, user);
+      assert.equal(result.status, 200);
+      return result.value.find((p: { id: string }) => p.id === project);
+    };
+    assert.equal(await list(), undefined);
+    const trash = await list("?includeArchived=true&projectLifecycle=1");
+    assert.ok(trash?.deletedAt && trash.purgeAfter && trash.archivedAt);
+    assert.deepEqual(
+      await list("?includeArchived=true&projectLifecycle=1", member),
+      {
+        id: project,
+        name: trash.name,
+        role: "member",
+        lifecycleRevision: 3,
+        deletedAt: trash.deletedAt,
+        purgeAfter: trash.purgeAfter,
+      },
+    );
+    for (const field of ["deletedAt", "purgeAfter", "archivedAt"])
+      assert.equal(deleted.value[field], trash[field]);
+    assert.equal(
+      Date.parse(trash.purgeAfter) - Date.parse(trash.deletedAt),
+      7 * 86400_000,
+    );
+    for (const path of [
+      `/v2/sync/pull?projectId=${project}`,
+      `/v2/blobs/${project}/${hash}`,
+    ])
+      assert.equal((await api(path)).status, 403);
+    assert.equal((await env("read", scope)).status, 403);
+    assert.equal(
+      (
+        await api("/v2/projects/action", "POST", {
+          action: "set-remote",
+          projectId: project,
+          remoteKey: hash,
+        })
+      ).status,
+      409,
+    );
+    assert.equal(
+      (
+        await api(
+          "/v2/join",
+          "POST",
+          { token: pendingInvite.value.token },
+          outsider,
+        )
+      ).status,
+      400,
+    );
+    const undo = { ...restore, requestId: randomUUID(), expectedRevision: 3 };
+    assert.equal(
+      (await api("/v2/projects/action", "POST", undo, member)).status,
+      403,
+    );
+    const restoredReceipt = await api("/v2/projects/action", "POST", undo);
+    assert.equal(restoredReceipt.status, 200);
+    for (const field of ["deletedAt", "purgeAfter", "archivedAt"])
+      assert.equal(restoredReceipt.value[field], null);
+    const restored = await list();
+    for (const field of ["deletedAt", "purgeAfter", "archivedAt"])
+      assert.equal(restored[field], null);
+    const restoredBlob = await fetch(`${url}/v2/blobs/${project}/${hash}`, {
+      headers: { Authorization: `Bearer ${owner.device.owner}` },
+    });
+    assert.equal(restoredBlob.status, 200);
+    assert.deepEqual(Buffer.from(await restoredBlob.arrayBuffer()), content);
+    assert.equal((await env("read", scope)).status, 200);
+
+    const deleteAgain = {
+      ...deletion,
+      requestId: randomUUID(),
+      expectedRevision: 4,
+    };
+    assert.equal(
+      (await api("/v2/projects/action", "POST", deleteAgain)).status,
+      200,
+    );
+    await pool.query(
+      "update orka.projects set deleted_at=now()-interval '8 days',purge_after=now()-interval '1 day' where id=$1",
+      [project],
+    );
+    assert.deepEqual(
+      await api("/v2/projects/action", "POST", {
+        ...undo,
+        requestId: randomUUID(),
+        expectedRevision: 5,
+      }),
+      {
+        status: 409,
+        value: { error: "The project restore window has expired" },
+      },
+    );
+    const purge = {
+      ...deleteAgain,
+      action: "purge",
+      requestId: randomUUID(),
+      expectedRevision: 5,
+    };
+    assert.equal(
+      (await api("/v2/projects/action", "POST", purge, member)).status,
+      403,
+    );
+    assert.equal(
+      (
+        await api("/v2/projects/action", "POST", {
+          ...purge,
+          confirmation: "wrong",
+        })
+      ).status,
+      400,
+    );
     const removeProject = blobs.removeProject.bind(blobs);
     let failCleanup = true;
     blobs.removeProject = async (id) => {
@@ -392,8 +528,18 @@ await test("project lifecycle: owner permissions, archive boundaries, restoratio
       }
       await removeProject(id);
     };
-    const deleted = await api("/v2/projects/action", "POST", deletion);
-    assert.equal(deleted.status, 200);
+    const purged = await api("/v2/projects/action", "POST", purge);
+    assert.equal(purged.status, 200);
+    assert.equal(await list(), undefined);
+    const tombstone = await list("?includeArchived=true&projectLifecycle=1");
+    assert.deepEqual(Object.keys(tombstone).sort(), [
+      "deletedAt",
+      "id",
+      "purged",
+    ]);
+    assert.equal(tombstone.id, project);
+    assert.equal(tombstone.purged, true);
+    assert.ok(tombstone.deletedAt);
     assert.equal(
       (
         await pool.query(
@@ -403,10 +549,7 @@ await test("project lifecycle: owner permissions, archive boundaries, restoratio
       ).rows[0].count,
       "1",
     );
-    assert.deepEqual(
-      await api("/v2/projects/action", "POST", deletion),
-      deleted,
-    );
+    assert.deepEqual(await api("/v2/projects/action", "POST", purge), purged);
     assert.equal((await env("read", scope)).status, 403);
     assert.equal((await api(`/v2/sync/pull?projectId=${project}`)).status, 403);
     for (const table of [

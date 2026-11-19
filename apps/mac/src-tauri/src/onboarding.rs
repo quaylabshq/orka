@@ -230,14 +230,7 @@ async fn review(input: Value) -> Result<Value> {
         .as_str()
         .ok_or("Configure a service first")?;
     let supported = crate::auth::capabilities(service.into()).await?["onboarding"] == 1;
-    let catalog = sync::api_at(
-        owner,
-        service,
-        "GET",
-        "/v2/projects?includeArchived=true",
-        None,
-    )
-    .await?;
+    let catalog = sync::api_at(owner, service, "GET", crate::projects::CATALOG_PATH, None).await?;
     let _lock = crate::projects::wait_for_lock(std::time::Duration::from_secs(5))?;
     ensure_scope(&db, (owner, service))?;
     crate::projects::merge_catalog(&db, &catalog)?;
@@ -263,9 +256,16 @@ fn project_review(
     local: &[Value],
     supported: bool,
 ) -> Result<Value> {
+    let available = |p: &&Value| {
+        p["archivedAt"].is_null()
+            && p["deletedAt"].is_null()
+            && p["purged"] != true
+            && p["revoked"] != true
+            && p["detachedAt"].is_null()
+    };
     let mut catalog: Vec<_> = candidates
         .iter()
-        .filter(|p| p["archivedAt"].is_null())
+        .filter(available)
         .map(|p| json!({"id":p["id"],"name":p["name"],"role":p["role"],"sources":p["sources"].as_array().map(|sources| sources.iter().filter(|source| source["removedAt"].is_null()).collect::<Vec<_>>())}))
         .collect();
     catalog.sort_by_key(|p| p["name"].as_str().unwrap_or("").to_lowercase());
@@ -276,9 +276,10 @@ fn project_review(
         } else {
             None
         };
-        let mut suggested = candidates.iter().filter(|p| {
-            p["archivedAt"].is_null() && key.is_some() && p["remoteKey"].as_str() == key.as_deref()
-        });
+        let mut suggested = candidates
+            .iter()
+            .filter(available)
+            .filter(|p| key.is_some() && p["remoteKey"].as_str() == key.as_deref());
         let suggested_id = suggested
             .next()
             .filter(|_| suggested.next().is_none())
@@ -391,14 +392,8 @@ async fn connect(input: Value, expected: Option<(&str, &str)>) -> Result<Value> 
     };
     // Refresh membership before connecting to an existing project.
     if input["existingId"].is_string() {
-        let catalog = sync::api_at(
-            owner,
-            service,
-            "GET",
-            "/v2/projects?includeArchived=true",
-            None,
-        )
-        .await?;
+        let catalog =
+            sync::api_at(owner, service, "GET", crate::projects::CATALOG_PATH, None).await?;
         let _lock = crate::projects::lock()?;
         ensure_scope(&db, scope)?;
         crate::projects::merge_catalog(&db, &catalog)?;
@@ -1139,6 +1134,38 @@ mod tests {
         saved["draft"]["completedAt"] = Value::Null;
         assert!(!pending_connections(&saved));
     }
+    #[test]
+    fn project_review_excludes_inactive_catalog_entries_and_suggestions() {
+        let folder = tempfile::tempdir().unwrap();
+        fs::create_dir_all(folder.path().join(".git")).unwrap();
+        fs::write(
+            folder.path().join(".git/config"),
+            "[remote \"origin\"]\nurl = https://github.com/example/project.git\n",
+        )
+        .unwrap();
+        let key = discovery::remote_key(folder.path().to_str().unwrap()).unwrap();
+        let mut candidates =
+            vec![json!({"id":"live","name":"Live","role":"owner","remoteKey":key,"sources":[]})];
+        for (field, value) in [
+            ("archivedAt", json!("2026-11-19T00:00:00Z")),
+            ("deletedAt", json!("2026-11-19T00:00:00Z")),
+            ("purged", json!(true)),
+            ("revoked", json!(true)),
+            ("detachedAt", json!("2026-11-19T00:00:00Z")),
+        ] {
+            let mut project = json!({"id":field,"remoteKey":key});
+            project[field] = value;
+            candidates.push(project);
+        }
+        let review = project_review(&[json!(folder.path())], &candidates, &[], true).unwrap();
+        assert_eq!(review["catalog"].as_array().unwrap().len(), 1);
+        assert_eq!(review["catalog"][0]["id"], "live");
+        assert_eq!(
+            review["matches"][folder.path().to_str().unwrap()]["suggestedId"],
+            "live"
+        );
+    }
+
     #[test]
     fn large_project_review_saves_the_catalog_once() {
         let folder = tempfile::tempdir().unwrap();

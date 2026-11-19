@@ -350,6 +350,14 @@ fn remote_source_removal_preserves_unsent_snapshots_and_releases_only_its_queue(
         )
         .unwrap();
     }
+    for queued in [&push, &copy, &active] {
+        db::set(
+            &f.db,
+            &format!("sessionOutboxRedaction:{}", queued["id"].as_str().unwrap()),
+            &json!({"drop":true}),
+        )
+        .unwrap();
+    }
     f.db.execute(
         "UPDATE outbox SET error='409: Source folder was removed' WHERE id=?",
         [push["id"].as_str().unwrap()],
@@ -368,7 +376,23 @@ fn remote_source_removal_preserves_unsent_snapshots_and_releases_only_its_queue(
     let mut remote = project.clone();
     remote["sources"][0]["removedAt"] = json!("2026-11-13T00:00:00Z");
     crate::projects::merge_catalog(&f.db, &json!([remote.clone()])).unwrap();
-    assert_eq!(f.outbox(), vec![active]);
+    assert_eq!(f.outbox(), vec![active.clone()]);
+    for queued in [&push, &copy] {
+        assert!(db::get(
+            &f.db,
+            &format!("sessionOutboxRedaction:{}", queued["id"].as_str().unwrap())
+        )
+        .unwrap()
+        .is_null());
+    }
+    assert_eq!(
+        db::get(
+            &f.db,
+            &format!("sessionOutboxRedaction:{}", active["id"].as_str().unwrap())
+        )
+        .unwrap(),
+        json!({"drop":true})
+    );
     let drafts = db::rows(&f.db, "SELECT value FROM drafts", &[]).unwrap();
     assert_eq!(drafts.len(), 3);
     for queued in [&push, &share, &copy] {

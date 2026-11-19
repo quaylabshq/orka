@@ -184,8 +184,7 @@ impl Doctor {
         let updated = Self::time(&summary.status["updatedAt"]);
         let error = &summary.status["error"];
         let has_error = error.as_str().is_some_and(|e| !e.is_empty());
-        let stale_after =
-            (config["syncMinutes"].as_u64().unwrap_or(15).clamp(1, 1440) * 120).max(300);
+        let stale_after = crate::sync_schedule::Interval::from_config(&config).stale_after();
         let invalid = (!summary.status.is_null() && !summary.status.is_object())
             || (!error.is_null() && !error.is_string())
             || (!summary.status["lastSync"].is_null() && last.is_none())
@@ -200,7 +199,8 @@ impl Doctor {
             } else if last.is_none() {
                 (Verdict::Warn, "never synced")
             } else if last.is_some_and(|t| {
-                Utc::now().signed_duration_since(t) > chrono::Duration::seconds(stale_after as i64)
+                Utc::now().signed_duration_since(t)
+                    > chrono::Duration::seconds(stale_after.as_secs() as i64)
             }) {
                 (Verdict::Warn, "last success is stale")
             } else {

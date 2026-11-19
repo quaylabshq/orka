@@ -68,8 +68,51 @@ func (s *Store) createProject(q *Queries, user, name string, governed bool, remo
 	return id
 }
 func (s *Store) listProjects(q *Queries, user string, archived bool) []Object {
-	return q.Rows(`select p.id,p.name,p.revision,m.role,p.remote_key as "remoteKey",p.last_sync_at as "lastSyncAt",p.archived_at as "archivedAt",p.lifecycle_revision as "lifecycleRevision",p.governed,p.policy_revision as "policyRevision",p.role_policies as "rolePolicies",p.source_model as "sourceModel",coalesce((select jsonb_agg(jsonb_build_object('id',s.id,'name',s.name) || case when s.removed_at is not null then jsonb_build_object('removedAt',s.removed_at) else '{}'::jsonb end || case when r.project_id is not null then jsonb_build_object('repository',case when r.repository ? 'id' then r.repository || jsonb_build_object('revision',r.revision) else null end,'repositoryRevision',r.revision) else '{}'::jsonb end order by s.name,s.id) from orka.project_sources s left join orka.source_repositories r on r.project_id=s.project_id and r.source_id=s.id where s.project_id=p.id),'[]'::jsonb) as sources from orka.projects p join orka.members m on m.project_id=p.id where m.user_id=$1 and ($2 or p.archived_at is null) order by p.name`, user, archived)
+	return q.Rows(`select p.id,p.name,p.revision,m.role,p.remote_key as "remoteKey",p.last_sync_at as "lastSyncAt",p.archived_at as "archivedAt",p.deleted_at as "deletedAt",p.purge_after as "purgeAfter",p.lifecycle_revision as "lifecycleRevision",p.governed,p.policy_revision as "policyRevision",p.role_policies as "rolePolicies",p.source_model as "sourceModel",coalesce((select jsonb_agg(jsonb_build_object('id',s.id,'name',s.name) || case when s.removed_at is not null then jsonb_build_object('removedAt',s.removed_at) else '{}'::jsonb end || case when r.project_id is not null then jsonb_build_object('repository',case when r.repository ? 'id' then r.repository || jsonb_build_object('revision',r.revision) else null end,'repositoryRevision',r.revision) else '{}'::jsonb end order by s.name,s.id) from orka.project_sources s left join orka.source_repositories r on r.project_id=s.project_id and r.source_id=s.id where s.project_id=p.id),'[]'::jsonb) as sources from orka.projects p join orka.members m on m.project_id=p.id where m.user_id=$1 and ($2 or p.archived_at is null) and (p.deleted_at is null or $2) order by p.name`, user, archived)
 }
+
+func (s *Store) projectCatalog(q *Queries, user string, archived, lifecycle bool) []Object {
+	projects := s.listProjects(q, user, archived)
+	// Existing desktops also request archived projects, but understand only full
+	// project rows. Keep their folder mappings and archive gate intact unless a
+	// client explicitly opts into reduced entries and tombstones.
+	if !archived || !lifecycle {
+		return projects
+	}
+	for i, project := range projects {
+		if project["deletedAt"] != nil && text(project["role"]) != "owner" {
+			projects[i] = restoreWindowEntry(project)
+		}
+	}
+	// A purged project has no row to report, so the trash view also carries the
+	// member's unexpired tombstones. Clients recognise them by purged and stop
+	// syncing the project instead of treating the entry as a live one.
+	return append(projects, s.projectTombstones(q, user)...)
+}
+
+// restoreWindowEntry is the part of a deleted project's catalog row that a member
+// who is not the owner may see: enough to show that the owner deleted the project
+// and until when it can be restored, without exposing its sources or policies.
+// The caller's role and lifecycle revision keep ownership changes and out-of-order
+// catalog responses from reviving stale client state. Access to the project itself
+// stays refused with project_deleted, and only the owner can restore or purge it.
+func restoreWindowEntry(project Object) Object {
+	return Object{"id": project["id"], "name": project["name"], "role": project["role"], "lifecycleRevision": project["lifecycleRevision"], "deletedAt": project["deletedAt"], "purgeAfter": project["purgeAfter"]}
+}
+func (s *Store) projectTombstones(q *Queries, user string) []Object {
+	rows := q.Rows(`select project_id as id,deleted_at as "deletedAt" from orka.project_tombstones where user_id=$1 and expires_at>now() order by deleted_at desc`, user)
+	for _, row := range rows {
+		row["purged"] = true
+	}
+	return rows
+}
+
+func projectRestoreWindowDays(q *Queries) int64 {
+	days := number(q.One("select coalesce(nullif(current_setting('orka.project_restore_window_days',true),'')::int,7) as days")["days"])
+	q.Require(days > 0, 500, "Project restore window must be positive")
+	return days
+}
+
 func (s *Store) cleanupBlobs(ctx context.Context) {
 	q := &Queries{ctx: ctx, db: s.Pool}
 	for _, row := range q.Rows("select project_id from orka.project_blob_cleanup") {
@@ -85,9 +128,9 @@ func (s *Store) mutateProject(q *Queries, user string, input Object) any {
 	project := text(input["projectId"])
 	action := text(input["action"])
 	if action == "set-remote" {
-		p := q.One("select id,remote_key from orka.projects where id=$1 for update", project)
+		p := q.One("select id,remote_key,archived_at from orka.projects where id=$1 for update", project)
 		owner := q.One("select 1 from orka.members where project_id=$1 and user_id=$2 and role='owner'", project, user)
-		if !q.Require(p != nil && owner != nil, 403, "Only project owners can set the remote key") || !q.Require(p["remote_key"] == nil, 409, "Project remote key is already set") {
+		if !q.Require(p != nil && owner != nil, 403, "Only project owners can set the remote key") || !q.Require(p["archived_at"] == nil, 409, "Restore the project before setting its remote key") || !q.Require(p["remote_key"] == nil, 409, "Project remote key is already set") {
 			return nil
 		}
 		q.Exec("update orka.projects set remote_key=$2 where id=$1", project, input["remoteKey"])
@@ -102,7 +145,10 @@ func (s *Store) mutateProject(q *Queries, user string, input Object) any {
 	}
 	p := q.One("select * from orka.projects where id=$1 for update", project)
 	owner := q.One("select 1 from orka.members where project_id=$1 and user_id=$2 and role='owner'", project, user)
-	if !q.Require(p != nil && owner != nil, 403, "Only project owners can rename, archive, restore, or delete cloud projects") || !q.Require(number(p["lifecycle_revision"]) == number(input["expectedRevision"]), 409, "Project changed; refresh and review it again") {
+	if !q.Require(p != nil && owner != nil, 403, "Only project owners can change the project lifecycle") || !q.Require(number(p["lifecycle_revision"]) == number(input["expectedRevision"]), 409, "Project changed; refresh and review it again") {
+		return nil
+	}
+	if (action == "delete" || action == "purge") && !q.Require(input["confirmation"] == p["name"], 400, "Type the project name to confirm deletion") {
 		return nil
 	}
 	switch action {
@@ -112,22 +158,41 @@ func (s *Store) mutateProject(q *Queries, user string, input Object) any {
 		}
 		q.Exec("update orka.projects set name=$2,lifecycle_revision=lifecycle_revision+1 where id=$1", project, input["name"])
 	case "delete":
-		if !q.Require(input["confirmation"] == p["name"], 400, "Type the project name to confirm deletion") {
+		if !q.Require(p["deleted_at"] == nil, 409, "Project is already deleted") {
 			return nil
 		}
-		q.Exec("insert into orka.project_blob_cleanup values($1) on conflict do nothing", project)
-		q.Exec("delete from orka.projects where id=$1", project)
-	default:
-		archived := action == "archive"
-		if !q.Require((p["archived_at"] != nil) != archived, 409, "Project changed; refresh and review it again") {
+		days := projectRestoreWindowDays(q)
+		q.Exec(`with deletion as (select clock_timestamp() as at)
+			update orka.projects set deleted_at=deletion.at,archived_at=deletion.at,
+			purge_after=deletion.at+interval '24 hours'*$2,
+			lifecycle_revision=lifecycle_revision+1 from deletion where id=$1`, project, days)
+	case "purge":
+		s.purgeProjects(q, []string{project}, projectTombstoneTTL)
+	case "archive":
+		if !q.Require(p["archived_at"] == nil, 409, "Project changed; refresh and review it again") {
 			return nil
 		}
-		q.Exec("update orka.projects set archived_at=case when $2 then now() else null end,lifecycle_revision=lifecycle_revision+1 where id=$1", project, archived)
-		if archived {
-			q.Exec("delete from orka.invites where project_id=$1", project)
+		q.Exec("update orka.projects set archived_at=now(),lifecycle_revision=lifecycle_revision+1 where id=$1", project)
+	case "restore":
+		if !q.Require(p["archived_at"] != nil, 409, "Project changed; refresh and review it again") {
+			return nil
+		}
+		updated := q.Exec(`update orka.projects set archived_at=null,deleted_at=null,purge_after=null,lifecycle_revision=lifecycle_revision+1
+			where id=$1 and (purge_after is null or purge_after>clock_timestamp())`, project)
+		if !q.Require(updated == 1, 409, "The project restore window has expired") {
+			return nil
 		}
 	}
+	if action == "archive" || action == "delete" {
+		q.Exec("delete from orka.invites where project_id=$1", project)
+	}
 	receipt := Object{"projectId": project, "action": action, "lifecycleRevision": number(input["expectedRevision"]) + 1}
+	if action != "purge" {
+		state := q.One(`select archived_at as "archivedAt",deleted_at as "deletedAt",purge_after as "purgeAfter" from orka.projects where id=$1`, project)
+		for _, key := range []string{"archivedAt", "deletedAt", "purgeAfter"} {
+			receipt[key] = state[key]
+		}
+	}
 	if action == "rename" {
 		receipt["name"] = input["name"]
 	}
