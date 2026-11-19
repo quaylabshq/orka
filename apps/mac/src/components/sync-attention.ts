@@ -9,7 +9,7 @@ import type {
   ProjectResource,
   Snapshot,
 } from "../types.js";
-import { visibleRequest } from "../lib/features.js";
+import { actionableRequest, visibleRequest } from "../lib/features.js";
 
 export const bindingResourceId = (binding: Binding) =>
   binding.resourceId ?? binding.base?.resourceId;
@@ -196,7 +196,7 @@ export function projectAttention(
     return result;
   };
   for (const request of requests) {
-    if (request.status !== "pending" || !request.canReview) continue;
+    if (!actionableRequest(request)) continue;
     const key = request.resourceId ?? `request:${request.id}`;
     item(key, request.resourceId, request.title).requests.push(request);
   }

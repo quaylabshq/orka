@@ -169,6 +169,12 @@ for (const size of [
       .click();
     const dialog = page.getByRole("dialog", { name: "Create project" });
     await expect(
+      dialog.getByText(
+        "Share individual snapshots from an item’s menu or with the Orka plugin.",
+        { exact: true },
+      ),
+    ).toBeVisible();
+    await expect(
       dialog.getByRole("combobox", { name: /sharing$/ }),
     ).toHaveCount(4);
     for (const label of ["Memories", "Sessions", "Plans", "Skills"]) {
@@ -353,6 +359,26 @@ test("saving no categories and connecting a folder carries private defaults", as
       args: { id: "new-project", paths: ["/test/new-project"] },
     },
   ]);
+});
+
+test("manual-only sharing explains both explicit sharing routes without enabling uploads", async ({
+  page,
+}) => {
+  await fixture(page);
+  await page.getByRole("button", { name: "Add project", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Create project" });
+  for (const label of ["Memories", "Sessions", "Plans", "Skills"])
+    await setSharingMode(
+      dialog.getByRole("combobox", { name: `${label} sharing`, exact: true }),
+      false,
+    );
+  await expect(dialog.getByRole("status")).toHaveText(
+    "Automatic sharing is off. Only snapshots you explicitly share from Orka or through the plugin will be sent.",
+  );
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  expect(
+    (await calls(page)).filter((call) => call.command === "cloud_action"),
+  ).toEqual([]);
 });
 
 test("failed creation retains selections for retry", async ({ page }) => {

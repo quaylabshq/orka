@@ -175,7 +175,7 @@ export function SignInForm({
         headingRef={heading}
         onConnect={connect}
         onBack={() => navigate(serverReturn.step, serverReturn.mode)}
-        onSignIn={() => navigate("login", "cloud")}
+        onCloudSignIn={() => navigate("login", "cloud")}
       >
         {inviteNotice}
       </SelfHostedConnection>

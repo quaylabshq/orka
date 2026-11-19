@@ -48,6 +48,7 @@ mod sync_schedule;
 #[cfg(test)]
 mod tests;
 mod updates;
+mod upload_review;
 use serde_json::json;
 #[cfg(debug_assertions)]
 use serde_json::Value;
@@ -173,6 +174,7 @@ fn main() {
             "sign-in"=>tokio::runtime::Runtime::new().expect("Test runtime").block_on(commands::sign_in(input["email"].as_str().unwrap_or("").into(),input["password"].as_str().unwrap_or("").into())),
             "sign-out"=>auth::sign_out().map(|_|json!({"ok":true})),
             "snapshot"=>commands::snapshot(),
+            "resource-command"=>tokio::runtime::Runtime::new().expect("Test runtime").block_on(resource_commands::run_command(input["operation"].as_str().unwrap_or("").into(),input["input"].clone(),None)),
             "menu-bar-snapshot"=>menu_bar::menu_bar_snapshot(),
             "session-launch-options"=>session_launcher::options(input["id"].as_str().unwrap_or("")).and_then(|options|serde_json::to_value(options).map_err(|e|e.to_string())),
             "session-handoff-prompt"=>session_launcher::handoff_prompt(input["id"].as_str().unwrap_or("")),

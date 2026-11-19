@@ -21,6 +21,7 @@ import { LoadingRegion } from "../loading-region.js";
 import { ActivityIndicator } from "../activity-indicator.js";
 import { SettingsHeading } from "./settings-shared.js";
 import { useWorkspaceScope } from "../workspace-cache.js";
+import { actionableRequest } from "../../lib/features.js";
 
 const samples: ProjectMember[] = [
   {
@@ -270,6 +271,9 @@ export function SettingsMembers({
     catalog.data?.members ??
     (Array.isArray(stored?.members) ? stored.members : null);
   const pendingInvites = query.data?.pendingInvites ?? [];
+  const pendingRequests = (query.data?.requests ?? []).filter(
+    (request) => request.projectId === projectId && actionableRequest(request),
+  );
   const [busy, setBusy] = useState(""),
     [error, setError] = useState(""),
     [notice, setNotice] = useState("");
@@ -539,9 +543,9 @@ export function SettingsMembers({
       )}
       {error && <p role="alert">{error}</p>}
       {notice && <p role="status">{notice}</p>}
-      {(query.data?.requests.length ?? 0) > 0 && (
+      {pendingRequests.length > 0 && (
         <Button onClick={onReviews}>
-          Review pending requests ({query.data!.requests.length})
+          Review pending requests ({pendingRequests.length})
         </Button>
       )}
       {query.data && (

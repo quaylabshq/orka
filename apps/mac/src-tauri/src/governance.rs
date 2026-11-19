@@ -622,7 +622,7 @@ fn texts(files: &Value) -> Result<Value> {
 }
 // Preserve the text-only response for existing consumers while exposing the
 // hashes and decode result needed to distinguish binary-only changes.
-fn preview_files(files: &Value) -> Result<(Value, Value)> {
+pub(crate) fn preview_files(files: &Value) -> Result<(Value, Value)> {
     let mut result = serde_json::Map::new();
     let mut manifest = Vec::new();
     for f in files.as_array().ok_or("Missing files")? {

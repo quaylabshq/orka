@@ -22,6 +22,7 @@ import {
 } from "./sync-queue.js";
 import { syncIssueRecovery } from "./sync-issues.js";
 import type { ProjectAttention } from "./sync-attention.js";
+import { useQueuedUploadReview } from "./resource-menu.js";
 
 export function SyncMenu({
   state,
@@ -64,6 +65,7 @@ export function SyncMenu({
   onOpenChange?: (open: boolean) => void;
   onReview?: () => void;
 }) {
+  const reviewUpload = useQueuedUploadReview();
   const memberName = useMemberLabel(state.user);
   const [localOpen, setLocalOpen] = useState(false);
   const open = controlledOpen ?? localOpen;
@@ -537,6 +539,23 @@ export function SyncMenu({
                       }
                     >
                       Review conflict
+                    </Button>
+                  ) : reviewUpload &&
+                    item.uploads.some((upload) => upload.reviewable) ? (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      disabled={busy}
+                      onClick={() =>
+                        leave(() =>
+                          reviewUpload(
+                            item.uploads.find((upload) => upload.reviewable)!
+                              .id,
+                          ),
+                        )
+                      }
+                    >
+                      Review upload
                     </Button>
                   ) : item.requests.length > 0 || item.binding || item.draft ? (
                     onReview && (
