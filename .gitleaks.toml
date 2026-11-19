@@ -1,0 +1,12 @@
+# Gitleaks defaults, plus one narrow allowlist.
+[extend]
+useDefault = true
+
+# PR screenshot manifests on the pr-screenshots branch record each image's
+# SHA-256, which the generic-api-key rule mistakes for a key.
+[[allowlists]]
+description = "SHA-256 image digests in PR screenshot manifests"
+condition = "AND"
+paths = ['''^pr-\d+/[0-9a-f]{40}/[0-9a-f]+/capture\.json$''']
+regexTarget = "secret"
+regexes = ['''^[0-9a-f]{64}$''']
