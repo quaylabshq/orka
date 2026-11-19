@@ -582,11 +582,11 @@ export async function settingsFixture(
               url: "https://test.orka/join/join-once",
             };
           if (command === "project_command") {
+            const restoreWindowDays = options.projectRestoreWindowDays ?? 7;
             if (args.action === "capabilities")
               return {
                 softDelete: options.olderService ? 0 : 1,
-                projectRestoreWindowDays:
-                  options.projectRestoreWindowDays ?? 30,
+                projectRestoreWindowDays: restoreWindowDays,
               };
             if (args.action === "list")
               return { supported: true, projects: structuredClone(projects) };
@@ -600,6 +600,10 @@ export async function settingsFixture(
                 (project) => project.id === args.input.projectId,
               ))! as any;
             if (args.action === "delete" || args.action === "purge") {
+              const deletedAt = "2026-01-01T00:00:00Z";
+              const purgeAfter = new Date(
+                Date.parse(deletedAt) + restoreWindowDays * 86400_000,
+              ).toISOString();
               if (options.queued)
                 throw new Error(
                   "Sync queued changes and finish pending ENV publications before deleting this project",
@@ -615,8 +619,8 @@ export async function settingsFixture(
                 );
                 deletedProjects.push({
                   ...project,
-                  deletedAt: "2026-01-01T00:00:00Z",
-                  purgeAfter: "2026-02-01T00:00:00Z",
+                  deletedAt,
+                  purgeAfter,
                 });
               } else {
                 deletedProjects.splice(
@@ -628,8 +632,7 @@ export async function settingsFixture(
               }
               return {
                 ok: true,
-                purgeAfter:
-                  args.action === "delete" ? "2026-02-01T00:00:00Z" : null,
+                purgeAfter: args.action === "delete" ? purgeAfter : null,
               };
             }
             if (args.action === "archive") {
