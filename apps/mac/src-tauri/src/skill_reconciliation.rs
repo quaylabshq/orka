@@ -336,7 +336,13 @@ pub(crate) fn reconcile(
             "UPDATE drafts SET value=json_set(value,'$.baseRevision',?1,'$.automaticSharing',json('false'),'$.conflictReview',json('true'),'$.skillReconciliation',json('true'),'$.skillReviewFingerprint',?5)
              WHERE id=?2 AND project=?3 AND json_extract(value,'$.status')='local'
                AND json_extract(value,'$.submission') IS NULL AND json_extract(value,'$.requestId') IS NULL AND NOT ?4",
-            params![shared["revision"].as_u64(), &draft_id, project_id, existing, &fingerprint],
+            params![
+                shared["revision"].as_i64().ok_or("Invalid shared revision")?,
+                &draft_id,
+                project_id,
+                existing,
+                &fingerprint
+            ],
         )
         .map_err(|error| error.to_string())?;
         Some(draft_id)

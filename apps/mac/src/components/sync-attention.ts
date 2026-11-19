@@ -68,8 +68,7 @@ const skillConflictMessages = new Set([
 const staleVersionMessage =
   "409: Resource changed; refresh and review the exact version again";
 const needsPlanReview = (upload: Snapshot["outbox"][number]) =>
-  upload.kind === "plan" &&
-  (upload.reviewable || upload.error === staleVersionMessage);
+  upload.kind === "plan" && upload.reviewable === true;
 
 export interface SyncReviewItem {
   projectId: string;
@@ -79,6 +78,7 @@ export interface SyncReviewItem {
     | "Shared version changed"
     | "Queued upload needs review";
   uploadId?: string;
+  showDetails: boolean;
 }
 
 /** Find decisions across the active workspace, with the same deduplication as Requests. */
@@ -110,6 +110,9 @@ export function syncReviewItems(
         ? selectedAttention
         : projectAttention(state, id);
     return items.flatMap<SyncReviewItem>((item) => {
+      const hasOtherReview = Boolean(
+        item.requests.length || item.draft || item.conflicts.length,
+      );
       if (
         item.kind === "skill" &&
         item.binding?.installationState !== "kept_local" &&
@@ -117,7 +120,15 @@ export function syncReviewItems(
           item.messages.some((m) => skillConflictMessages.has(m)))
       )
         return [
-          { projectId: id, item, reason: "Local skill copies need review" },
+          {
+            projectId: id,
+            item,
+            reason: "Local skill copies need review",
+            showDetails:
+              hasOtherReview ||
+              item.uploads.length > 0 ||
+              item.messages.some((m) => !skillConflictMessages.has(m)),
+          },
         ];
       const upload = item.uploads.find(needsPlanReview);
       return upload
@@ -129,7 +140,11 @@ export function syncReviewItems(
                 upload.error === staleVersionMessage
                   ? "Shared version changed"
                   : "Queued upload needs review",
-              uploadId: upload.reviewable ? upload.id : undefined,
+              uploadId: upload.id,
+              showDetails:
+                hasOtherReview ||
+                item.uploads.length > 1 ||
+                item.messages.some((m) => m !== upload.error),
             },
           ]
         : [];
