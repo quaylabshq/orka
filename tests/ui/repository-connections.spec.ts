@@ -862,9 +862,16 @@ test("account controls and unlinking are tucked into explicit menus", async ({
   await picker(page)
     .getByRole("button", { name: /GitHub account options/ })
     .click();
-  await expect(
-    page.getByRole("button", { name: "Disconnect GitHub", exact: true }),
-  ).toBeVisible();
+  const accountMenu = page.getByRole("dialog", {
+    name: "GitHub account options",
+    exact: true,
+  });
+  await expect(accountMenu.getByRole("button")).toHaveText([
+    "Manage GitHub access",
+    "Connect another GitHub account",
+    "Disconnect GitHub",
+  ]);
+  await expect(accountMenu.locator("button > .ui-icon > svg")).toHaveCount(3);
 });
 
 test("a saved checkout needing reconnection is reused without cloning", async ({
