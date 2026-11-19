@@ -83,10 +83,11 @@ fn relevance(candidate: &Candidate, kind: Kind, now: u64) -> f64 {
     let recency = (-age / 14.0).exp();
     // 50 sessions and 30 active days saturate their terms.
     let sessions = (1.0 + candidate.sessions as f64).ln() / 51.0_f64.ln();
+    // Today and the 89 days before it.
     let active = candidate
         .days
         .iter()
-        .filter(|day| **day + 91 > now / DAY)
+        .filter(|day| **day + 90 > now / DAY)
         .count();
     let active = (1.0 + active as f64).ln() / 31.0_f64.ln();
     let git = if kind == Kind::Project { 1.0 } else { 0.0 };
@@ -1056,6 +1057,19 @@ mod tests {
         assert_eq!(rows.last().unwrap().kind, Kind::Chat);
         assert!(rows.last().unwrap().relevance < 11.0);
         assert!(rows[0].relevance > 70.0);
+    }
+    #[test]
+    fn active_days_count_the_last_ninety_days() {
+        let now = 1_795_000_000_000;
+        let score = |days: &[u64]| {
+            relevance(
+                &candidate(1, now - 200 * DAY, days, &["claude"]),
+                Kind::Project,
+                now,
+            )
+        };
+        assert_eq!(score(&[now - 90 * DAY]), score(&[]));
+        assert!(score(&[now - 89 * DAY]) > score(&[]));
     }
     #[test]
     fn conversation_folders_are_chats_but_the_workspace_root_is_not() {
