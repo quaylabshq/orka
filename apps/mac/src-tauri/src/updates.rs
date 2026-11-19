@@ -2,11 +2,52 @@ use crate::db::Result;
 use serde_json::{json, Value};
 use std::{
     fs::{File, OpenOptions},
-    io::{BufRead, BufReader},
+    io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
 };
 use tauri::Emitter;
+
+// Installation.swift pins the same official Orka Cloud service for the offer.
+const ROLLOUT_ORIGIN: &str = "https://api.tryorka.ai";
+
+async fn rollout_token(owner: Option<String>) -> Option<String> {
+    let owner = owner?;
+    let config = crate::db::get(&crate::db::open().ok()?, "config").ok()?;
+    if config["apiUrl"] != ROLLOUT_ORIGIN || config["mode"] == "self-hosted" {
+        return None;
+    }
+    crate::auth::token_for_service(&owner, ROLLOUT_ORIGIN)
+        .await
+        .ok()
+        .filter(|token| !token.is_empty() && token.len() <= 8192)
+}
+
+fn start_update_command(
+    command: &mut Command,
+    token: Option<String>,
+) -> Result<std::process::Child> {
+    command
+        .stdin(if token.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if token.is_some() {
+        command.arg("--rollout-session");
+    }
+    let mut child = command.spawn().map_err(|error| error.to_string())?;
+    if let Some(mut input) = child.stdin.take() {
+        if let Some(token) = token {
+            // Closing the pipe completes the message. The token never enters process
+            // arguments, inherited environment, the webview, or updater state files.
+            let _ = input.write_all(token.as_bytes());
+        }
+    }
+    Ok(child)
+}
 
 pub fn executable() -> std::io::Result<PathBuf> {
     let executable = std::env::current_exe()?;
@@ -174,20 +215,27 @@ pub fn update_ready() {
 }
 
 #[tauri::command]
-pub async fn update_status(app: tauri::AppHandle, manual: Option<bool>) -> Result<Value> {
+pub async fn update_status(
+    app: tauri::AppHandle,
+    manual: Option<bool>,
+    owner: Option<String>,
+) -> Result<Value> {
     let installed = app.package_info().version.to_string();
     if bundled_app().is_none() {
         return Ok(
             json!({ "installedVersion": installed, "supported": false, "message": "Updates are unavailable for this build." }),
         );
     }
+    let token = rollout_token(owner).await;
     tauri::async_runtime::spawn_blocking(move || {
         let mut command = Command::new(executable().map_err(|error| error.to_string())?);
         command.arg("--orka-update-status");
         if manual.unwrap_or(false) {
             command.arg("--fresh");
         }
-        let output = command.output().map_err(|error| error.to_string())?;
+        let output = start_update_command(&mut command, token)?
+            .wait_with_output()
+            .map_err(|error| error.to_string())?;
         serde_json::from_slice(&output.stdout)
             .map_err(|_| "Couldn’t read Orka’s update status.".into())
     })
@@ -196,20 +244,23 @@ pub async fn update_status(app: tauri::AppHandle, manual: Option<bool>) -> Resul
 }
 
 #[tauri::command]
-pub async fn update_install(app: tauri::AppHandle, version: String, sha256: String) -> Result<()> {
+pub async fn update_install(
+    app: tauri::AppHandle,
+    version: String,
+    sha256: String,
+    owner: Option<String>,
+) -> Result<()> {
     bundled_app().ok_or("Updates are unavailable for this build.")?;
+    let token = rollout_token(owner).await;
     tauri::async_runtime::spawn_blocking(move || {
-        let mut child = Command::new(executable().map_err(|error| error.to_string())?)
-            .args([
-                "--orka-install-update",
-                &version,
-                &sha256,
-                crate::profiles::current(),
-            ])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|error| error.to_string())?;
+        let mut command = Command::new(executable().map_err(|error| error.to_string())?);
+        command.args([
+            "--orka-install-update",
+            &version,
+            &sha256,
+            crate::profiles::current(),
+        ]);
+        let mut child = start_update_command(&mut command, token)?;
         if let Some(stdout) = child.stdout.take() {
             for line in BufReader::new(stdout).lines() {
                 let line = line.map_err(|error| error.to_string())?;

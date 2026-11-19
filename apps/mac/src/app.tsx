@@ -83,7 +83,12 @@ import {
   useDesktopUpdates,
 } from "./components/desktop-updates.js";
 import { WorkspaceHeader } from "./components/workspace-header.js";
-import { projectAttention } from "./components/sync-attention.js";
+import {
+  projectAttention,
+  syncReviewItems,
+  type SyncReviewItem,
+} from "./components/sync-attention.js";
+import { skillReviewState } from "./components/skill-review-state.js";
 import { useDeepLinks } from "./components/use-deep-links.js";
 import { PluginAuthorization } from "./components/plugin-authorization.js";
 import { parseProjectInvite } from "./components/project-invite.js";
@@ -212,9 +217,9 @@ function WorkspaceApp({
     actionNotice,
   } = workspace;
   const { notify } = useToasts();
-  const updates = useDesktopUpdates();
-  const account = useAccount(state.config, !state.user);
   const workspaceScope = WorkspaceCache.scope(state);
+  const updates = useDesktopUpdates(workspaceScope, state.user);
+  const account = useAccount(state.config, !state.user);
   useBackgroundRepositoryAccess(state);
   const [repositorySetup, setRepositorySetup] = useState("");
   const setup = useProjectSetup(
@@ -553,6 +558,10 @@ function WorkspaceApp({
     () => projectAttention(state, project),
     [state, project],
   );
+  const syncReviews = useMemo(
+    () => syncReviewItems(state, project, attention),
+    [state, project, attention],
+  );
   const updatesDialog =
     settings === "updates" && (!state.user || state.onboarding?.active) ? (
       <Overlay
@@ -631,6 +640,27 @@ function WorkspaceApp({
       index.setRepository("all");
     setResource(id);
     view.setChanges(false);
+  };
+  const openSyncReview = ({ projectId, item }: SyncReviewItem) => {
+    const targetProject = state.projects.find((p) => p.id === projectId);
+    if (!targetProject) return;
+    const target = catalogResources.find(
+      (r) => r.resourceId === item.resourceId && r.projectId === projectId,
+    );
+    setProject(projectId);
+    setGovernance(null);
+    if (
+      target?.kind === "skill" &&
+      skillReviewState(target, state, targetProject).incoming
+    ) {
+      setGovernance({ resource: target.resourceId, mode: "incoming" });
+    }
+    if (target && !target.deleted && (target.kind === "skill" || !item.draft)) {
+      setTab(target.kind);
+      openResource(target.resourceId);
+    } else {
+      openManagement("requests");
+    }
   };
   const closeDetail = () => {
     setReturnFocus(resource);
@@ -892,6 +922,11 @@ function WorkspaceApp({
                 canConnect={Boolean(selectedProject)}
                 state={state}
                 attention={attention}
+                projectId={project}
+                reviews={syncReviews}
+                onReviewItem={(review) =>
+                  leaveSettings(() => openSyncReview(review))
+                }
                 queue={queue}
                 onCancel={(projectId) =>
                   void act(

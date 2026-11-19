@@ -571,7 +571,7 @@ export const SettingsModal = forwardRef<
                   <>
                     <SettingsHeading
                       title="General"
-                      description="Project details and settings for this Mac."
+                      description="Project name, connected folders, and sharing."
                       action={
                         <Button
                           variant="primary"

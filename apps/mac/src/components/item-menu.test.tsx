@@ -125,6 +125,7 @@ const state = {
       sources: [{ id: "source", name: "app", path: "/repo/app" }],
     },
   ],
+  outbox: [],
   bindings: [
     {
       resourceId: "skill-a",

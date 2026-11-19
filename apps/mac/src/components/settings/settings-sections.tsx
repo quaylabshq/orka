@@ -38,7 +38,7 @@ export function SettingsGeneral({
           size="lg"
           hint={
             project.role === "owner"
-              ? undefined
+              ? "Changes rename this project for everyone."
               : name === null
                 ? "Uses the shared name. Changes apply only on this Mac."
                 : "Only on this Mac. Shared renames won’t replace this name."

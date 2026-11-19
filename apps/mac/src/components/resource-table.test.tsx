@@ -33,6 +33,7 @@ function renderTable() {
     profile: "test",
     config: { apiUrl: "https://test.example", syncMinutes: 5 },
     user: "me",
+    outbox: [],
     projects: [{ id: "project", name: "Project", role: "owner" }],
   } as never;
   render(

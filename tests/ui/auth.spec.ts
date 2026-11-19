@@ -434,6 +434,30 @@ test("an unfinished self-hosted address cannot block returning to Cloud sign-in"
   ).toHaveLength(1);
 });
 
+test("self-hosted setup labels the Cloud switch before changing services", async ({
+  page,
+}) => {
+  await fixture(page, false, { fresh: true });
+  await page.getByRole("button", { name: "Connect to your server" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Connect to your server", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Sign In$/ })).toHaveCount(0);
+  await page.getByLabel("Server link").fill("https://team.example.test");
+  await page
+    .getByRole("button", { name: "Sign in to Orka Cloud", exact: true })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "Welcome back to Orka", exact: true }),
+  ).toBeVisible();
+  expect(
+    (await calls(page)).filter((call) => call.command === "configure"),
+  ).toEqual([]);
+  expect(
+    (await calls(page)).filter((call) => call.command === "begin_sign_in"),
+  ).toEqual([]);
+});
+
 test("Cloud entry retains the email and supports retry after a failed connection save", async ({
   page,
 }) => {
@@ -857,7 +881,9 @@ test("switching to self-hosted requires a reachable service and signs out", asyn
     apiUrl: "https://private.example.test",
     cloudUrl: "https://cloud.example.test",
   });
-  await page.getByRole("button", { name: /^Sign In$/ }).click();
+  await page
+    .getByRole("button", { name: "Sign in to Orka Cloud", exact: true })
+    .click();
   await page.getByLabel("Email", { exact: true }).fill("person@example.test");
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
   expect(
@@ -886,7 +912,9 @@ test("hosting validates before saving and resumes after restart; navigation keep
   await expect(page.getByLabel("Server link")).toHaveValue(
     "https://private.example.test",
   );
-  await page.getByRole("button", { name: /^Sign In$/ }).click();
+  await page
+    .getByRole("button", { name: "Sign in to Orka Cloud", exact: true })
+    .click();
   await page.getByRole("button", { name: "Connect to your server" }).click();
   await expect(page.getByLabel("Server link")).toHaveValue(
     "https://private.example.test",
@@ -914,7 +942,7 @@ test("failed or unreachable server connections preserve the saved service and ca
     .click();
   await expect(page.getByRole("alert")).toContainText("Could not save");
   await expect(
-    page.getByRole("heading", { name: "Log into your account" }),
+    page.getByRole("heading", { name: "Connect to your server" }),
   ).toBeVisible();
   await page.evaluate(() => {
     (window as any).failConfigure = false;
