@@ -490,3 +490,315 @@ fn removing_the_local_copy_drops_its_held_markers() {
         .unwrap()
         .is_null());
 }
+
+fn rowid(f: &Capture, id: &Value) -> i64 {
+    f.db.query_row(
+        "SELECT rowid FROM outbox WHERE id=?",
+        [id.as_str().unwrap()],
+        |row| row.get(0),
+    )
+    .unwrap()
+}
+
+fn write_session(f: &Capture, session: &str, messages: &[&str]) {
+    let sessions = f.home.path().join(".claude/projects/deleted");
+    fs::create_dir_all(&sessions).unwrap();
+    let records = messages
+        .iter()
+        .map(|text| json!({"type":"user","sessionId":session,"cwd":f.root,"version":"2.1.283","message":{"role":"user","content":text}}))
+        .collect::<Vec<_>>();
+    fs::write(
+        sessions.join(format!("{session}.jsonl")),
+        native::encode(&records),
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn three_edits_while_deleted_coalesce_into_one_row_with_the_latest_content() {
+    let f = Capture::new(restorable());
+    let session = uuid::Uuid::new_v4().to_string();
+    let mut first: Option<Vec<Value>> = None;
+    let mut ids = BTreeSet::new();
+    let mut positions = Vec::new();
+    for (round, text) in ["first\n", "second\n", "third\n"].iter().enumerate() {
+        f.edit_memory(text);
+        let messages = ["one", "two", "three"];
+        write_session(&f, &session, &messages[..=round]);
+        assert!(matches!(f.run_job().await, Some(Outcome::Captured)));
+        let rows = f.outbox();
+        assert_eq!(rows.len(), 2, "round {round}: {rows:?}");
+        assert!(rows.iter().all(|row| row["held"] == 1));
+        if first.is_none() {
+            // Keep the original base to prove a replacement does not move it.
+            for row in &rows {
+                let mut value = row["value"].clone();
+                value["baseRevision"] = json!(7);
+                f.db.execute(
+                    "UPDATE outbox SET value=? WHERE id=?",
+                    params![value.to_string(), row["id"].as_str()],
+                )
+                .unwrap();
+            }
+            first = Some(f.outbox());
+            positions = rows.iter().map(|row| rowid(&f, &row["id"])).collect();
+        }
+        for row in &rows {
+            ids.insert(row["id"].as_str().unwrap().to_owned());
+        }
+    }
+    let first = first.unwrap();
+    let last = f.outbox();
+    // Every replacement got a fresh request ID and kept its place and base.
+    assert_eq!(ids.len(), 6);
+    for (before, after) in first.iter().zip(&last) {
+        assert_eq!(before["kind"], after["kind"]);
+        assert_ne!(before["id"], after["id"]);
+        assert_eq!(after["value"]["id"], after["id"]);
+        assert_eq!(after["value"]["baseRevision"], 7);
+        // A replaced row's blobs stay readable.
+        for file in before["value"]["resource"]["files"].as_array().unwrap() {
+            db::blob_read(file["hash"].as_str().unwrap()).unwrap();
+        }
+        // No marker is left for a replaced request.
+        assert!(db::get(
+            &f.db,
+            &indexer::held_capture_key(before["id"].as_str().unwrap())
+        )
+        .unwrap()
+        .is_null());
+    }
+    // Each replacement kept the first row's place in the queue.
+    assert_eq!(
+        last.iter()
+            .map(|row| rowid(&f, &row["id"]))
+            .collect::<Vec<_>>(),
+        positions
+    );
+    let memory = last.iter().find(|row| row["kind"] == "memory").unwrap();
+    let hash = memory["value"]["resource"]["files"][0]["hash"]
+        .as_str()
+        .unwrap();
+    assert_eq!(db::blob_read(hash).unwrap(), b"third\n");
+    let session = last.iter().find(|row| row["kind"] == "session").unwrap();
+    let hash = session["value"]["resource"]["files"][0]["hash"]
+        .as_str()
+        .unwrap();
+    assert!(String::from_utf8(db::blob_read(hash).unwrap())
+        .unwrap()
+        .contains("three"));
+    // A restore sends only the latest version.
+    f.restore();
+    let outbox = ProjectOutbox::open(&f.db, &f.id).unwrap();
+    let queued = outbox.queued(&f.db).unwrap();
+    assert_eq!(
+        outbox
+            .batch(&queued)
+            .iter()
+            .map(|row| row["id"].clone())
+            .collect::<Vec<_>>(),
+        last.iter().map(|row| row["id"].clone()).collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn rows_queued_before_the_deletion_are_never_rewritten() {
+    let f = Capture::new(json!({}));
+    f.edit_memory("Before the deletion\n");
+    indexer::scan(&f.db, &f.project()).unwrap();
+    let before = f.outbox();
+    assert_eq!(before.len(), 1);
+    assert_eq!(before[0]["held"], 0);
+    let mut project = f.project();
+    for (key, value) in restorable().as_object().unwrap() {
+        project[key] = value.clone();
+    }
+    db::upsert(&f.db, "projects", &f.id, "", &project).unwrap();
+    for text in ["During the deletion\n", "Later during the deletion\n"] {
+        f.edit_memory(text);
+        assert!(matches!(f.run_job().await, Some(Outcome::Captured)));
+        // The earlier row may already be on its way; it stays exactly as it
+        // was, and a restore scan picks up the newer edit after it is sent.
+        assert_eq!(f.outbox(), before);
+    }
+}
+
+#[tokio::test]
+async fn sent_failed_or_earlier_deletion_rows_are_never_rewritten() {
+    for case in ["handed to the network", "failed", "earlier deletion"] {
+        let f = Capture::new(restorable());
+        f.edit_memory("Captured\n");
+        assert!(matches!(f.run_job().await, Some(Outcome::Captured)));
+        let id = f.outbox()[0]["id"].as_str().unwrap().to_owned();
+        match case {
+            "handed to the network" => indexer::release_held_capture(&f.db, &id).unwrap(),
+            "failed" => {
+                f.db.execute(
+                    "UPDATE outbox SET error=? WHERE id=?",
+                    params![PLAN_REVISION_CONFLICT, id],
+                )
+                .unwrap();
+            }
+            _ => {
+                // Restored before it drained, then deleted again.
+                f.restore();
+                let mut project = f.project();
+                project["deletedAt"] = json!("2026-11-10T00:00:00Z");
+                project["archivedAt"] = project["deletedAt"].clone();
+                project["purgeAfter"] = json!(future());
+                db::upsert(&f.db, "projects", &f.id, "", &project).unwrap();
+            }
+        }
+        let before = f.outbox();
+        f.edit_memory("Edited again\n");
+        assert!(matches!(f.run_job().await, Some(Outcome::Captured)));
+        assert_eq!(f.outbox(), before, "{case}");
+    }
+}
+
+#[tokio::test]
+async fn a_governed_plan_keeps_its_held_marker_when_its_context_grows() {
+    let mut lifecycle = restorable();
+    lifecycle["governed"] = json!(true);
+    let f = Capture::new(lifecycle);
+    let plans = f.root.join(".claude/plans");
+    fs::create_dir_all(&plans).unwrap();
+    let plan = plans.join("launch.md");
+    fs::write(&plan, "# Launch plan\n").unwrap();
+    // Another plan was queued before the deletion and may already be on its
+    // way, so it has no held marker.
+    let notes = plans.join("notes.md");
+    fs::write(&notes, "# Notes\n").unwrap();
+    let logical = "claude/files/notes.md";
+    let earlier = json!({"version":2,"id":"before-delete","projectId":f.id,"deviceId":"this-mac","baseRevision":0,"resource":{
+        "resourceId":indexer::scoped_resource_id(&f.db, &f.project(), "plan", logical).unwrap(),
+        "kind":"plan","source":"claude","logicalPath":logical,"title":"Notes",
+        "files":[crate::plans::content(b"# Notes\n").unwrap()],"deleted":false,"contextSources":[]}});
+    f.db.execute(
+        "INSERT INTO outbox VALUES('before-delete',?,'/v2/sync/push',?,NULL)",
+        params![f.id, earlier.to_string()],
+    )
+    .unwrap();
+    let earlier_row = || -> Vec<Value> {
+        f.outbox()
+            .into_iter()
+            .filter(|row| row["value"]["resource"]["logicalPath"] == logical)
+            .collect()
+    };
+    assert!(matches!(f.run_job().await, Some(Outcome::Captured)));
+    let plan_rows = || -> Vec<Value> {
+        f.outbox()
+            .into_iter()
+            .filter(|row| {
+                row["kind"] == "plan" && row["value"]["resource"]["logicalPath"] != logical
+            })
+            .collect()
+    };
+    let first = plan_rows();
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0]["held"], 1);
+    // A transcript referencing the plan, with sources its hooks recorded
+    // before the deletion, adds context to the queued plan.
+    let session = uuid::Uuid::new_v4().to_string();
+    db::set(
+        &f.db,
+        &format!("sessionSources:{}:{session}", f.id),
+        &json!(["shared-memory"]),
+    )
+    .unwrap();
+    let sessions = f.home.path().join(".claude/projects/deleted");
+    fs::create_dir_all(&sessions).unwrap();
+    fs::write(
+        sessions.join(format!("{session}.jsonl")),
+        native::encode(&[
+            json!({"type":"user","sessionId":session,"cwd":f.root,"version":"2.1.283","planFilePath":plan,"message":{"role":"user","content":"Write the launch plan"}}),
+            json!({"type":"user","sessionId":session,"cwd":f.root,"version":"2.1.283","planFilePath":notes,"message":{"role":"user","content":"Read the notes"}}),
+        ]),
+    )
+    .unwrap();
+    assert!(matches!(f.run_job().await, Some(Outcome::Captured)));
+    let grown = plan_rows();
+    assert_eq!(grown.len(), 1);
+    assert_ne!(grown[0]["id"], first[0]["id"]);
+    assert!(grown[0]["value"]["resource"]["contextSources"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("shared-memory")));
+    assert_eq!(grown[0]["held"], 1);
+    // The plan queued before the deletion would also gain that context, but
+    // keeps its request ID and body exactly as they were.
+    let planned = db::get(&f.db, &format!("planSources:{}:{logical}", f.id)).unwrap();
+    assert!(planned
+        .as_array()
+        .unwrap()
+        .contains(&json!("shared-memory")));
+    let kept = earlier_row();
+    assert_eq!(kept.len(), 1);
+    assert_eq!(kept[0]["id"], "before-delete");
+    assert_eq!(kept[0]["held"], 0);
+    assert_eq!(kept[0]["value"], earlier);
+    // A second edit still coalesces into that one held row.
+    fs::write(&plan, "# Launch plan\n\nRevised\n").unwrap();
+    assert!(matches!(f.run_job().await, Some(Outcome::Captured)));
+    let last = plan_rows();
+    assert_eq!(last.len(), 1, "{last:?}");
+    assert_eq!(last[0]["held"], 1);
+    assert_eq!(earlier_row()[0]["value"], earlier);
+    let hash = last[0]["value"]["resource"]["files"][0]["hash"]
+        .as_str()
+        .unwrap();
+    assert!(String::from_utf8(db::blob_read(hash).unwrap())
+        .unwrap()
+        .contains("Revised"));
+    assert!(db::rows(&f.db, "SELECT value FROM meta WHERE key GLOB 'heldCapture:*' AND substr(key,13) NOT IN (SELECT id FROM outbox)", &[])
+        .unwrap()
+        .is_empty());
+    f.assert_sent_nothing();
+}
+
+#[tokio::test]
+async fn a_held_row_in_a_redaction_rebuild_is_never_rewritten() {
+    let f = Capture::new(restorable());
+    let session = uuid::Uuid::new_v4().to_string();
+    write_session(&f, &session, &["one"]);
+    assert!(matches!(f.run_job().await, Some(Outcome::Captured)));
+    let before = f.outbox();
+    assert_eq!(before.len(), 1);
+    db::set(
+        &f.db,
+        &outbox_redaction_key(before[0]["id"].as_str().unwrap()),
+        &json!({"value":before[0]["value"],"state":null}),
+    )
+    .unwrap();
+    write_session(&f, &session, &["one", "two"]);
+    assert!(matches!(f.run_job().await, Some(Outcome::Captured)));
+    assert_eq!(f.outbox(), before);
+}
+
+#[tokio::test]
+async fn an_item_created_then_deleted_while_deleted_leaves_one_held_deletion() {
+    let f = Capture::new(restorable());
+    let file = f.root.join("AGENTS.md");
+    fs::write(&file, "Short-lived instructions\n").unwrap();
+    assert!(matches!(f.run_job().await, Some(Outcome::Captured)));
+    let created = f.outbox();
+    assert_eq!(created.len(), 1);
+    let created_position = rowid(&f, &created[0]["id"]);
+    let created_hash = created[0]["value"]["resource"]["files"][0]["hash"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    fs::remove_file(&file).unwrap();
+    assert!(matches!(f.run_job().await, Some(Outcome::Captured)));
+    let rows = f.outbox();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0]["held"], 1);
+    assert_ne!(rows[0]["id"], created[0]["id"]);
+    assert_eq!(rows[0]["value"]["resource"]["deleted"], true);
+    assert_eq!(rows[0]["value"]["baseRevision"], 0);
+    // The deletion took the creation's place in the queue.
+    assert_eq!(rowid(&f, &rows[0]["id"]), created_position);
+    // The created version's blob stays readable.
+    db::blob_read(&created_hash).unwrap();
+    f.assert_sent_nothing();
+}

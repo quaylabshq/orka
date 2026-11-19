@@ -266,23 +266,121 @@ fn queue_scanned(
     }
     crate::projects::require_capture(db, project_id, crate::projects::queued_kind(path, value))?;
     let id = value["id"].as_str().ok_or("Missing request ID")?;
-    db.execute(
-        "INSERT INTO outbox VALUES(?,?,?,?,NULL)",
-        params![id, project_id, path, value.to_string()],
-    )
-    .map_err(|e| e.to_string())?;
-    // The row is written first: a crash in between leaves an ordinary row,
-    // which is never rewritten.
-    db::set(
+    let marker = json!({
+        "heldCapture": true,
+        "projectId": project_id,
+        "resourceId": value["resource"]["resourceId"],
+        "deletedAt": project["deletedAt"],
+    });
+    // Checking which rows are replaceable and rewriting them is one
+    // transaction, and each write also requires the row's marker, so a row
+    // released for upload in between is never rewritten.
+    let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
+    let held = match value["resource"]["resourceId"].as_str() {
+        Some(resource) if path == "/v2/sync/push" => replaceable_held(&tx, project, resource)?,
+        _ => Vec::new(),
+    };
+    let Some((first, base)) = held.first() else {
+        tx.execute(
+            "INSERT INTO outbox VALUES(?,?,?,?,NULL)",
+            params![id, project_id, path, value.to_string()],
+        )
+        .map_err(|e| e.to_string())?;
+        db::set(&tx, &held_capture_key(id), &marker)?;
+        return tx.commit().map_err(|e| e.to_string());
+    };
+    // The latest edit replaces every never-sent row for this item. The first
+    // row keeps its place in the queue and its base, so nothing overtakes it,
+    // and the fresh request ID never collides with a retry of an old body.
+    // Replaced rows' blobs stay in the content-addressed store: drafts,
+    // exports and other rows may still read them.
+    let mut value = value.clone();
+    value["baseRevision"] = base.clone();
+    let still_held = "EXISTS(SELECT 1 FROM meta WHERE key=?)";
+    if tx
+        .execute(
+            &format!("UPDATE outbox SET id=?,value=? WHERE id=? AND project=? AND path=? AND error IS NULL AND {still_held}"),
+            params![id, value.to_string(), first, project_id, path, held_capture_key(first)],
+        )
+        .map_err(|e| e.to_string())?
+        != 1
+    {
+        return Err("A held change was sent meanwhile; capture will retry".into());
+    }
+    for (old, _) in &held {
+        if old != first
+            && tx
+                .execute(
+                    &format!("DELETE FROM outbox WHERE id=? AND project=? AND error IS NULL AND {still_held}"),
+                    params![old, project_id, held_capture_key(old)],
+                )
+                .map_err(|e| e.to_string())?
+                != 1
+        {
+            return Err("A held change was sent meanwhile; capture will retry".into());
+        }
+        release_held_capture(&tx, old)?;
+        crate::sync::clear_session_copy(&tx, old)?;
+    }
+    db::set(&tx, &held_capture_key(id), &marker)?;
+    tx.commit().map_err(|e| e.to_string())
+}
+
+/// The never-sent rows a newer capture of `resource` may replace, as
+/// `(request ID, baseRevision)` in queue order. It is empty unless every
+/// queued request for the item is a push held during this same deletion and
+/// never handed to the network. A row from before the deletion, a failed or
+/// partly sent row, or one from an earlier deletion is never rewritten.
+fn replaceable_held(
+    db: &rusqlite::Connection,
+    project: &Value,
+    resource: &str,
+) -> Result<Vec<(String, Value)>> {
+    let project_id = project["id"].as_str().ok_or("Missing project ID")?;
+    if project["captureOnly"] != true || project["deletedAt"].is_null() {
+        return Ok(Vec::new());
+    }
+    let rows = db::rows(
         db,
-        &held_capture_key(id),
-        &json!({
-            "heldCapture": true,
-            "projectId": project_id,
-            "resourceId": value["resource"]["resourceId"],
-            "deletedAt": project["deletedAt"],
-        }),
-    )
+        "SELECT json_object('id',o.id,'project',o.project,'path',o.path,'error',o.error,
+           'base',json_extract(o.value,'$.baseRevision'),
+           'held',(SELECT json_extract(value,'$.heldCapture') FROM meta WHERE key=?2||o.id),
+           'heldProject',(SELECT json_extract(value,'$.projectId') FROM meta WHERE key=?2||o.id),
+           'heldDeletion',(SELECT json_extract(value,'$.deletedAt') FROM meta WHERE key=?2||o.id),
+           'rebuilding',EXISTS(SELECT 1 FROM meta WHERE key='sessionOutboxRedaction:'||o.id))
+         FROM outbox o
+         WHERE o.project=?3 AND (json_extract(o.value,'$.resource.resourceId')=?1
+           OR json_extract(o.value,'$.resourceId')=?1)
+         ORDER BY o.rowid",
+        &[&resource, &HELD_CAPTURE, &project_id],
+    )?;
+    let replaceable = |row: &Value| {
+        row["project"] == project_id
+            && row["path"] == "/v2/sync/push"
+            && row["error"].is_null()
+            && row["rebuilding"] == 0
+            && row["held"] == 1
+            && row["heldProject"] == project_id
+            && row["heldDeletion"] == project["deletedAt"]
+    };
+    if !rows.iter().all(replaceable) {
+        return Ok(Vec::new());
+    }
+    Ok(rows
+        .into_iter()
+        .filter_map(|row| Some((row["id"].as_str()?.to_owned(), row["base"].clone())))
+        .collect())
+}
+
+/// Whether queued work stops a scan from queuing another change to
+/// `resource`. A capture's own never-sent rows do not: the edit replaces them.
+fn blocks_capture(
+    db: &rusqlite::Connection,
+    project: &Value,
+    resource: &str,
+    pending: bool,
+) -> Result<bool> {
+    Ok(pending && replaceable_held(db, project, resource)?.is_empty())
 }
 
 /// A held row is about to be sent, so it may already have reached the service
@@ -530,7 +628,7 @@ fn collect(
             b["nativeId"] = json!(n);
         }
     }
-    if changed && !pending {
+    if changed && !blocks_capture(db, project, &id, pending)? {
         let title = if kind == "plan" {
             title
         } else {
@@ -1370,9 +1468,9 @@ fn scan_source(
                     &mut seen,
                 )?;
                 if project["governed"] != true
-                    && !pending
                     && changed.len() > 1
                     && changed[0].1 != changed[1].1
+                    && !blocks_capture(db, project, &id, pending)?
                 {
                     let mut input = json!({"version":2,"id":Uuid::new_v4().to_string(),"projectId":project_id,"deviceId":db::device(db)?,"baseRevision":base["revision"].as_u64().unwrap_or(0),"resource":{"resourceId":id,"kind":"skill","source":"shared","logicalPath":name,"title":name,"files":changed[1].1,"deleted":false}});
                     crate::sources::scope(project, &mut input["resource"]);
@@ -1751,8 +1849,17 @@ fn scan_source(
             let mut known=change["resource"]["contextSources"].as_array().cloned().unwrap_or_default();
             for source in scanned_sources(db,project,change["resource"]["logicalPath"].as_str().ok_or("Missing plan path")?,None)?.as_array().cloned().unwrap_or_default() {if !known.contains(&source){known.push(source);}}
             if change["resource"]["contextSources"]!=json!(known) {
+                let old_id=queued["id"].as_str().ok_or("Missing request ID")?;
+                let held=held_capture_key(old_id);
+                // While deleted, only never-sent captures are rewritten; a row
+                // queued before the deletion stays exactly as it was.
+                if project["captureOnly"]==true && db::get(db,&held)?.is_null() { continue; }
                 let new_id=Uuid::new_v4().to_string();change["id"]=json!(new_id);change["resource"]["contextSources"]=json!(known);
-                db.execute("UPDATE outbox SET id=?,value=?,error=NULL WHERE id=?",params![new_id,change.to_string(),queued["id"].as_str()]).map_err(|e|e.to_string())?;
+                let tx=db.unchecked_transaction().map_err(|e|e.to_string())?;
+                tx.execute("UPDATE outbox SET id=?,value=?,error=NULL WHERE id=?",params![new_id,change.to_string(),old_id]).map_err(|e|e.to_string())?;
+                // The held marker follows the row to its new request ID.
+                tx.execute("UPDATE meta SET key=? WHERE key=?",params![held_capture_key(&new_id),held]).map_err(|e|e.to_string())?;
+                tx.commit().map_err(|e|e.to_string())?;
             }
         }
     }

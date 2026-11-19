@@ -82,13 +82,17 @@ While a deleted project can still be restored (`deletedAt` with a
 scanning local files into the outbox with no request to the service, on a
 timer four times slower than an active project's. The window ends when the
 catalog delivers a purge tombstone or drops the project, not by this Mac's
-clock. Governed
-edits become drafts whose automatic sharing waits for a restore. Each captured
-row is marked as never sent by a `heldCapture:<request id>` entry in local
-metadata rather than in the request, so older clients send it unchanged; the
-marker is cleared just before the row is first uploaded. A restore sends the
-rows as ordinary changes. Archived-only, revoked, hidden, detached and purged
-projects, and catalogs without `purgeAfter`, capture nothing.
+clock. Governed edits become drafts whose automatic sharing waits for a
+restore. Each captured row is marked as never sent by a
+`heldCapture:<request id>` entry in local metadata rather than in the request,
+so older clients send it unchanged; the marker is cleared just before the row
+is first uploaded. A newer edit to the same item replaces its held rows in
+place with a fresh request ID and the same base revision, so the latest edit
+wins. Rows queued before the deletion, failed rows, rows in a redaction rebuild
+and rows from an earlier deletion are never rewritten, and replaced rows' blobs
+stay in the local blob store. A restore sends the rows as ordinary changes.
+Archived-only, revoked, hidden, detached and purged projects, and catalogs
+without `purgeAfter`, capture nothing.
 
 ## Native modules
 
