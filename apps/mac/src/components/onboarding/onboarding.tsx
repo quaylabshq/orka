@@ -14,6 +14,7 @@ import { RecoveryStep } from "./recovery-step.js";
 import {
   destinationCandidates,
   frameForStep,
+  readableSelection,
   suggestedSource,
   type OnboardingStep,
 } from "./model.js";
@@ -77,9 +78,10 @@ export function Onboarding({
     }, 1500);
     return () => clearTimeout(timer);
   }, [step, showProgress]);
-  const projects = draft.projects.filter((p) =>
-    draft.selected.includes(p.path),
-  );
+  const projects =
+    step === "select" || step === "review"
+      ? readableSelection(draft)
+      : draft.projects.filter((p) => draft.selected.includes(p.path));
   const syncing = step === "syncing" || step === "retrying";
   const progressOpen =
     step === "scanning" ||
@@ -325,7 +327,7 @@ export function Onboarding({
           step === "review"
             ? flow.sync()
             : go(state.background ? "invite" : "background"),
-        syncing || needsChoice,
+        syncing || needsChoice || (step === "review" && !projects.length),
       )}
       {step === "review" && (
         <Button variant="tertiary" disabled={busy} onClick={flow.defer}>
@@ -438,8 +440,7 @@ export function Onboarding({
                     />
                     <div className="onboarding-flow__selection-toolbar">
                       <span aria-live="polite">
-                        {draft.selected.length} of {draft.projects.length}{" "}
-                        selected
+                        {projects.length} of {draft.projects.length} selected
                       </span>
                       <Button
                         size="sm"
@@ -471,7 +472,10 @@ export function Onboarding({
                         >
                           <input
                             type="checkbox"
-                            checked={draft.selected.includes(project.path)}
+                            checked={
+                              project.readable !== false &&
+                              draft.selected.includes(project.path)
+                            }
                             disabled={busy || project.readable === false}
                             onChange={() => flow.toggle(project.path)}
                           />
@@ -514,7 +518,7 @@ export function Onboarding({
                       </Button>
                       <Button
                         variant="primary"
-                        disabled={busy || !draft.selected.length}
+                        disabled={busy || !projects.length}
                         onClick={flow.proceed}
                       >
                         Proceed
