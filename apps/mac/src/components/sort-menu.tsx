@@ -2,6 +2,7 @@ import { CheckIcon, ChevronDownIcon } from "lucide-react";
 import React, { useRef } from "react";
 import { Button, type ButtonVariant } from "./button.js";
 import { Icon, type ControlSize } from "./icon.js";
+import type { IconGlyph } from "./icons.js";
 import { ActionPopover } from "./resource-actions.js";
 
 /** Radio-style sort menu shared by collection tools and the skill picker. */
@@ -15,7 +16,7 @@ export function SortMenu<T extends string>({
   className = "index-toolbar-sort",
 }: {
   value: T;
-  options: { value: T; label: string }[];
+  options: { value: T; label: string; icon: IconGlyph }[];
   onChange: (sort: T) => void;
   label?: string;
   size?: ControlSize;
@@ -79,6 +80,7 @@ export function SortMenu<T extends string>({
             className="index-sort-option"
             onClick={() => onChange(option.value)}
           >
+            <Icon icon={option.icon} variant="secondary" />
             <span className="index-sort-option-label">{option.label}</span>
             {option.value === value && <Icon icon={CheckIcon} />}
           </Button>

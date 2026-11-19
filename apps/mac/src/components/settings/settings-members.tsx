@@ -1,4 +1,14 @@
-import { HistoryIcon, MailIcon, UserPlusIcon } from "lucide-react";
+import {
+  HistoryIcon,
+  KeyRoundIcon,
+  MailIcon,
+  MailXIcon,
+  SendIcon,
+  ShieldUserIcon,
+  UserMinusIcon,
+  UserPlusIcon,
+  UserRoundIcon,
+} from "lucide-react";
 import { RepositoryRequests } from "../repository-connections.js";
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -121,10 +131,12 @@ export function MemberRows({
           actions.push({
             id: "role",
             label: "Change role",
+            icon: ShieldUserIcon,
             onSelect: () => {},
             children: ["admin", "member"].map((role) => ({
               id: role,
               label: roleName(role),
+              icon: role === "admin" ? ShieldUserIcon : UserRoundIcon,
               disabled: Boolean(busy) || member.role === role,
               onSelect: () => onRole(member.id, role),
             })),
@@ -138,12 +150,14 @@ export function MemberRows({
             actions.push({
               id: "transfer",
               label: "Transfer ownership",
+              icon: KeyRoundIcon,
               disabled: Boolean(busy),
               onSelect: () => onTransfer(member),
             });
           actions.push({
             id: "remove",
             label: `Remove ${roleName(member.role)}`,
+            icon: UserMinusIcon,
             danger: true,
             separator: actions.length > 0,
             disabled: Boolean(busy),
@@ -478,6 +492,7 @@ export function SettingsMembers({
                 {
                   id: "resend",
                   label: "Resend",
+                  icon: SendIcon,
                   disabled,
                   onSelect: () => resend(invite.email),
                 },
@@ -486,6 +501,7 @@ export function SettingsMembers({
                 actions.push({
                   id: "revoke",
                   label: "Revoke",
+                  icon: MailXIcon,
                   danger: true,
                   separator: true,
                   disabled,

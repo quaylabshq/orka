@@ -1,4 +1,4 @@
-import { CopyIcon, TrashIcon } from "lucide-react";
+import { BookOpenIcon, CopyIcon, TrashIcon } from "lucide-react";
 import {
   act,
   cleanup,
@@ -16,12 +16,14 @@ import {
   ItemMenuButton,
   type ItemMenuAction,
 } from "./item-menu.js";
+import { MarkdownMarkIcon } from "./icons.js";
 import { ResourceItemMenu, ResourceMenuProvider } from "./resource-menu.js";
 import { MemberRows } from "./settings/settings-members.js";
 
 const action = (label: string, extra: Partial<ItemMenuAction> = {}) => ({
   id: label,
   label,
+  icon: BookOpenIcon,
   onSelect: vi.fn(),
   ...extra,
 });
@@ -80,26 +82,24 @@ test.each(Object.entries(menus))(
         action("Open", { group: "open" }),
         action("Copy link", { group: "copy", icon: CopyIcon }),
         // An action without a group stays with the group before it.
-        action("Show Markdown"),
+        action("Show Markdown", { icon: MarkdownMarkIcon }),
         action("Delete", { group: "remove", icon: TrashIcon }),
       ]),
     );
-    // Actions without an icon keep an empty slot so labels line up.
     expect(entries.join(", ")).toBe(
-      "span Open, |, svg Copy link, span Show Markdown, |, svg Delete",
+      "svg Open, |, svg Copy link, svg Show Markdown, |, svg Delete",
     );
   },
 );
 
-test("menus without icons or groups render as before", async () => {
-  const { menu, entries } = await open(
+test("an explicit separator works without groups", async () => {
+  const { entries } = await open(
     menus["right-click menu"]([
       action("One"),
       action("Two", { separator: true }),
     ]),
   );
-  expect(menu.querySelector(".item-menu-icon")).toBeNull();
-  expect(entries).toEqual(["- One", "|", "- Two"]);
+  expect(entries).toEqual(["svg One", "|", "svg Two"]);
 });
 
 const fn = vi.fn();
@@ -151,7 +151,7 @@ const resourceMenu = (
   >
     <ResourceItemMenu
       resource={resource}
-      extraActions={[action("Show Markdown")]}
+      extraActions={[action("Show Markdown", { icon: MarkdownMarkIcon })]}
     >
       {() => <button type="button">Item</button>}
     </ResourceItemMenu>
@@ -193,9 +193,9 @@ test("a shared skill keeps everyday actions and deletion at the top level", asyn
     "svg Copy file content",
     "svg Compare with previous revision",
     "svg Copy link",
-    "span Show Markdown",
+    "svg Show Markdown",
     "|",
-    "span More actions",
+    "svg More actions",
     "|",
     "svg Delete shared skill…",
   ]);
