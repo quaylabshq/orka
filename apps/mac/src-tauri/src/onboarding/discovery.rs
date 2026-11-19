@@ -17,6 +17,22 @@ struct Candidate {
     tools: BTreeSet<String>,
     last: u64,
     sessions: usize,
+    worktrees: usize,
+}
+impl Candidate {
+    fn activity(&mut self, tool: Option<&str>, last: u64, sessions: usize) {
+        if let Some(tool) = tool {
+            self.tools.insert(tool.into());
+        }
+        self.last = self.last.max(last);
+        self.sessions += sessions;
+    }
+    fn fold(&mut self, other: Self) {
+        self.tools.extend(other.tools);
+        self.last = self.last.max(other.last);
+        self.sessions += other.sessions;
+        self.worktrees += other.worktrees;
+    }
 }
 struct Budget {
     start: Instant,
@@ -100,6 +116,142 @@ impl ImportedHistory {
     }
 }
 
+fn usable_root(path: &Path, home: &Path) -> bool {
+    path.is_dir()
+        && path != Path::new("/")
+        && path != home
+        && (path.starts_with(home) || !(path.starts_with("/tmp") || path.starts_with("/private")))
+}
+/// Resolves a Git directory and the common directory shared by its worktrees.
+fn git_dirs(path: &Path) -> Option<(PathBuf, PathBuf)> {
+    let git = path.join(".git");
+    if !git.is_file() {
+        return None;
+    }
+    let value = fs::read_to_string(&git).ok()?;
+    let target = value.trim().strip_prefix("gitdir:")?.trim();
+    if target.is_empty() {
+        return None;
+    }
+    let directory = resolved(&path.join(target));
+    let common = match fs::read_to_string(directory.join("commondir")) {
+        Ok(common) => resolved(&directory.join(common.trim())),
+        Err(_) => directory.clone(),
+    };
+    Some((directory, common))
+}
+fn resolved(path: &Path) -> PathBuf {
+    fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+fn linked_common_dir(path: &Path) -> Option<PathBuf> {
+    let (directory, common) = git_dirs(path)?;
+    (directory != common).then_some(common)
+}
+
+fn git_config_bool(path: &Path, section: &str, name: &str) -> Option<bool> {
+    let config = fs::File::open(path).ok()?;
+    let mut in_section = false;
+    let mut result = None;
+    for line in BufReader::new(config.take(1_000_000))
+        .lines()
+        .map_while(std::result::Result::ok)
+    {
+        let line = line.split(['#', ';']).next().unwrap_or_default().trim();
+        if line.starts_with('[') {
+            in_section = line
+                .strip_prefix('[')
+                .and_then(|value| value.strip_suffix(']'))
+                .is_some_and(|value| value.eq_ignore_ascii_case(section));
+        } else if in_section {
+            let (key, value) = line.split_once('=').unwrap_or((line, "true"));
+            if key.trim().eq_ignore_ascii_case(name) {
+                let value = value.trim().trim_matches('"').to_ascii_lowercase();
+                result = match value.as_str() {
+                    "true" | "yes" | "on" => Some(true),
+                    "" | "false" | "no" | "off" => Some(false),
+                    number => number.parse::<i64>().ok().map(|number| number != 0),
+                };
+            }
+        }
+    }
+    result
+}
+
+fn is_bare_git_directory(directory: &Path) -> bool {
+    let config = directory.join("config");
+    if git_config_bool(&config, "extensions", "worktreeConfig") == Some(true) {
+        if let Some(bare) = git_config_bool(&directory.join("config.worktree"), "core", "bare") {
+            return bare;
+        }
+    }
+    git_config_bool(&config, "core", "bare") == Some(true)
+}
+
+#[derive(Default)]
+struct MainCheckouts(BTreeMap<PathBuf, BTreeSet<PathBuf>>);
+impl MainCheckouts {
+    fn from_paths<'a>(paths: impl Iterator<Item = &'a PathBuf>, home: &Path) -> Self {
+        let mut checkouts = Self::default();
+        for path in paths.filter_map(|path| fs::canonicalize(path).ok()) {
+            if !usable_root(&path, home) {
+                continue;
+            }
+            let git = path.join(".git");
+            let common = if git.is_dir() {
+                resolved(&git)
+            } else {
+                let Some((directory, common)) = git_dirs(&path) else {
+                    continue;
+                };
+                if directory != common || !common.is_dir() {
+                    continue;
+                }
+                common
+            };
+            if !is_bare_git_directory(&common) {
+                checkouts.0.entry(common).or_default().insert(path);
+            }
+        }
+        checkouts
+    }
+
+    fn main_of(&self, path: &Path) -> Option<PathBuf> {
+        self.main_for(&linked_common_dir(path)?).cloned()
+    }
+
+    fn main_for(&self, common: &Path) -> Option<&PathBuf> {
+        // A Git directory named .git can live outside its checkout. Its parent
+        // is not enough to identify the primary without a known project path.
+        let mut matches = self.0.get(common)?.iter();
+        match (matches.next(), matches.next()) {
+            (Some(only), None) => Some(only),
+            _ => None,
+        }
+    }
+}
+/// Worktrees connect to their main checkout, so they are one project, not two.
+fn fold_worktrees(
+    found: &mut BTreeMap<PathBuf, Candidate>,
+    home: &Path,
+    connected: &BTreeMap<PathBuf, u64>,
+) {
+    let mains = MainCheckouts::from_paths(found.keys().chain(connected.keys()), home);
+    let worktrees: Vec<PathBuf> = found
+        .keys()
+        .filter(|path| path.join(".git").is_file() && !connected.contains_key(*path))
+        .cloned()
+        .collect();
+    for path in worktrees {
+        let Some(main) = mains.main_of(&path).filter(|main| usable_root(main, home)) else {
+            continue;
+        };
+        let Some(mut worktree) = found.remove(&path) else {
+            continue;
+        };
+        worktree.worktrees += 1;
+        found.entry(main).or_default().fold(worktree);
+    }
+}
 fn project_root(path: &Path, home: &Path) -> Option<PathBuf> {
     let path = match fs::canonicalize(path) {
         Ok(path) => path,
@@ -118,11 +270,7 @@ fn project_root(path: &Path, home: &Path) -> Option<PathBuf> {
     if fs::metadata(&path).is_err_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied) {
         return Some(path);
     }
-    if !path.is_dir()
-        || path == Path::new("/")
-        || path == home
-        || (!path.starts_with(home) && (path.starts_with("/tmp") || path.starts_with("/private")))
-    {
+    if !usable_root(&path, home) {
         return None;
     }
     for parent in path.ancestors() {
@@ -146,12 +294,10 @@ fn add(
     let Some(path) = project_root(path, home) else {
         return;
     };
-    let item = found.entry(path).or_default();
-    if let Some(tool) = tool {
-        item.tools.insert(tool.into());
-    }
-    item.last = item.last.max(last);
-    item.sessions += sessions;
+    found
+        .entry(path)
+        .or_default()
+        .activity(tool, last, sessions);
 }
 fn cwd_record(path: &Path, codex: bool, budget: &mut Budget) -> Option<Value> {
     if fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
@@ -412,9 +558,13 @@ pub fn discover(path: Option<&str>) -> Result<Value> {
                 .filter_map(move |view| Some((PathBuf::from(view["path"].as_str()?), pending)))
         })
         .collect();
+    // A folder pick is honored as chosen, so only history scans fold worktrees.
+    if path.is_none() {
+        fold_worktrees(&mut found, &home, &connected_folders);
+    }
     let projects: Vec<Value> = found.into_iter().map(|(path, c)| {
         let display = path.strip_prefix(&home).map(|p| format!("~/{}", p.display())).unwrap_or_else(|_| path.display().to_string());
-        json!({"name":path.file_name().unwrap_or_default().to_string_lossy(),"path":path,"displayPath":display,"sources":c.tools,"lastActiveAt":c.last,"sessions":c.sessions,"readable":fs::read_dir(&path).is_ok(),"alreadyConnected":connected_folders.contains_key(&path),"pendingChanges":connected_folders.get(&path).copied().unwrap_or(0)})
+        json!({"name":path.file_name().unwrap_or_default().to_string_lossy(),"path":path,"displayPath":display,"sources":c.tools,"lastActiveAt":c.last,"sessions":c.sessions,"worktrees":c.worktrees,"readable":fs::read_dir(&path).is_ok(),"alreadyConnected":connected_folders.contains_key(&path),"pendingChanges":connected_folders.get(&path).copied().unwrap_or(0)})
     }).collect();
     if budget.truncated {
         eprintln!("Some history was skipped (onboarding discovery budget)");
@@ -457,13 +607,9 @@ pub fn remote_key(path: &str) -> Result<Option<String>> {
     let root = fs::canonicalize(path).map_err(|_| "Project folder is unavailable")?;
     let git = root.join(".git");
     let directory = if git.is_file() {
-        let value = fs::read_to_string(&git).map_err(|e| e.to_string())?;
-        let target = value
-            .trim()
-            .strip_prefix("gitdir:")
+        git_dirs(&root)
+            .map(|(directory, _)| directory)
             .ok_or("Invalid Git directory")?
-            .trim();
-        root.join(target)
     } else {
         git
     };
@@ -507,6 +653,23 @@ pub fn remote_key(path: &str) -> Result<Option<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Creates a T3 linked worktree whose Git directory lives in `main`.
+    fn linked_worktree(home: &Path, main: &Path, name: &str) -> PathBuf {
+        let git = main.join(".git/worktrees").join(name);
+        fs::create_dir_all(&git).unwrap();
+        fs::write(git.join("commondir"), "../..\n").unwrap();
+        let worktree = home
+            .join(".t3/worktrees")
+            .join(main.file_name().unwrap())
+            .join(name);
+        fs::create_dir_all(&worktree).unwrap();
+        fs::write(
+            worktree.join(".git"),
+            format!("gitdir: {}\n", git.display()),
+        )
+        .unwrap();
+        worktree
+    }
     #[test]
     fn remote_identity_is_transport_independent() {
         for value in [
@@ -576,6 +739,131 @@ mod tests {
             remote_key(root.join("feature").to_str().unwrap()).unwrap(),
             Some(db::digest(b"orka-remote-v1:github.com/owner/repo"))
         );
+    }
+    #[test]
+    fn worktrees_fold_into_their_main_checkout() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = fs::canonicalize(temp.path()).unwrap();
+        let main = home.join("Development/orka");
+        fs::create_dir_all(main.join(".git")).unwrap();
+        let first = linked_worktree(&home, &main, "feature-a");
+        let second = linked_worktree(&home, &main, "feature-b");
+        let mut found = BTreeMap::new();
+        add(&mut found, &main, &home, Some("claude"), 10, 4);
+        add(&mut found, &first, &home, Some("claude"), 20, 1);
+        add(&mut found, &second, &home, Some("codex"), 30, 2);
+        fold_worktrees(&mut found, &home, &BTreeMap::new());
+        assert_eq!(
+            found.keys().collect::<Vec<_>>(),
+            vec![&main],
+            "two live worktrees must not stay separate projects"
+        );
+        let row = &found[&main];
+        assert_eq!(row.sessions, 7);
+        assert_eq!(row.last, 30);
+        assert_eq!(row.worktrees, 2);
+        assert_eq!(row.tools.len(), 2);
+    }
+    #[test]
+    fn worktrees_fold_into_a_known_checkout_using_a_separate_git_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = fs::canonicalize(temp.path()).unwrap();
+        let main = home.join("Development/orka");
+        let metadata = home.join("metadata/.git");
+        let feature = home.join("feature");
+        fs::create_dir_all(&main).unwrap();
+        fs::create_dir_all(metadata.join("worktrees/feature")).unwrap();
+        fs::create_dir_all(&feature).unwrap();
+        fs::write(
+            main.join(".git"),
+            format!("gitdir: {}\n", metadata.display()),
+        )
+        .unwrap();
+        fs::write(
+            feature.join(".git"),
+            "gitdir: ../metadata/.git/worktrees/feature\n",
+        )
+        .unwrap();
+        fs::write(metadata.join("worktrees/feature/commondir"), "../..\n").unwrap();
+
+        let mut found = BTreeMap::new();
+        add(&mut found, &main, &home, Some("claude"), 10, 1);
+        add(&mut found, &feature, &home, Some("codex"), 20, 2);
+        fold_worktrees(&mut found, &home, &BTreeMap::new());
+        assert_eq!(found.keys().collect::<Vec<_>>(), vec![&main]);
+        assert_eq!(found[&main].sessions, 3);
+        assert_eq!(found[&main].worktrees, 1);
+
+        found.clear();
+        add(&mut found, &feature, &home, Some("codex"), 20, 2);
+        fold_worktrees(&mut found, &home, &BTreeMap::new());
+        assert_eq!(found.keys().collect::<Vec<_>>(), vec![&feature]);
+        assert_eq!(found[&feature].worktrees, 0);
+
+        fold_worktrees(&mut found, &home, &BTreeMap::from([(main.clone(), 0)]));
+        assert_eq!(found.keys().collect::<Vec<_>>(), vec![&main]);
+        assert_eq!(found[&main].sessions, 2);
+    }
+    #[test]
+    fn connected_worktrees_keep_their_own_row() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = fs::canonicalize(temp.path()).unwrap();
+        let main = home.join("Development/orka");
+        fs::create_dir_all(main.join(".git")).unwrap();
+        let worktree = linked_worktree(&home, &main, "feature-a");
+        let mut found = BTreeMap::new();
+        add(&mut found, &main, &home, Some("claude"), 10, 1);
+        add(&mut found, &worktree, &home, Some("claude"), 20, 1);
+        let connected = BTreeMap::from([(worktree.clone(), 0)]);
+        fold_worktrees(&mut found, &home, &connected);
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[&worktree].worktrees, 0);
+    }
+    #[test]
+    fn submodules_and_bare_worktrees_are_not_folded() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = fs::canonicalize(temp.path()).unwrap();
+        let superproject = home.join("Development/super");
+        fs::create_dir_all(superproject.join(".git/modules/sub")).unwrap();
+        let submodule = superproject.join("sub");
+        fs::create_dir_all(&submodule).unwrap();
+        fs::write(submodule.join(".git"), "gitdir: ../.git/modules/sub\n").unwrap();
+        let bare = home.join("repos/.git");
+        fs::create_dir_all(bare.join("worktrees/feature")).unwrap();
+        fs::write(bare.join("config"), "[core]\n bare = true\n").unwrap();
+        fs::write(bare.join("worktrees/feature/commondir"), "../..\n").unwrap();
+        let checkout = home.join(".t3/worktrees/orka/feature");
+        fs::create_dir_all(&checkout).unwrap();
+        fs::write(
+            checkout.join(".git"),
+            format!("gitdir: {}/worktrees/feature\n", bare.display()),
+        )
+        .unwrap();
+        let mut found = BTreeMap::new();
+        add(&mut found, &superproject, &home, Some("claude"), 10, 1);
+        add(&mut found, &submodule, &home, Some("claude"), 10, 1);
+        add(&mut found, &checkout, &home, Some("claude"), 10, 1);
+        fold_worktrees(&mut found, &home, &BTreeMap::new());
+        assert_eq!(found.len(), 3);
+        assert_eq!(found[&submodule].worktrees, 0);
+        assert_eq!(found[&checkout].worktrees, 0);
+        assert!(!found.contains_key(&home.join("repos")));
+
+        let metadata = bare.parent().unwrap().to_path_buf();
+        let connected = BTreeMap::from([(metadata.clone(), 0)]);
+        fold_worktrees(&mut found, &home, &connected);
+        assert!(found.contains_key(&checkout));
+        assert!(!found.contains_key(&metadata));
+
+        fs::write(
+            bare.join("config"),
+            "[extensions]\n worktreeConfig = true\n",
+        )
+        .unwrap();
+        fs::write(bare.join("config.worktree"), "[core]\n bare = true\n").unwrap();
+        fold_worktrees(&mut found, &home, &connected);
+        assert!(found.contains_key(&checkout));
+        assert!(!found.contains_key(&metadata));
     }
     #[test]
     fn claude_finds_cwd_after_metadata() {
