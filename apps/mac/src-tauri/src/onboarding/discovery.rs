@@ -56,13 +56,14 @@ enum Kind {
 }
 impl Kind {
     fn of(path: &Path, home: &Path) -> Self {
-        if path.join(".git").exists() {
-            Kind::Project
-        } else if chat(path, home) {
-            Kind::Chat
-        } else {
-            Kind::Folder
+        match path.join(".git").try_exists() {
+            Ok(true) => Kind::Project,
+            Ok(false) if chat(path, home) => Kind::Chat,
+            _ => Kind::Folder,
         }
+    }
+    fn excluded_from_history(self, connected: bool) -> bool {
+        self == Self::Chat && !connected
     }
     fn multiplier(self) -> f64 {
         match self {
@@ -801,20 +802,16 @@ fn credited_root(
         _ => None,
     }
 }
-pub fn discover(path: Option<&str>) -> Result<Value> {
-    let home = db::home()?;
-    let db = db::open()?;
-    let mut found = BTreeMap::new();
-    let mut budget = Budget::new();
+fn connected_folders(db: &rusqlite::Connection) -> Result<BTreeMap<PathBuf, u64>> {
     let connected = db::rows(
-        &db,
+        db,
         &format!(
             "SELECT json_set(value,'$.pendingChanges',(SELECT count(*) FROM outbox WHERE project=projects.id)) FROM projects WHERE {}",
             crate::projects::ACTIVE
         ),
         &[],
     )?;
-    let connected_folders: BTreeMap<_, _> = connected
+    Ok(connected
         .iter()
         .flat_map(|project| {
             let pending = project["pendingChanges"].as_u64().unwrap_or(0);
@@ -822,7 +819,32 @@ pub fn discover(path: Option<&str>) -> Result<Value> {
                 .into_iter()
                 .filter_map(move |view| Some((PathBuf::from(view["path"].as_str()?), pending)))
         })
-        .collect();
+        .collect())
+}
+
+pub(super) fn excluded_history_folders<'a>(paths: &[&'a str]) -> Result<BTreeSet<&'a str>> {
+    if paths.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+    let home = db::home()?;
+    let connected = connected_folders(&db::open()?)?;
+    Ok(paths
+        .iter()
+        .copied()
+        .filter(|path| {
+            let path = Path::new(path);
+            path.is_absolute()
+                && Kind::of(path, &home).excluded_from_history(connected.contains_key(path))
+        })
+        .collect())
+}
+
+pub fn discover(path: Option<&str>) -> Result<Value> {
+    let home = db::home()?;
+    let db = db::open()?;
+    let mut found = BTreeMap::new();
+    let mut budget = Budget::new();
+    let connected_folders = connected_folders(&db)?;
     if let Some(path) = path {
         let root = fs::canonicalize(path)
             .map_err(|_| "Orka couldn’t read this folder. Choose it again to give Orka access.")?;
@@ -857,7 +879,10 @@ pub fn discover(path: Option<&str>) -> Result<Value> {
         .into_iter()
         // Chats stay available as folder picks, but never fill the history scan.
         .filter(|row| {
-            path.is_some() || row.kind != Kind::Chat || connected_folders.contains_key(&row.path)
+            path.is_some()
+                || !row
+                    .kind
+                    .excluded_from_history(connected_folders.contains_key(&row.path))
         })
         .map(|row| {
             let path = row.path;
