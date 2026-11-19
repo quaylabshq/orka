@@ -955,7 +955,7 @@ async fn explicit_purge_preserves_local_captures_and_guards_other_pending_work()
     assert_eq!(snapshot["inactive"][0]["purgeAfter"], Value::Null);
     assert!(snapshot["projects"].as_array().unwrap().is_empty());
     let path = f.home.path().join("purged-project.zip");
-    bundles::export_project(&f.db, &f.id, &path).unwrap();
+    crate::bundles::export_project(&f.db, &f.id, &path).unwrap();
     let mut zip = zip::ZipArchive::new(fs::File::open(path).unwrap()).unwrap();
     let id = drafts[0]["id"].as_str().unwrap();
     assert!(zip.by_name(&format!("drafts/{id}/blobs/{hash}")).is_ok());
