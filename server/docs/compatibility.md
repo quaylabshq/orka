@@ -1,3 +1,56 @@
+## Project deletion catalog and access errors
+
+`projectTombstones: 1` in `/v2/projects/capabilities` advertises the versioned
+catalog selected by
+`GET /v2/projects?includeArchived=true&projectLifecycle=1`. During the restore
+window, the owner sees the whole deleted project entry. Other members receive
+only `id`, `name`, `role`, `lifecycleRevision`, `deletedAt` and `purgeAfter`.
+The caller's role and monotonic lifecycle revision let clients apply membership
+changes and reject stale responses without receiving sources or policies.
+Access to the project stays refused with `project_deleted`; only the owner can
+restore or purge it.
+
+After a purge the same opted-in catalog returns one
+`{ id, deletedAt, purged: true }` entry per unexpired tombstone belonging to the
+signed-in user. Clients detach it and stop syncing; the tombstone remains
+terminal if an older catalog response arrives later. Tombstones disappear 90
+days after purge and are never listed to unrelated accounts.
+
+Existing desktops already request `includeArchived=true`, so that query alone
+continues returning complete, familiar project rows. Deleted member projects
+retain `archivedAt`, `role`, `sources` and `lifecycleRevision`, preserving the
+archive gate and connected-folder mappings in desktop 0.3.13. It returns no
+sparse entries or tombstones. An unrecognised `projectLifecycle` version also
+gets this compatible response. The active catalog and MCP `list_projects` remain
+unchanged. Update and validate the complete API deletion stack before shipping
+new desktops; clients must opt into the versioned catalog and require
+`softDelete: 1` before using recoverable deletion.
+
+Access refusals keep their existing 403 status and `Project access denied`
+message, and now also carry a `code`: `project_archived`, `project_deleted` or
+`not_member`. Deletion is reported before archiving because a deleted project is
+also archived, and `not_member` covers an unknown project as well as one the
+caller does not belong to. A client that ignores `code` behaves exactly as
+before; a newer client combines the code with its opted-in tombstone catalog to
+distinguish a purge from lost membership. Both
+editions share this implementation, and the versioned protocol package exports
+the tombstone entry as `projectTombstone`.
+
+## Recoverable project deletion
+
+`softDelete: 1` in `/v2/projects/capabilities` identifies recoverable project
+deletion. Updated desktops must require it before offering Delete project: older
+services use the same `delete` action for permanent deletion. The capability's
+`projectRestoreWindowDays` is the instance's positive
+`orka.project_restore_window_days` setting, defaulting to 7. Use that duration in
+the confirmation; an active project has no deletion deadline yet.
+
+Lifecycle mutation receipts contain the authoritative `archivedAt`, `deletedAt`
+and `purgeAfter` markers, including null markers after restoration. Clients apply
+the receipt immediately instead of waiting for a background catalog refresh.
+Retries return the original receipt and markers, even after a later operation
+changes the project again. Purge receipts have no remaining lifecycle markers.
+
 ## Latest complete session snapshots
 
 `sessionLatestOnly: 1` in `/v2/projects/capabilities` advertises latest-only

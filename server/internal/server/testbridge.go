@@ -126,7 +126,7 @@ func RunTestBridge() error {
 			return nil, err
 		}
 		if failure := object(field(value, "error")); failure != nil {
-			return nil, &HTTPError{Status: int(number(failure["status"])), Message: text(failure["message"])}
+			return nil, &HTTPError{Status: int(number(failure["status"])), Code: text(failure["code"]), Message: text(failure["message"])}
 		}
 		return field(value, "result"), nil
 	}
@@ -215,6 +215,8 @@ func RunTestBridge() error {
 			result, err = store.transaction(ctx, func(q *Queries) any {
 				return store.governance(q, user, text(field(args["input"], "action")), object(field(args["input"], "input")))
 			})
+		case "purgeProjects":
+			result, err = ProjectPurger{Store: store}.Run(ctx)
 		case "cleanup":
 			store.cleanupBlobs(ctx)
 			result = nil

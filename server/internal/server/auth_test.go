@@ -52,6 +52,30 @@ func TestEditionSettings(t *testing.T) {
 	}
 }
 
+func assertEmailDocument(t *testing.T, content string) {
+	t.Helper()
+	if !strings.HasPrefix(content, `<!doctype html>`) || !strings.HasSuffix(content, `</html>`) {
+		t.Errorf("expected a complete HTML document: %s", content)
+	}
+	for _, marker := range []string{`<html lang="en">`, `<head>`, `<meta charset="utf-8">`, `</head>`, `</body>`} {
+		if !strings.Contains(content, marker) {
+			t.Errorf("email document missing %s", marker)
+		}
+	}
+}
+
+func TestGoTrueEmailTemplate(t *testing.T) {
+	res := authRequest(&API{}, http.MethodGet, "/email-template", "", nil)
+	if res.Code != http.StatusOK || res.Header().Get("Content-Type") != "text/html; charset=utf-8" {
+		t.Fatalf("template response: %d %v", res.Code, res.Header())
+	}
+	content := res.Body.String()
+	assertEmailDocument(t, content)
+	if !strings.Contains(content, `href="{{ .ConfirmationURL }}"`) || !strings.Contains(content, "{{ .Token }}") {
+		t.Errorf("GoTrue placeholders missing: %s", content)
+	}
+}
+
 func TestEmailHookAuthenticatesPayloadAndDelivery(t *testing.T) {
 	type delivery struct {
 		body Object
@@ -115,6 +139,7 @@ func TestEmailHookAuthenticatesPayloadAndDelivery(t *testing.T) {
 			t.Fatalf("unsafe sign-in content: %s", content)
 		}
 	}
+	assertEmailDocument(t, text(first.body["html"]))
 	plugin := payload("https://orka.example/mcp/connect")
 	if err := api.emailHook(context.Background(), plugin, signed(plugin, time.Now())); err != nil {
 		t.Fatal(err)
@@ -125,6 +150,16 @@ func TestEmailHookAuthenticatesPayloadAndDelivery(t *testing.T) {
 		if !strings.Contains(content, "123456") || strings.Contains(content, "Orka connection page") || !strings.Contains(content, "auth/confirm") {
 			t.Fatal("retired plugin redirect did not use desktop sign-in")
 		}
+	}
+	api.Settings.DashboardURL = "https://dashboard.example"
+	browser := payload("https://dashboard.example/auth/session?flow=" + strings.Repeat("a", 43))
+	if err := api.emailHook(context.Background(), browser, signed(browser, time.Now())); err != nil {
+		t.Fatal(err)
+	}
+	browserHTML := text((<-deliveries).body["html"])
+	assertEmailDocument(t, browserHTML)
+	if !strings.Contains(browserHTML, "Open this link in the browser") || strings.Contains(browserHTML, "123456") {
+		t.Errorf("expected browser sign-in without an email code: %s", browserHTML)
 	}
 	fail.Store(true)
 	if err := api.emailHook(context.Background(), body, headers); err == nil || !strings.Contains(err.Error(), "could not be sent") {

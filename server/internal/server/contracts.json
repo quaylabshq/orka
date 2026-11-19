@@ -1800,6 +1800,54 @@
       "env"
     ]
   },
+  "projectLifecycleAction": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "requestId": {
+        "type": "string",
+        "format": "uuid",
+        "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+      },
+      "projectId": {
+        "type": "string",
+        "format": "uuid",
+        "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+      },
+      "action": {
+        "type": "string",
+        "enum": [
+          "archive",
+          "restore",
+          "delete",
+          "purge",
+          "rename"
+        ]
+      },
+      "expectedRevision": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 9007199254740991
+      },
+      "confirmation": {
+        "type": "string",
+        "maxLength": 100
+      },
+      "name": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 100,
+        "x-orka-trim": true
+      }
+    },
+    "required": [
+      "requestId",
+      "projectId",
+      "action",
+      "expectedRevision"
+    ],
+    "additionalProperties": false
+  },
   "projectRules": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
@@ -2025,6 +2073,32 @@
     "required": [
       "id",
       "name"
+    ],
+    "additionalProperties": false
+  },
+  "projectTombstone": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "id": {
+        "type": "string",
+        "format": "uuid",
+        "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+      },
+      "deletedAt": {
+        "type": "string",
+        "format": "date-time",
+        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+      },
+      "purged": {
+        "type": "boolean",
+        "const": true
+      }
+    },
+    "required": [
+      "id",
+      "deletedAt",
+      "purged"
     ],
     "additionalProperties": false
   },
@@ -2419,6 +2493,28 @@
     ],
     "additionalProperties": false,
     "x-orka-refinement": "resourceInput"
+  },
+  "revokeInvite": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "projectId": {
+        "type": "string",
+        "format": "uuid",
+        "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+      },
+      "email": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 254,
+        "x-orka-trim": true
+      }
+    },
+    "required": [
+      "projectId",
+      "email"
+    ],
+    "additionalProperties": false
   },
   "rolePolicies": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",

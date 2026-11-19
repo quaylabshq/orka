@@ -269,7 +269,7 @@ await test("encrypted ENV exchange: device proof, grants, approval, concurrency,
 await test(
   "native ENV commands exchange real age ciphertext across three isolated Macs",
   { skip: !process.env.ORKA_ENV_NATIVE_BIN, timeout: 90_000 },
-  async () => {
+  async (t) => {
     const pool = new Pool({ connectionString: process.env.DATABASE_URL });
     const home = await mkdtemp(join(tmpdir(), "orka-env-native-"));
     const store = new Store(pool, new Blobs(join(home, "cloud-blobs")));
@@ -287,7 +287,14 @@ await test(
     ]);
     const processes: EnvMac[] = [];
     async function mac(name: string, user: string) {
-      const client = await startEnvMac({ home, name, user, url, project });
+      const client = await startEnvMac({
+        home,
+        name,
+        user,
+        url,
+        project,
+        enable: false,
+      });
       processes.push(client);
       return client;
     }
@@ -304,9 +311,23 @@ await test(
     }
     const canary = "CANARY_NATIVE_ENCRYPTED_" + randomUUID();
     try {
-      const a = await mac("mac-a", owner),
-        b = await mac("mac-b", member),
-        c = await mac("mac-b-new", member);
+      const a = await mac("mac-a", owner);
+      try {
+        await a.env("enable", { name: "mac-a" });
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          error.message === "ENV support is disabled"
+        ) {
+          t.skip("ENV is disabled in this native product configuration");
+          return;
+        }
+        throw error;
+      }
+      const b = await mac("mac-b", member);
+      await b.env("enable", { name: "mac-b" });
+      const c = await mac("mac-b-new", member);
+      await c.env("enable", { name: "mac-b-new" });
       const privateSharing = {
         memory: false,
         skill: false,

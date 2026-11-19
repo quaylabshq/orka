@@ -22,10 +22,11 @@ func renderPage(name string, values map[string]string) []byte {
 }
 
 var invitePath = regexp.MustCompile(`^/join/([a-f0-9]{48})$`)
+var inviteToken = regexp.MustCompile(`^[a-f0-9]{48}$`)
 
 func (a *API) invitePage(w http.ResponseWriter, r *http.Request) error {
 	dashboard := fromDashboard(r)
-	title, description, content, status := "Invite unavailable", "This invite has expired or was already used. Ask the project owner for a new invite.", "", 200
+	title, description, content, status := "Invite unavailable", inviteUsed, "", 200
 	if !includes([]string{http.MethodGet, http.MethodHead}, r.Method) {
 		status = 405
 		w.Header().Set("Allow", "GET, HEAD")
@@ -40,26 +41,26 @@ func (a *API) invitePage(w http.ResponseWriter, r *http.Request) error {
 				http.Redirect(w, r, a.Settings.DashboardURL+r.URL.Path, http.StatusTemporaryRedirect)
 				return nil
 			}
-			var project Object
+			var invite storedInvite
 			_, err := a.Store.read(r.Context(), func(q *Queries) any {
-				project = q.One("select p.name from orka.invites i join orka.projects p on p.id=i.project_id where i.token_hash=$1 and i.expires_at>now() and p.archived_at is null", bytesHash([]byte(parts[1])))
+				invite = a.Store.storedInvite(q, parts[1])
 				return nil
 			})
 			if err != nil {
 				return err
 			}
-			if project == nil {
-				status = 410
+			if reason := invite.unavailable(); reason != "" {
+				status, description = 410, reason
 			} else {
 				if dashboard {
-					_, err := w.Write(jsonBytes(Object{"projectName": project["name"], "serviceOrigin": a.Settings.PublicURL}))
+					_, err := w.Write(jsonBytes(Object{"projectName": invite.Name, "serviceOrigin": a.Settings.PublicURL}))
 					return err
 				}
-				title = "Join " + text(project["name"])
-				description = "Open Orka to sign in, review what to share from this Mac, and join the project."
+				title = "Join " + invite.Name
+				description = "Join in the Orka app to sign in, review what to share from this Mac, and join the project."
 				desktop := "orka://join/" + parts[1] + "?" + url.Values{"server": []string{a.Settings.PublicURL}}.Encode()
 				browser := a.Settings.PublicURL + "/join/" + parts[1]
-				content = `<a class="button" href="` + escapeHTML(desktop) + `">Open Orka</a><p>Don’t have Orka? Install it on your Mac, then return to this page.</p><label for="invite">Invite link</label><textarea id="invite" rows="3" readonly spellcheck="false">` + escapeHTML(browser) + `</textarea><p class="hint">If Orka doesn’t open, copy this link and paste it into Join project in the app. Invites work once and expire after 24 hours.</p><p class="hint">Service: ` + escapeHTML(a.Settings.PublicURL) + `</p>`
+				content = `<a class="button" href="` + escapeHTML(desktop) + `">Join project</a><p>Don’t have Orka? Install it on your Mac, then return to this page.</p><label for="invite">Invite link</label><textarea id="invite" rows="3" readonly spellcheck="false">` + escapeHTML(browser) + `</textarea><p class="hint">If Orka doesn’t open, copy this link and paste it into Join project in the app. Invites work once and expire after 24 hours.</p><p class="hint">Service: ` + escapeHTML(a.Settings.PublicURL) + `</p>`
 			}
 		}
 	}

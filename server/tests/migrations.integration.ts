@@ -51,6 +51,8 @@ await test("a fresh server installs the baseline and GitHub migration atomically
       "005_source_removal.sql",
       "006_github_authorization_completion.sql",
       "007_session_retention.sql",
+      "008_project_soft_delete.sql",
+      "009_project_tombstones.sql",
     ],
   );
   await database(async (pool) => {
@@ -63,6 +65,8 @@ await test("a fresh server installs the baseline and GitHub migration atomically
       "005_source_removal.sql",
       "006_github_authorization_completion.sql",
       "007_session_retention.sql",
+      "008_project_soft_delete.sql",
+      "009_project_tombstones.sql",
     ]);
     assert.equal(
       (
@@ -70,7 +74,7 @@ await test("a fresh server installs the baseline and GitHub migration atomically
           "select count(*) from pg_tables where schemaname='orka'",
         )
       ).rows[0].count,
-      "47",
+      "48",
     );
     const project = randomUUID(),
       owner = randomUUID();
@@ -95,6 +99,8 @@ await test("a fresh server installs the baseline and GitHub migration atomically
       "005_source_removal.sql",
       "006_github_authorization_completion.sql",
       "007_session_retention.sql",
+      "008_project_soft_delete.sql",
+      "009_project_tombstones.sql",
     ]);
   });
 });
@@ -176,6 +182,8 @@ await test("an existing baseline upgrades GitHub tables without replacing projec
       "005_source_removal.sql",
       "006_github_authorization_completion.sql",
       "007_session_retention.sql",
+      "008_project_soft_delete.sql",
+      "009_project_tombstones.sql",
     ]);
     assert.equal(
       (
@@ -271,6 +279,8 @@ await test("baseline failure rolls back its DDL and ledger without touching pre-
       "005_source_removal.sql",
       "006_github_authorization_completion.sql",
       "007_session_retention.sql",
+      "008_project_soft_delete.sql",
+      "009_project_tombstones.sql",
     ]);
   });
 });
@@ -300,6 +310,8 @@ await test("resetting a completed historical ledger is explicit and preserves ap
       "005_source_removal.sql",
       "006_github_authorization_completion.sql",
       "007_session_retention.sql",
+      "008_project_soft_delete.sql",
+      "009_project_tombstones.sql",
     ]);
     assert.equal(
       (

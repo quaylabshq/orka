@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"mime/multipart"
 	"mime/quotedprintable"
 	"net"
@@ -16,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 func normalizeInvitationEmail(value string) (string, error) {
@@ -38,21 +42,94 @@ func (a *API) invitationEmailAvailable() bool {
 	return a.Environment["SMTP_HOST"] != "" && a.Environment["SMTP_FROM"] != ""
 }
 
-func invitationContent(project, link, to string) (string, string) {
-	plain := fmt.Sprintf("You've been invited to join %s on Orka.\n\n%s\n\nSign in with %s, then review and confirm joining in Orka. This invitation expires in 24 hours and can be used once. If you weren't expecting it, ignore this email.", project, link, to)
-	content := `<p>You've been invited to join <strong>` + escapeHTML(project) + `</strong> on Orka.</p><p><a href="` + escapeHTML(link) + `">Join project</a></p><p>Sign in with ` + escapeHTML(to) + `, then review and confirm joining in Orka.</p><p>This invitation expires in 24 hours and can be used once. If you weren't expecting it, ignore this email.</p>`
-	return plain, content
+type invitationEmail struct {
+	To, Project, Link, InviterName, InviterEmail string
+	ExpiresAt                                    time.Time
 }
 
-func invitationMessage(from, to, project, link string) ([]byte, string, error) {
+func isASCII(value string) bool {
+	for i := 0; i < len(value); i++ {
+		if value[i] > unicode.MaxASCII {
+			return false
+		}
+	}
+	return true
+}
+
+func (invite invitationEmail) replyTo() string {
+	if !isASCII(invite.InviterEmail) || strings.ContainsAny(invite.InviterEmail, "\r\n") {
+		return ""
+	}
+	email := strings.TrimSpace(invite.InviterEmail)
+	address, err := mail.ParseAddress(email)
+	if err != nil || address.Address != email {
+		return ""
+	}
+	return email
+}
+
+func (invite invitationEmail) content() (string, string, emailHTML) {
+	inviter, email := strings.TrimSpace(invite.InviterName), strings.TrimSpace(invite.InviterEmail)
+	if inviter == "" {
+		inviter = email
+	}
+	if inviter == "" {
+		inviter = "A teammate"
+	}
+	subject := fmt.Sprintf("%s invited you to %s on Orka", inviter, invite.Project)
+	if email != "" && inviter != email {
+		inviter += " (" + email + ")"
+	}
+	expiry := invite.ExpiresAt.UTC().Format("02 Jan 2006 at 15:04 UTC")
+	account := "You need an account on this Orka service with " + invite.To + " to accept."
+	plain := fmt.Sprintf("%s invited you to join %s on Orka.\n\n%s\n\n%s\nSign in with %s, then review and confirm joining in Orka.\n\nThis invite expires on %s and can be used once. If you weren't expecting it, ignore this email.", inviter, invite.Project, invite.Link, account, invite.To, expiry)
+	content := `<p>` + escapeHTML(inviter) + ` invited you to join <strong>` + escapeHTML(invite.Project) + `</strong> on Orka.</p><p><a href="` + escapeHTML(invite.Link) + `">Join project</a></p><p>` + escapeHTML(account) + `</p><p>Sign in with ` + escapeHTML(invite.To) + `, then review and confirm joining in Orka.</p><p>This invite expires on ` + escapeHTML(expiry) + ` and can be used once. If you weren't expecting it, ignore this email.</p>`
+	return subject, plain, emailHTML(content)
+}
+
+func foldInvitationSubject(subject string) string {
+	const firstLineLimit = 78 - len("Subject: ")
+	encoded := mime.QEncoding.Encode("utf-8", subject)
+	if len(encoded) <= firstLineLimit {
+		return " " + encoded
+	}
+
+	var words []string
+	if encoded == subject {
+		// Encode long ASCII too, so unbroken names and repeated spaces survive folding.
+		for len(subject) > 0 {
+			n := min(len(subject), 42) // 56 base64 bytes plus 12 for the encoded-word wrapper.
+			words = append(words, "=?utf-8?b?"+base64.StdEncoding.EncodeToString([]byte(subject[:n]))+"?=")
+			subject = subject[n:]
+		}
+	} else {
+		words = strings.Split(encoded, " ")
+	}
+
+	prefix := " "
+	if len(words[0]) > firstLineLimit {
+		prefix = "\r\n "
+	}
+	return prefix + strings.Join(words, "\r\n ")
+}
+
+func invitationMessage(from string, invite invitationEmail) ([]byte, string, error) {
 	sender, err := mail.ParseAddress(from)
 	if err != nil {
 		return nil, "", err
 	}
-	plain, content := invitationContent(project, link, to)
+	id, err := randomToken(16)
+	if err != nil {
+		return nil, "", err
+	}
+	domain := sender.Address[strings.LastIndexByte(sender.Address, '@')+1:]
+	if !isASCII(domain) {
+		domain = "orka.invalid"
+	}
+	subject, plain, content := invite.content()
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
-	for _, part := range []struct{ kind, content string }{{"text/plain", plain}, {"text/html", content}} {
+	for _, part := range []struct{ kind, content string }{{"text/plain", plain}, {"text/html", content.document()}} {
 		headers := textproto.MIMEHeader{"Content-Type": {part.kind + `; charset="utf-8"`}, "Content-Transfer-Encoding": {"quoted-printable"}}
 		output, err := writer.CreatePart(headers)
 		if err != nil {
@@ -69,35 +146,51 @@ func invitationMessage(from, to, project, link string) ([]byte, string, error) {
 	if err = writer.Close(); err != nil {
 		return nil, "", err
 	}
-	header := fmt.Sprintf("Date: %s\r\nFrom: %s\r\nTo: %s\r\nSubject: You're invited to a project on Orka\r\nMIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary=%q\r\n\r\n", time.Now().Format(time.RFC1123Z), sender.String(), to, writer.Boundary())
+	header := fmt.Sprintf("Date: %s\r\nFrom: %s\r\nTo: %s\r\nSubject:%s\r\nMessage-ID: <%s@%s>\r\n", time.Now().Format(time.RFC1123Z), sender.String(), invite.To, foldInvitationSubject(subject), id, domain)
+	if reply := invite.replyTo(); reply != "" {
+		header += "Reply-To: " + reply + "\r\n"
+	}
+	header += fmt.Sprintf("MIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary=%q\r\n\r\n", writer.Boundary())
 	return append([]byte(header), body.Bytes()...), sender.Address, nil
 }
 
-func (a *API) sendInvitation(ctx context.Context, email, project, link, hash string) error {
+type invitationDeliveryRejected struct{ *HTTPError }
+
+func (e *invitationDeliveryRejected) Unwrap() error { return e.HTTPError }
+
+func (a *API) sendInvitation(ctx context.Context, invite invitationEmail, hash string) error {
 	fail := &HTTPError{Status: 503, Message: "Invitation email delivery could not be confirmed. Try again in a minute or use a joining link."}
 	if a.Settings.EmailProvider == "resend" {
 		base := a.Environment["RESEND_API_URL"]
 		if base == "" {
 			base = "https://api.resend.com"
 		}
-		plain, content := invitationContent(project, link, email)
-		response, err := requestHTTP(ctx, http.MethodPost, strings.TrimSuffix(base, "/")+"/emails", jsonBytes(Object{"from": a.Environment["RESEND_FROM"], "to": email, "subject": "You're invited to a project on Orka", "text": plain, "html": content}), http.Header{"Authorization": {"Bearer " + a.Environment["RESEND_API_KEY"]}, "Content-Type": {"application/json"}, "Idempotency-Key": {"orka-invite-" + hash}}, 10*time.Second)
+		subject, plain, content := invite.content()
+		payload := Object{"from": a.Environment["RESEND_FROM"], "to": invite.To, "subject": subject, "text": plain, "html": content.document()}
+		if reply := invite.replyTo(); reply != "" {
+			payload["reply_to"] = reply
+		}
+		response, err := requestHTTP(ctx, http.MethodPost, strings.TrimSuffix(base, "/")+"/emails", jsonBytes(payload), http.Header{"Authorization": {"Bearer " + a.Environment["RESEND_API_KEY"]}, "Content-Type": {"application/json"}, "Idempotency-Key": {"orka-invite-" + hash}}, 10*time.Second)
 		if err != nil {
 			return fail
 		}
 		defer response.Body.Close()
 		if response.StatusCode < 200 || response.StatusCode >= 300 {
-			return fail
+			return &invitationDeliveryRejected{fail}
 		}
 		return nil
 	}
-	if err := a.sendSMTPInvitation(ctx, email, project, link); err != nil {
+	if err := a.sendSMTPInvitation(ctx, invite); err != nil {
+		var rejection *textproto.Error
+		if errors.As(err, &rejection) && rejection.Code >= 400 && rejection.Code < 600 {
+			return &invitationDeliveryRejected{fail}
+		}
 		return fail
 	}
 	return nil
 }
 
-func (a *API) sendSMTPInvitation(ctx context.Context, email, project, link string) error {
+func (a *API) sendSMTPInvitation(ctx context.Context, invite invitationEmail) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	host, port := a.Environment["SMTP_HOST"], a.Environment["SMTP_PORT"]
@@ -108,7 +201,7 @@ func (a *API) sendSMTPInvitation(ctx context.Context, email, project, link strin
 	if err != nil || n < 1 || n > 65535 {
 		return fmt.Errorf("invalid SMTP port")
 	}
-	message, from, err := invitationMessage(a.Environment["SMTP_FROM"], email, project, link)
+	message, from, err := invitationMessage(a.Environment["SMTP_FROM"], invite)
 	if err != nil {
 		return err
 	}
@@ -149,7 +242,7 @@ func (a *API) sendSMTPInvitation(ctx context.Context, email, project, link strin
 	if err = client.Mail(from); err != nil {
 		return err
 	}
-	if err = client.Rcpt(email); err != nil {
+	if err = client.Rcpt(invite.To); err != nil {
 		return err
 	}
 	output, err := client.Data()

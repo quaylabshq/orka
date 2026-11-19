@@ -121,6 +121,7 @@ export type ManagementLog = {
     | "project.created"
     | "project.source_removed"
     | "invite.created"
+    | "invite.revoked"
     | "member.joined"
     | "member.removed"
     | "permissions.enabled"
@@ -142,3 +143,8 @@ export type ManagementLog = {
   mode?: AccessMode;
   canAdd?: boolean;
 };
+
+export const revokeInvite = z
+  .object({ projectId: z.uuid(), email: z.string().trim().min(1).max(254) })
+  .strict();
+export type InviteRevocation = { email: string; revoked: number };

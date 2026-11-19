@@ -25,15 +25,52 @@ func defaultProjectRules() Object {
 func defaultRolePolicies() Object {
 	return Object{"admin": Object{"memory": "write", "session": "write", "plan": "write", "skill": "write"}, "member": Object{"memory": "read", "session": "read", "plan": "write", "skill": "write"}}
 }
+
+const projectAccessDenied = "Project access denied"
+
+// projectDenial is why a member may not use a project. It is reported as the
+// unchanged 403 message plus a code, so an older client that matches the text
+// keeps working while a newer one can classify the access refusal.
+// The empty denial means the project is live.
+type projectDenial string
+
+const (
+	deniedNotMember       projectDenial = "not_member"
+	deniedProjectArchived projectDenial = "project_archived"
+	deniedProjectDeleted  projectDenial = "project_deleted"
+)
+
+// refuse records the standard project 403 for this denial.
+func (d projectDenial) refuse(q *Queries) {
+	q.RequireCode(false, 403, string(d), projectAccessDenied)
+}
+
+// denialOf classifies a member's project row. A deleted project is also
+// archived, so deletion is checked first to keep the reason precise.
+func denialOf(row Object) projectDenial {
+	switch {
+	case row == nil:
+		return deniedNotMember
+	case row["deleted_at"] != nil:
+		return deniedProjectDeleted
+	case row["archived_at"] != nil:
+		return deniedProjectArchived
+	}
+	return ""
+}
 func (s *Store) member(q *Queries, user, project string) {
-	q.Require(q.One("select 1 from orka.members m join orka.projects p on p.id=m.project_id where m.project_id=$1 and m.user_id=$2 and p.archived_at is null", project, user) != nil, 403, "Project access denied")
+	row := q.One("select p.archived_at,p.deleted_at from orka.members m join orka.projects p on p.id=m.project_id where m.project_id=$1 and m.user_id=$2", project, user)
+	if d := denialOf(row); d != "" {
+		d.refuse(q)
+	}
 }
 func (s *Store) checkDevice(q *Queries, user, id string) {
 	q.Require(q.One("select 1 from orka.devices where id=$1 and owner=$2", id, user) != nil, 403, "Register this device first")
 }
 func (s *Store) projectAccess(q *Queries, project, user string) Object {
-	row := q.One("select p.governed,p.policy,p.policy_revision,p.role_policies,m.role from orka.projects p join orka.members m on m.project_id=p.id where p.id=$1 and m.user_id=$2 and p.archived_at is null", project, user)
-	if !q.Require(row != nil, 403, "Project access denied") {
+	row := q.One("select p.governed,p.policy,p.policy_revision,p.role_policies,m.role,p.archived_at,p.deleted_at from orka.projects p join orka.members m on m.project_id=p.id where p.id=$1 and m.user_id=$2", project, user)
+	if d := denialOf(row); d != "" {
+		d.refuse(q)
 		return Object{}
 	}
 	policy := row["policy"]

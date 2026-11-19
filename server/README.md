@@ -209,6 +209,11 @@ Optional [GitHub repository connections](docs/github-repositories.md) remain
 available for password accounts. Edit the private `.env` and run
 `sh ./orka-server start` to apply settings.
 
+Optional project invitation email uses the same file: set `SMTP_HOST` and
+`SMTP_FROM`, plus `SMTP_USER` and `SMTP_PASSWORD` if the relay needs a login.
+See [email delivery](docs/email-delivery.md) for the settings, the sending domain
+and the DNS records that mail providers check.
+
 No inference provider is required for sharing instructions, skills, plans,
 sessions or ordinary memory additions/deletions. Memory replacements and
 conflicting edits remain queued until optional JEV is enabled and configured;

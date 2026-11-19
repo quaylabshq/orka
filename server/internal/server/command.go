@@ -192,7 +192,9 @@ func run(parent context.Context, env map[string]string) error {
 		timer := time.NewTicker(time.Minute)
 		defer timer.Stop()
 		retentionCursor := ""
+		purger := ProjectPurger{Store: store}
 		for {
+			purger.Tick(ctx)
 			store.cleanupBlobs(ctx)
 			stats, err := store.pruneSessionHistoryBatch(ctx, true, retentionCursor)
 			if err != nil {
