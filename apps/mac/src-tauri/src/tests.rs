@@ -2551,6 +2551,19 @@ fn session_presentation_preview_preserves_stored_resource() {
     assert_eq!(title.as_deref(), Some("Clean up the session list"));
     assert_eq!(f.resources()[0], original);
     assert!(f.outbox().is_empty());
+    let mut corrupt = original.clone();
+    corrupt["files"][0]["hash"] = json!(db::blob(b"invalid JSON\n").unwrap());
+    db::upsert(
+        &f.db,
+        "resources",
+        &id,
+        f.project["id"].as_str().unwrap(),
+        &corrupt,
+    )
+    .unwrap();
+    assert!(
+        tauri::async_runtime::block_on(crate::commands::session_display_title(id.clone())).is_err()
+    );
     let mut deleted = original.clone();
     deleted["deleted"] = json!(true);
     db::upsert(

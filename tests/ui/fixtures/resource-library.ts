@@ -12,6 +12,7 @@ export interface LibraryState {
   catalogErrors: string[];
   deferCatalog: boolean;
   finishCatalog?: () => void;
+  finishTitle?: (title: string) => void;
   finishCatalogs: (() => void)[];
   tail: number;
   syncMinutes: number;
@@ -29,6 +30,9 @@ export async function resourceLibraryFixture(
     withoutRepositories?: boolean;
     teammateAvatar?: string;
     cachedLocal?: boolean;
+    extraRows?: number;
+    boundaryFork?: boolean;
+    deferredTitleId?: string;
   } = {},
 ) {
   await page.emulateMedia({ reducedMotion: "reduce" });
@@ -86,6 +90,32 @@ export async function resourceLibraryFixture(
             updatedBy: "user",
             source: "claude",
           }),
+          ...Array.from({ length: options.extraRows ?? 0 }, (_, index) =>
+            resource(
+              kind,
+              `extra-${index}`,
+              `Archive ${kind} ${index}`,
+              "user",
+            ),
+          ),
+          ...(options.boundaryFork && kind === "session"
+            ? [
+                resource(
+                  kind,
+                  "boundary-fork",
+                  "Archived session fork",
+                  "user",
+                  {
+                    fork: {
+                      parentId: "session-extra-37",
+                      nativeId: "native-boundary-fork",
+                      destination: "desktop",
+                      createdAt: "2026-11-12T10:00:00Z",
+                    },
+                  },
+                ),
+              ]
+            : []),
         ]);
     const local = (kind: "memory" | "session" | "plan") =>
       options.emptyLocal
@@ -240,7 +270,13 @@ export async function resourceLibraryFixture(
             if (error) throw error;
             return result;
           }
-          if (command === "session_display_title") return null;
+          if (command === "session_display_title") {
+            if (options.deferredTitleId && args.id === options.deferredTitleId)
+              return new Promise<string>((resolve) => {
+                library.finishTitle = resolve;
+              });
+            return null;
+          }
           if (command === "session_messages")
             return {
               messages: [

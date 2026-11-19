@@ -101,12 +101,16 @@ import { useDeepLinks } from "./components/use-deep-links.js";
 import { PluginAuthorization } from "./components/plugin-authorization.js";
 import { parseProjectInvite } from "./components/project-invite.js";
 import { useIndexFilters } from "./components/use-index-filters.js";
+import { defaultIndexFilters } from "./components/index-toolbar.js";
 import { useResourceView } from "./components/use-resource-view.js";
 import {
   useSkillSummaries,
   skillSummaryKey,
 } from "./components/use-skill-summaries.js";
-import { useSessionTitles } from "./components/use-session-titles.js";
+import {
+  useSessionTitleCache,
+  useSessionTitles,
+} from "./components/use-session-titles.js";
 import { useLocalResources } from "./components/use-local-resources.js";
 import { resourceCatalog } from "./components/resource-catalog.js";
 import { useWorkspace } from "./components/use-workspace.js";
@@ -427,6 +431,14 @@ function WorkspaceApp({
   )
     ? index.repository
     : "all";
+  const collectionFilters =
+    tab === "home" || tab === "env" || tab === "members"
+      ? undefined
+      : index.filters[tab];
+  const filters = useMemo(
+    () => ({ ...defaultIndexFilters, ...collectionFilters, repository }),
+    [collectionFilters, repository],
+  );
   const projectPath = selectedProject?.path;
   const localCatalog = useLocalResources({
     scope: workspaceScope,
@@ -463,10 +475,11 @@ function WorkspaceApp({
       ),
     [catalogResources, project, tab],
   );
+  const titleCache = useSessionTitleCache(workspaceScope);
   const sessionTitles = useSessionTitles(
     resources,
     tab === "session",
-    workspaceScope,
+    titleCache,
   );
   const skillSummaries = useSkillSummaries(resources, workspaceScope);
   const skillUsage = useProjectSkillUsage(
@@ -495,6 +508,7 @@ function WorkspaceApp({
   const duplicateTitles = useMemo(() => {
     const counts = new Map<string, number>();
     for (const item of resources) {
+      if (item.kind === "session" || item.kind === "skill") continue;
       const title = displayTitle(item).toLocaleLowerCase();
       counts.set(title, (counts.get(title) ?? 0) + 1);
     }
@@ -1180,6 +1194,7 @@ function WorkspaceApp({
                 ) : tab === "home" ? (
                   <ProjectHome
                     scope={workspaceScope}
+                    titleCache={titleCache}
                     project={selectedProject}
                     user={state.user}
                     resources={catalogResources}
@@ -1241,7 +1256,7 @@ function WorkspaceApp({
                     skillUsage={tab === "skill" ? skillUsage : undefined}
                     kind={tab}
                     resources={resources}
-                    filters={{ ...index.filters[tab], repository }}
+                    filters={filters}
                     onFilters={(next) => index.set(tab, next)}
                     user={state.user}
                     displayTitle={displayTitle}

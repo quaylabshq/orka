@@ -154,3 +154,34 @@ test("reduced motion snaps directly between states and has no hover/press deform
   await input.press("Space");
   expect(await thumb(input)).toEqual({ x: 2, width: 20, height: 20 });
 });
+
+test("the switch track preserves its starting appearance when the color transition starts", async ({
+  page,
+}) => {
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await fixture(page);
+  const input = page.getByRole("switch", { name: "Controlled", exact: true });
+  const { before, start, end } = await input.evaluate(async (element) => {
+    const track = element.nextElementSibling!;
+    const appearance = () => {
+      const { backgroundColor, boxShadow } = getComputedStyle(track);
+      return { backgroundColor, boxShadow };
+    };
+    const before = appearance();
+    (element as HTMLInputElement).click();
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => resolve()),
+    );
+    const transitions = track.getAnimations();
+    for (const transition of transitions) {
+      transition.pause();
+      transition.currentTime = 0;
+    }
+    const start = appearance();
+    for (const transition of transitions) transition.finish();
+    return { before, start, end: appearance() };
+  });
+  await expect(input).toBeChecked();
+  expect(start).toEqual(before);
+  expect(end.backgroundColor).not.toBe(before.backgroundColor);
+});
