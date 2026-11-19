@@ -3201,6 +3201,19 @@ fn deleted_skill_capture_coalesces_each_mirror_independently() {
     let agreed = pending();
     assert_eq!(agreed.len(), 1);
     assert_eq!(agreed[0].0, "Agreed new variant");
+
+    // The shared snapshot can be replaced by the next edit from either path.
+    for (changed, other) in [(&first_file, &second_file), (&second_file, &first_file)] {
+        let edit = format!("Edited at {}", changed.display());
+        fs::write(changed, &edit).unwrap();
+        indexer::scan(&f.db, &deleted).unwrap();
+        let rows = pending();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, edit);
+        fs::write(other, edit).unwrap();
+        indexer::scan(&f.db, &deleted).unwrap();
+        assert_eq!(pending().len(), 1);
+    }
 }
 
 #[test]
