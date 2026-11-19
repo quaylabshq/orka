@@ -82,7 +82,6 @@ export function RepositoryConnections({
   const {
     call,
     enabled,
-    capabilitiesPending,
     status,
     statusPending,
     busy,
@@ -144,33 +143,6 @@ export function RepositoryConnections({
     setNotice("");
     setDialog({ kind: "connect", source });
   };
-  if (capabilitiesPending)
-    return renderLocalFolders ? (
-      <LoadingRegion
-        id="repository-capabilities"
-        label="Checking available source connections…"
-        loading
-      >
-        <div className="settings-group settings-source-list">
-          {activeSources(project.sources).map((source) => (
-            <div className="settings-folder-row" key={source.id}>
-              <div className="settings-folder-identity">
-                <FolderIcon className="settings-folder-icon" />
-                <span>{source.name}</span>
-              </div>
-            </div>
-          ))}
-          {project.role === "owner" && (
-            <div className="settings-add-folder-row">
-              <Button className="settings-add-folder" variant="tertiary">
-                <PlusIcon size={16} aria-hidden="true" />
-                Add Folder
-              </Button>
-            </div>
-          )}
-        </div>
-      </LoadingRegion>
-    ) : null;
   if (!enabled) return <>{renderLocalFolders?.(false, openPicker)}</>;
   const disabled = busy || folderBusy;
   const sources = activeSources(project.sources).filter(

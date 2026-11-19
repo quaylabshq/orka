@@ -506,7 +506,7 @@ async function choose(page: Page, control: Locator, value: string) {
   await page.getByRole("option", { name: labels[value], exact: true }).click();
 }
 
-test("General shows the confirmed repository action without a transient folder or GitHub action", async ({
+test("General keeps local folder actions available and waits for confirmed GitHub status", async ({
   page,
 }) => {
   await fixture(page, { deferConnectionChecks: true });
@@ -524,12 +524,17 @@ test("General shows the confirmed repository action without a transient folder o
     name: "Connect repository",
     exact: true,
   });
-  await expect(section.getByRole("status")).toHaveText(
-    "Checking available source connections…",
-  );
   await expect(
     section.getByRole("button", { name: "Add Folder", exact: true }),
-  ).toHaveCount(0);
+  ).toBeEnabled();
+  await expect(
+    section.getByRole("button", {
+      name: "Options for private-repo",
+      exact: true,
+    }),
+  ).toBeEnabled();
+  await expect(connectGitHub).toHaveCount(0);
+  await expect(connectRepository).toHaveCount(0);
   await finish("capabilities");
   await expect(
     section.getByText("Checking GitHub connection…", { exact: true }),

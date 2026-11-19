@@ -406,7 +406,6 @@ export function useRepositories(
   return {
     call,
     enabled,
-    capabilitiesPending: capabilities.isPending,
     status,
     statusPending,
     authorization,

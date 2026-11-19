@@ -41,6 +41,7 @@ export function SyncMenu({
   onConnect,
   onOpen,
   canConnect = true,
+  triggerRef,
   open: controlledOpen,
   onOpenChange,
   onReview,
@@ -72,6 +73,7 @@ export function SyncMenu({
   onConnect: () => void;
   onOpen: (id: string) => void;
   canConnect?: boolean;
+  triggerRef?: React.Ref<HTMLButtonElement>;
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
   onReview?: () => void;
@@ -371,6 +373,7 @@ export function SyncMenu({
       <Popover.Trigger asChild>
         <button
           type="button"
+          ref={triggerRef}
           className={`sync-status sync-status--${placement}`}
           data-offline={(running && state.sync?.online === false) || undefined}
           data-only-offline-notice={
@@ -420,10 +423,12 @@ export function SyncMenu({
           collisionPadding={12}
           aria-label="Sync status and notifications"
           onCloseAutoFocus={(event) => {
-            if (openingRequestHistory.current) {
+            if (
+              openingRequestHistory.current &&
+              document.activeElement !== document.body
+            )
               event.preventDefault();
-              openingRequestHistory.current = false;
-            }
+            openingRequestHistory.current = false;
           }}
         >
           <div className="sync-menu-heading">

@@ -99,6 +99,7 @@ test("saved history previews keep the original bytes and expose no publication c
     name: "Open request history",
   });
   await expect(openHistory).toHaveCSS("border-top-width", "1px");
+  await expect(openHistory).toHaveCSS("height", "32px");
   await openHistory.press("Enter");
   const management = page.getByRole("region", { name: "Manage", exact: true });
   const history = management.getByRole("region", { name: "Request history" });
@@ -143,4 +144,57 @@ test("saved history previews keep the original bytes and expose no publication c
     ),
   );
   expect(mutations).toEqual([]);
+});
+
+test("history navigation respects a Settings draft and does not replay after opening Settings again", async ({
+  page,
+}) => {
+  const settings = page.getByRole("region", { name: "Settings", exact: true });
+  const openSettings = page.getByRole("button", {
+    name: "Settings",
+    exact: true,
+  });
+  const sync = page.locator(".workspace-header .sync-status");
+  await openSettings.click();
+  await settings
+    .getByRole("button", { name: "Sync & startup", exact: true })
+    .click();
+  const interval = settings.getByRole("button", { name: "5 min", exact: true });
+  await interval.click();
+
+  const openHistory = async () => {
+    await sync.press("Enter");
+    const popover = page.getByRole("dialog", {
+      name: "Sync status and notifications",
+    });
+    await popover
+      .locator("summary")
+      .filter({ hasText: "History (" })
+      .press("Enter");
+    await popover
+      .getByRole("button", { name: "Open request history", exact: true })
+      .press("Enter");
+  };
+  const guard = page.getByRole("dialog", { name: "Save your changes?" });
+  await openHistory();
+  await guard.getByRole("button", { name: "Stay", exact: true }).press("Enter");
+  await expect(interval).toHaveAttribute("aria-pressed", "true");
+  await expect(sync).toBeFocused();
+
+  await openHistory();
+  await guard
+    .getByRole("button", { name: "Discard", exact: true })
+    .press("Enter");
+  const history = page.getByRole("region", { name: "Request history" });
+  const disclosure = history.locator("details");
+  const summary = disclosure.locator("summary");
+  await expect(disclosure).toHaveAttribute("open", "");
+  await expect(summary).toBeFocused();
+  await summary.press("Enter");
+  await expect(disclosure).not.toHaveAttribute("open", "");
+
+  await openSettings.click();
+  await page.keyboard.press("Escape");
+  await expect(disclosure).toBeVisible();
+  await expect(disclosure).not.toHaveAttribute("open", "");
 });

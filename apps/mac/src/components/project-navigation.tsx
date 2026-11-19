@@ -119,7 +119,7 @@ export function ProjectPicker({
   const reduced = useReducedMotion();
   const listRef = React.useRef<HTMLDivElement>(null);
   const focusEdge = React.useRef<"first" | "last" | null>(null);
-  const actionTakesFocus = React.useRef(false);
+  const actionAfterClose = React.useRef<(() => void) | null>(null);
   const typeahead = React.useRef({ text: "", time: 0 });
   const listId = React.useId();
   const hover = useFluidHover(listRef, {
@@ -175,9 +175,10 @@ export function ProjectPicker({
     (projectActions?.(project) ?? []).map((action) => ({
       ...action,
       onSelect: () => {
-        actionTakesFocus.current = open && action.restoreFocus === false;
         setOpen(false);
-        action.onSelect();
+        if (open && action.restoreFocus === false)
+          actionAfterClose.current = action.onSelect;
+        else action.onSelect();
       },
     }));
   return (
@@ -249,12 +250,11 @@ export function ProjectPicker({
               onKeyDownCapture={() => setKeyboard(true)}
               onPointerDownCapture={() => setKeyboard(false)}
               onCloseAutoFocus={(event) => {
-                if (
-                  actionTakesFocus.current &&
-                  document.activeElement !== document.body
-                )
-                  event.preventDefault();
-                actionTakesFocus.current = false;
+                const action = actionAfterClose.current;
+                if (!action) return;
+                actionAfterClose.current = null;
+                event.preventDefault();
+                action();
               }}
               onOpenAutoFocus={(event) => {
                 event.preventDefault();

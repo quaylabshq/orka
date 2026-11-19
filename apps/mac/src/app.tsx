@@ -323,13 +323,20 @@ function WorkspaceApp({
       },
     );
   const openProjectSettings = (id: string, section: SettingsSection) => {
+    if (section === "folder") projectPickerTrigger.current?.focus();
     if (settings && settingsNavigation.current) {
-      settingsNavigation.current.requestProject(id, () => {
-        setSettingsProject(id);
-        requestAnimationFrame(() =>
-          settingsNavigation.current?.requestSection(section),
-        );
-      });
+      settingsNavigation.current.requestProject(
+        id,
+        () => {
+          setSettingsProject(id);
+          requestAnimationFrame(() =>
+            settingsNavigation.current?.requestSection(section),
+          );
+        },
+        (accepted) => {
+          if (!accepted) projectPickerTrigger.current?.focus();
+        },
+      );
     } else {
       setSettingsProject(id);
       setSettings(section);
@@ -361,18 +368,26 @@ function WorkspaceApp({
     };
   }, []);
   const [syncOpen, setSyncOpen] = useState(false);
-  const managementScope = JSON.stringify([workspaceScope, project]);
+  const syncStatusTrigger = useRef<HTMLButtonElement>(null);
+  const projectScope = JSON.stringify([workspaceScope, project]);
   const [management, setManagement] = useState<{
     section: Exclude<ManagementSection, "members">;
     history?: { scope: string; request: symbol };
   }>({ section: "requests" });
   useEffect(() => {
     setManagement((current) =>
-      current.history && current.history.scope !== managementScope
+      current.history && current.history.scope !== projectScope
         ? { section: current.section }
         : current,
     );
-  }, [managementScope]);
+  }, [projectScope]);
+  const consumeHistoryRequest = useCallback((request: symbol) => {
+    setManagement((current) =>
+      current.history?.request === request
+        ? { section: current.section }
+        : current,
+    );
+  }, []);
   const [governance, setGovernance] = useState<{
     resource: string;
     mode?: "incoming" | "outgoing";
@@ -420,7 +435,7 @@ function WorkspaceApp({
   useEffect(() => {
     if (actionNotice) setNotice(actionNotice.title);
   }, [actionNotice, setNotice]);
-  const index = useIndexFilters(JSON.stringify([workspaceScope, project]));
+  const index = useIndexFilters(projectScope);
   const inactiveProject = state.inactive?.find((item) => item.id === project);
   const selectedProject =
     state.projects.find((p) => p.id === project) ?? inactiveProject;
@@ -793,7 +808,7 @@ function WorkspaceApp({
   return (
     <ResourceMenuProvider
       key={workspaceScope}
-      scope={JSON.stringify([workspaceScope, project])}
+      scope={projectScope}
       state={state}
       resources={catalogResources}
       busy={busy}
@@ -1037,6 +1052,7 @@ function WorkspaceApp({
             status={
               <SyncMenu
                 placement="header"
+                triggerRef={syncStatusTrigger}
                 open={syncOpen}
                 onOpenChange={setSyncOpen}
                 key={project}
@@ -1064,8 +1080,11 @@ function WorkspaceApp({
                 }
                 onReview={() => leaveSettings(() => openManagement("requests"))}
                 onOpenRequestHistory={() =>
-                  leaveSettings(() =>
-                    openManagement("requests", managementScope),
+                  leaveSettings(
+                    () => openManagement("requests", projectScope),
+                    (accepted) => {
+                      if (!accepted) syncStatusTrigger.current?.focus();
+                    },
                   )
                 }
                 busy={busy}
@@ -1201,10 +1220,11 @@ function WorkspaceApp({
                     state={state}
                     section={management.section}
                     historyRequest={
-                      management.history?.scope === managementScope
+                      management.history?.scope === projectScope
                         ? management.history.request
                         : undefined
                     }
+                    onHistoryShown={consumeHistoryRequest}
                     onSection={openManagement}
                     onRefresh={refresh}
                     onReviewFile={(resource) => setGovernance({ resource })}

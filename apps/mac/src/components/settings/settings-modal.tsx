@@ -39,7 +39,11 @@ export interface SettingsNavigationHandle {
     onGuardCloseAutoFocus?: (accepted: boolean) => void,
   ) => void;
   requestSection: (section: SettingsSection) => void;
-  requestProject: (projectId: string, action: () => void) => void;
+  requestProject: (
+    projectId: string,
+    action: () => void,
+    onGuardCloseAutoFocus?: (accepted: boolean) => void,
+  ) => void;
 }
 type Destination =
   { section: SettingsSection; projectId: string } | (() => void) | "close";
@@ -269,23 +273,27 @@ export const SettingsModal = forwardRef<
       setPending(() => destination);
     } else navigate(destination);
   };
+  const requestNavigation: SettingsNavigationHandle["requestExit"] = (
+    action,
+    onGuardClose,
+  ) => {
+    let accepted = false;
+    request(
+      () => {
+        accepted = true;
+        action();
+      },
+      onGuardClose && (() => onGuardClose(accepted)),
+    );
+  };
   useImperativeHandle(ref, () => ({
-    requestExit: (action, onGuardClose) => {
-      let accepted = false;
-      request(
-        () => {
-          accepted = true;
-          action();
-        },
-        onGuardClose && (() => onGuardClose(accepted)),
-      );
-    },
-    requestProject: (id, action) =>
-      request(() => {
+    requestExit: requestNavigation,
+    requestProject: (id, action, onGuardClose) =>
+      requestNavigation(() => {
         reset(id);
         setProjectId(id);
         action();
-      }),
+      }, onGuardClose),
     requestSection: (next) => {
       if (normalized(next) !== section) request({ section: next, projectId });
       else if (next !== section)

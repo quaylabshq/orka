@@ -35,6 +35,7 @@ export function ProjectRequests({
   state,
   catalog,
   historyRequest,
+  onHistoryShown,
   call,
   run,
   busy,
@@ -46,6 +47,7 @@ export function ProjectRequests({
   state: Snapshot;
   catalog: GovernanceCatalog;
   historyRequest?: symbol;
+  onHistoryShown: (request: symbol) => void;
   call: ProjectCall;
   run: (fn: () => Promise<void>) => Promise<void>;
   busy: boolean;
@@ -56,20 +58,14 @@ export function ProjectRequests({
   const [visibleCount, setVisibleCount] = useState(5);
   const requestHeading = useRef<HTMLHeadingElement>(null);
   const requestTrigger = useRef<HTMLElement | null>(null);
-  const shownHistoryRequest = useRef<symbol>(undefined);
   const revealHistory = useCallback(
     (details: HTMLDetailsElement | null) => {
-      if (
-        !details ||
-        !historyRequest ||
-        shownHistoryRequest.current === historyRequest
-      )
-        return;
-      shownHistoryRequest.current = historyRequest;
+      if (!details || !historyRequest) return;
       details.open = true;
       details.querySelector("summary")?.focus();
+      onHistoryShown(historyRequest);
     },
-    [historyRequest],
+    [historyRequest, onHistoryShown],
   );
   const [selectedRequest, setSelectedRequest] = useState<ReviewRequest | null>(
     null,

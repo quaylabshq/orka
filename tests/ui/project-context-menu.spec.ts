@@ -71,6 +71,25 @@ test("Source folders opens at its section from Profile and from General", async 
   }
 });
 
+test("canceling the Source folders shortcut keeps the draft and restores picker focus", async ({
+  page,
+}) => {
+  const settings = await settingsFixture(page);
+  const name = settings.getByRole("textbox", {
+    name: "Project name",
+    exact: true,
+  });
+  await name.fill("Unsaved Orka name");
+  const menu = await projectMenu(page, "Website");
+  await menu.getByRole("menuitem", { name: "Source folders…" }).press("Enter");
+  const guard = page.getByRole("dialog", { name: "Save your changes?" });
+  await guard.getByRole("button", { name: "Stay", exact: true }).press("Enter");
+  await expect(name).toHaveValue("Unsaved Orka name");
+  await expect(
+    page.getByRole("combobox", { name: "Select project", exact: true }),
+  ).toBeFocused();
+});
+
 test("source context and ellipsis menus share actions and bind native reveal to the chosen source", async ({
   page,
 }) => {

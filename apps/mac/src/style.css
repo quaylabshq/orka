@@ -710,6 +710,8 @@
     @apply capitalize;
   }
   .sync-menu .sync-history-action {
+    padding: calc(var(--control-padding-y) - 1px)
+      calc(var(--control-padding-x) - 1px);
     border: 1px solid var(--border-default);
     background: var(--surface-secondary);
   }
