@@ -928,12 +928,52 @@ pub async fn resume_session(
 pub fn export_bundle(id: String, path: String) -> Result<()> {
     bundles::export(&db::open()?, &id, &PathBuf::from(path))
 }
-/// Keeps a copy of an inactive project's cached work before it leaves this Mac.
+/// Exports the authorized snapshot, returning true when fresh capture was
+/// unavailable for a restorable deleted project.
+pub(crate) fn export_project_with_capture(
+    cache: &db::CacheScope,
+    project_id: &str,
+    destination: &std::path::Path,
+) -> Result<bool> {
+    let capture_only: bool = cache
+        .open_read_only()?
+        .query_row(
+            &format!(
+                "SELECT EXISTS(SELECT 1 FROM projects WHERE id=? AND {})",
+                projects::CAPTURE_ONLY
+            ),
+            [project_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    let mut cached_only = false;
+    if capture_only {
+        if let Some(_workspace) = projects::try_lock()? {
+            // Capture writes blobs in the current service. Verify that it is
+            // still the invocation's service under the same lock as a switch.
+            if db::CacheScope::current()? != *cache {
+                return Err("The Orka account or service changed during export. Export again from the project.".into());
+            }
+            let db = cache.open()?;
+            if let Err(error) = sync::capture_held(&db, project_id) {
+                let _ = sync::record_result(&db, project_id, Err(error));
+                cached_only = true;
+            }
+        } else {
+            cached_only = true;
+        }
+    }
+    // Compress a scoped, read-only snapshot after releasing the capture lock.
+    bundles::export_project(cache, project_id, destination)?;
+    Ok(cached_only)
+}
+
+/// Keeps a copy of an inactive project's work before it leaves this Mac.
 #[tauri::command]
-pub async fn export_project(project_id: String, destination: String) -> Result<()> {
+pub async fn export_project(project_id: String, destination: String) -> Result<bool> {
+    let cache = db::CacheScope::current()?;
     tauri::async_runtime::spawn_blocking(move || {
-        let _lock = projects::lock()?;
-        bundles::export_project(&db::open()?, &project_id, &PathBuf::from(destination))
+        export_project_with_capture(&cache, &project_id, &PathBuf::from(destination))
     })
     .await
     .map_err(|error| error.to_string())?

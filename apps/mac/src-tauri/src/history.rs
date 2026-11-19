@@ -549,6 +549,13 @@ impl History {
     }
 
     pub fn resource(resource: &Value) -> Result<Self> {
+        Self::resource_with(resource, &db::blob_read)
+    }
+
+    fn resource_with(
+        resource: &Value,
+        read_blob: &impl Fn(&str) -> Result<Vec<u8>>,
+    ) -> Result<Self> {
         let files = resource["files"]
             .as_array()
             .ok_or("Missing history files")?;
@@ -564,7 +571,7 @@ impl History {
         let load = |path: &str| -> Result<Vec<u8>> {
             let file = files.iter().find(|f| f["path"] == path)
                 .ok_or("Inherited Codex history is missing. Sync this session again from the original device.")?;
-            let bytes = db::blob_read(file["hash"].as_str().ok_or("Missing history hash")?)?;
+            let bytes = read_blob(file["hash"].as_str().ok_or("Missing history hash")?)?;
             if bytes.len() as u64 != file["size"].as_u64().ok_or("Missing history size")? {
                 return Err("History size does not match the manifest".into());
             }
@@ -787,14 +794,19 @@ pub fn redacted_files(source: &Value, files: &Value) -> Result<Vec<Value>> {
 }
 
 pub fn resource_records(resource: &Value) -> Result<Vec<Value>> {
+    resource_records_with(resource, &db::blob_read)
+}
+
+pub(crate) fn resource_records_with(
+    resource: &Value,
+    read_blob: &impl Fn(&str) -> Result<Vec<u8>>,
+) -> Result<Vec<Value>> {
     if resource["source"] == "codex" {
-        return Ok(History::resource(resource)?.records());
+        return Ok(History::resource_with(resource, read_blob)?.records());
     }
     let file = resource["files"]
         .as_array()
         .and_then(|files| files.iter().find(|f| f["path"] == "session.jsonl"))
         .ok_or("Missing transcript")?;
-    native::complete_records(&db::blob_read(
-        file["hash"].as_str().ok_or("Missing hash")?,
-    )?)
+    native::complete_records(&read_blob(file["hash"].as_str().ok_or("Missing hash")?)?)
 }

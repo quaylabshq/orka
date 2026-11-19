@@ -96,8 +96,10 @@ without `purgeAfter`, capture nothing.
 
 Claude and Codex hooks keep recording the session and its sources for such a
 project, but inject no shared context until it is restored. The sidebar banner
-and the removal warning count the rows still waiting on this Mac, and an export
-runs the capture pass first so held edits are included.
+and the removal warning count the rows still waiting on this Mac. Export scans
+a restorable deleted project when it can take the workspace lock immediately.
+A busy workspace still exports the saved snapshot and reports that recent edits
+may be missing. Compression reads the scoped cache after the lock is released.
 
 ## Native modules
 

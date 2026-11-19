@@ -25,7 +25,14 @@ export function repositoryLabel(
 ) {
   const source = sources.find((source) => source.id === id);
   if (!source) return undefined;
+  return source.name + repositoryLabelSuffix(sources, source);
+}
+
+export function repositoryLabelSuffix(
+  sources: { id: string; name: string }[],
+  source: { id: string; name: string },
+) {
   return sources.filter((item) => item.name === source.name).length > 1
-    ? `${source.name} · ${source.id.slice(0, 6)}`
-    : source.name;
+    ? ` · ${source.id.slice(0, 6)}`
+    : "";
 }

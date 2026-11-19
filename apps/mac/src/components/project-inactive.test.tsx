@@ -122,6 +122,18 @@ test("export writes the project to the path the user picks", async () => {
   expect(mocks.invoke).toHaveBeenCalledTimes(1);
 });
 
+test("a cached export warns that recent edits may be missing", async () => {
+  mocks.save.mockResolvedValue("/tmp/orka.zip");
+  mocks.invoke.mockResolvedValue(true);
+  renderBanner(deleted);
+  fireEvent.click(screen.getByRole("button", { name: "Export" }));
+  expect(
+    await screen.findByText(
+      "Saved content exported. Recent edits may be missing.",
+    ),
+  ).toBeTruthy();
+});
+
 test("the removal warning counts all pending changes, not just restorable uploads", () => {
   renderBanner({
     ...deleted,

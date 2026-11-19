@@ -2,7 +2,7 @@
 //! into the outbox and sends nothing until it is restored.
 use super::*;
 use crate::{
-    bundles,
+    commands::export_project_with_capture,
     sync_queue::{Priority, SyncQueue},
     sync_schedule::Interval,
 };
@@ -969,7 +969,9 @@ async fn export_captures_edits_made_while_deleted() {
     f.edit_memory("Exported while deleted\n");
     assert!(f.outbox().is_empty());
     let path = f.root.join("project.zip");
-    bundles::export_project(&f.db, &f.id, &path).unwrap();
+    assert!(
+        !export_project_with_capture(&db::CacheScope::current().unwrap(), &f.id, &path).unwrap()
+    );
     let rows = f.outbox();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["held"], 1);
@@ -996,7 +998,9 @@ async fn export_captures_edits_made_while_deleted() {
     // An active project is not scanned by export, so nothing new is queued.
     f.restore();
     let before = f.outbox();
-    bundles::export_project(&f.db, &f.id, &path).unwrap();
+    assert!(
+        !export_project_with_capture(&db::CacheScope::current().unwrap(), &f.id, &path).unwrap()
+    );
     assert_eq!(f.outbox(), before);
 }
 
@@ -1013,7 +1017,9 @@ async fn export_keeps_held_changes_when_the_deleted_project_folder_is_missing() 
     fs::remove_dir_all(&f.root).unwrap();
 
     let path = f.home.path().join("project.zip");
-    bundles::export_project(&f.db, &f.id, &path).unwrap();
+    assert!(
+        export_project_with_capture(&db::CacheScope::current().unwrap(), &f.id, &path).unwrap()
+    );
     assert_eq!(f.outbox(), rows);
     let error: String =
         f.db.query_row("SELECT error FROM errors WHERE source=?", [&f.id], |row| {
@@ -1055,7 +1061,9 @@ fn deleted_project_export_includes_the_latest_edit_behind_a_pending_request() {
     f.edit_memory("Latest edit while deleted\n");
 
     let path = f.home.path().join("project.zip");
-    bundles::export_project(&f.db, &f.id, &path).unwrap();
+    assert!(
+        !export_project_with_capture(&db::CacheScope::current().unwrap(), &f.id, &path).unwrap()
+    );
     assert_eq!(f.outbox(), queued);
     let mut zip = zip::ZipArchive::new(fs::File::open(path).unwrap()).unwrap();
     let header: Value = serde_json::from_reader(zip.by_name("project.json").unwrap()).unwrap();
@@ -1150,8 +1158,35 @@ async fn explicit_purge_preserves_local_captures_and_guards_other_pending_work()
     assert_eq!(snapshot["inactive"][0]["purgeAfter"], Value::Null);
     assert!(snapshot["projects"].as_array().unwrap().is_empty());
     let path = f.home.path().join("purged-project.zip");
-    crate::bundles::export_project(&f.db, &f.id, &path).unwrap();
+    crate::bundles::export_project(&db::CacheScope::current().unwrap(), &f.id, &path).unwrap();
     let mut zip = zip::ZipArchive::new(fs::File::open(path).unwrap()).unwrap();
     let id = drafts[0]["id"].as_str().unwrap();
     assert!(zip.by_name(&format!("drafts/{id}/blobs/{hash}")).is_ok());
+}
+
+#[tokio::test]
+async fn busy_deleted_project_export_reports_that_it_used_cached_content() {
+    let f = Capture::new(restorable());
+    f.edit_memory("Already captured\n");
+    assert!(matches!(f.run_job().await, Some(Outcome::Captured)));
+    let before = f.outbox();
+    f.edit_memory("New on disk\n");
+
+    let cache = db::CacheScope::current().unwrap();
+    let path = f.home.path().join("project.zip");
+    let workspace = crate::projects::lock().unwrap();
+    let writer = db::open().unwrap();
+    writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+    assert!(export_project_with_capture(&cache, &f.id, &path).unwrap());
+    assert!(path.is_file());
+    assert_eq!(f.outbox(), before);
+    writer.execute_batch("ROLLBACK").unwrap();
+    drop(workspace);
+
+    assert!(!export_project_with_capture(&cache, &f.id, &path).unwrap());
+    let after = f.outbox();
+    let hash = after[0]["value"]["resource"]["files"][0]["hash"]
+        .as_str()
+        .unwrap();
+    assert_eq!(db::blob_read(hash).unwrap(), b"New on disk\n");
 }
