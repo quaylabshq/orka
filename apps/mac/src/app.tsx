@@ -212,9 +212,9 @@ function WorkspaceApp({
     actionNotice,
   } = workspace;
   const { notify } = useToasts();
-  const updates = useDesktopUpdates();
-  const account = useAccount(state.config, !state.user);
   const workspaceScope = WorkspaceCache.scope(state);
+  const updates = useDesktopUpdates(workspaceScope, state.user);
+  const account = useAccount(state.config, !state.user);
   useBackgroundRepositoryAccess(state);
   const [repositorySetup, setRepositorySetup] = useState("");
   const setup = useProjectSetup(

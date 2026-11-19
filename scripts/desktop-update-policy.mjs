@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import { createPrivateKey, createPublicKey, sign, verify } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 
+const rolloutPurpose = "orka-desktop-rollout";
+const rolloutPayloadLimit = 16_384;
+
 const version = /^(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})$/;
 const compare = (a, b) => {
   const left = a.split(".").map(Number);
@@ -18,7 +21,29 @@ assert.equal(
   ),
 );
 
-const [operation, priorFile, outputFile, releaseFile] = process.argv.slice(2);
+function verifiedPayload(envelope) {
+  const payload = Buffer.from(envelope.payload, "base64");
+  assert(
+    verify(null, payload, publicKey, Buffer.from(envelope.signature, "base64")),
+    "The update signature is invalid",
+  );
+  return JSON.parse(payload);
+}
+
+function writeSigned(path, value, limit = Infinity) {
+  const payload = Buffer.from(JSON.stringify(value));
+  assert(payload.length <= limit, "The signed manifest is too large");
+  writeFileSync(
+    path,
+    JSON.stringify({
+      payload: payload.toString("base64"),
+      signature: sign(null, payload, key).toString("base64"),
+    }) + "\n",
+  );
+}
+
+const [operation, priorFile, outputFile, releaseFile, approvalFile] =
+  process.argv.slice(2);
 const input = readFileSync(priorFile, "utf8");
 let prior = {
   sequence: 0,
@@ -27,13 +52,7 @@ let prior = {
   release: null,
 };
 if (input.trim()) {
-  const envelope = JSON.parse(input);
-  const payload = Buffer.from(envelope.payload, "base64");
-  assert(
-    verify(null, payload, publicKey, Buffer.from(envelope.signature, "base64")),
-    "Existing feed signature is invalid",
-  );
-  prior = JSON.parse(payload);
+  prior = verifiedPayload(JSON.parse(input));
   assert.equal(prior.schema, 1);
 }
 const policy = {
@@ -48,7 +67,7 @@ assert(
   version.test(policy.minimumVersion) &&
     compare(policy.minimumVersion, prior.minimumVersion) >= 0,
 );
-if (operation === "promote") {
+if (operation === "stage" || operation === "promote") {
   const candidate = JSON.parse(readFileSync(releaseFile, "utf8"));
   assert(version.test(candidate.version));
   for (const old of [...prior.withdrawn, prior.release?.version].filter(
@@ -81,7 +100,29 @@ if (operation === "promote") {
     typeof candidate.notes === "string" &&
       Buffer.byteLength(candidate.notes) <= 4000,
   );
-  policy.release = candidate;
+  if (operation === "stage") {
+    writeSigned(
+      outputFile,
+      { schema: 1, purpose: rolloutPurpose, release: candidate },
+      rolloutPayloadLimit,
+    );
+    process.exit(0);
+  }
+  const approval = JSON.parse(readFileSync(approvalFile, "utf8"));
+  assert.equal(
+    approval.audience,
+    "public",
+    "Approve this release in the Dashboard first",
+  );
+  const approved = verifiedPayload(approval.manifest);
+  assert.equal(approved.schema, 1);
+  assert.equal(approved.purpose, rolloutPurpose);
+  assert.deepEqual(
+    { ...candidate, notes: approved.release.notes },
+    approved.release,
+    "The verified archive must match the Dashboard's public approval",
+  );
+  policy.release = approved.release;
 } else if (operation === "withdraw") {
   const withdrawn = process.env.ORKA_WITHDRAW_VERSION ?? "";
   assert(version.test(withdrawn));
@@ -95,11 +136,4 @@ if (
   compare(policy.release.version, policy.minimumVersion) < 0
 )
   policy.release = null;
-const payload = Buffer.from(JSON.stringify(policy));
-writeFileSync(
-  outputFile,
-  JSON.stringify({
-    payload: payload.toString("base64"),
-    signature: sign(null, payload, key).toString("base64"),
-  }) + "\n",
-);
+writeSigned(outputFile, policy);

@@ -19,7 +19,7 @@ struct Launcher {
             } else {
                 app = bundle.bundleURL
             }
-            let installation = try Installation(app: app, info: bundle.infoDictionary ?? [:])
+            let installation = try Installation(app: app, info: bundle.infoDictionary ?? [:], rollout: Rollout())
             if helper && canonicalPath(bundle.bundleURL) != canonicalPath(installation.updater) { exit(1) }
             switch arguments.first {
             case "--orka-launch-preflight" where !helper:
@@ -27,17 +27,20 @@ struct Launcher {
                 exit(try prepareLaunch(installation, request: request) ? 0 : 2)
             case "--orka-update-status" where !helper:
                 Task {
-                    let status = await status(for: installation, bypassCache: arguments.contains("--fresh"))
+                    let token = arguments.contains("--rollout-session") ? readRolloutToken() : nil
+                    let status = await status(for: installation, bypassCache: arguments.contains("--fresh"), token: token)
                     if let data = try? JSONEncoder().encode(status) { FileHandle.standardOutput.write(data) }
                     exit(0)
                 }
                 dispatchMain()
-            case "--orka-install-update" where arguments.count == 4:
+            case "--orka-install-update" where arguments.count == 4 ||
+                (arguments.count == 5 && arguments.last == "--rollout-session"):
                 if !helper {
                     try installation.provisionUpdater()
                     try replaceProcess(with: installation.updaterExecutable, arguments: [arguments[0], app.path] + arguments.dropFirst())
                 }
-                try installApprovedUpdate(installation, version: arguments[1], sha256: arguments[2], profile: arguments[3])
+                try installApprovedUpdate(installation, version: arguments[1], sha256: arguments[2], profile: arguments[3],
+                                          useRolloutSession: arguments.count == 5)
             case "--orka-recover" where helper, "--orka-builtin-recovery" where !helper:
                 let lock = try FileLock(installation.state.appendingPathComponent("recovery-window.lock"), operation: LOCK_EX | LOCK_NB)
                 let delegate = RecoveryWindow(installation: installation)
@@ -115,24 +118,25 @@ func prepareLaunch(_ installation: Installation, request: LaunchPreflight) throw
 struct UpdateStatus: Encodable {
     let installedVersion: String
     var update: Release?
+    var updateAudience: RolloutAudience?
     var release: Release?
     var message: String?
     var supported: Bool?
 }
 
-func status(for installation: Installation, bypassCache: Bool = false) async -> UpdateStatus {
+func status(for installation: Installation, bypassCache: Bool = false, token: String? = nil) async -> UpdateStatus {
     guard let current = try? InstalledBuild(at: installation.app) else {
         return UpdateStatus(installedVersion: "Unknown", message: "Orka Recovery couldn’t read the installed version.")
     }
-    guard let feed = installation.feed else {
+    guard installation.feed != nil else {
         return UpdateStatus(installedVersion: current.version, message: "Updates are unavailable for this build.", supported: false)
     }
     do {
-        let policy = try await feed.refresh(bypassCache: bypassCache)
+        let (policy, offer) = try await installation.refreshOffer(current: current, bypassCache: bypassCache, token: token)
         let release = policy.release.flatMap { release in
             release.version == current.version && policy.allows(release.version) ? release : nil
         }
-        return UpdateStatus(installedVersion: current.version, update: feed.candidate(policy, current: current), release: release)
+        return UpdateStatus(installedVersion: current.version, update: offer?.release, updateAudience: offer?.audience, release: release)
     } catch {
         return UpdateStatus(installedVersion: current.version, message: "Couldn’t verify the update feed. Try again when you’re online.")
     }
