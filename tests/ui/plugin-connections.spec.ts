@@ -297,16 +297,17 @@ test("Connectors keeps account details visible during recheck and reports retrya
     exact: true,
   });
   const resting = await check.boundingBox();
-  const background = await check.evaluate(
-    (element) => getComputedStyle(element).backgroundColor,
+  // Hover lays the shared state overlay over the resting fill.
+  const overlay = await check.evaluate(
+    (element) => getComputedStyle(element).boxShadow,
   );
   await check.hover();
   expect(await check.boundingBox()).toEqual(resting);
   await expect
     .poll(() =>
-      check.evaluate((element) => getComputedStyle(element).backgroundColor),
+      check.evaluate((element) => getComputedStyle(element).boxShadow),
     )
-    .not.toBe(background);
+    .not.toBe(overlay);
   await page.evaluate(() => {
     (window as any).settingsControls.pluginStatusDelay = 1200;
   });

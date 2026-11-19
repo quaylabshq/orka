@@ -35,7 +35,7 @@
 .onboarding-flow__avatar::after {
   position: absolute;
   inset: 0;
-  border: 1px solid var(--surface-stroke);
+  border: 1px solid var(--border-default);
   border-radius: inherit;
   pointer-events: none;
   content: "";
@@ -44,7 +44,7 @@
   border-color: var(--text-secondary);
 }
 .onboarding-profile__avatar:focus-visible {
-  outline: 1px solid var(--focus-ring);
+  outline: 1px solid var(--border-focus);
   outline-offset: 4px;
 }
 .onboarding-profile__edit {
@@ -76,7 +76,7 @@
   height: 44px;
   min-height: 44px;
   padding: 8px 11px;
-  border: 1px solid var(--surface-stroke);
+  border: 1px solid var(--border-default);
   border-radius: 10px;
   background: var(--surface-tertiary);
   font: inherit;
@@ -88,7 +88,7 @@
   border-color: var(--text-tertiary);
 }
 .onboarding-profile__role .permission-select-trigger:focus-visible {
-  outline: 1px solid var(--focus-ring);
+  outline: 1px solid var(--border-focus);
   outline-offset: 2px;
 }
 .onboarding-profile__role [data-placeholder] {
@@ -99,8 +99,6 @@
   height: 16px;
 }
 .onboarding-flow {
-  --flow-blue: #548ed6;
-  --flow-pearl: #f2eeeb;
   position: relative;
   isolation: isolate;
   display: flex;
@@ -218,7 +216,7 @@
   width: 36px;
   height: 6px;
   border-radius: 29px;
-  background: var(--interaction-hover);
+  background: var(--state-hover);
 }
 .onboarding-flow__steps-progress span:first-child {
   background: #faf9f8;
@@ -280,8 +278,8 @@
   transition-property: background, box-shadow, transform;
 }
 .onboarding-flow .ui-button--primary {
-  background: var(--flow-pearl);
-  color: #080808;
+  background: var(--action-solid);
+  color: var(--text-on-solid);
   box-shadow: none;
 }
 .onboarding-flow .ui-button--primary:hover:not(:disabled) {
@@ -289,12 +287,12 @@
   box-shadow: none;
 }
 .onboarding-flow .ui-button--primary:disabled {
-  background: var(--interaction-hover);
+  background: var(--state-hover);
   color: var(--text-disabled);
 }
 .onboarding-flow--progress-visible .ui-button--primary:disabled {
-  background: #f2eeeb;
-  color: #080808;
+  background: var(--action-solid);
+  color: var(--text-on-solid);
 }
 .onboarding-flow--progress-visible .ui-switch:disabled + .ui-switch-track {
   opacity: 1;
@@ -308,7 +306,7 @@
   background: #faf9f8;
 }
 .onboarding-flow__discovery-actions .ui-button--secondary {
-  background: var(--interaction-hover);
+  background: var(--state-hover);
 }
 .onboarding-flow__source-methods {
   display: flex;
@@ -342,7 +340,7 @@
   min-height: 40px;
   width: 100%;
   min-width: 0;
-  border: 1px solid var(--surface-stroke);
+  border: 1px solid var(--border-default);
   border-radius: var(--radius-control);
   padding: 8px 12px;
   background: var(--surface-tertiary);
@@ -375,10 +373,10 @@
 .onboarding-flow__project-list {
   max-height: 351px;
   overflow: auto;
-  border: 1px solid var(--surface-stroke);
+  border: 1px solid var(--border-default);
   border-radius: 12px;
   scrollbar-width: thin;
-  scrollbar-color: var(--interaction-hover) transparent;
+  scrollbar-color: var(--state-hover) transparent;
 }
 .onboarding-flow__project-list::-webkit-scrollbar {
   width: 8px;
@@ -386,7 +384,7 @@
 .onboarding-flow__project-list::-webkit-scrollbar-thumb {
   border: 2px solid #181818;
   border-radius: 37px;
-  background: var(--interaction-hover);
+  background: var(--state-hover);
 }
 .onboarding-flow__project {
   display: flex;
@@ -396,7 +394,7 @@
   gap: 16px;
   min-height: 66px;
   padding: 10px 16px;
-  border-top: 1px solid var(--surface-stroke);
+  border-top: 1px solid var(--border-default);
   background: var(--surface-secondary);
   cursor: pointer;
 }
@@ -420,7 +418,7 @@
 }
 .onboarding-flow__project input:checked {
   border: 0;
-  background: var(--flow-blue);
+  background: var(--blue-text);
 }
 .onboarding-flow__project input:checked::after {
   position: absolute;
@@ -430,7 +428,7 @@
   mask: url("/onboarding/checkbox-check.svg") center/12px 12px no-repeat;
 }
 .onboarding-flow__project input:focus-visible {
-  outline: 1px solid var(--focus-ring);
+  outline: 1px solid var(--border-focus);
   outline-offset: 3px;
 }
 .onboarding-flow__project-details {
@@ -494,7 +492,7 @@
 }
 .onboarding-flow__sharing-list {
   overflow: hidden;
-  border: 1px solid var(--surface-stroke);
+  border: 1px solid var(--border-default);
   border-radius: 12px;
 }
 .onboarding-flow__destinations {
@@ -516,7 +514,7 @@
 }
 .onboarding-flow__match {
   padding: 12px;
-  border: 1px solid var(--surface-stroke);
+  border: 1px solid var(--border-default);
   border-radius: 12px;
   display: flex;
   flex-direction: column;
@@ -540,7 +538,7 @@
   gap: 12px;
   padding: 10px 16px;
   min-height: 66px;
-  border-top: 1px solid var(--surface-stroke);
+  border-top: 1px solid var(--border-default);
 }
 .onboarding-flow__sharing-row:first-child {
   border-top: 0;
@@ -571,15 +569,13 @@
   height: 22px;
 }
 .onboarding-flow__sharing-row .ui-switch-track {
-  border: 1px solid var(--surface-stroke);
-  --switch-track-on: var(--flow-blue);
+  border: 1px solid var(--border-default);
 }
 .onboarding-flow__sharing-row .ui-switch-thumb {
   width: 12px;
   height: 12px;
   top: 3px;
   left: 3px;
-  --switch-thumb-on: var(--flow-pearl);
 }
 .onboarding-flow__invitations {
   display: flex;
@@ -648,7 +644,7 @@
 }
 .onboarding-flow__sync-status {
   overflow: hidden;
-  border: 1px solid var(--surface-stroke);
+  border: 1px solid var(--border-default);
   border-radius: 12px;
 }
 .onboarding-flow__sync-status > div {
@@ -659,7 +655,7 @@
   padding: 16px 20px;
 }
 .onboarding-flow__sync-status > div + div {
-  border-top: 1px solid var(--surface-stroke);
+  border-top: 1px solid var(--border-default);
 }
 .onboarding-flow__sync-status strong {
   flex: 1;
@@ -704,14 +700,14 @@
   overflow: hidden;
   border: 0;
   border-radius: 3px;
-  background: var(--surface-stroke);
-  color: var(--flow-pearl);
+  background: var(--border-default);
+  color: var(--action-solid);
 }
 .onboarding-flow__project-progress progress::-webkit-progress-bar {
-  background: var(--surface-stroke);
+  background: var(--border-default);
 }
 .onboarding-flow__project-progress progress::-webkit-progress-value {
-  background: var(--flow-pearl);
+  background: var(--action-solid);
   border-radius: 3px;
 }
 .onboarding-flow__project-progress span,
@@ -798,7 +794,7 @@
   z-index: 21;
   font-family: "Orka Onboarding Inter", "Inter Variable", sans-serif;
   outline: none;
-  border: 1px solid var(--surface-stroke);
+  border: 1px solid var(--border-default);
   border-radius: 20px;
   background: var(--surface-secondary);
   box-shadow: var(--shadow-modal);
@@ -824,7 +820,7 @@
   width: 60px;
   height: 60px;
   flex: none;
-  border: 1.358px solid var(--surface-stroke);
+  border: 1.358px solid var(--border-default);
   border-radius: 15.453px;
   background: var(--surface-tertiary);
   -webkit-backdrop-filter: blur(6.792px);
@@ -833,7 +829,7 @@
 }
 .onboarding-flow__loading-blocks > span:nth-child(2) {
   background: #2b1c15;
-  border-color: #c4865a;
+  border-color: var(--brand-copper);
 }
 .onboarding-flow__loading-blocks--syncing {
   display: block;
@@ -882,7 +878,7 @@
       rgba(0, 0, 0, 0) 45.013%,
       rgba(0, 0, 0, 0.2) 56.886%
     ),
-    linear-gradient(90deg, #b5b5b5, #b5b5b5);
+    linear-gradient(90deg, var(--text-secondary), var(--text-secondary));
   -webkit-background-clip: text;
   background-clip: text;
   font-size: 16px;
@@ -901,7 +897,7 @@
   display: block;
   height: 16px;
   border-radius: 30px;
-  background: #c4865a;
+  background: var(--brand-copper);
 }
 .onboarding-flow__progress-bar--indeterminate > span {
   width: 45%;
@@ -911,7 +907,7 @@
   padding: 10px;
   opacity: 0.64;
   border-radius: 46px;
-  background: rgba(74, 222, 128, 0.12);
+  background: var(--green-surface);
   -webkit-backdrop-filter: blur(6.792px);
   backdrop-filter: blur(6.792px);
 }
@@ -951,7 +947,7 @@
 }
 .onboarding-flow__background-modal h2 {
   margin: 0 0 8px;
-  color: var(--flow-pearl, #f2eeeb);
+  color: var(--action-solid);
   font-size: 20px;
   font-weight: 600;
   line-height: 28px;
@@ -983,8 +979,8 @@
   background: var(--surface-tertiary);
 }
 .onboarding-flow__background-actions .ui-button--primary {
-  background: #f2eeeb;
-  color: #080808;
+  background: var(--action-solid);
+  color: var(--text-on-solid);
   box-shadow: none;
 }
 .onboarding-flow__background-modal .onboarding-entry__error:empty {

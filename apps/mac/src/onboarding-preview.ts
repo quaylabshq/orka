@@ -6,7 +6,7 @@ if (import.meta.env.DEV) {
     .onboarding-preview-bar { height: 64px; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 8px 16px; background: var(--surface-tertiary); font: 12px/18px 'Inter Variable', sans-serif; color: var(--text-secondary); }
     .onboarding-preview-bar strong { color: var(--text-primary); margin-right: 8px; }
     .onboarding-preview-bar a { padding: 6px 10px; border-radius: 8px; color: inherit; text-decoration: none; }
-    .onboarding-preview-bar a:hover, .onboarding-preview-bar a[aria-current] { background: var(--interaction-hover); color: var(--text-primary); }
+    .onboarding-preview-bar a:hover, .onboarding-preview-bar a[aria-current] { background: var(--state-hover); color: var(--text-primary); }
     .onboarding-preview-bar span { margin-left: auto; }
     #root { height: calc(100vh - 64px); }
     #root .sign-in, #root .app { height: 100%; min-height: 0; }

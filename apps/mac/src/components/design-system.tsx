@@ -116,24 +116,24 @@ export default function DesignSystem({ onClose }: { onClose: () => void }) {
                   {buttonSize} /{" "}
                   {buttonSize === "lg" ? 40 : buttonSize === "md" ? 36 : 32}px
                 </span>
-                {(
-                  ["primary", "primary-brand", "secondary", "tertiary"] as const
-                ).map((variant) => (
-                  <React.Fragment key={variant}>
-                    <Button variant={variant} size={buttonSize}>
-                      {variant === "tertiary" ? null : (
-                        <Icon icon={FolderIcon} />
-                      )}
-                      {variant}
-                    </Button>
-                    <IconButton
-                      variant={variant}
-                      size={buttonSize}
-                      icon={PlusIcon}
-                      aria-label={`${variant} ${buttonSize} add`}
-                    />
-                  </React.Fragment>
-                ))}
+                {(["primary", "secondary", "tertiary"] as const).map(
+                  (variant) => (
+                    <React.Fragment key={variant}>
+                      <Button variant={variant} size={buttonSize}>
+                        {variant === "tertiary" ? null : (
+                          <Icon icon={FolderIcon} />
+                        )}
+                        {variant}
+                      </Button>
+                      <IconButton
+                        variant={variant}
+                        size={buttonSize}
+                        icon={PlusIcon}
+                        aria-label={`${variant} ${buttonSize} add`}
+                      />
+                    </React.Fragment>
+                  ),
+                )}
               </div>
             ))}
           </section>

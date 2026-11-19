@@ -26,7 +26,7 @@ const font = readFileSync(
 ).toString("base64");
 const h = React.createElement;
 const sizes: ControlSize[] = ["lg", "md", "sm"];
-const variants = ["primary", "primary-brand", "secondary", "tertiary"] as const;
+const variants = ["primary", "secondary", "tertiary"] as const;
 const states = ["Default", "Hover", "Pressed", "Focus", "Disabled"] as const;
 // Pin real production pseudo-states for side-by-side comparison. These
 // aliases exist only in the gallery, not in the component API or app CSS.
@@ -244,7 +244,7 @@ ${stateRules.join("\n")}
 .states-heading p,.state-note{color:var(--text-tertiary);font-size:12px;line-height:18px}
 .size-control{display:flex;align-items:center;gap:12px;font-size:12px;color:var(--text-secondary);white-space:nowrap}
 .size-control select{background:var(--surface-tertiary);color:var(--text-primary);padding:8px 12px;border:0;border-radius:8px;font:inherit;cursor:pointer}
-.size-control select:focus-visible{outline:2px solid var(--focus-ring);outline-offset:4px}
+.size-control select:focus-visible{outline:2px solid var(--border-focus);outline-offset:4px}
 .states-scroll{overflow-x:auto;padding:6px;margin:-6px}
 .states-table{width:100%;min-width:700px;border-collapse:collapse;text-align:left}
 .states-table th{font-size:12px;line-height:18px;font-weight:400;color:var(--text-tertiary)}

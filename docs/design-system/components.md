@@ -1,6 +1,6 @@
 # Orka design system implementation
 
-The native frontend now uses Pitch color tokens, the approved Inter Variable scale, and shared Button, Icon, and IconButton components. Existing command handlers and native workflow payloads are retained.
+The native frontend now uses the 24 color tokens in `design-system.css` (mirrored from the Orka Library `Colors` collection), the approved Inter Variable scale, and shared Button, Icon, and IconButton components. Existing command handlers and native workflow payloads are retained.
 
 ## Sources
 
