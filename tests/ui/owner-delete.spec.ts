@@ -49,7 +49,7 @@ test("owner sees the danger zone and confirms project deletion by name", async (
   });
   await expect(dialog).toContainText("The 3 members of this project");
   await expect(dialog).toContainText(
-    "This service keeps deleted projects for 30 days.",
+    "This service keeps deleted projects for 7 days.",
   );
   const field = dialog.getByRole("textbox", {
     name: "Project name",
