@@ -339,6 +339,49 @@ test("Home keeps resource context menus without separate action buttons in a com
   expect(accessibility.violations).toEqual([]);
 });
 
+test("every shared session action has an icon in both menu entry points", async ({
+  page,
+}) => {
+  await menuFixture(page, { emptyLocal: true });
+  await collection(page, "Sessions");
+  const ownedMenu = await resourceMenu(page, "My shared session");
+  const actions = await ownedMenu.getByRole("menuitem").allTextContents();
+  expect(actions).toEqual([
+    "Open",
+    "Continue or fork in…",
+    "Copy session prompt",
+    "Create copy",
+    "Copy link",
+    "More actions",
+    "Remove from history…",
+  ]);
+  await expect(ownedMenu.locator("svg.item-menu-icon")).toHaveCount(
+    actions.length,
+  );
+  await ownedMenu
+    .getByRole("menuitem", { name: "More actions", exact: true })
+    .press("ArrowRight");
+  const submenu = page.getByRole("menu", { name: "More actions", exact: true });
+  await expect(submenu.locator("svg.item-menu-icon")).toHaveCount(3);
+  await page.keyboard.press("ArrowLeft");
+  await expect(submenu).toBeHidden();
+  await page.keyboard.press("Escape");
+  await resourceRow(page, "My shared session")
+    .getByRole("button", { name: "Actions for My shared session", exact: true })
+    .click();
+  const overflowMenu = page.getByRole("menu", {
+    name: "Actions for My shared session",
+    exact: true,
+  });
+  expect(await overflowMenu.getByRole("menuitem").allTextContents()).toEqual(
+    actions,
+  );
+  await expect(overflowMenu.locator("svg.item-menu-icon")).toHaveCount(
+    actions.length,
+  );
+  await page.keyboard.press("Escape");
+});
+
 test("local and teammate sessions expose useful actions without mutation of another owner's history", async ({
   page,
 }) => {

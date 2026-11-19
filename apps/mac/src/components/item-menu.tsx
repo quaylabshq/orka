@@ -13,7 +13,7 @@ export const ITEM_MENU_CAP = 8;
 export interface ItemMenuAction {
   id: string;
   label: string;
-  icon?: IconGlyph;
+  icon: IconGlyph;
   /** Actions in one group sit together; a separator divides two groups. */
   group?: string;
   onSelect: () => void;
@@ -38,21 +38,10 @@ function separators(actions: ItemMenuAction[]) {
   });
 }
 
-function ActionLabel({
-  action,
-  iconSlot,
-}: {
-  action: ItemMenuAction;
-  iconSlot: boolean;
-}) {
+function ActionLabel({ action }: { action: ItemMenuAction }) {
   return (
     <>
-      {action.icon ? (
-        <action.icon className="item-menu-icon" size={16} aria-hidden />
-      ) : (
-        // Keeps labels aligned when only some actions have an icon.
-        iconSlot && <span className="item-menu-icon" aria-hidden />
-      )}
+      <action.icon className="item-menu-icon" size={16} aria-hidden />
       <span className="item-menu-label">{action.label}</span>
     </>
   );
@@ -69,7 +58,6 @@ function MenuItems({
 }) {
   const Menu = contextual ? ContextMenu : DropdownMenu;
   const separated = separators(actions);
-  const iconSlot = actions.some((action) => action.icon);
   return actions.map((action, index) => (
     <React.Fragment key={action.id}>
       {separated[index] && <Menu.Separator className="item-menu-separator" />}
@@ -80,7 +68,7 @@ function MenuItems({
             disabled={action.disabled}
             title={action.reason}
           >
-            <ActionLabel action={action} iconSlot={iconSlot} />
+            <ActionLabel action={action} />
             <ChevronRightIcon size={14} aria-hidden="true" />
           </Menu.SubTrigger>
           <Menu.Portal>
@@ -110,7 +98,7 @@ function MenuItems({
             action.onSelect();
           }}
         >
-          <ActionLabel action={action} iconSlot={iconSlot} />
+          <ActionLabel action={action} />
         </Menu.Item>
       )}
     </React.Fragment>
