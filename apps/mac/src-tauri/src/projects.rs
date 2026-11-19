@@ -132,9 +132,9 @@ pub fn require_capture(db: &Connection, id: &str, kind: &str) -> Result<()> {
 
 /// Local project lifecycle work shared by the command and its tests.
 pub(crate) trait ProjectLifecycle {
-    /// Work that has not reached the service yet; deleting with it would lose
-    /// the only copy. The same check guards source removal.
-    fn queued_changes(&self, project: &str) -> Result<bool>;
+    /// Work that must be sent before deleting, leaving or removing a source.
+    /// Purge can preserve never-sent captures from the current deletion as drafts.
+    fn queued_changes(&self, project: &str, purging: bool) -> Result<bool>;
     /// Records a server soft delete without touching the local copy, so a
     /// restore keeps its folders and queue.
     fn mark_deleted(&self, project: &str, receipt: &Value) -> Result<()>;
@@ -146,10 +146,24 @@ pub(crate) trait ProjectLifecycle {
 }
 
 impl ProjectLifecycle for Connection {
-    fn queued_changes(&self, project: &str) -> Result<bool> {
+    fn queued_changes(&self, project: &str, purging: bool) -> Result<bool> {
         self.query_row(
-            "SELECT EXISTS(SELECT 1 FROM outbox WHERE project=?1 UNION ALL SELECT 1 FROM meta WHERE key LIKE 'env:%:pending:%' AND json_extract(value,'$.header.manifest.projectId')=?1 AND json_extract(value,'$.sourceRemoval') IS NULL)",
-            [project],
+            "SELECT EXISTS(
+                SELECT 1 FROM outbox WHERE project=?1 AND NOT (
+                    ?2 AND path='/v2/sync/push' AND error IS NULL AND EXISTS (
+                        SELECT 1 FROM meta marker JOIN projects ON projects.id=outbox.project
+                        WHERE marker.key='heldCapture:'||outbox.id
+                        AND json_extract(marker.value,'$.projectId')=outbox.project
+                        AND json_extract(marker.value,'$.heldCapture')=1
+                        AND json_extract(marker.value,'$.deletedAt')=json_extract(projects.value,'$.deletedAt')
+                        AND NOT EXISTS (SELECT 1 FROM meta WHERE key='sessionOutboxRedaction:'||outbox.id)
+                    )
+                )
+                UNION ALL SELECT 1 FROM meta WHERE key LIKE 'env:%:pending:%'
+                AND json_extract(value,'$.header.manifest.projectId')=?1
+                AND json_extract(value,'$.sourceRemoval') IS NULL
+            )",
+            params![project, purging],
             |row| row.get(0),
         )
         .map_err(|e| e.to_string())
@@ -496,7 +510,7 @@ pub async fn project_command(action: String, input: Value) -> Result<Value> {
             }
             let source_id = input["sourceId"].as_str().ok_or("Choose a source folder")?;
             uuid::Uuid::parse_str(source_id).map_err(|_| "Invalid source folder")?;
-            if db.queued_changes(id)? {
+            if db.queued_changes(id, false)? {
                 return Err("Sync queued changes and finish pending ENV publications before removing a source folder".into());
             }
             if sync::api_as(&owner, "GET", "/v2/projects/capabilities", None).await?
@@ -563,7 +577,7 @@ pub async fn project_command(action: String, input: Value) -> Result<Value> {
         }
         "leave" => {
             active(&db, id)?;
-            if db.queued_changes(id)? {
+            if db.queued_changes(id, false)? {
                 return Err("Sync queued changes and finish pending ENV publications before leaving this project".into());
             }
             let expected = input["expectedPolicyRevision"]
@@ -588,7 +602,9 @@ pub async fn project_command(action: String, input: Value) -> Result<Value> {
                     return Err("This service does not support shared project renaming. Update the server and try again.".into());
                 }
             }
-            if matches!(action.as_str(), "delete" | "purge") && db.queued_changes(id)? {
+            if matches!(action.as_str(), "delete" | "purge")
+                && db.queued_changes(id, action == "purge")?
+            {
                 return Err("Sync queued changes and finish pending ENV publications before deleting this project".into());
             }
             if matches!(action.as_str(), "delete" | "purge") {

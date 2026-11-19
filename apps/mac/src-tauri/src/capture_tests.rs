@@ -510,3 +510,45 @@ fn removing_the_local_copy_drops_its_held_markers() {
         .unwrap()
         .is_null());
 }
+
+#[tokio::test]
+async fn explicit_purge_preserves_local_captures_and_guards_other_pending_work() {
+    use crate::projects::ProjectLifecycle;
+
+    let f = Capture::new(restorable());
+    f.edit_memory("Recoverable held edit");
+    assert!(matches!(f.run_job().await, Some(Outcome::Captured)));
+    let held = f.outbox()[0]["id"].as_str().unwrap().to_string();
+    assert!(f.db.queued_changes(&f.id, false).unwrap());
+    assert!(!f.db.queued_changes(&f.id, true).unwrap());
+
+    db::set(
+        &f.db,
+        "env:test:pending:publication",
+        &json!({"header":{"manifest":{"projectId":f.id}}}),
+    )
+    .unwrap();
+    assert!(f.db.queued_changes(&f.id, true).unwrap());
+    f.db.execute(
+        "DELETE FROM meta WHERE key='env:test:pending:publication'",
+        [],
+    )
+    .unwrap();
+    f.db.execute(
+        "INSERT INTO outbox VALUES('older',?,'/v2/sync/push','{}',NULL)",
+        [&f.id],
+    )
+    .unwrap();
+    assert!(f.db.queued_changes(&f.id, true).unwrap());
+    f.db.execute("DELETE FROM outbox WHERE id='older'", [])
+        .unwrap();
+
+    f.db.purge_local(&f.id).unwrap();
+    assert!(f.outbox().is_empty());
+    assert!(db::get(&f.db, &indexer::held_capture_key(&held))
+        .unwrap()
+        .is_null());
+    let drafts = db::rows(&f.db, "SELECT value FROM drafts WHERE project=?", &[&f.id]).unwrap();
+    let hash = drafts[0]["resource"]["files"][0]["hash"].as_str().unwrap();
+    assert_eq!(db::blob_read(hash).unwrap(), b"Recoverable held edit");
+}
