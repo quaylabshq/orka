@@ -200,6 +200,26 @@ pub(crate) fn clear_review_errors(db: &Connection, project: &Value, shared: &Val
     .map_err(|error| error.to_string())
 }
 
+fn own_published_version(db: &Connection, project: &str, shared: &Value) -> Result<bool> {
+    let user = db::get(db, "user")?;
+    if !user.is_string() || shared["updatedBy"] != user || shared["deleted"] == true {
+        return Ok(false);
+    }
+    db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM drafts WHERE project=?1
+           AND json_extract(value,'$.status') IN ('published','approved')
+           AND json_extract(value,'$.submission.resource.resourceId')=?2
+           AND json_extract(value,'$.submission.resource.files')=json(?3))",
+        params![
+            project,
+            shared["resourceId"].as_str(),
+            shared["files"].to_string()
+        ],
+        |row| row.get(0),
+    )
+    .map_err(|error| error.to_string())
+}
+
 /// The background scanner normally chooses a single edited mirror for publication.
 /// A new shared revision or two independently edited mirrors require reconciliation
 /// first, even on a project that normally publishes skills automatically.
@@ -225,13 +245,36 @@ pub(crate) fn defer_scan(
             return Ok(true);
         }
         let base = &binding["base"];
+        let installed = installed_base(binding, &shared);
         let base_is_current = base["revision"] == shared["revision"]
-            && (installed_base(binding, &shared)
-                .is_some_and(|base| base["files"] == shared["files"])
+            && (installed.is_some_and(|base| base["files"] == shared["files"])
                 || (base["resourceId"] == shared["resourceId"]
                     && base["deleted"] == true
                     && shared["deleted"] == true));
         if !base_is_current {
+            // Keep a single real edit against an acknowledged deletion. The
+            // normal scan ignores unchanged installed bytes and keeps edits
+            // private because their installed revision is older.
+            if shared["deleted"] == true
+                && installed.is_some_and(|base| {
+                    copies
+                        .iter()
+                        .filter(|(_, files)| *files != base["files"])
+                        .count()
+                        <= 1
+                })
+            {
+                return Ok(false);
+            }
+            // A publication can be acknowledged while just one mirror exists.
+            // Its recorded receipt proves the base for the ordinary outgoing
+            // edit without asserting that a second copy was ever installed.
+            if binding["keptLocalSkill"].is_null()
+                && copies.len() == 1
+                && own_published_version(db, project_id, &shared)?
+            {
+                return Ok(false);
+            }
             hold_unsent_drafts(db, project_id, id)?;
             return Ok(true);
         }
@@ -437,13 +480,39 @@ fn merge_text(local: &str, base: &str, shared: &str) -> Option<Vec<u8>> {
         fs::write(&path, bytes).ok()?;
         paths.push(path);
     }
-    let output = Command::new("/usr/bin/diff3")
-        .args(["-m", "-E"])
-        .args(&paths)
+    // The system diff3 versions disagree on whether identical edits overlap.
+    // Use the installed Apple Git directly when available, without invoking
+    // the /usr/bin/git shim that can prompt to install developer tools.
+    let developer = Command::new("/usr/bin/xcode-select")
+        .arg("-p")
         .env_clear()
-        .env("PATH", "/usr/bin:/bin")
-        .env("LC_ALL", "C")
         .output()
-        .ok()?;
+        .ok();
+    let git = developer
+        .as_ref()
+        .filter(|selection| selection.status.success())
+        .and_then(|selection| std::str::from_utf8(&selection.stdout).ok())
+        .map(|developer| Path::new(developer.trim()).join("usr/bin/git"))
+        .filter(|git| git.is_absolute() && git.is_file());
+    let output = if let Some(git) = git {
+        Command::new(git)
+            .args(["merge-file", "-p", "--"])
+            .env_clear()
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .args(&paths)
+            .current_dir(temp.path())
+            .output()
+            .ok()?
+    } else {
+        Command::new("/usr/bin/diff3")
+            .args(["-m", "-E"])
+            .args(&paths)
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("LC_ALL", "C")
+            .output()
+            .ok()?
+    };
     (output.status.success() && output.stdout.len() <= 1_000_000).then_some(output.stdout)
 }
