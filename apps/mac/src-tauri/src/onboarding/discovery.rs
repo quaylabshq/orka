@@ -56,12 +56,10 @@ enum Kind {
 }
 impl Kind {
     fn of(path: &Path, home: &Path) -> Self {
-        if path.join(".git").exists() {
-            Kind::Project
-        } else if chat(path, home) {
-            Kind::Chat
-        } else {
-            Kind::Folder
+        match path.join(".git").try_exists() {
+            Ok(true) => Kind::Project,
+            Ok(false) if chat(path, home) => Kind::Chat,
+            _ => Kind::Folder,
         }
     }
     fn excluded_from_history(self, connected: bool) -> bool {
