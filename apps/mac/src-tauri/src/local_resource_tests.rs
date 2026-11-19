@@ -186,6 +186,87 @@ fn local_library_lists_and_reads_private_categories_without_publishing() {
     assert!(!f.root.join(".orka/plans").exists());
 }
 
+#[test]
+fn local_library_groups_native_forks_without_changing_session_identity() {
+    let mut f = Fixture::new();
+    prepare(&mut f);
+    let codex = native::codex_home().unwrap().join("sessions");
+    let claude = native::claude_home().unwrap().join("projects/test");
+    fs::create_dir_all(&claude).unwrap();
+    let codex_parent = uuid::Uuid::new_v4().to_string();
+    let codex_child = uuid::Uuid::new_v4().to_string();
+    let claude_parent = uuid::Uuid::new_v4().to_string();
+    let claude_child = uuid::Uuid::new_v4().to_string();
+    let orphan = uuid::Uuid::new_v4().to_string();
+    let codex_file = |id: &str, parent: Option<&str>| {
+        let mut meta =
+            json!({"type":"session_meta","payload":{"id":id,"cwd":f.root,"source":"vscode"}});
+        if let Some(parent) = parent {
+            meta["payload"]["forked_from_id"] = json!(parent);
+        }
+        let path = codex.join(format!("rollout-{id}.jsonl"));
+        fs::write(&path, native::encode(&[meta])).unwrap();
+        path
+    };
+    let claude_file = |id: &str, parent: Option<&str>| {
+        let message_id = uuid::Uuid::new_v4().to_string();
+        let mut turn = json!({"type":"user","uuid":message_id,"sessionId":id,"cwd":f.root,"message":{"role":"user","content":"Example Claude session"}});
+        if let Some(parent) = parent {
+            turn["forkedFrom"] = json!({"sessionId":parent,"messageUuid":message_id});
+        }
+        let path = claude.join(format!("{id}.jsonl"));
+        fs::write(&path, native::encode(&[turn])).unwrap();
+    };
+    codex_file(&codex_parent, None);
+    codex_file(&codex_child, None);
+    claude_file(&claude_parent, None);
+    claude_file(&claude_child, None);
+    let before = local_resources::catalog(&f.db, &f.project, "session").unwrap();
+
+    let codex_fork_path = codex_file(&codex_child, Some(&codex_parent));
+    claude_file(&claude_child, Some(&claude_parent));
+    // A matching UUID from a different provider cannot become a parent.
+    claude_file(&orphan, Some(&codex_parent));
+    let after = local_resources::catalog(&f.db, &f.project, "session").unwrap();
+    assert_eq!(after["errors"], json!([]));
+    let find = |catalog: &Value, tool: &str, id: &str| {
+        let path = format!("{tool}/{id}");
+        catalog["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|resource| resource["logicalPath"] == path)
+            .unwrap()
+            .clone()
+    };
+    for (tool, parent, child) in [
+        ("codex", &codex_parent, &codex_child),
+        ("claude", &claude_parent, &claude_child),
+    ] {
+        let resource = find(&after, tool, child);
+        assert_eq!(
+            resource["resourceId"],
+            find(&before, tool, child)["resourceId"]
+        );
+        assert_eq!(
+            resource["nativeForkParentId"],
+            find(&after, tool, parent)["resourceId"]
+        );
+        let id = resource["resourceId"].as_str().unwrap();
+        let reading = local_resources::resource(&f.db, id).unwrap();
+        assert_eq!(
+            crate::session_forks::binding(&f.db, &reading).unwrap()["nativeId"],
+            *child
+        );
+    }
+    assert!(find(&after, "claude", &orphan)
+        .get("nativeForkParentId")
+        .is_none());
+    assert!(f.outbox().is_empty());
+    assert!(f.resources().is_empty());
+    assert!(codex_fork_path.is_file());
+}
+
 #[tokio::test]
 async fn local_library_private_sessions_page_export_and_resume_without_shared_bindings() {
     let mut f = Fixture::new();

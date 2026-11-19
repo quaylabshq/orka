@@ -5,6 +5,25 @@ use crate::{
 use rusqlite::Connection;
 use serde_json::{json, Value};
 
+pub(crate) fn native_parent<'a>(tool: &str, id: &str, records: &'a [Value]) -> Option<&'a str> {
+    let parent = match tool {
+        "codex" => records.first()?["payload"]["forked_from_id"].as_str()?,
+        "claude" => {
+            let mut parents = records
+                .iter()
+                .filter(|record| record["sessionId"] == id)
+                .filter_map(|record| record["forkedFrom"]["sessionId"].as_str());
+            let parent = parents.next()?;
+            if parents.any(|other| other != parent) {
+                return None;
+            }
+            parent
+        }
+        _ => return None,
+    };
+    (parent != id && uuid::Uuid::parse_str(parent).is_ok()).then_some(parent)
+}
+
 pub fn info(db: &Connection, id: &str) -> Result<Value> {
     let local = db::get(db, &format!("sessionFork:{id}"))?;
     if !local.is_null() {

@@ -318,7 +318,7 @@ export function ResourceTable({
                           )}
                         </span>
                       )}
-                      {resource.fork && (
+                      {(resource.fork || resource.nativeForkParentId) && (
                         <GitForkIcon
                           className="session-fork-icon"
                           size={16}

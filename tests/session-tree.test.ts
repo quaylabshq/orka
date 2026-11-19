@@ -78,3 +78,22 @@ void test("invalid lineage cannot hide sessions or join different projects and r
   assert.equal(tree.roots.length, list.length);
   assert.equal(tree.parents.size, 0);
 });
+
+void test("native lineage nests local forks and gives Orka-recorded lineage precedence", () => {
+  const parent = resource("parent");
+  const native = {
+    ...resource("native"),
+    nativeForkParentId: parent.resourceId,
+  };
+  const managed = {
+    ...resource("managed", native.resourceId),
+    nativeForkParentId: parent.resourceId,
+  };
+  const tree = sessionTree([managed, native, parent]);
+  assert.deepEqual(tree.roots, [parent]);
+  assert.deepEqual(sessionAncestors("managed", tree.parents), [
+    "native",
+    "parent",
+  ]);
+  assert.deepEqual(sessionTree([native]).roots, [native]);
+});
