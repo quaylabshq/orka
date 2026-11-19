@@ -1156,7 +1156,27 @@ for (const width of [1440, 900])
       "background-color",
       "rgb(18, 18, 18)",
     );
-    await page.getByRole("checkbox").first().check();
+    const checkbox = page.getByRole("checkbox").first();
+    await checkbox.check();
+    const checkmarkContrast = await checkbox.evaluate((element) => {
+      const luminance = (color: string) => {
+        const [red, green, blue] = color.match(/\d+/g)!.map((value) => {
+          const channel = Number(value) / 255;
+          return channel <= 0.04045
+            ? channel / 12.92
+            : ((channel + 0.055) / 1.055) ** 2.4;
+        });
+        return red * 0.2126 + green * 0.7152 + blue * 0.0722;
+      };
+      const fill = luminance(getComputedStyle(element).backgroundColor);
+      const checkmark = luminance(
+        getComputedStyle(element, "::after").backgroundColor,
+      );
+      return (
+        (Math.max(fill, checkmark) + 0.05) / (Math.min(fill, checkmark) + 0.05)
+      );
+    });
+    expect(checkmarkContrast).toBeGreaterThanOrEqual(3);
     await expect(page.locator(".onboarding-flow__project").first()).toHaveCSS(
       "background-color",
       "rgb(24, 24, 24)",
