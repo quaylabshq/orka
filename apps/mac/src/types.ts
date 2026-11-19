@@ -72,6 +72,7 @@ export interface Binding {
   needsCopy?: boolean;
   installationState?: string;
   availableRevision?: number;
+  skillReviewFingerprint?: string | null;
 }
 export type ServiceMode = "cloud" | "self-hosted";
 export interface SyncProgress {
@@ -130,6 +131,7 @@ export interface Snapshot {
     resourceId?: string | null;
     title?: string | null;
     kind?: Resource["kind"] | null;
+    reviewable?: boolean;
   }[];
   errors: { source: string; error: string }[];
   sync: { online: boolean; lastSync?: string; error?: string } | null;

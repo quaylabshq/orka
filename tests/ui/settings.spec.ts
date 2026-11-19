@@ -112,6 +112,9 @@ test("one General save retains failed sharing and acknowledges successful name c
   page,
 }) => {
   const settings = await settingsFixture(page, { failSharing: true });
+  await expect(
+    settings.getByRole("textbox", { name: "Project name", exact: true }),
+  ).toHaveAccessibleDescription("Changes rename this project for everyone.");
   await settings
     .getByRole("textbox", { name: "Project name", exact: true })
     .fill("Orka renamed");
@@ -292,7 +295,13 @@ test("local names survive shared rename and Use shared name follows the latest n
     name: "Project name",
     exact: true,
   });
+  await expect(name).toHaveAccessibleDescription(
+    "Uses the shared name. Changes apply only on this Mac.",
+  );
   await name.fill("My local project");
+  await expect(name).toHaveAccessibleDescription(
+    "Only on this Mac. Shared renames won’t replace this name.",
+  );
   await button(settings, "Save changes").click();
   await page.evaluate(() => {
     (window as any).settingsState.projects[0].name = "Owner renamed it";

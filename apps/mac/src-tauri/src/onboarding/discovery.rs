@@ -143,15 +143,38 @@ fn git_dirs(path: &Path) -> Option<(PathBuf, PathBuf)> {
 fn resolved(path: &Path) -> PathBuf {
     fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
-/// Returns the main checkout of a linked worktree, if it has one.
-fn main_checkout(path: &Path) -> Option<PathBuf> {
-    let (_, common) = git_dirs(path)?;
-    if common.file_name()? != ".git" {
-        return None;
+#[derive(Default)]
+struct MainCheckouts(BTreeMap<PathBuf, BTreeSet<PathBuf>>);
+impl MainCheckouts {
+    fn from_paths<'a>(paths: impl Iterator<Item = &'a PathBuf>, home: &Path) -> Self {
+        let mut checkouts = Self::default();
+        for path in paths {
+            let Some((directory, common)) = git_dirs(path) else {
+                continue;
+            };
+            if directory == common && common.is_dir() && usable_root(path, home) {
+                checkouts.0.entry(common).or_default().insert(path.clone());
+            }
+        }
+        checkouts
     }
-    let main = common.parent()?;
-    // A bare repository has no checkout, so its worktrees keep their own rows.
-    (fs::canonicalize(main.join(".git")).ok()? == common).then(|| main.to_path_buf())
+
+    /// Returns a linked worktree's main checkout when its location is known.
+    fn main_of(&self, path: &Path) -> Option<PathBuf> {
+        let (directory, common) = git_dirs(path)?;
+        if directory == common {
+            return None;
+        }
+        if common.file_name()? == ".git" && common.is_dir() {
+            return common.parent().map(Path::to_path_buf);
+        }
+        // An external Git directory has no backlink to its primary checkout.
+        let mut matches = self.0.get(&common)?.iter();
+        match (matches.next(), matches.next()) {
+            (Some(only), None) => Some(only.clone()),
+            _ => None,
+        }
+    }
 }
 /// Worktrees connect to their main checkout, so they are one project, not two.
 fn fold_worktrees(
@@ -159,13 +182,14 @@ fn fold_worktrees(
     home: &Path,
     connected: &BTreeMap<PathBuf, u64>,
 ) {
+    let mains = MainCheckouts::from_paths(found.keys().chain(connected.keys()), home);
     let worktrees: Vec<PathBuf> = found
         .keys()
         .filter(|path| path.join(".git").is_file() && !connected.contains_key(*path))
         .cloned()
         .collect();
     for path in worktrees {
-        let Some(main) = main_checkout(&path).filter(|main| usable_root(main, home)) else {
+        let Some(main) = mains.main_of(&path).filter(|main| usable_root(main, home)) else {
             continue;
         };
         let Some(mut worktree) = found.remove(&path) else {
@@ -940,6 +964,42 @@ mod tests {
         assert_eq!(row.last, 30);
         assert_eq!(row.worktrees, 2);
         assert_eq!(row.tools.len(), 2);
+    }
+    #[test]
+    fn worktrees_fold_into_a_known_checkout_using_a_separate_git_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = fs::canonicalize(temp.path()).unwrap();
+        let main = home.join("Development/orka");
+        let metadata = home.join("metadata/orka.git");
+        let feature = home.join("feature");
+        fs::create_dir_all(&main).unwrap();
+        fs::create_dir_all(metadata.join("worktrees/feature")).unwrap();
+        fs::create_dir_all(&feature).unwrap();
+        fs::write(
+            main.join(".git"),
+            format!("gitdir: {}\n", metadata.display()),
+        )
+        .unwrap();
+        fs::write(
+            feature.join(".git"),
+            "gitdir: ../metadata/orka.git/worktrees/feature\n",
+        )
+        .unwrap();
+        fs::write(metadata.join("worktrees/feature/commondir"), "../..\n").unwrap();
+
+        let mut found = BTreeMap::new();
+        add(&mut found, &main, &home, Some("claude"), 10, 1);
+        add(&mut found, &feature, &home, Some("codex"), 20, 2);
+        fold_worktrees(&mut found, &home, &BTreeMap::new());
+        assert_eq!(found.keys().collect::<Vec<_>>(), vec![&main]);
+        assert_eq!(found[&main].sessions, 3);
+        assert_eq!(found[&main].worktrees, 1);
+
+        found.clear();
+        add(&mut found, &feature, &home, Some("codex"), 20, 2);
+        fold_worktrees(&mut found, &home, &BTreeMap::from([(main.clone(), 0)]));
+        assert_eq!(found.keys().collect::<Vec<_>>(), vec![&main]);
+        assert_eq!(found[&main].sessions, 2);
     }
     #[test]
     fn connected_worktrees_keep_their_own_row() {

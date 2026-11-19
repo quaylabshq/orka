@@ -16,7 +16,7 @@ export function SelfHostedConnection({
   headingRef,
   onConnect,
   onBack,
-  onSignIn,
+  onCloudSignIn,
   children,
 }: {
   account: Account;
@@ -25,7 +25,7 @@ export function SelfHostedConnection({
   headingRef: React.RefObject<HTMLHeadingElement | null>;
   onConnect: () => void;
   onBack: () => void;
-  onSignIn: () => void;
+  onCloudSignIn: () => void;
   children?: React.ReactNode;
 }) {
   const [linkError, setLinkError] = useState("");
@@ -42,17 +42,16 @@ export function SelfHostedConnection({
         <OnboardingLogo />
         <div className="onboarding-entry__heading">
           <h1 id="onboarding-entry-title" ref={headingRef} tabIndex={-1}>
-            Log into your account
+            Connect to your server
           </h1>
           <p>
-            Already have an account ?{" "}
             <button
               className="onboarding-entry__sign-in"
               type="button"
               disabled={busy}
-              onClick={onSignIn}
+              onClick={onCloudSignIn}
             >
-              Sign In
+              Sign in to Orka Cloud
             </button>
           </p>
         </div>
