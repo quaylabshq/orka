@@ -1074,6 +1074,7 @@ fn deleted_project_export_includes_the_latest_edit_behind_a_pending_request() {
     assert_eq!(bytes, b"Latest edit while deleted\n");
 }
 
+#[tokio::test]
 async fn a_new_embedded_plan_proposal_replaces_the_held_plan() {
     let f = Capture::new(restorable());
     let id = uuid::Uuid::new_v4().to_string();
