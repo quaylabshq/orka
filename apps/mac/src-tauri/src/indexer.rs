@@ -293,7 +293,7 @@ fn queue_scanned(
     };
     let mut matching = held
         .iter()
-        .filter(|row| mirror.is_null() || row["mirror"] == mirror);
+        .filter(|row| mirror.is_null() || row["mirror"] == mirror || row["resource"] == *resource);
     if let Some(first) = matching.next() {
         // Preserve queue order and the original base. Mint a fresh ID for the
         // changed body. The marker check prevents rewriting a released row.
@@ -340,6 +340,7 @@ fn replaceable_held(
         db,
         "SELECT json_object('id',o.id,'path',o.path,'error',o.error,
            'base',json_extract(o.value,'$.baseRevision'),
+           'resource',json_extract(o.value,'$.resource'),
            'mirror',json_extract(m.value,'$.mirror'),
            'held',json(m.value),
            'rebuilding',EXISTS(SELECT 1 FROM meta WHERE key='sessionOutboxRedaction:'||o.id))
@@ -618,7 +619,20 @@ fn collect(
     let deleted = files.as_array().is_none_or(|a| a.is_empty());
     let base_revision = b["base"]["revision"].as_u64().unwrap_or(0);
     let pending:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM outbox WHERE json_extract(value,'$.resource.resourceId')=? OR json_extract(value,'$.resourceId')=?)",params![id,id],|r|r.get(0)).map_err(|e|e.to_string())?;
-    let last = b["lastSeenHash"].as_str().unwrap_or("").to_string();
+    let captured_mirror = if project["captureOnly"] == true && kind == "skill" {
+        paths.first().and_then(|origin| {
+            b["paths"]
+                .as_array()?
+                .iter()
+                .position(|path| path.as_str() == origin.to_str())
+        })
+    } else {
+        None
+    };
+    let last = captured_mirror
+        .and_then(|index| b["guards"][index].as_str())
+        .or_else(|| b["lastSeenHash"].as_str())
+        .unwrap_or("");
     let changed = hash != last;
     if b["paths"].is_null() {
         b["paths"] = json!(&paths);
@@ -659,6 +673,15 @@ fn collect(
             kind,
             Path::new(project["path"].as_str().ok_or("Connect a folder")?),
         )?;
+        if let Some(origin_index) = captured_mirror {
+            let base = manifest_hash(&b["base"]["files"]);
+            for (index, guard) in guards.iter_mut().enumerate() {
+                if index != origin_index && *guard != hash {
+                    // A differing mirror has its own capture and write guard.
+                    *guard = b["guards"][index].as_str().unwrap_or(&base).to_owned();
+                }
+            }
+        }
         if let Some(origin) = paths.first() {
             if let Some(index) = b["paths"]
                 .as_array()
@@ -1063,6 +1086,15 @@ fn scan_source(
     };
     fs::read_dir(&root).map_err(|e| e.to_string())?;
     let project_id = project["id"].as_str().ok_or("Missing project ID")?;
+    let earlier_plans: BTreeSet<String> = if project["governed"] == true
+        && project["catalogOnly"] != true
+        && project["captureOnly"] != true
+    {
+        db::rows(db, "SELECT json_quote(id) FROM outbox WHERE project=? AND json_extract(value,'$.resource.kind')='plan'", &[&project_id])?
+            .into_iter().filter_map(|value| value.as_str().map(str::to_owned)).collect()
+    } else {
+        BTreeSet::new()
+    };
     let scan_id = project["sourceId"]
         .as_str()
         .map(|source| format!("{project_id}:{source}"))
@@ -1421,7 +1453,11 @@ fn scan_source(
                     } else {
                         None
                     };
-                    if project["captureOnly"] != true || held.is_some() {
+                    // A pending row already protected by a deleted-project
+                    // mirror review must also survive the first active scan.
+                    if (project["captureOnly"] != true && b["mirrorReview"] != true)
+                        || held.is_some()
+                    {
                         for queued in db::rows(&tx, "SELECT value FROM outbox WHERE project=? AND json_extract(value,'$.resource.resourceId')=?", &[&project_id, &id])? {
                             crate::governance::capture(&tx, project, &queued["resource"], &json!(paths))?;
                         }
@@ -1493,7 +1529,7 @@ fn scan_source(
                 )?;
                 if project["governed"] != true
                     && changed.len() > 1
-                    && changed[0].1 != changed[1].1
+                    && (changed[0].1 != changed[1].1 || project["captureOnly"] == true)
                     && (!pending || project["captureOnly"] == true)
                 {
                     let mut input = json!({"version":2,"id":Uuid::new_v4().to_string(),"projectId":project_id,"deviceId":db::device(db)?,"baseRevision":base["revision"].as_u64().unwrap_or(0),"resource":{"resourceId":id,"kind":"skill","source":"shared","logicalPath":name,"title":name,"files":changed[1].1,"deleted":false}});
@@ -1880,8 +1916,9 @@ fn scan_source(
                 // While deleted, only never-sent captures are rewritten; a row
                 // queued before the deletion stays exactly as it was.
                 let tx=db.unchecked_transaction().map_err(|e|e.to_string())?;
-                if project["captureOnly"] == true
-                    && (!queued["error"].is_null() || !held_in_deletion(&db::get(&tx, &held)?, project)) {
+                if earlier_plans.contains(old_id)
+                    || (project["captureOnly"] == true
+                        && (!queued["error"].is_null() || !held_in_deletion(&db::get(&tx, &held)?, project))) {
                     continue;
                 }
                 let new_id=Uuid::new_v4().to_string();change["id"]=json!(new_id);change["resource"]["contextSources"]=json!(known);
