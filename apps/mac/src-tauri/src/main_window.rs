@@ -14,19 +14,6 @@ pub fn reveals_current(urls: &[tauri::Url], current: &str) -> bool {
     })
 }
 
-/// Activates Orka so macOS switches to the Space holding its window.
-#[cfg(target_os = "macos")]
-pub fn activate() {
-    use objc2_app_kit::NSApplication;
-    let Some(mtm) = objc2::MainThreadMarker::new() else {
-        return;
-    };
-    // Tauri's set_focus only activates a visible, non-minimized window, so
-    // activate explicitly to leave another app's Space.
-    #[allow(deprecated)]
-    NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
-}
-
 #[cfg(test)]
 mod tests {
     fn urls(raw: &[&str]) -> Vec<tauri::Url> {

@@ -104,8 +104,6 @@ pub fn open_main(app: &tauri::AppHandle) -> tauri::Result<()> {
         window.unminimize()?;
         window.show()?;
         window.set_focus()?;
-        #[cfg(target_os = "macos")]
-        crate::main_window::activate();
     }
     Ok(())
 }
