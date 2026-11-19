@@ -27,6 +27,8 @@ jobs:
           tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP" gitleaks
       - name: Scan full fetched history
         run: '"$RUNNER_TEMP/gitleaks" git . --log-opts="--all" --redact --no-banner --max-archive-depth=2'
+      - name: Check the scan still reports new credentials
+        run: scripts/check-secret-scan.sh "$RUNNER_TEMP/gitleaks"
   dependencies:
     runs-on: ubuntu-24.04
     timeout-minutes: 15

@@ -1124,6 +1124,96 @@ fn project_names_stay_local_across_catalog_updates_and_restart() {
     crate::projects::remove_local(&f.db, id).unwrap();
     assert!(rename(json!("Unavailable")).is_err());
 }
+#[test]
+fn native_opened_routes_to_the_destination_without_the_receiving_webview() {
+    use crate::{main_window, profiles};
+    let _fixture = Fixture::new();
+    let destination = profiles::current();
+    let lock = profiles::instance_lock(destination).unwrap();
+    fs2::FileExt::try_lock_exclusive(&lock).unwrap();
+    let focus = profiles::root(destination).unwrap().join("focus");
+    let callback = format!("orka://auth/callback?code=synthetic&profile={destination}");
+    let urls = [callback.parse().unwrap()];
+
+    assert_eq!(main_window::route_opened(&urls, "alice"), (false, None));
+    assert_eq!(main_window::route_opened(&urls, "alice"), (false, None));
+    assert!(focus.exists());
+    assert_eq!(profiles::take_callback().unwrap(), Some(callback.clone()));
+    assert_eq!(profiles::take_callback().unwrap(), None);
+
+    // An explicit reopen can retry an exchange that failed after delivery.
+    fs::remove_file(&focus).unwrap();
+    assert_eq!(main_window::route_opened(&urls, "alice"), (false, None));
+    assert!(focus.exists());
+    assert_eq!(profiles::take_callback().unwrap(), Some(callback));
+
+    // A local link earlier in the batch must not short-circuit routing.
+    let new_callback = format!("orka://auth/callback?code=next&profile={destination}");
+    let mixed = [
+        "orka://join/token".parse().unwrap(),
+        new_callback.parse().unwrap(),
+    ];
+    assert_eq!(main_window::route_opened(&mixed, "alice"), (true, None));
+    assert_eq!(profiles::take_callback().unwrap(), Some(new_callback));
+}
+
+#[test]
+fn native_opened_surfaces_failed_handoffs_and_can_retry_them() {
+    use crate::{main_window, profiles};
+    let _fixture = Fixture::new();
+    let destination = profiles::current();
+    let lock = profiles::instance_lock(destination).unwrap();
+    fs2::FileExt::try_lock_exclusive(&lock).unwrap();
+    let focus = profiles::root(destination).unwrap().join("focus");
+    fs::create_dir(&focus).unwrap();
+
+    let callback = format!("orka://auth/callback?code=retry&profile={destination}");
+    let urls = [callback.parse().unwrap()];
+    let (reveal, error) = main_window::route_opened(&urls, "alice");
+    assert!(reveal);
+    assert!(error.is_some());
+    assert!(focus.is_dir());
+
+    fs::remove_dir(&focus).unwrap();
+    assert_eq!(main_window::route_opened(&urls, "alice"), (false, None));
+    assert!(focus.is_file());
+    assert_eq!(profiles::take_callback().unwrap(), Some(callback));
+
+    let missing = ["orka://auth/callback?code=missing&profile=missing"
+        .parse()
+        .unwrap()];
+    assert_eq!(
+        main_window::route_opened(&missing, "alice"),
+        (
+            true,
+            Some("The window that requested this sign-in is unavailable".into())
+        )
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn forwarded_webview_events_do_not_repeat_native_sign_in_delivery() {
+    use crate::{main_window, profiles};
+    let _fixture = Fixture::new();
+    let destination = profiles::current();
+    let own = format!("orka://auth/callback?code=local&profile={destination}");
+    let malformed = "orka://auth/callback?profile=bob&profile=alice";
+    let urls = [own.parse().unwrap(), malformed.parse().unwrap()];
+
+    assert_eq!(main_window::route_opened(&urls, destination), (true, None));
+    assert_eq!(profiles::take_callback().unwrap(), Some(own.clone()));
+    assert!(profiles::route_auth_callback(malformed.into()).is_err());
+    profiles::route_auth_callback(own).unwrap();
+    assert_eq!(profiles::take_callback().unwrap(), None);
+
+    let bob = profiles::root("bob").unwrap();
+    fs::create_dir_all(&bob).unwrap();
+    profiles::route_auth_callback("orka://auth/callback?code=foreign&profile=bob".into()).unwrap();
+    assert!(!bob.join("auth-callback.json").exists());
+    assert!(!bob.join("focus").exists());
+}
+
 struct Fixture {
     _lock: MutexGuard<'static, ()>,
     _home: tempfile::TempDir,

@@ -16,6 +16,7 @@ mod governance;
 mod history;
 mod indexer;
 mod local_resources;
+mod main_window;
 mod memory_context;
 mod menu_bar;
 mod native;
@@ -267,6 +268,7 @@ fn main() {
             _app.manage(plugin_broker::start().map_err(std::io::Error::other)?);
             onboarding::resume_sync();
             sync::start_foreground();
+            profiles::watch_focus_requests(_app.handle().clone());
             Ok(())
         })
         .invoke_handler(|invoke| {
@@ -367,6 +369,22 @@ fn main() {
         .build(context)
         .expect("Unable to start Orka")
         .run(|app, event| {
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Opened { urls } = &event {
+                let (reveal, routing_error) = main_window::route_opened(urls, profiles::current());
+                if reveal {
+                    let _ = menu_bar::open_main(app);
+                }
+                if let Some(error) = routing_error {
+                    use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+                    eprintln!("Orka could not route sign-in callback: {error}");
+                    app.dialog()
+                        .message("Orka couldn’t open the window that requested this sign-in. Open the sign-in link again to retry.")
+                        .title("Couldn’t open sign-in")
+                        .kind(MessageDialogKind::Error)
+                        .show(|_| {});
+                }
+            }
             #[cfg(target_os = "macos")]
             if matches!(event, tauri::RunEvent::Reopen { .. }) {
                 let _ = menu_bar::open_main(app);

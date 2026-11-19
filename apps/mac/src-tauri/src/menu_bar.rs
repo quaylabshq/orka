@@ -93,10 +93,13 @@ pub(crate) fn snapshot(db: &rusqlite::Connection, running: bool) -> db::Result<V
     }))
 }
 
+/// Brings the main window forward, on another Space, minimized or hidden.
 pub fn open_main(app: &tauri::AppHandle) -> tauri::Result<()> {
     if let Some(panel) = app.get_webview_window(LABEL) {
         panel.hide()?;
     }
+    #[cfg(target_os = "macos")]
+    app.show()?;
     if let Some(window) = app.get_webview_window("main") {
         window.unminimize()?;
         window.show()?;

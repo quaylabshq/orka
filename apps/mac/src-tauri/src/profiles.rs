@@ -1,7 +1,12 @@
 use crate::db::{self, Result};
 use fs2::FileExt;
 use serde_json::{json, Value};
-use std::{fs, path::PathBuf, process::Command, sync::OnceLock};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+    sync::OnceLock,
+};
 
 static CURRENT: OnceLock<String> = OnceLock::new();
 
@@ -164,13 +169,22 @@ pub fn open_profile(name: String) -> Result<()> {
     }
 }
 
-// The OS may deliver an OAuth callback to any running copy of the app.
-// Queue it for its original profile; only that profile has the PKCE verifier.
+// macOS routes valid sign-in callbacks from the native Opened event. The
+// plugin also forwards them to the webview, which only handles malformed
+// callbacks there. Other platforms still use the webview to route valid links.
 #[tauri::command]
 pub fn route_auth_callback(callback: String) -> Result<()> {
-    let name = queue_callback(&callback)?;
-    if name != current() {
-        open_profile(name)?;
+    let name = crate::auth::callback_profile(&callback)?;
+    if cfg!(target_os = "macos") {
+        return Ok(());
+    }
+    deliver_auth_callback(&name, &callback, current())
+}
+
+pub fn deliver_auth_callback(name: &str, callback: &str, receiving_profile: &str) -> Result<()> {
+    queue_callback_for(name, callback)?;
+    if name != receiving_profile {
+        open_profile(name.into())?;
     }
     Ok(())
 }
@@ -185,7 +199,7 @@ pub fn route_plugin_callback(callback: String) -> Result<()> {
     Ok(())
 }
 
-fn callback_lock(root: &std::path::Path) -> Result<fs::File> {
+fn callback_lock(root: &Path) -> Result<fs::File> {
     let file = fs::OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -215,13 +229,13 @@ fn queue_callback_for(name: &str, callback: &str) -> Result<()> {
             &json!({"url":callback,"expiresAt":chrono::Utc::now().timestamp()+600}),
         )
         .map_err(|e| e.to_string())?,
-    )?;
-    Ok(())
+    )
 }
 
 pub fn take_callback() -> Result<Option<String>> {
-    let _lock = callback_lock(&db::root()?)?;
-    let path = db::root()?.join("auth-callback.json");
+    let root = db::root()?;
+    let _lock = callback_lock(&root)?;
+    let path = root.join("auth-callback.json");
     let raw = match fs::read(&path) {
         Ok(raw) => raw,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -229,32 +243,53 @@ pub fn take_callback() -> Result<Option<String>> {
     };
     fs::remove_file(path).map_err(|e| e.to_string())?;
     let value: Value = serde_json::from_slice(&raw).map_err(|e| e.to_string())?;
-    Ok(
-        if value["expiresAt"].as_i64().unwrap_or(0) >= chrono::Utc::now().timestamp() {
-            value["url"].as_str().map(str::to_string)
-        } else {
-            None
-        },
-    )
+    Ok(value["url"]
+        .as_str()
+        .filter(|_| value["expiresAt"].as_i64().unwrap_or(0) >= chrono::Utc::now().timestamp())
+        .map(str::to_string))
+}
+
+/// Consumes a request from another process to bring this profile forward.
+fn take_focus_request(root: &std::path::Path) -> bool {
+    fs::remove_file(root.join("focus")).is_ok()
+}
+
+/// Brings this profile forward when another process asks, without the webview.
+///
+/// WebKit suspends the page of a minimized window, so `profile_events` stops
+/// polling and a callback routed here would wait unseen. Revealing the window
+/// natively wakes the page, which then takes the callback.
+pub fn watch_focus_requests(app: tauri::AppHandle) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        if db::root().is_ok_and(|root| take_focus_request(&root)) {
+            let _ = crate::menu_bar::open_main(&app);
+        }
+    });
 }
 
 #[tauri::command]
 pub fn profile_events(app: tauri::AppHandle) -> Result<Option<String>> {
-    use tauri::Manager;
-    let focus = db::root()?.join("focus");
+    let focus = take_focus_request(&db::root()?);
     let callback = take_callback()?;
-    if focus.exists() || callback.is_some() {
-        let _ = fs::remove_file(focus);
-        if let Some(window) = app.get_webview_window("main") {
-            let _ = window.show();
-            let _ = window.set_focus();
-        }
+    if focus || callback.is_some() {
+        let _ = crate::menu_bar::open_main(&app);
     }
     Ok(callback)
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_focus_request_is_taken_once() {
+        let root = tempfile::tempdir().unwrap();
+        assert!(!super::take_focus_request(root.path()));
+        std::fs::write(root.path().join("focus"), b"").unwrap();
+        assert!(super::take_focus_request(root.path()));
+        assert!(!root.path().join("focus").exists());
+        assert!(!super::take_focus_request(root.path()));
+    }
+
     #[test]
     fn profile_names_cannot_escape_storage_or_arguments() {
         for name in ["default", "alice", "wt-feature-123"] {
