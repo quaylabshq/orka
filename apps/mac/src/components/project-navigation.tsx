@@ -101,12 +101,14 @@ export function ProjectPicker({
   projectId,
   collapsed,
   onProjectChange,
+  triggerRef,
   projectActions,
 }: {
   projects: Project[];
   projectId: string;
   collapsed: boolean;
   onProjectChange: (id: string) => void;
+  triggerRef?: React.Ref<HTMLButtonElement>;
   projectActions?: (project: Project) => ItemMenuAction[];
 }) {
   const selected = projects.find((p) => p.id === projectId);
@@ -186,6 +188,7 @@ export function ProjectPicker({
         <Popover.Trigger asChild>
           <button
             type="button"
+            ref={triggerRef}
             role="combobox"
             aria-controls={open ? listId : undefined}
             aria-haspopup="listbox"
