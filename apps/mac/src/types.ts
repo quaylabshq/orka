@@ -59,7 +59,9 @@ export interface Project {
   archivedAt?: string | null;
   deletedAt?: string | null;
   purgeAfter?: string | null;
-  purged?: boolean;
+  purged?: boolean | null;
+  revoked?: boolean | null;
+  detachedAt?: string | null;
 }
 export interface Binding {
   resourceId?: string;
@@ -102,6 +104,8 @@ export interface Snapshot {
     selfHostedUrl?: string;
   } | null;
   projects: Project[];
+  /** Archived, deleted, or unreachable projects that stay visible as read-only. */
+  inactive?: Project[];
   deletedProjects?: Project[];
   archivedProjects?: Project[];
   resources: ProjectResource[];

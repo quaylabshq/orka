@@ -635,6 +635,17 @@ export async function settingsFixture(
                 purgeAfter: args.action === "delete" ? purgeAfter : null,
               };
             }
+            if (args.action === "leave") {
+              if (options.queued)
+                throw new Error(
+                  "Sync queued changes and finish pending ENV publications before leaving this project",
+                );
+              Object.assign(project, {
+                revoked: true,
+                detachedAt: "2026-01-01T00:00:00Z",
+              });
+              return { ok: true };
+            }
             if (args.action === "archive") {
               archivedProjects.push({
                 ...project,

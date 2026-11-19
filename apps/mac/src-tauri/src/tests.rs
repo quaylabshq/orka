@@ -4,6 +4,7 @@ use crate::{
 use serde_json::{json, Value};
 use std::{
     fs,
+    io::Read,
     path::{Path, PathBuf},
     sync::{Mutex, MutexGuard},
 };
@@ -249,6 +250,8 @@ mod plugin_connection_tests;
 mod plugin_operations_tests;
 #[path = "project_conflict_tests.rs"]
 mod project_conflict_tests;
+#[path = "project_export_tests.rs"]
+mod project_export_tests;
 #[path = "repository_tests.rs"]
 mod repository_tests;
 #[path = "resource_command_tests.rs"]
@@ -822,6 +825,84 @@ fn a_restored_project_clears_the_errors_its_403_left() {
 }
 
 #[test]
+fn snapshot_keeps_archived_deleted_and_removed_projects_visible_until_hidden() {
+    let f = Fixture::new();
+    let id = f.project["id"].as_str().unwrap();
+    let snapshot = || crate::commands::snapshot().unwrap();
+    crate::projects::merge_catalog(&f.db,&json!([{"id":id,"name":"test","role":"member","archivedAt":"2026-10-03T00:00:00Z","lifecycleRevision":1}])).unwrap();
+    let state = snapshot();
+    assert!(state["projects"].as_array().unwrap().is_empty());
+    assert_eq!(state["inactive"].as_array().unwrap().len(), 1);
+    assert_eq!(state["inactive"][0]["archivedAt"], "2026-10-03T00:00:00Z");
+    assert!(state["inactive"][0]["deletedAt"].is_null());
+    crate::projects::merge_catalog(&f.db,&json!([{"id":id,"name":"test","deletedAt":"2026-01-01T00:00:00Z","purgeAfter":"2026-01-31T00:00:00Z"}])).unwrap();
+    let state = snapshot();
+    assert!(state["projects"].as_array().unwrap().is_empty());
+    assert_eq!(state["inactive"][0]["purgeAfter"], "2026-01-31T00:00:00Z");
+    // Leaving the catalog detaches the project instead of hiding it.
+    crate::projects::merge_catalog(&f.db, &json!([])).unwrap();
+    let state = snapshot();
+    assert_eq!(state["inactive"][0]["revoked"], true);
+    assert!(state["inactive"][0]["detachedAt"].is_string());
+    // Removing it from this Mac hides it for good.
+    crate::projects::remove_local(&f.db, id).unwrap();
+    assert!(snapshot()["inactive"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn exporting_a_project_writes_cached_resources_and_drafts() {
+    let f = Fixture::new();
+    let id = f.project["id"].as_str().unwrap();
+    let cached = b"# Cached memory\n";
+    let draft = b"# Unpublished draft\n";
+    let resource = json!({"resourceId":"cached","projectId":id,"kind":"memory","source":"shared","logicalPath":"knowledge/cached.md","title":"Cached","deleted":false,"files":[{"path":"content.md","hash":db::blob(cached).unwrap(),"size":cached.len(),"executable":false}]});
+    db::upsert(&f.db, "resources", "cached", id, &resource).unwrap();
+    let queued = json!({"id":"draft","projectId":id,"status":"local","createdAt":db::now(),"resource":{"resourceId":"draft-resource","kind":"memory","source":"shared","logicalPath":"knowledge/draft.md","title":"Draft","deleted":false,"files":[{"path":"content.md","hash":db::blob(draft).unwrap(),"size":draft.len(),"executable":false}]}});
+    db::upsert(&f.db, "drafts", "draft", id, &queued).unwrap();
+    let path = f.root.join("project.zip");
+    bundles::export_project(&f.db, id, &path).unwrap();
+    let mut zip = zip::ZipArchive::new(fs::File::open(&path).unwrap()).unwrap();
+    let mut names = Vec::new();
+    for index in 0..zip.len() {
+        names.push(zip.by_index(index).unwrap().name().unwrap().to_string());
+    }
+    let memory_hash = db::blob(cached).unwrap();
+    let draft_hash = db::blob(draft).unwrap();
+    for name in [
+        "project.json".to_string(),
+        "resources/cached/resource.json".to_string(),
+        format!("resources/cached/blobs/{memory_hash}"),
+        "drafts/draft/draft.json".to_string(),
+        format!("drafts/draft/blobs/{draft_hash}"),
+    ] {
+        assert!(names.contains(&name), "missing {name}: {names:?}");
+    }
+    let mut header = String::new();
+    zip.by_name("project.json")
+        .unwrap()
+        .read_to_string(&mut header)
+        .unwrap();
+    let header: Value = serde_json::from_str(&header).unwrap();
+    assert_eq!(header["project"]["name"], "test");
+    assert_eq!(header["resources"], 1);
+    assert_eq!(header["drafts"], 1);
+    let mut blob = Vec::new();
+    zip.by_name(&format!("drafts/draft/blobs/{draft_hash}"))
+        .unwrap()
+        .read_to_end(&mut blob)
+        .unwrap();
+    assert_eq!(blob, draft);
+    // Local folders and cached work are untouched by the export.
+    assert_eq!(f.resources().len(), 1);
+    assert_eq!(
+        db::rows(&f.db, "SELECT value FROM drafts", &[])
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
 fn deleting_a_project_with_queued_changes_is_refused() {
     let f = Fixture::new();
     let id = f.project["id"].as_str().unwrap();
@@ -844,6 +925,49 @@ fn deleting_a_project_with_queued_changes_is_refused() {
         );
     }
     assert_eq!(f.outbox().len(), 1);
+}
+
+#[test]
+fn leaving_a_project_with_queued_changes_is_refused() {
+    let f = Fixture::new();
+    let id = f.project["id"].as_str().unwrap();
+    f.db.execute(
+        "INSERT INTO outbox VALUES('queued',?,'/test','{}',NULL)",
+        [id],
+    )
+    .unwrap();
+    let error = tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(crate::projects::project_command(
+            "leave".into(),
+            json!({"projectId":id,"expectedPolicyRevision":1}),
+        ))
+        .unwrap_err();
+    assert!(error.contains("before leaving this project"), "{error}");
+    assert_eq!(f.outbox().len(), 1);
+}
+
+#[test]
+fn leaving_a_project_detaches_it_and_keeps_local_work() {
+    let f = Fixture::new();
+    let id = f.project["id"].as_str().unwrap();
+    let file = f.root.join("CLAUDE.md");
+    fs::write(&file, "Keep my local work\n").unwrap();
+    indexer::scan(&f.db, &f.project).unwrap();
+    assert!(!f.outbox().is_empty());
+    f.db.leave(id).unwrap();
+    let saved = db::rows(&f.db, "SELECT value FROM projects WHERE id=?", &[&id])
+        .unwrap()
+        .remove(0);
+    assert_eq!(saved["revoked"], true);
+    assert!(saved["detachedAt"].is_string());
+    assert!(saved["hidden"].is_null());
+    assert_eq!(saved["path"], f.project["path"]);
+    assert!(f.outbox().is_empty());
+    assert!(!db::rows(&f.db, "SELECT value FROM drafts", &[])
+        .unwrap()
+        .is_empty());
+    assert_eq!(fs::read_to_string(file).unwrap(), "Keep my local work\n");
 }
 
 #[test]
