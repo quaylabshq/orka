@@ -311,3 +311,212 @@ test("member role cannot access owner context actions", async ({ page }) => {
     }),
   ).toHaveCount(0);
 });
+
+test("owners archive and restore the project from the picker without changing the selected project", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 900, height: 640 });
+  await settingsFixture(page, { openSettings: false, websiteRole: "owner" });
+  const picker = page.getByRole("combobox", { name: "Select project" });
+  const menu = await projectMenu(page, "Website");
+  const archive = menu.getByRole("menuitem", {
+    name: "Archive project",
+    exact: true,
+  });
+  await expect(archive).toBeInViewport();
+  await archive.click();
+  await expect(
+    page.getByText("Project archived", { exact: true }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Dismiss", exact: true }).click();
+
+  await expect(picker).toContainText("Orka");
+  await picker.click();
+  const archived = page.getByRole("option", {
+    name: /Website.*Archived by owner/,
+  });
+  await archived.press("Shift+F10");
+  await expect(
+    menu.getByRole("menuitem", { name: "Delete project…" }),
+  ).toHaveCount(0);
+  await menu
+    .getByRole("menuitem", { name: "Restore project", exact: true })
+    .click();
+  await expect(
+    page.getByText("Project restored", { exact: true }),
+  ).toBeVisible();
+  await expect(picker).toContainText("Orka");
+  expect(
+    (await settingsCalls(page))
+      .filter((call) => ["archive", "restore"].includes(call.args.action))
+      .map((call) => call.args),
+  ).toEqual([
+    {
+      action: "archive",
+      input: {
+        projectId: "two",
+        expectedRevision: 1,
+        requestId: expect.any(String),
+      },
+    },
+    {
+      action: "restore",
+      input: {
+        projectId: "two",
+        expectedRevision: 2,
+        requestId: expect.any(String),
+      },
+    },
+  ]);
+});
+
+test("delete confirms the clicked owner project by name and returns focus to the picker", async ({
+  page,
+}) => {
+  await settingsFixture(page, { openSettings: false, websiteRole: "owner" });
+  const picker = page.getByRole("combobox", { name: "Select project" });
+  const openDelete = async () => {
+    const menu = await projectMenu(page, "Website");
+    const item = menu.getByRole("menuitem", { name: "Delete project…" });
+    await expect(item).toBeInViewport();
+    await item.click();
+  };
+  const dialog = page.getByRole("dialog", { name: "Delete project?" });
+  const confirm = dialog.getByRole("button", {
+    name: "Delete project",
+    exact: true,
+  });
+  const field = dialog.getByRole("textbox", { name: "Project name" });
+  await openDelete();
+  await expect(dialog).toContainText("Website");
+  await expect(dialog).toContainText(
+    "This service keeps deleted projects for 7 days.",
+  );
+  await expect(field).toBeFocused();
+  await field.fill("Orka");
+  await expect(confirm).toBeDisabled();
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(picker).toBeFocused();
+  expect(
+    (await settingsCalls(page)).some((call) => call.args.action === "delete"),
+  ).toBe(false);
+
+  await openDelete();
+  await field.fill("Website");
+  await confirm.click();
+  await expect(dialog).toHaveCount(0);
+  await expect(picker).toBeFocused();
+  await expect(picker).toContainText("Orka");
+  expect(
+    (await settingsCalls(page)).find((call) => call.args.action === "delete")
+      ?.args.input,
+  ).toMatchObject({
+    projectId: "two",
+    expectedRevision: 1,
+    confirmation: "Website",
+  });
+});
+
+for (const role of ["admin", "member"] as const) {
+  test(`project lifecycle shortcuts are unavailable to an active or archived ${role}`, async ({
+    page,
+  }) => {
+    await settingsFixture(page, {
+      openSettings: false,
+      role,
+      archivedProjects: [
+        {
+          id: "archived",
+          name: "Archived workspace",
+          role,
+          archivedAt: "2026-01-01T00:00:00Z",
+        },
+      ],
+    });
+    const picker = page.getByRole("combobox", { name: "Select project" });
+    await picker.click({ button: "right" });
+    const action = /Archive project|Delete project|Restore project/;
+    const active = page.getByRole("menu", { name: "Actions for Orka" });
+    await expect(
+      active.getByRole("menuitem", { name: "Open project" }),
+    ).toBeVisible();
+    await expect(active.getByRole("menuitem", { name: action })).toHaveCount(0);
+    await page.keyboard.press("Escape");
+    await picker.click();
+    await page
+      .getByRole("option", { name: /Archived workspace.*Archived by owner/ })
+      .click({ button: "right" });
+    const archived = page.getByRole("menu", {
+      name: "Actions for Archived workspace",
+    });
+    await expect(
+      archived.getByRole("menuitem", { name: "Open project" }),
+    ).toBeVisible();
+    await expect(archived.getByRole("menuitem", { name: action })).toHaveCount(
+      0,
+    );
+  });
+}
+
+test("project deletion from the selected picker respects service compatibility", async ({
+  page,
+}) => {
+  await settingsFixture(page, { openSettings: false, olderService: true });
+  const picker = page.getByRole("combobox", { name: "Select project" });
+  await picker.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Delete project…" }).click();
+  const dialog = page.getByRole("dialog", { name: "Delete project?" });
+  await expect(dialog).toContainText(
+    "Update this service to use recoverable project deletion.",
+  );
+  await dialog.getByRole("textbox", { name: "Project name" }).fill("Orka");
+  await expect(
+    dialog.getByRole("button", { name: "Delete project", exact: true }),
+  ).toBeDisabled();
+});
+
+test("archiving from the picker respects the unsaved settings guard", async ({
+  page,
+}) => {
+  const settings = await settingsFixture(page);
+  const name = settings.getByRole("textbox", {
+    name: "Project name",
+    exact: true,
+  });
+  await name.fill("Unsaved project name");
+  const menu = await projectMenu(page, "Orka");
+  await menu
+    .getByRole("menuitem", { name: "Archive project", exact: true })
+    .click();
+  await page
+    .getByRole("dialog", { name: "Save your changes?" })
+    .getByRole("button", { name: "Stay" })
+    .click();
+  await expect(name).toHaveValue("Unsaved project name");
+  expect(
+    (await settingsCalls(page)).some((call) => call.args.action === "archive"),
+  ).toBe(false);
+
+  await (
+    await projectMenu(page, "Orka")
+  )
+    .getByRole("menuitem", { name: "Archive project", exact: true })
+    .click();
+  await page
+    .getByRole("dialog", { name: "Save your changes?" })
+    .getByRole("button", { name: "Save", exact: true })
+    .click();
+  await expect(
+    page.getByText("Project archived", { exact: true }),
+  ).toBeVisible();
+  const calls = await settingsCalls(page);
+  expect(
+    calls
+      .filter((call) => ["rename", "archive"].includes(call.args.action))
+      .map((call) => call.args),
+  ).toMatchObject([
+    { action: "rename", input: { projectId: "one", expectedRevision: 1 } },
+    { action: "archive", input: { projectId: "one", expectedRevision: 2 } },
+  ]);
+});
