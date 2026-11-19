@@ -206,7 +206,9 @@
     background: var(--surface-tertiary);
     box-shadow: inset 0 0 0 100vmax var(--state-pressed);
     pointer-events: none;
-    transition: background-color var(--switch-color-duration) ease-out;
+    transition:
+      background-color var(--switch-color-duration) ease-out,
+      box-shadow var(--switch-color-duration) ease-out;
   }
   .ui-switch-thumb {
     position: absolute;
@@ -221,7 +223,7 @@
   }
   .ui-switch:checked + .ui-switch-track {
     background: var(--action-solid);
-    box-shadow: none;
+    box-shadow: inset 0 0 0 100vmax transparent;
   }
   .ui-switch:checked + .ui-switch-track .ui-switch-thumb {
     background: var(--text-on-solid);
@@ -287,6 +289,7 @@
       background 120ms ease,
       box-shadow 120ms ease,
       color 120ms ease,
+      filter 120ms ease,
       transform var(--motion-control-duration) var(--motion-control-ease);
   }
   /* Solid fills carry their own hover color. Secondary and tertiary take the
@@ -301,6 +304,9 @@
   .ui-button--primary:active:not(:disabled),
   .ui-button--primary[aria-pressed="true"] {
     background: var(--action-solid-hover);
+  }
+  .ui-button--primary:active:not(:disabled) {
+    filter: brightness(0.76);
   }
   .ui-button--secondary {
     color: var(--text-primary);

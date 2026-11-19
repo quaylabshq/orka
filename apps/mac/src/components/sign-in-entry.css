@@ -206,6 +206,9 @@
   background: var(--brand-copper) url("/onboarding/email-button-texture.png")
     center / cover;
   box-shadow: none;
+}
+
+.onboarding-entry__submit.ui-button:hover:not(:disabled):not(:active) {
   filter: brightness(1.06);
 }
 

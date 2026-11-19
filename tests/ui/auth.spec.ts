@@ -783,9 +783,16 @@ for (const width of [1160, 900]) {
     await checkEntryAccessibility(page);
     await page.getByLabel("Email", { exact: true }).fill("person@example.test");
     await page.getByLabel("Email", { exact: true }).blur();
-    await expect(
-      page.getByRole("button", { name: "Sign in", exact: true }),
-    ).toHaveCSS("background-color", "rgb(196, 134, 90)");
+    const submit = page.getByRole("button", { name: "Sign in", exact: true });
+    await expect(submit).toHaveCSS("background-color", "rgb(196, 134, 90)");
+    await submit.hover();
+    await expect(submit).toHaveCSS("filter", "brightness(1.06)");
+    await page.mouse.down();
+    await expect(submit).toHaveCSS("filter", "brightness(0.76)");
+    await expect(submit).toHaveCSS("background-image", /email-button-texture/);
+    await page.mouse.move(1, 1);
+    await page.mouse.up();
+    await expect(submit).toHaveCSS("filter", "none");
     await page.screenshot({
       animations: "disabled",
       path: info.outputPath("sign-in-filled.png"),

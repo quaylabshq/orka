@@ -235,7 +235,7 @@ ${stateRules.join("\n")}
 .component-sheet{max-width:1040px;margin:auto;padding:40px}
 .component-sheet h1{font-size:var(--heading-lg-font-size);line-height:var(--heading-lg-line-height);letter-spacing:var(--heading-lg-letter-spacing)}
 .component-sheet>p{margin-top:12px;color:var(--text-secondary)}
-.component-sheet section{padding:28px 0;border-bottom:1px solid var(--border-subtle)}
+.component-sheet section{padding:28px 0;border-bottom:1px solid var(--border-default)}
 .component-sheet h2{font-size:var(--body-md-font-size);line-height:var(--body-md-line-height);font-weight:500;margin-bottom:20px}
 .component-sheet h3{font-size:var(--body-xs-font-size);line-height:var(--body-xs-line-height);font-weight:400;color:var(--text-tertiary);margin:24px 0 12px}
 .component-row{display:flex;align-items:center;flex-wrap:wrap;gap:16px}
@@ -251,7 +251,7 @@ ${stateRules.join("\n")}
 .states-table thead th{padding:0 0 16px;text-transform:capitalize}
 .states-table tbody th{width:100px;color:var(--text-secondary)}
 .states-table td{padding:18px 0}
-.states-table tbody tr{border-top:1px solid var(--border-subtle)}
+.states-table tbody tr{border-top:1px solid var(--border-default)}
 .state-pair{display:flex;align-items:center;gap:12px;padding-right:16px}
 .state-pair .ui-button{pointer-events:none;transition:none}
 .state-note{margin-top:20px}

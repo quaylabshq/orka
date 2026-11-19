@@ -424,7 +424,7 @@
   position: absolute;
   inset: 2px;
   content: "";
-  background: white;
+  background: var(--text-on-solid);
   mask: url("/onboarding/checkbox-check.svg") center/12px 12px no-repeat;
 }
 .onboarding-flow__project input:focus-visible {
