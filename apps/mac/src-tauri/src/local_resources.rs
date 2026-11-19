@@ -250,9 +250,6 @@ fn read_catalog(
                         fork = json!({"parentId":parts[2],"nativeId":entry["nativeId"],"destination":parts[3],"createdAt":resource["updatedAt"]});
                     }
                 }
-                if !fork.is_null() {
-                    resource["fork"] = fork;
-                }
                 if let Some(native_id) = entry["nativeId"].as_str() {
                     let scope = (
                         resource["sourceId"].as_str().unwrap_or("").to_owned(),
@@ -266,6 +263,9 @@ fn read_catalog(
                     if let Some(parent) = entry["nativeParentId"].as_str() {
                         native_forks.push((id.to_owned(), (scope, parent.to_owned())));
                     }
+                }
+                if !fork.is_null() {
+                    resource["fork"] = fork;
                 }
             }
             if let Some(object) = resource.as_object_mut() {
