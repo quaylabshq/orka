@@ -367,7 +367,7 @@ fn main() {
         .run(|app, event| {
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Opened { urls } = &event {
-                if main_window::has_deep_link(urls) {
+                if main_window::reveals_current(urls, profiles::current()) {
                     let _ = menu_bar::open_main(app);
                 }
             }

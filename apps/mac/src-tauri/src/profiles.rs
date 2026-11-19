@@ -240,15 +240,11 @@ pub fn take_callback() -> Result<Option<String>> {
 
 #[tauri::command]
 pub fn profile_events(app: tauri::AppHandle) -> Result<Option<String>> {
-    use tauri::Manager;
     let focus = db::root()?.join("focus");
     let callback = take_callback()?;
     if focus.exists() || callback.is_some() {
         let _ = fs::remove_file(focus);
-        if let Some(window) = app.get_webview_window("main") {
-            let _ = window.show();
-            let _ = window.set_focus();
-        }
+        let _ = crate::menu_bar::open_main(&app);
     }
     Ok(callback)
 }
