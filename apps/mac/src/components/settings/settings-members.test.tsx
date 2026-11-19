@@ -124,6 +124,9 @@ test("Members does not offer pending review when all requests are complete or wa
       screen.queryByRole("button", { name: /Review pending requests/ }),
     ).toBeNull(),
   );
+  expect(
+    screen.getByRole("button", { name: "View requests and history" }),
+  ).toBeTruthy();
 });
 
 function deferredCatalogs() {

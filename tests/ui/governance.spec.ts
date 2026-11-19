@@ -514,7 +514,11 @@ async function fixture(
   if (mode === "role-policy-skills") return;
   await page.getByRole("button", { name: "Settings", exact: true }).click();
   await page.getByRole("button", { name: "Members", exact: true }).click();
-  await page.getByRole("button", { name: /Review pending requests/ }).click();
+  await page
+    .getByRole("button", {
+      name: /Review pending requests|View requests and history/,
+    })
+    .click();
 }
 
 const management = (page: Page) =>

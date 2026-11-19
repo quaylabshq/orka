@@ -21,7 +21,7 @@ import { LoadingRegion } from "../loading-region.js";
 import { ActivityIndicator } from "../activity-indicator.js";
 import { SettingsHeading } from "./settings-shared.js";
 import { useWorkspaceScope } from "../workspace-cache.js";
-import { actionableRequest } from "../../lib/features.js";
+import { actionableRequest, visibleRequest } from "../../lib/features.js";
 
 const samples: ProjectMember[] = [
   {
@@ -271,9 +271,10 @@ export function SettingsMembers({
     catalog.data?.members ??
     (Array.isArray(stored?.members) ? stored.members : null);
   const pendingInvites = query.data?.pendingInvites ?? [];
-  const pendingRequests = (query.data?.requests ?? []).filter(
-    (request) => request.projectId === projectId && actionableRequest(request),
+  const requests = (query.data?.requests ?? []).filter(
+    (request) => request.projectId === projectId && visibleRequest(request),
   );
+  const pendingRequests = requests.filter(actionableRequest);
   const [busy, setBusy] = useState(""),
     [error, setError] = useState(""),
     [notice, setNotice] = useState("");
@@ -543,9 +544,11 @@ export function SettingsMembers({
       )}
       {error && <p role="alert">{error}</p>}
       {notice && <p role="status">{notice}</p>}
-      {pendingRequests.length > 0 && (
+      {requests.length > 0 && (
         <Button onClick={onReviews}>
-          Review pending requests ({pendingRequests.length})
+          {pendingRequests.length > 0
+            ? `Review pending requests (${pendingRequests.length})`
+            : "View requests and history"}
         </Button>
       )}
       {query.data && (
