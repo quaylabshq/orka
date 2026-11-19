@@ -177,6 +177,26 @@ impl Capture {
 }
 
 #[tokio::test]
+async fn capture_preparation_failure_leaves_service_status_alone() {
+    let f = Capture::new(restorable());
+    let status = json!({"online":true,"lastSync":"2026-11-01T00:00:00Z"});
+    db::set(&f.db, "sync", &status).unwrap();
+    // A broken cached resource makes repair fail before capture can scan.
+    db::upsert(&f.db, "resources", "broken-cache", &f.id, &json!({})).unwrap();
+
+    assert!(f.run_job().await.is_none());
+    assert_eq!(db::get(&f.db, "sync").unwrap(), status);
+    assert!(db::get(&f.db, "syncOutage").unwrap().is_null());
+    let error = db::rows(
+        &f.db,
+        "SELECT json_quote(error) FROM errors WHERE source=?",
+        &[&f.id],
+    )
+    .unwrap();
+    assert_eq!(error, [json!("Missing resource")]);
+}
+
+#[tokio::test]
 async fn a_restorable_deleted_project_captures_every_kind_and_sends_nothing() {
     let f = Capture::new(restorable());
     f.edit_everything();
