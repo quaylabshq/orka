@@ -2082,6 +2082,8 @@
 }
 .permission-select-menu {
   min-width: var(--radix-select-trigger-width);
+  /* .project-menu caps height with the popover variable; Select sets its own. */
+  max-height: min(320px, var(--radix-select-content-available-height));
   z-index: 100;
 }
 .permission-select-menu .project-menu-item {

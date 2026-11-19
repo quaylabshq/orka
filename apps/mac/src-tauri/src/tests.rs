@@ -240,6 +240,8 @@ mod doctor_tests {
 mod global_skill_tests;
 #[path = "governance_tests.rs"]
 mod governance_tests;
+#[path = "hook_capture_tests.rs"]
+mod hook_capture_tests;
 #[path = "local_resource_tests.rs"]
 mod local_resource_tests;
 #[path = "memory_context_tests.rs"]
@@ -256,6 +258,8 @@ mod plugin_operations_tests;
 mod project_conflict_tests;
 #[path = "project_export_tests.rs"]
 mod project_export_tests;
+#[path = "project_restore_tests.rs"]
+mod project_restore_tests;
 #[path = "repository_tests.rs"]
 mod repository_tests;
 #[path = "resource_command_tests.rs"]
@@ -3132,4 +3136,132 @@ fn peer_archive_does_not_promote_a_delete_to_a_new_owned_copy() {
     assert!(f.outbox().is_empty());
     let b = crate::repair::binding(&f.db, &base, b).unwrap();
     assert_eq!(b["paths"], json!([archived]));
+}
+
+#[test]
+fn deleted_skill_capture_coalesces_each_mirror_independently() {
+    let f = Fixture::new();
+    let first = f.root.join(".agents/skills/release");
+    let second = f.root.join(".claude/skills/release");
+    let first_file = first.join("SKILL.md");
+    let second_file = second.join("SKILL.md");
+    fs::create_dir_all(&first).unwrap();
+    fs::write(&first_file, "baseline").unwrap();
+    indexer::scan(&f.db, &f.project).unwrap();
+    f.accept(&f.resources()[0]);
+    assert_eq!(fs::read_to_string(&second_file).unwrap(), "baseline");
+
+    let mut deleted = f.project.clone();
+    deleted["deletedAt"] = json!("2026-11-18T00:00:00Z");
+    deleted["archivedAt"] = deleted["deletedAt"].clone();
+    deleted["purgeAfter"] = json!("2026-12-18T00:00:00Z");
+    db::upsert(
+        &f.db,
+        "projects",
+        deleted["id"].as_str().unwrap(),
+        "",
+        &deleted,
+    )
+    .unwrap();
+    deleted["captureOnly"] = json!(true);
+    fs::write(&first_file, "Codex variant").unwrap();
+    fs::write(&second_file, "Claude variant").unwrap();
+    indexer::scan(&f.db, &deleted).unwrap();
+
+    let pending = || -> Vec<(String, Value)> {
+        f.outbox()
+            .iter()
+            .map(|request| {
+                let hash = request["resource"]["files"][0]["hash"].as_str().unwrap();
+                (
+                    String::from_utf8(db::blob_read(hash).unwrap()).unwrap(),
+                    request["id"].clone(),
+                )
+            })
+            .collect()
+    };
+    let before = pending();
+    assert_eq!(before.len(), 2);
+    assert!(before.iter().any(|(text, _)| text == "Codex variant"));
+    let claude = before
+        .iter()
+        .find(|(text, _)| text == "Claude variant")
+        .unwrap();
+
+    fs::write(&first_file, "Updated Codex variant").unwrap();
+    indexer::scan(&f.db, &deleted).unwrap();
+    let after = pending();
+    assert_eq!(after.len(), 2);
+    assert!(after.contains(claude));
+    assert!(after
+        .iter()
+        .any(|(text, id)| text == "Updated Codex variant"
+            && !before.iter().any(|(_, old)| id == old)));
+
+    // Align with the other path, then make a shared edit to both paths.
+    fs::write(&second_file, "Updated Codex variant").unwrap();
+    indexer::scan(&f.db, &deleted).unwrap();
+    let aligned = pending();
+    assert_eq!(aligned.len(), 1);
+    assert_eq!(aligned[0].0, "Updated Codex variant");
+
+    fs::write(&first_file, "Codex only").unwrap();
+    fs::write(&second_file, "Claude only").unwrap();
+    indexer::scan(&f.db, &deleted).unwrap();
+    assert_eq!(pending().len(), 2);
+    for file in [&first_file, &second_file] {
+        fs::write(file, "Agreed new variant").unwrap();
+    }
+    indexer::scan(&f.db, &deleted).unwrap();
+    let agreed = pending();
+    assert_eq!(agreed.len(), 1);
+    assert_eq!(agreed[0].0, "Agreed new variant");
+
+    // The shared snapshot can be replaced by the next edit from either path.
+    for (changed, other) in [(&first_file, &second_file), (&second_file, &first_file)] {
+        let edit = format!("Edited at {}", changed.display());
+        fs::write(changed, &edit).unwrap();
+        indexer::scan(&f.db, &deleted).unwrap();
+        let rows = pending();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, edit);
+        fs::write(other, edit).unwrap();
+        indexer::scan(&f.db, &deleted).unwrap();
+        assert_eq!(pending().len(), 1);
+    }
+}
+
+#[test]
+fn uninstalled_skill_keeps_its_frozen_request_through_restore() {
+    let f = Fixture::new();
+    let first = f.root.join(".agents/skills/release");
+    let second = f.root.join(".claude/skills/release");
+    fs::create_dir_all(&first).unwrap();
+    fs::write(first.join("SKILL.md"), "Submitted version").unwrap();
+    indexer::scan(&f.db, &f.project).unwrap();
+    let submitted = f.outbox();
+    assert_eq!(submitted.len(), 1);
+
+    let mut deleted = f.project.clone();
+    deleted["deletedAt"] = json!("2026-11-18T00:00:00Z");
+    deleted["archivedAt"] = deleted["deletedAt"].clone();
+    deleted["purgeAfter"] = json!("2026-12-18T00:00:00Z");
+    db::upsert(
+        &f.db,
+        "projects",
+        deleted["id"].as_str().unwrap(),
+        "",
+        &deleted,
+    )
+    .unwrap();
+    deleted["captureOnly"] = json!(true);
+    fs::create_dir_all(&second).unwrap();
+    fs::write(second.join("SKILL.md"), "Divergent variant").unwrap();
+    indexer::scan(&f.db, &deleted).unwrap();
+    assert_eq!(f.outbox(), submitted);
+
+    let id = f.project["id"].as_str().unwrap();
+    db::upsert(&f.db, "projects", id, "", &f.project).unwrap();
+    indexer::scan(&f.db, &f.project).unwrap();
+    assert_eq!(f.outbox(), submitted);
 }

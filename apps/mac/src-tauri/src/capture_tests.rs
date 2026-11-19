@@ -2,6 +2,7 @@
 //! into the outbox and sends nothing until it is restored.
 use super::*;
 use crate::{
+    commands::export_project_with_capture,
     sync_queue::{Priority, SyncQueue},
     sync_schedule::Interval,
 };
@@ -49,6 +50,7 @@ impl Capture {
         service.set_nonblocking(true).unwrap();
         let url = format!("http://127.0.0.1:{}", service.local_addr().unwrap().port());
         db::set(&db, "config", &json!({"apiUrl":url})).unwrap();
+        let db = db::open().unwrap();
         let id = uuid::Uuid::new_v4().to_string();
         let mut project = json!({"id":id,"name":"Deleted","role":"member","path":root});
         for (key, value) in lifecycle.as_object().unwrap() {
@@ -130,6 +132,10 @@ impl Capture {
             &[&self.id],
         )
         .unwrap()
+    }
+
+    fn held_count(&self) -> i64 {
+        indexer::held_count(&self.db, &self.id).unwrap()
     }
 
     fn kinds(&self) -> BTreeSet<String> {
@@ -450,6 +456,54 @@ async fn a_restore_sends_held_rows_as_ordinary_uploads() {
 }
 
 #[tokio::test]
+async fn a_catalog_restore_queues_a_local_sync_and_hands_off_the_held_row() {
+    let f = Capture::new(restorable());
+    f.edit_memory("Held until the catalog restores it\n");
+    assert!(matches!(f.run_job().await, Some(Outcome::Captured)));
+    let held = f.outbox();
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0]["held"], 1);
+    let id = held[0]["id"].as_str().unwrap().to_string();
+    let jobs = || {
+        db::rows(
+            &f.db,
+            "SELECT json_object('project',project,'priority',priority,'reason',reason) FROM sync_queue",
+            &[],
+        )
+        .unwrap()
+    };
+    assert!(jobs().is_empty());
+    // The catalog merge, not a manual request, wakes the restored project at
+    // local priority so the held row does not wait for a timer.
+    f.restore();
+    assert_eq!(
+        jobs(),
+        [json!({"project":f.id.as_str(),"priority":Priority::Local as i64,"reason":"restore"})]
+    );
+    // The held row is an ordinary upload candidate, and the upload stage
+    // releases its marker before the request goes out.
+    let project = f.project();
+    let outbox = ProjectOutbox::open(&f.db, &f.id).unwrap();
+    let queued = outbox.queued(&f.db).unwrap();
+    assert_eq!(
+        outbox
+            .batch(&queued)
+            .iter()
+            .map(|row| row["id"].clone())
+            .collect::<Vec<_>>(),
+        [json!(id)]
+    );
+    let mut db = db::open().unwrap();
+    let mut pass = SyncPass::new(&mut db, &f.owner, None);
+    assert!(pass.drain_outbox(&project).await.is_err());
+    let after = f.outbox();
+    assert_eq!(after.len(), 1);
+    assert_eq!(after[0]["id"], id);
+    assert_eq!(after[0]["held"], 0);
+    assert_eq!(after[0]["value"], held[0]["value"]);
+}
+
+#[tokio::test]
 async fn a_row_without_the_held_marker_still_loads_and_is_kept() {
     let f = Capture::new(restorable());
     // A row queued before the deletion, or by an older client, has no marker.
@@ -511,6 +565,554 @@ fn removing_the_local_copy_drops_its_held_markers() {
         .is_null());
 }
 
+fn rowid(f: &Capture, id: &Value) -> i64 {
+    f.db.query_row(
+        "SELECT rowid FROM outbox WHERE id=?",
+        [id.as_str().unwrap()],
+        |row| row.get(0),
+    )
+    .unwrap()
+}
+
+fn write_session(f: &Capture, session: &str, messages: &[&str]) {
+    let sessions = f.home.path().join(".claude/projects/deleted");
+    fs::create_dir_all(&sessions).unwrap();
+    let records = messages
+        .iter()
+        .map(|text| json!({"type":"user","sessionId":session,"cwd":f.root,"version":"2.1.283","message":{"role":"user","content":text}}))
+        .collect::<Vec<_>>();
+    fs::write(
+        sessions.join(format!("{session}.jsonl")),
+        native::encode(&records),
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn three_edits_while_deleted_coalesce_into_one_row_with_the_latest_content() {
+    let f = Capture::new(restorable());
+    let session = uuid::Uuid::new_v4().to_string();
+    let mut first: Option<Vec<Value>> = None;
+    let mut ids = BTreeSet::new();
+    let mut positions = Vec::new();
+    for (round, text) in ["first\n", "second\n", "third\n"].iter().enumerate() {
+        f.edit_memory(text);
+        let messages = ["one", "two", "three"];
+        write_session(&f, &session, &messages[..=round]);
+        assert!(matches!(f.run_job().await, Some(Outcome::Captured)));
+        let rows = f.outbox();
+        assert_eq!(rows.len(), 2, "round {round}: {rows:?}");
+        assert!(rows.iter().all(|row| row["held"] == 1));
+        if first.is_none() {
+            // Keep the original base to prove a replacement does not move it.
+            for row in &rows {
+                let mut value = row["value"].clone();
+                value["baseRevision"] = json!(7);
+                f.db.execute(
+                    "UPDATE outbox SET value=? WHERE id=?",
+                    params![value.to_string(), row["id"].as_str()],
+                )
+                .unwrap();
+            }
+            first = Some(f.outbox());
+            positions = rows.iter().map(|row| rowid(&f, &row["id"])).collect();
+        }
+        for row in &rows {
+            ids.insert(row["id"].as_str().unwrap().to_owned());
+        }
+    }
+    let first = first.unwrap();
+    let last = f.outbox();
+    // Every replacement got a fresh request ID and kept its place and base.
+    assert_eq!(ids.len(), 6);
+    for (before, after) in first.iter().zip(&last) {
+        assert_eq!(before["kind"], after["kind"]);
+        assert_ne!(before["id"], after["id"]);
+        assert_eq!(after["value"]["id"], after["id"]);
+        assert_eq!(after["value"]["baseRevision"], 7);
+        // A replaced row's blobs stay readable.
+        for file in before["value"]["resource"]["files"].as_array().unwrap() {
+            db::blob_read(file["hash"].as_str().unwrap()).unwrap();
+        }
+        // No marker is left for a replaced request.
+        assert!(db::get(
+            &f.db,
+            &indexer::held_capture_key(before["id"].as_str().unwrap())
+        )
+        .unwrap()
+        .is_null());
+    }
+    // Each replacement kept the first row's place in the queue.
+    assert_eq!(
+        last.iter()
+            .map(|row| rowid(&f, &row["id"]))
+            .collect::<Vec<_>>(),
+        positions
+    );
+    let memory = last.iter().find(|row| row["kind"] == "memory").unwrap();
+    let hash = memory["value"]["resource"]["files"][0]["hash"]
+        .as_str()
+        .unwrap();
+    assert_eq!(db::blob_read(hash).unwrap(), b"third\n");
+    let session = last.iter().find(|row| row["kind"] == "session").unwrap();
+    let hash = session["value"]["resource"]["files"][0]["hash"]
+        .as_str()
+        .unwrap();
+    assert!(String::from_utf8(db::blob_read(hash).unwrap())
+        .unwrap()
+        .contains("three"));
+    // A restore sends only the latest version.
+    f.restore();
+    let outbox = ProjectOutbox::open(&f.db, &f.id).unwrap();
+    let queued = outbox.queued(&f.db).unwrap();
+    assert_eq!(
+        outbox
+            .batch(&queued)
+            .iter()
+            .map(|row| row["id"].clone())
+            .collect::<Vec<_>>(),
+        last.iter().map(|row| row["id"].clone()).collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn rows_queued_before_the_deletion_are_never_rewritten() {
+    let f = Capture::new(json!({}));
+    f.edit_memory("Before the deletion\n");
+    indexer::scan(&f.db, &f.project()).unwrap();
+    let before = f.outbox();
+    assert_eq!(before.len(), 1);
+    assert_eq!(before[0]["held"], 0);
+    let mut project = f.project();
+    for (key, value) in restorable().as_object().unwrap() {
+        project[key] = value.clone();
+    }
+    db::upsert(&f.db, "projects", &f.id, "", &project).unwrap();
+    for text in ["During the deletion\n", "Later during the deletion\n"] {
+        f.edit_memory(text);
+        assert!(matches!(f.run_job().await, Some(Outcome::Captured)));
+        // Keep the retry identity and a recoverable copy of the newer bytes.
+        assert_eq!(f.outbox(), before);
+        let drafts = db::rows(
+            &f.db,
+            "SELECT value FROM drafts WHERE project=? AND json_extract(value,'$.status')='local'",
+            &[&f.id],
+        )
+        .unwrap();
+        assert_eq!(drafts.len(), 1);
+        let hash = drafts[0]["resource"]["files"][0]["hash"].as_str().unwrap();
+        assert_eq!(db::blob_read(hash).unwrap(), text.as_bytes());
+    }
+}
+
+#[tokio::test]
+async fn sent_failed_or_earlier_deletion_rows_are_never_rewritten() {
+    for case in ["handed to the network", "failed", "earlier deletion"] {
+        let f = Capture::new(restorable());
+        f.edit_memory("Captured\n");
+        assert!(matches!(f.run_job().await, Some(Outcome::Captured)));
+        let id = f.outbox()[0]["id"].as_str().unwrap().to_owned();
+        match case {
+            "handed to the network" => indexer::release_held_capture(&f.db, &id).unwrap(),
+            "failed" => {
+                f.db.execute(
+                    "UPDATE outbox SET error=? WHERE id=?",
+                    params![PLAN_REVISION_CONFLICT, id],
+                )
+                .unwrap();
+            }
+            _ => {
+                // Restored before it drained, then deleted again.
+                f.restore();
+                let mut project = f.project();
+                project["deletedAt"] = json!("2026-11-10T00:00:00Z");
+                project["archivedAt"] = project["deletedAt"].clone();
+                project["purgeAfter"] = json!(future());
+                db::upsert(&f.db, "projects", &f.id, "", &project).unwrap();
+            }
+        }
+        let before = f.outbox();
+        f.edit_memory("Edited again\n");
+        assert!(matches!(f.run_job().await, Some(Outcome::Captured)));
+        assert_eq!(f.outbox(), before, "{case}");
+    }
+}
+
+#[tokio::test]
+async fn a_governed_plan_keeps_its_held_marker_when_its_context_grows() {
+    let mut lifecycle = restorable();
+    lifecycle["governed"] = json!(true);
+    let f = Capture::new(lifecycle);
+    let plans = f.root.join(".claude/plans");
+    fs::create_dir_all(&plans).unwrap();
+    let plan = plans.join("launch.md");
+    fs::write(&plan, "# Launch plan\n").unwrap();
+    // Another plan was queued before the deletion and may already be on its
+    // way, so it has no held marker.
+    let notes = plans.join("notes.md");
+    fs::write(&notes, "# Notes\n").unwrap();
+    let logical = "claude/files/notes.md";
+    let earlier = json!({"version":2,"id":"before-delete","projectId":f.id,"deviceId":"this-mac","baseRevision":0,"resource":{
+        "resourceId":indexer::scoped_resource_id(&f.db, &f.project(), "plan", logical).unwrap(),
+        "kind":"plan","source":"claude","logicalPath":logical,"title":"Notes",
+        "files":[crate::plans::content(b"# Notes\n").unwrap()],"deleted":false,"contextSources":[]}});
+    f.db.execute(
+        "INSERT INTO outbox VALUES('before-delete',?,'/v2/sync/push',?,NULL)",
+        params![f.id, earlier.to_string()],
+    )
+    .unwrap();
+    let earlier_row = || -> Vec<Value> {
+        f.outbox()
+            .into_iter()
+            .filter(|row| row["value"]["resource"]["logicalPath"] == logical)
+            .collect()
+    };
+    assert!(matches!(f.run_job().await, Some(Outcome::Captured)));
+    let plan_rows = || -> Vec<Value> {
+        f.outbox()
+            .into_iter()
+            .filter(|row| {
+                row["kind"] == "plan" && row["value"]["resource"]["logicalPath"] != logical
+            })
+            .collect()
+    };
+    let first = plan_rows();
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0]["held"], 1);
+    // A transcript referencing the plan, with sources its hooks recorded
+    // before the deletion, adds context to the queued plan.
+    let session = uuid::Uuid::new_v4().to_string();
+    db::set(
+        &f.db,
+        &format!("sessionSources:{}:{session}", f.id),
+        &json!(["shared-memory"]),
+    )
+    .unwrap();
+    let sessions = f.home.path().join(".claude/projects/deleted");
+    fs::create_dir_all(&sessions).unwrap();
+    fs::write(
+        sessions.join(format!("{session}.jsonl")),
+        native::encode(&[
+            json!({"type":"user","sessionId":session,"cwd":f.root,"version":"2.1.283","planFilePath":plan,"message":{"role":"user","content":"Write the launch plan"}}),
+            json!({"type":"user","sessionId":session,"cwd":f.root,"version":"2.1.283","planFilePath":notes,"message":{"role":"user","content":"Read the notes"}}),
+        ]),
+    )
+    .unwrap();
+    assert!(matches!(f.run_job().await, Some(Outcome::Captured)));
+    let grown = plan_rows();
+    assert_eq!(grown.len(), 1);
+    assert_ne!(grown[0]["id"], first[0]["id"]);
+    assert!(grown[0]["value"]["resource"]["contextSources"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("shared-memory")));
+    assert_eq!(grown[0]["held"], 1);
+    // The plan queued before the deletion would also gain that context, but
+    // keeps its request ID and body exactly as they were.
+    let planned = db::get(&f.db, &format!("planSources:{}:{logical}", f.id)).unwrap();
+    assert!(planned
+        .as_array()
+        .unwrap()
+        .contains(&json!("shared-memory")));
+    let kept = earlier_row();
+    assert_eq!(kept.len(), 1);
+    assert_eq!(kept[0]["id"], "before-delete");
+    assert_eq!(kept[0]["held"], 0);
+    assert_eq!(kept[0]["value"], earlier);
+    // A second edit still coalesces into that one held row.
+    fs::write(&plan, "# Launch plan\n\nRevised\n").unwrap();
+    assert!(matches!(f.run_job().await, Some(Outcome::Captured)));
+    let last = plan_rows();
+    assert_eq!(last.len(), 1, "{last:?}");
+    assert_eq!(last[0]["held"], 1);
+    assert_eq!(earlier_row()[0]["value"], earlier);
+    let hash = last[0]["value"]["resource"]["files"][0]["hash"]
+        .as_str()
+        .unwrap();
+    assert!(String::from_utf8(db::blob_read(hash).unwrap())
+        .unwrap()
+        .contains("Revised"));
+    assert!(db::rows(&f.db, "SELECT value FROM meta WHERE key GLOB 'heldCapture:*' AND substr(key,13) NOT IN (SELECT id FROM outbox)", &[])
+        .unwrap()
+        .is_empty());
+    f.assert_sent_nothing();
+}
+
+#[tokio::test]
+async fn a_held_row_in_a_redaction_rebuild_is_never_rewritten() {
+    let f = Capture::new(restorable());
+    let session = uuid::Uuid::new_v4().to_string();
+    write_session(&f, &session, &["one"]);
+    assert!(matches!(f.run_job().await, Some(Outcome::Captured)));
+    let before = f.outbox();
+    assert_eq!(before.len(), 1);
+    db::set(
+        &f.db,
+        &outbox_redaction_key(before[0]["id"].as_str().unwrap()),
+        &json!({"value":before[0]["value"],"state":null}),
+    )
+    .unwrap();
+    write_session(&f, &session, &["one", "two"]);
+    assert!(matches!(f.run_job().await, Some(Outcome::Captured)));
+    assert_eq!(f.outbox(), before);
+}
+
+#[tokio::test]
+async fn an_item_created_then_deleted_while_deleted_leaves_one_held_deletion() {
+    let f = Capture::new(restorable());
+    let file = f.root.join("AGENTS.md");
+    fs::write(&file, "Short-lived instructions\n").unwrap();
+    assert!(matches!(f.run_job().await, Some(Outcome::Captured)));
+    let created = f.outbox();
+    assert_eq!(created.len(), 1);
+    let created_position = rowid(&f, &created[0]["id"]);
+    let created_hash = created[0]["value"]["resource"]["files"][0]["hash"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    fs::remove_file(&file).unwrap();
+    assert!(matches!(f.run_job().await, Some(Outcome::Captured)));
+    let rows = f.outbox();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0]["held"], 1);
+    assert_ne!(rows[0]["id"], created[0]["id"]);
+    assert_eq!(rows[0]["value"]["resource"]["deleted"], true);
+    assert_eq!(rows[0]["value"]["baseRevision"], 0);
+    // The deletion took the creation's place in the queue.
+    assert_eq!(rowid(&f, &rows[0]["id"]), created_position);
+    // The created version's blob stays readable.
+    db::blob_read(&created_hash).unwrap();
+    f.assert_sent_nothing();
+}
+
+#[tokio::test]
+async fn held_count_covers_captured_and_unsent_rows_but_not_failed_ones() {
+    let f = Capture::new(restorable());
+    assert_eq!(f.held_count(), 0);
+    f.edit_memory("Captured while deleted\n");
+    assert!(matches!(f.run_job().await, Some(Outcome::Captured)));
+    assert_eq!(f.held_count(), 1);
+    // Another item captured in the same deletion adds up.
+    let skill = f.root.join(".agents/skills/release");
+    fs::create_dir_all(&skill).unwrap();
+    fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: release\ndescription: Ship it\n---\nSteps\n",
+    )
+    .unwrap();
+    assert!(matches!(f.run_job().await, Some(Outcome::Captured)));
+    assert_eq!(f.held_count(), 2);
+    // A row queued before the deletion that was never sent is waiting too.
+    let queued = uuid::Uuid::new_v4().to_string();
+    f.db.execute(
+        "INSERT INTO outbox VALUES(?,?,?,?,NULL)",
+        params![
+            queued,
+            f.id,
+            "/v2/sync/push",
+            json!({"id":queued,"projectId":f.id,"resource":{"resourceId":"earlier","kind":"plan"}})
+                .to_string()
+        ],
+    )
+    .unwrap();
+    assert_eq!(f.held_count(), 3);
+    // Restore retries 403s, but not other failures, even on marked rows.
+    f.db.execute(
+        "UPDATE outbox SET error='403: Project access denied' WHERE id=?",
+        [&queued],
+    )
+    .unwrap();
+    assert_eq!(f.held_count(), 3);
+    let first = f.outbox()[0]["id"].as_str().unwrap().to_owned();
+    f.db.execute(
+        "UPDATE outbox SET error=? WHERE id=?",
+        params![PLAN_REVISION_CONFLICT, first],
+    )
+    .unwrap();
+    assert_eq!(f.held_count(), 2);
+    f.db.execute("UPDATE outbox SET error=NULL WHERE id=?", [&first])
+        .unwrap();
+    f.db.execute(
+        "UPDATE outbox SET error=? WHERE id=?",
+        params![PLAN_REVISION_CONFLICT, queued],
+    )
+    .unwrap();
+    assert_eq!(f.held_count(), 2);
+    let publication = "env:test:pending:publication";
+    db::set(
+        &f.db,
+        publication,
+        &json!({"header":{"manifest":{"projectId":f.id}}}),
+    )
+    .unwrap();
+    let snapshot = crate::commands::snapshot().unwrap();
+    assert_eq!(snapshot["inactive"][0]["heldChanges"], 2);
+    assert_eq!(snapshot["inactive"][0]["pendingChanges"], 4);
+    assert_eq!(snapshot["inactive"][0]["pendingEnvPublications"], 1);
+    // A restore releases the marker just before upload, but the row is still
+    // local work waiting, so it stays counted until it leaves the outbox.
+    f.restore();
+    indexer::release_held_capture(&f.db, &first).unwrap();
+    assert_eq!(f.held_count(), 2);
+    f.db.execute("DELETE FROM outbox WHERE id=?", [&first])
+        .unwrap();
+    assert_eq!(f.held_count(), 1);
+    // Removing the local copy drops what was waiting with it.
+    crate::projects::remove_local(&f.db, &f.id).unwrap();
+    assert_eq!(f.held_count(), 0);
+    assert!(f.outbox().is_empty());
+    assert_eq!(db::get(&f.db, publication).unwrap(), Value::Null);
+}
+
+#[tokio::test]
+async fn export_captures_edits_made_while_deleted() {
+    let f = Capture::new(restorable());
+    f.edit_memory("Exported while deleted\n");
+    assert!(f.outbox().is_empty());
+    let path = f.root.join("project.zip");
+    assert!(
+        !export_project_with_capture(&db::CacheScope::current().unwrap(), &f.id, &path).unwrap()
+    );
+    let rows = f.outbox();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["held"], 1);
+    let mut zip = zip::ZipArchive::new(fs::File::open(&path).unwrap()).unwrap();
+    let mut header = Vec::new();
+    use std::io::Read;
+    zip.by_name("project.json")
+        .unwrap()
+        .read_to_end(&mut header)
+        .unwrap();
+    let header: Value = serde_json::from_slice(&header).unwrap();
+    assert_eq!(header["pendingChanges"], 1);
+    let prefix = format!("pending/{}/", rows[0]["id"].as_str().unwrap());
+    let hash = rows[0]["value"]["resource"]["files"][0]["hash"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut exported = Vec::new();
+    zip.by_name(&format!("{prefix}blobs/{hash}"))
+        .unwrap()
+        .read_to_end(&mut exported)
+        .unwrap();
+    assert_eq!(exported, b"Exported while deleted\n");
+    // An active project is not scanned by export, so nothing new is queued.
+    f.restore();
+    let before = f.outbox();
+    assert!(
+        !export_project_with_capture(&db::CacheScope::current().unwrap(), &f.id, &path).unwrap()
+    );
+    assert_eq!(f.outbox(), before);
+}
+
+#[tokio::test]
+async fn export_keeps_held_changes_when_the_deleted_project_folder_is_missing() {
+    use std::io::Read;
+
+    let f = Capture::new(restorable());
+    f.edit_memory("Held before the folder went missing\n");
+    assert!(matches!(f.run_job().await, Some(Outcome::Captured)));
+    let rows = f.outbox();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["held"], 1);
+    fs::remove_dir_all(&f.root).unwrap();
+
+    let path = f.home.path().join("project.zip");
+    assert!(
+        export_project_with_capture(&db::CacheScope::current().unwrap(), &f.id, &path).unwrap()
+    );
+    assert_eq!(f.outbox(), rows);
+    let error: String =
+        f.db.query_row("SELECT error FROM errors WHERE source=?", [&f.id], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert!(
+        error.contains("folder") && error.contains("unavailable"),
+        "{error}"
+    );
+    let mut zip = zip::ZipArchive::new(fs::File::open(path).unwrap()).unwrap();
+    let header: Value = serde_json::from_reader(zip.by_name("project.json").unwrap()).unwrap();
+    assert_eq!(header["pendingChanges"], 1);
+    let id = rows[0]["id"].as_str().unwrap();
+    let hash = rows[0]["value"]["resource"]["files"][0]["hash"]
+        .as_str()
+        .unwrap();
+    let mut exported = Vec::new();
+    zip.by_name(&format!("pending/{id}/blobs/{hash}"))
+        .unwrap()
+        .read_to_end(&mut exported)
+        .unwrap();
+    assert_eq!(exported, b"Held before the folder went missing\n");
+}
+
+#[test]
+fn deleted_project_export_includes_the_latest_edit_behind_a_pending_request() {
+    use std::io::Read;
+
+    let f = Capture::new(json!({}));
+    f.edit_memory("Queued before deletion\n");
+    indexer::scan(&f.db, &f.project()).unwrap();
+    let queued = f.outbox();
+    let mut project = f.project();
+    for (key, value) in restorable().as_object().unwrap() {
+        project[key] = value.clone();
+    }
+    db::upsert(&f.db, "projects", &f.id, "", &project).unwrap();
+    f.edit_memory("Latest edit while deleted\n");
+
+    let path = f.home.path().join("project.zip");
+    assert!(
+        !export_project_with_capture(&db::CacheScope::current().unwrap(), &f.id, &path).unwrap()
+    );
+    assert_eq!(f.outbox(), queued);
+    let mut zip = zip::ZipArchive::new(fs::File::open(path).unwrap()).unwrap();
+    let header: Value = serde_json::from_reader(zip.by_name("project.json").unwrap()).unwrap();
+    assert_eq!(header["pendingChanges"], 1);
+    assert_eq!(header["drafts"], 1);
+    let draft = db::rows(&f.db, "SELECT value FROM drafts WHERE project=?", &[&f.id])
+        .unwrap()
+        .remove(0);
+    let id = draft["id"].as_str().unwrap();
+    let hash = draft["resource"]["files"][0]["hash"].as_str().unwrap();
+    let mut bytes = Vec::new();
+    zip.by_name(&format!("drafts/{id}/blobs/{hash}"))
+        .unwrap()
+        .read_to_end(&mut bytes)
+        .unwrap();
+    assert_eq!(bytes, b"Latest edit while deleted\n");
+}
+
+#[tokio::test]
+async fn a_new_embedded_plan_proposal_replaces_the_held_plan() {
+    let f = Capture::new(restorable());
+    let id = uuid::Uuid::new_v4().to_string();
+    let sessions = f.home.path().join(".claude/projects/deleted");
+    fs::create_dir_all(&sessions).unwrap();
+    let transcript = sessions.join(format!("{id}.jsonl"));
+    let mut records = vec![
+        json!({"type":"user","sessionId":id,"cwd":f.root,"version":"2.1.283","message":{"role":"user","content":"Plan the update"}}),
+    ];
+    let mut previous = None;
+    for text in ["# First proposal", "# Revised proposal"] {
+        records.push(json!({"type":"assistant","sessionId":id,"cwd":f.root,"message":{"role":"assistant","content":[{"type":"tool_use","name":"ExitPlanMode","input":{"plan":text}}]}}));
+        fs::write(&transcript, native::encode(&records)).unwrap();
+        assert!(matches!(f.run_job().await, Some(Outcome::Captured)));
+        let plans: Vec<_> = f
+            .outbox()
+            .into_iter()
+            .filter(|row| row["kind"] == "plan")
+            .collect();
+        assert_eq!(plans.len(), 1);
+        let hash = plans[0]["value"]["resource"]["files"][0]["hash"]
+            .as_str()
+            .unwrap();
+        assert_eq!(db::blob_read(hash).unwrap(), text.as_bytes());
+        assert_ne!(previous, Some(plans[0]["id"].clone()));
+        previous = Some(plans[0]["id"].clone());
+    }
+}
+
 #[tokio::test]
 async fn explicit_purge_preserves_local_captures_and_guards_other_pending_work() {
     use crate::projects::ProjectLifecycle;
@@ -561,4 +1163,58 @@ async fn explicit_purge_preserves_local_captures_and_guards_other_pending_work()
     let mut zip = zip::ZipArchive::new(fs::File::open(path).unwrap()).unwrap();
     let id = drafts[0]["id"].as_str().unwrap();
     assert!(zip.by_name(&format!("drafts/{id}/blobs/{hash}")).is_ok());
+}
+
+#[tokio::test]
+async fn busy_deleted_project_export_reports_that_it_used_cached_content() {
+    let f = Capture::new(restorable());
+    f.edit_memory("Already captured\n");
+    assert!(matches!(f.run_job().await, Some(Outcome::Captured)));
+    let before = f.outbox();
+    f.edit_memory("New on disk\n");
+
+    let cache = db::CacheScope::current().unwrap();
+    let path = f.home.path().join("project.zip");
+    let workspace = crate::projects::lock().unwrap();
+    let writer = db::open().unwrap();
+    writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+    assert!(export_project_with_capture(&cache, &f.id, &path).unwrap());
+    assert!(path.is_file());
+    assert_eq!(f.outbox(), before);
+    writer.execute_batch("ROLLBACK").unwrap();
+    drop(workspace);
+
+    assert!(!export_project_with_capture(&cache, &f.id, &path).unwrap());
+    let after = f.outbox();
+    let hash = after[0]["value"]["resource"]["files"][0]["hash"]
+        .as_str()
+        .unwrap();
+    assert_eq!(db::blob_read(hash).unwrap(), b"New on disk\n");
+}
+
+#[test]
+fn export_warns_when_one_repository_is_missing_and_captures_the_rest() {
+    let f = Capture::new(restorable());
+    let ready = uuid::Uuid::new_v4();
+    let missing = uuid::Uuid::new_v4();
+    let mut project = f.project();
+    project["sources"] = json!([
+        {"id": ready, "name": "Attached", "path": f.root},
+        {"id": missing, "name": "Missing", "path": f.home.path().join("missing")}
+    ]);
+    db::upsert(&f.db, "projects", &f.id, &f.id, &project).unwrap();
+    f.edit_memory("Edit from the available repository\n");
+
+    let cache = db::CacheScope::current().unwrap();
+    let path = f.home.path().join("project.zip");
+    assert!(export_project_with_capture(&cache, &f.id, &path).unwrap());
+    let rows = f.outbox();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["value"]["resource"]["sourceId"], ready.to_string());
+    let hash = rows[0]["value"]["resource"]["files"][0]["hash"]
+        .as_str()
+        .unwrap();
+    let id = rows[0]["id"].as_str().unwrap();
+    let mut zip = zip::ZipArchive::new(fs::File::open(path).unwrap()).unwrap();
+    assert!(zip.by_name(&format!("pending/{id}/blobs/{hash}")).is_ok());
 }

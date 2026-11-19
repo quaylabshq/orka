@@ -1718,14 +1718,7 @@ impl<'a> SyncPass<'a> {
         if crate::projects::foreground_waiting()? {
             return Ok(Break(()));
         }
-        for source in crate::sources::views(project) {
-            crate::repair::project_state(self.db, &source)?;
-        }
-        packages::recover_project_installations(self.db, project)?;
-        rebuild_unredacted_outbox_for(
-            self.db,
-            Some(project["id"].as_str().ok_or("Missing project")?),
-        )?;
+        prepare_local(self.db, project)?;
         Ok(Continue(()))
     }
 
@@ -1741,18 +1734,14 @@ impl<'a> SyncPass<'a> {
         if crate::projects::foreground_waiting()? || boundary(self.db, project)?.is_break() {
             return Ok(Break(()));
         }
-        let db = &mut *self.db;
-        indexer::clear_orphan_held_captures(db)?;
-        let mut capture = p.clone();
-        capture["captureOnly"] = json!(true);
-        capture["deferAutomaticSharing"] = json!(true);
-        match indexer::scan(db, &capture) {
-            Ok(()) => {
-                db.execute("DELETE FROM errors WHERE source=?", [project])
+        match scan_held(self.db, p) {
+            Ok(_) => {
+                self.db
+                    .execute("DELETE FROM errors WHERE source=?", [project])
                     .map_err(|e| e.to_string())?;
             }
             Err(error) => {
-                db.execute("INSERT INTO errors VALUES(?,?) ON CONFLICT(source) DO UPDATE SET error=excluded.error",params![project,error]).map_err(|e|e.to_string())?;
+                self.db.execute("INSERT INTO errors VALUES(?,?) ON CONFLICT(source) DO UPDATE SET error=excluded.error",params![project,error]).map_err(|e|e.to_string())?;
             }
         }
         boundary(self.db, project)
@@ -2939,6 +2928,45 @@ async fn run_mode(foreground: bool) {
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
+}
+
+/// Local repair every project pass does before it looks at files.
+fn prepare_local(db: &rusqlite::Connection, project: &Value) -> Result<()> {
+    for source in crate::sources::views(project) {
+        crate::repair::project_state(db, &source)?;
+    }
+    packages::recover_project_installations(db, project)?;
+    rebuild_unredacted_outbox_for(db, Some(project["id"].as_str().ok_or("Missing project")?))
+}
+
+/// Scans a deleted project's files into the outbox as held captures.
+fn scan_held(db: &rusqlite::Connection, project: &Value) -> Result<bool> {
+    indexer::clear_orphan_held_captures(db)?;
+    let mut capture = project.clone();
+    capture["captureOnly"] = json!(true);
+    capture["deferAutomaticSharing"] = json!(true);
+    indexer::scan_with_status(db, &capture, false)
+}
+
+/// Captures changes made while a project is deleted but still restorable, so an
+/// export taken before a restore contains them. A copy the catalog has detached
+/// is left alone and keeps exporting what it has.
+pub fn capture_held(db: &rusqlite::Connection, project: &str) -> Result<bool> {
+    let saved = db::rows(
+        db,
+        &format!(
+            "SELECT value FROM projects WHERE id=? AND {}",
+            crate::projects::CAPTURE_ONLY
+        ),
+        &[&project],
+    )?
+    .into_iter()
+    .next();
+    let Some(saved) = saved else {
+        return Ok(true);
+    };
+    prepare_local(db, &saved)?;
+    scan_held(db, &saved)
 }
 
 #[cfg(test)]

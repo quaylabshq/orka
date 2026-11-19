@@ -54,6 +54,7 @@ async function fixture(
     pollDeclined?: boolean;
     localMatch?: boolean;
     matchingFailsOnce?: boolean;
+    manyRepositories?: number;
   } = {},
 ) {
   await page.addInitScript((options) => {
@@ -330,6 +331,14 @@ async function fixture(
                         },
                       ]
                     : []),
+                  ...Array.from(
+                    { length: options.manyRepositories ?? 0 },
+                    (_, index) => ({
+                      ...available,
+                      id: `many-${index}`,
+                      fullName: `fixtures/repo-${index}`,
+                    }),
+                  ),
                 ],
                 nextPage: options.pagination && input.page === 1 ? 2 : null,
               };
@@ -805,6 +814,33 @@ test("accounts and paginated repository discovery retain simple selection", asyn
     1,
   );
   await page.keyboard.press("Escape");
+});
+
+test("a long repository list stays on screen and scrolls to every repository", async ({
+  page,
+}) => {
+  await fixture(page, { manyRepositories: 40 });
+  await panel(page)
+    .getByRole("button", { name: "Connect repository", exact: true })
+    .click();
+  const repository = picker(page).getByRole("combobox", {
+    name: "Repository",
+    exact: true,
+  });
+  await repository.click();
+  const menu = page.getByRole("listbox");
+  await expect(menu).toBeVisible();
+  const box = (await menu.boundingBox())!;
+  const viewport = page.viewportSize()!;
+  expect(box.y).toBeGreaterThanOrEqual(0);
+  expect(box.y + box.height).toBeLessThanOrEqual(viewport.height);
+  const last = page.getByRole("option", {
+    name: "fixtures/repo-39 · Private",
+    exact: true,
+  });
+  await last.scrollIntoViewIfNeeded();
+  await last.click();
+  await expect(repository).toHaveText("fixtures/repo-39 · Private");
 });
 
 test("existing local folders can be linked without cloning again", async ({

@@ -740,31 +740,45 @@ impl Hooks {
 #[cfg(test)]
 #[path = "hook_tests.rs"]
 mod hook_tests;
+/// The project folder that contains `cwd`. An active project wins; otherwise a
+/// deleted project that can still be restored is returned to track the
+/// session, flagged as capture-only. An active parent folder still wins over
+/// a deleted nested project.
+fn hook_project(db: &rusqlite::Connection, cwd: &str) -> Result<Option<(Value, bool)>> {
+    for (predicate, capture_only) in [
+        (crate::projects::ACTIVE, false),
+        (crate::projects::CAPTURE_ONLY, true),
+    ] {
+        let projects = db::rows(
+            db,
+            &format!("SELECT value FROM projects WHERE {predicate}"),
+            &[],
+        )?;
+        let found = projects
+            .iter()
+            .flat_map(crate::sources::views)
+            .filter(|p| {
+                p["path"]
+                    .as_str()
+                    .is_some_and(|s| Path::new(cwd).starts_with(s))
+            })
+            .max_by_key(|p| p["path"].as_str().unwrap_or("").len());
+        if let Some(project) = found {
+            return Ok(Some((project, capture_only)));
+        }
+    }
+    Ok(None)
+}
+
 pub fn hook(tool: &str, input: Value) -> Result<Value> {
     let db = db::open()?;
     let Some(cwd) = input["cwd"].as_str() else {
         return Ok(json!({}));
     };
-    let projects = db::rows(
-        &db,
-        &format!(
-            "SELECT value FROM projects WHERE {}",
-            crate::projects::ACTIVE
-        ),
-        &[],
-    )?;
-    let projects: Vec<_> = projects.iter().flat_map(crate::sources::views).collect();
-    let project = projects
-        .iter()
-        .filter(|p| {
-            p["path"]
-                .as_str()
-                .is_some_and(|s| Path::new(cwd).starts_with(s))
-        })
-        .max_by_key(|p| p["path"].as_str().unwrap_or("").len());
-    let Some(project) = project else {
+    let Some((project, capture_only)) = hook_project(&db, cwd)? else {
         return Ok(json!({}));
     };
+    let project = &project;
     if matches!(tool, "claude" | "codex") {
         db::set(&db, &format!("hookSeen:{tool}"), &json!(db::now()))?;
     }
@@ -772,11 +786,13 @@ pub fn hook(tool: &str, input: Value) -> Result<Value> {
     let project_id = project["id"].as_str().ok_or("Missing project")?;
     let event = input["hook_event_name"].as_str().unwrap_or("SessionStart");
     if event == "SessionEnd" {
-        db::set(
-            &db,
-            &format!("sessionSources:{project_id}:{id}"),
-            &session_sources(&db, project_id, id)?,
-        )?;
+        if !capture_only || id != "unknown" {
+            db::set(
+                &db,
+                &format!("sessionSources:{project_id}:{id}"),
+                &session_sources(&db, project_id, id)?,
+            )?;
+        }
         db.execute("DELETE FROM active WHERE native_id=?", [id])
             .map_err(|e| e.to_string())?;
     } else {
@@ -827,6 +843,11 @@ pub fn hook(tool: &str, input: Value) -> Result<Value> {
                 )?;
             }
         }
+    }
+    // A deleted project that can still be restored tracks the session, but its
+    // shared context is frozen: inject nothing until it is restored.
+    if capture_only {
+        return Ok(json!({}));
     }
     if project["governed"] != true && !crate::projects::sharing_allowed(project, "memory") {
         return Ok(json!({}));

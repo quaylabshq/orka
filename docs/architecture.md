@@ -82,13 +82,24 @@ While a deleted project can still be restored (`deletedAt` with a
 scanning local files into the outbox with no request to the service, on a
 timer four times slower than an active project's. The window ends when the
 catalog delivers a purge tombstone or drops the project, not by this Mac's
-clock. Governed
-edits become drafts whose automatic sharing waits for a restore. Each captured
-row is marked as never sent by a `heldCapture:<request id>` entry in local
-metadata rather than in the request, so older clients send it unchanged; the
-marker is cleared just before the row is first uploaded. A restore sends the
-rows as ordinary changes. Archived-only, revoked, hidden, detached and purged
-projects, and catalogs without `purgeAfter`, capture nothing.
+clock. Governed edits become drafts whose automatic sharing waits for a
+restore. Each captured row is marked as never sent by a
+`heldCapture:<request id>` entry in local metadata rather than in the request,
+so older clients send it unchanged; the marker is cleared just before the row
+is first uploaded. Successive edits replace a never-sent capture in place using a fresh request ID
+and the original base revision. Distinct edits to the Codex and Claude skill
+mirrors keep separate requests. When an earlier request must stay intact, the
+scan saves newer bytes as a local draft and leaves the native edit eligible for
+a later active scan. A restore sends the held requests as ordinary changes.
+Archived-only, revoked, hidden, detached and purged projects, and catalogs
+without `purgeAfter`, capture nothing.
+
+Claude and Codex hooks keep recording the session and its sources for such a
+project, but inject no shared context until it is restored. The sidebar banner
+and the removal warning count the rows still waiting on this Mac. Export scans
+a restorable deleted project when it can take the workspace lock immediately.
+A busy workspace still exports the saved snapshot and reports that recent edits
+may be missing. Compression reads the scoped cache after the lock is released.
 
 ## Native modules
 
