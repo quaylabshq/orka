@@ -1,11 +1,14 @@
 import {
+  ArchiveIcon,
   ArrowLeftIcon,
   FolderIcon,
   FolderOpenIcon,
   LinkIcon,
   PencilIcon,
+  RotateCcwIcon,
   SettingsIcon,
   ShieldUserIcon,
+  Trash2Icon,
   UsersIcon,
 } from "lucide-react";
 import {
@@ -52,6 +55,11 @@ import {
   projectLabel,
 } from "./components/project-navigation.js";
 import { InactiveProject } from "./components/inactive-project.js";
+import { inactiveReason } from "./components/project-inactive.js";
+import {
+  changeProjectArchive,
+  SettingsDanger,
+} from "./components/settings/settings-danger.js";
 import {
   FolderConnectionPrompt,
   ProjectEmptyState,
@@ -249,14 +257,66 @@ function WorkspaceApp({
     if (!settings) setSettingsProject(null);
   }, [settings]);
   const settingsNavigation = useRef<SettingsNavigationHandle>(null);
-  const leaveSettings = (action: () => void) => {
+  const projectPickerTrigger = useRef<HTMLButtonElement>(null);
+  const [projectLifecycle, setProjectLifecycle] = useState<{
+    id: string;
+    scope: string;
+    action: "archive" | "restore" | "delete";
+  } | null>(null);
+  const lifecycleTarget =
+    projectLifecycle?.scope === workspaceScope
+      ? (projectLifecycle.action === "restore"
+          ? state.inactive
+          : state.projects
+        )?.find(
+          (item) => item.id === projectLifecycle.id && item.role === "owner",
+        )
+      : undefined;
+  useEffect(() => {
+    if (!projectLifecycle) return;
+    if (!lifecycleTarget) {
+      setProjectLifecycle(null);
+      return;
+    }
+    const { action } = projectLifecycle;
+    if (action === "delete") return;
+    setProjectLifecycle(null);
+    if (action === "restore" && inactiveReason(lifecycleTarget) !== "archived")
+      return;
+    // A settings save can advance the revision before the requested action.
+    void act(() => changeProjectArchive(lifecycleTarget, action), {
+      successTitle:
+        action === "archive" ? "Project archived" : "Project restored",
+      errorTitle:
+        action === "archive"
+          ? "Couldn’t archive project"
+          : "Couldn’t restore project",
+    });
+  }, [act, projectLifecycle, lifecycleTarget]);
+  const deleteTarget =
+    projectLifecycle?.action === "delete" ? lifecycleTarget : undefined;
+  const leaveSettings = (
+    action: () => void,
+    onGuardCloseAutoFocus?: (accepted: boolean) => void,
+  ) => {
     if (settings && settingsNavigation.current)
       settingsNavigation.current.requestExit(() => {
         setSettings(null);
         action();
-      });
+      }, onGuardCloseAutoFocus);
     else action();
   };
+  const requestProjectLifecycle = (
+    id: string,
+    action: NonNullable<typeof projectLifecycle>["action"],
+  ) =>
+    leaveSettings(
+      () => setProjectLifecycle({ id, scope: workspaceScope, action }),
+      (accepted) => {
+        if (!accepted || action !== "delete")
+          projectPickerTrigger.current?.focus();
+      },
+    );
   const openProjectSettings = (id: string, section: SettingsSection) => {
     if (settings && settingsNavigation.current) {
       settingsNavigation.current.requestProject(id, () => {
@@ -780,6 +840,7 @@ function WorkspaceApp({
               projects={[...state.projects, ...(state.inactive ?? [])]}
               projectId={project}
               collapsed={sidebarCollapsed}
+              triggerRef={projectPickerTrigger}
               projectActions={(target) => {
                 const open: ItemMenuAction = {
                   id: "open",
@@ -793,9 +854,24 @@ function WorkspaceApp({
                       setTab("home");
                     }),
                 };
-                // A paused project has no settings to open on this Mac.
+                const archiveAction = (
+                  action: "archive" | "restore",
+                ): ItemMenuAction => ({
+                  id: action,
+                  label:
+                    action === "archive"
+                      ? "Archive project"
+                      : "Restore project",
+                  icon: action === "archive" ? ArchiveIcon : RotateCcwIcon,
+                  separator: true,
+                  disabled: busy,
+                  onSelect: () => requestProjectLifecycle(target.id, action),
+                });
                 if (!state.projects.some((item) => item.id === target.id))
-                  return [open];
+                  return target.role === "owner" &&
+                    inactiveReason(target) === "archived"
+                    ? [open, archiveAction("restore")]
+                    : [open];
                 const settingsAction = (
                   id: string,
                   label: string,
@@ -856,6 +932,17 @@ function WorkspaceApp({
                       ShieldUserIcon,
                     ),
                   );
+                if (target.role === "owner")
+                  actions.push(archiveAction("archive"), {
+                    id: "delete",
+                    label: "Delete project…",
+                    icon: Trash2Icon,
+                    danger: true,
+                    disabled: busy,
+                    restoreFocus: false,
+                    onSelect: () =>
+                      requestProjectLifecycle(target.id, "delete"),
+                  });
                 return actions;
               }}
               onProjectChange={(id) => {
@@ -1195,6 +1282,28 @@ function WorkspaceApp({
             </>
           )}
           <ToastViewport />
+          {deleteTarget && (
+            <SettingsDanger
+              key={deleteTarget.id}
+              project={deleteTarget}
+              serviceUrl={state.config?.apiUrl}
+              members={
+                state.governance?.find(
+                  (entry) => entry.projectId === deleteTarget.id,
+                )?.catalog.members?.length ?? null
+              }
+              busy={busy}
+              run={run}
+              onComplete={() => setNotice("Project deleted")}
+              standaloneDelete={{
+                onClose: () => setProjectLifecycle(null),
+                onCloseAutoFocus: (event) => {
+                  event.preventDefault();
+                  projectPickerTrigger.current?.focus();
+                },
+              }}
+            />
+          )}
         </main>
         {repositorySetupProject && !alreadyConnectedRepositories && (
           <RepositoryConnections
