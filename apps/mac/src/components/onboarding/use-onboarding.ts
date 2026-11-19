@@ -289,9 +289,9 @@ export function useOnboarding(
           Record<string, boolean | null | undefined>
         >("check-discovered-folders", {
           paths: recheck.map((row) => row.path),
-        }).catch(() => ({}) as Record<string, undefined>);
+        }).catch(() => null);
         for (const row of recheck) {
-          const status = statuses[row.path];
+          const status = statuses?.[row.path];
           if (status !== null)
             rows.set(row.path, { ...row, readable: status ?? row.readable });
         }
