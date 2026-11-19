@@ -161,8 +161,14 @@ impl Budget {
         true
     }
     fn entries(&mut self, path: &Path) -> Vec<fs::DirEntry> {
+        const MAX_ENTRIES: usize = 2001;
         match fs::read_dir(path) {
-            Ok(entries) => entries.flatten().take(2001).collect(),
+            Ok(entries) => {
+                let mut entries = entries.flatten();
+                let listed = entries.by_ref().take(MAX_ENTRIES).collect();
+                self.truncated |= entries.next().is_some();
+                listed
+            }
             Err(e) => {
                 self.denied |= e.kind() == std::io::ErrorKind::PermissionDenied;
                 vec![]
@@ -462,7 +468,11 @@ fn codex_files(root: &Path, depth: usize, budget: &mut Budget, files: &mut Vec<P
     let mut entries = budget.entries(root);
     entries.sort_by_key(|e| std::cmp::Reverse(e.file_name()));
     for entry in entries {
-        if files.len() >= 1000 || !budget.tick() {
+        if files.len() >= 1000 {
+            budget.truncated = true;
+            break;
+        }
+        if !budget.tick() {
             break;
         }
         let Ok(kind) = entry.file_type() else {
@@ -1287,6 +1297,16 @@ mod tests {
             &BTreeMap::new(),
         );
         assert_eq!(found[&project].sessions, 1);
+    }
+    #[test]
+    fn codex_file_limit_reports_skipped_history() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(temp.path().join("rollout-next.jsonl"), "{}\n").unwrap();
+        let mut files = vec![PathBuf::new(); 1000];
+        let mut budget = Budget::new();
+        codex_files(temp.path(), 5, &mut budget, &mut files);
+        assert_eq!(files.len(), 1000);
+        assert!(budget.truncated);
     }
     fn add_origin(project: &Path, repo: &str) {
         fs::create_dir_all(project.join(".git")).unwrap();
