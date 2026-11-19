@@ -1,4 +1,13 @@
-import { CopyIcon, FolderIcon, PlusIcon, XIcon } from "lucide-react";
+import {
+  CopyIcon,
+  FolderIcon,
+  FolderSearchIcon,
+  LinkIcon,
+  PlusIcon,
+  TrashIcon,
+  UnplugIcon,
+  XIcon,
+} from "lucide-react";
 import { useCallback, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
@@ -38,7 +47,7 @@ export function SettingsGeneral({
           size="lg"
           hint={
             project.role === "owner"
-              ? undefined
+              ? "Changes rename this project for everyone."
               : name === null
                 ? "Uses the shared name. Changes apply only on this Mac."
                 : "Only on this Mac. Shared renames won’t replace this name."
@@ -180,6 +189,7 @@ export function SettingsFolder({
                 if (folderState !== "connected")
                   actions.push({
                     id: "connect",
+                    icon: FolderSearchIcon,
                     label:
                       folderState === "locate"
                         ? "Locate Folder"
@@ -198,6 +208,7 @@ export function SettingsFolder({
                     {
                       id: "reveal",
                       label: "Show in Finder",
+                      icon: FolderIcon,
                       disabled: busy,
                       onSelect: () =>
                         void run(() =>
@@ -210,6 +221,7 @@ export function SettingsFolder({
                     {
                       id: "copy-path",
                       label: "Copy folder path",
+                      icon: CopyIcon,
                       disabled: busy,
                       onSelect: () =>
                         void run(async () => {
@@ -229,12 +241,14 @@ export function SettingsFolder({
                   actions.push({
                     id: "link",
                     label: "Link GitHub repository",
+                    icon: LinkIcon,
                     disabled: busy,
                     onSelect: () => onLink(source),
                   });
                 actions.push({
                   id: "disconnect",
                   label: "Disconnect folder on this Mac",
+                  icon: UnplugIcon,
                   disabled: busy || queued > 0 || !source.path,
                   reason:
                     queued > 0
@@ -250,6 +264,7 @@ export function SettingsFolder({
                   actions.push({
                     id: "remove",
                     label: "Remove source folder",
+                    icon: TrashIcon,
                     danger: true,
                     disabled: busy || queued > 0,
                     reason:

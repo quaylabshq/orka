@@ -4,6 +4,7 @@
 //! lock between jobs instead of waiting for a whole cycle.
 use crate::{
     db::{self, Result},
+    projects::CAPTURE_ONLY,
     sync_schedule::{jitter, Interval},
 };
 use rusqlite::{params, Connection, OptionalExtension};
@@ -35,6 +36,10 @@ fn cancelled_at_key(project: &str) -> String {
 /// keep the row when the job finishes.
 const RUNNING: i64 = i64::MAX;
 
+/// How many sync intervals a deleted, restorable project waits between its
+/// capture-only timer jobs. Local changes and user requests still run at once.
+const CAPTURE_INTERVAL_FACTOR: u32 = 4;
+
 #[derive(Clone, Copy)]
 pub(crate) enum Priority {
     Timer = 0,
@@ -59,6 +64,9 @@ pub(crate) enum Outcome {
     Skipped,
     /// Finished with item errors or deferred uploads; retried with backoff.
     Deferred,
+    /// A deleted, restorable project scanned its local files into the outbox
+    /// without any request. Its timer restarts, but no cloud sync is recorded.
+    Captured,
     /// Stopped early for foreground work; queued again as it was.
     Yielded,
     /// The user cancelled it at a stage boundary: no backoff for the rest of
@@ -116,7 +124,8 @@ impl SyncQueue {
 
     /// Adds a request, or merges it into the project's queued job. The higher
     /// priority and the earlier eligible `not_before` win. Automatic requests
-    /// respect a service outage; an explicit user request may bypass it.
+    /// respect a service outage; capture-only jobs and explicit user requests
+    /// may run during one.
     pub(crate) fn enqueue(
         db: &Connection,
         project: &str,
@@ -139,17 +148,23 @@ impl SyncQueue {
 
     fn merge(db: &Connection, job: &Job) -> Result<()> {
         db.execute(
-            // Read the service hold inside the UPSERT: a request racing with
-            // outage settlement must not reopen work from an earlier read.
-            "INSERT INTO sync_queue VALUES(?1,?2,?3,?4,
-             CASE WHEN ?2<2 THEN max(?5,coalesce(json_extract((SELECT value FROM meta WHERE key=?7),'$.notBefore'),?5)) ELSE ?5 END,
-             max(?6,coalesce(json_extract((SELECT value FROM meta WHERE key=?7),'$.attempts'),0)))
-             ON CONFLICT(project) DO UPDATE SET
-             reason=CASE WHEN excluded.priority>priority THEN excluded.reason ELSE reason END,
-             priority=max(priority,excluded.priority),
-             requested_at=min(requested_at,excluded.requested_at),
-             not_before=min(not_before,excluded.not_before),
-             attempts=max(attempts,excluded.attempts)",
+            // Read the project state and service hold inside the UPSERT so a
+            // concurrent catalog update or outage cannot leave a stale deadline.
+            &format!(
+                "WITH service_hold AS (
+                    SELECT value FROM meta WHERE key=?7
+                      AND NOT EXISTS(SELECT 1 FROM projects WHERE id=?1 AND {CAPTURE_ONLY})
+                 )
+                 INSERT INTO sync_queue VALUES(?1,?2,?3,?4,
+                 CASE WHEN ?2<2 THEN max(?5,coalesce((SELECT json_extract(value,'$.notBefore') FROM service_hold),?5)) ELSE ?5 END,
+                 max(?6,coalesce((SELECT json_extract(value,'$.attempts') FROM service_hold),0)))
+                 ON CONFLICT(project) DO UPDATE SET
+                 reason=CASE WHEN excluded.priority>priority THEN excluded.reason ELSE reason END,
+                 priority=max(priority,excluded.priority),
+                 requested_at=min(requested_at,excluded.requested_at),
+                 not_before=min(not_before,excluded.not_before),
+                 attempts=max(attempts,excluded.attempts)"
+            ),
             params![
                 job.project,
                 job.priority,
@@ -164,14 +179,38 @@ impl SyncQueue {
         .map_err(|e| e.to_string())
     }
 
+    /// The workspace, every active project, and every deleted project that can
+    /// still be restored, whose job only captures local changes.
     fn targets(db: &Connection) -> Result<Vec<String>> {
-        let sql = format!("SELECT id FROM projects WHERE {}", crate::projects::ACTIVE);
+        let sql = format!(
+            "SELECT id FROM projects WHERE {}",
+            *crate::projects::CAPTURABLE
+        );
         let mut query = db.prepare(&sql).map_err(|e| e.to_string())?;
         let ids = query
             .query_map([], |row| row.get(0))
             .and_then(|rows| rows.collect::<rusqlite::Result<Vec<String>>>())
             .map_err(|e| e.to_string())?;
         Ok(std::iter::once(WORKSPACE.to_string()).chain(ids).collect())
+    }
+
+    fn capture_only(db: &Connection) -> Result<std::collections::HashSet<String>> {
+        let sql = format!("SELECT id FROM projects WHERE {CAPTURE_ONLY}");
+        let mut query = db.prepare(&sql).map_err(|e| e.to_string())?;
+        let ids = query
+            .query_map([], |row| row.get(0))
+            .and_then(|rows| rows.collect::<rusqlite::Result<_>>())
+            .map_err(|e| e.to_string())?;
+        Ok(ids)
+    }
+
+    pub(crate) fn is_capture_only(db: &Connection, project: &str) -> Result<bool> {
+        db.query_row(
+            &format!("SELECT EXISTS(SELECT 1 FROM projects WHERE id=? AND {CAPTURE_ONLY})"),
+            [project],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())
     }
 
     /// Queues the workspace steps and every active project.
@@ -253,8 +292,14 @@ impl SyncQueue {
             self.synced.clear();
             self.device = device;
         }
-        let every = interval.duration();
+        let capture_only = Self::capture_only(db)?;
         for project in Self::targets(db)? {
+            // A deleted project only scans its own files, so it checks less often.
+            let every = if capture_only.contains(&project) {
+                interval.duration() * CAPTURE_INTERVAL_FACTOR
+            } else {
+                interval.duration()
+            };
             let mut base = self
                 .synced
                 .get(&project)
@@ -358,14 +403,18 @@ impl SyncQueue {
     /// job has no time the user acts on.
     pub(crate) fn states(db: &Connection, now: i64) -> Result<Value> {
         let mut query = db
-            .prepare(
+            // A deleted project's capture job is local bookkeeping, not a sync
+            // the user can follow or cancel, so the panel leaves it out.
+            .prepare(&format!(
                 "SELECT project,reason,attempts,not_before,EXISTS(
                  SELECT 1 FROM meta WHERE key='syncClaim:'||project AND json_type(value)='text'),EXISTS(
                  SELECT 1 FROM meta claim JOIN meta cancel ON cancel.value=claim.value
                  WHERE claim.key='syncClaim:'||project AND cancel.key='syncCancel:'||project
                  AND json_type(claim.value)='text') FROM sync_queue
-                 WHERE project<>?1 ORDER BY priority DESC,requested_at,project",
-            )
+                 WHERE project<>?1 AND project NOT IN (SELECT id FROM projects WHERE {})
+                 ORDER BY priority DESC,requested_at,project",
+                crate::projects::CAPTURE_ONLY
+            ))
             .map_err(|e| e.to_string())?;
         let jobs = query
             .query_map([WORKSPACE], |row| {
@@ -471,9 +520,8 @@ impl SyncQueue {
     /// the same without the timer, and a skip only removes the claimed job.
     /// A failure backs that project off with jitter, and a yielded job is ready
     /// again as it was. A request that arrived while the job ran stays queued
-    /// with its own `not_before`. A
-    /// service outage also holds every other job due before then until the same
-    /// time, so it costs one request per step.
+    /// with its own `not_before`. A service outage holds other network jobs
+    /// until the same retry time so it costs one request per step.
     fn settle(
         &mut self,
         db: &Connection,
@@ -491,7 +539,7 @@ impl SyncQueue {
                 "DELETE FROM sync_queue WHERE project=?1 AND not_before=?2",
                 params![project, RUNNING],
             )),
-            Ok(Outcome::Synced | Outcome::Cancelled) => {
+            Ok(Outcome::Synced | Outcome::Cancelled | Outcome::Captured) => {
                 let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
                 sql(tx.execute(
                     "DELETE FROM sync_queue WHERE project=?1 AND not_before=?2",
@@ -506,7 +554,7 @@ impl SyncQueue {
                     sql(tx.execute("DELETE FROM meta WHERE key=?", [OUTAGE]))?;
                 }
                 tx.commit().map_err(|e| e.to_string())?;
-                if matches!(result, Ok(Outcome::Synced)) {
+                if matches!(result, Ok(Outcome::Synced | Outcome::Captured)) {
                     self.synced.insert(job.project.clone(), now);
                     sql(db.execute("DELETE FROM meta WHERE key=?", [cancelled_at_key(project)]))?;
                 }
@@ -525,15 +573,19 @@ impl SyncQueue {
                     "UPDATE sync_queue SET attempts=?2, not_before=min(not_before,?3) WHERE project=?1",
                     params![project, attempts, not_before],
                 ))?;
-                if result.as_ref().is_err_and(|error| outage(error)) {
+                if result.as_ref().is_err_and(|error| outage(error))
+                    && !Self::is_capture_only(&tx, project)?
+                {
                     db::set(
                         &tx,
                         OUTAGE,
                         &json!({"notBefore":not_before,"attempts":attempts}),
                     )?;
                     sql(tx.execute(
-                        "UPDATE sync_queue SET attempts=max(attempts,?1), not_before=?2
-                         WHERE not_before<?2",
+                        &format!("UPDATE sync_queue SET attempts=max(attempts,?1), not_before=?2
+                                  WHERE not_before<?2 AND NOT EXISTS(
+                                     SELECT 1 FROM projects WHERE id=sync_queue.project AND {CAPTURE_ONLY}
+                                  )"),
                         params![attempts, not_before],
                     ))?;
                 }
@@ -608,6 +660,17 @@ mod tests {
 
     fn interval() -> Interval {
         Interval::from_config(&json!({"syncMinutes": 15}))
+    }
+
+    fn save_restorable(db: &Connection, id: &str) {
+        db::upsert(
+            db,
+            "projects",
+            id,
+            "",
+            &json!({"id":id,"deletedAt":"2026-11-01T00:00:00Z","purgeAfter":"2026-12-01T00:00:00Z"}),
+        )
+        .unwrap();
     }
 
     #[test]
@@ -906,6 +969,121 @@ mod tests {
     }
 
     #[test]
+    fn capture_can_run_at_each_workspace_outage_retry() {
+        let (_root, db) = queue_db(&["active"]);
+        save_restorable(&db, "held");
+        let mut queue = SyncQueue::new(0);
+        let interval = interval();
+        let mut now = 0;
+        SyncQueue::enqueue_all(&db, Priority::User, "sync now", now).unwrap();
+        for attempt in 1..=2 {
+            let workspace = SyncQueue::claim(&db, now).unwrap().unwrap();
+            assert_eq!(workspace.project, WORKSPACE);
+            queue
+                .settle(
+                    &db,
+                    workspace,
+                    &Err("503: Service unavailable".into()),
+                    now,
+                    &interval,
+                )
+                .unwrap();
+            let capture = SyncQueue::claim(&db, now).unwrap().unwrap();
+            assert_eq!((capture.project.as_str(), capture.attempts), ("held", 0));
+            queue
+                .settle(&db, capture, &Ok(Outcome::Captured), now, &interval)
+                .unwrap();
+            let outage = db::get(&db, OUTAGE).unwrap();
+            let held_until = outage["notBefore"].as_i64().unwrap();
+            assert_eq!(outage["attempts"], attempt);
+            assert!(rows(&db)
+                .iter()
+                .all(|job| job.not_before == held_until && job.attempts == attempt));
+            assert_eq!(SyncQueue::next(&db, held_until - 1).unwrap(), None);
+            now = held_until;
+            // New automatic work should already be runnable during the outage.
+            SyncQueue::enqueue(&db, "held", Priority::Timer, "timer", now - 1).unwrap();
+        }
+        let workspace = SyncQueue::claim(&db, now).unwrap().unwrap();
+        assert_eq!(workspace.project, WORKSPACE);
+        queue
+            .settle(&db, workspace, &Ok(Outcome::Synced), now, &interval)
+            .unwrap();
+        assert!(db::get(&db, OUTAGE).unwrap().is_null());
+        assert_eq!(
+            SyncQueue::next(&db, now).unwrap().unwrap().project,
+            "active"
+        );
+    }
+
+    #[test]
+    fn local_capture_requests_ignore_a_service_hold_from_another_connection() {
+        let (root, db) = queue_db(&["formerly-active"]);
+        let mut queue = SyncQueue::new(0);
+        SyncQueue::enqueue_all(&db, Priority::Local, "local", 0).unwrap();
+        let workspace = SyncQueue::claim(&db, 0).unwrap().unwrap();
+        queue
+            .settle(
+                &db,
+                workspace,
+                &Err("503: Service unavailable".into()),
+                0,
+                &interval(),
+            )
+            .unwrap();
+
+        let other = db::open_at(root.path()).unwrap();
+        save_restorable(&other, "formerly-active");
+        save_restorable(&other, "new-capture");
+        SyncQueue::enqueue(&other, "formerly-active", Priority::Local, "edit", 1).unwrap();
+        SyncQueue::enqueue(&other, "new-capture", Priority::Timer, "timer", 1).unwrap();
+        let jobs = rows(&db);
+        assert_eq!(
+            (jobs[1].project.as_str(), jobs[1].not_before),
+            ("formerly-active", 1)
+        );
+        assert_eq!(
+            (
+                jobs[2].project.as_str(),
+                jobs[2].not_before,
+                jobs[2].attempts
+            ),
+            ("new-capture", 1, 0)
+        );
+        assert_eq!(
+            SyncQueue::next(&db, 1).unwrap().unwrap().project,
+            "formerly-active"
+        );
+    }
+
+    #[test]
+    fn capture_failure_retries_only_its_local_job() {
+        let (_root, db) = queue_db(&["active"]);
+        save_restorable(&db, "held");
+        let mut queue = SyncQueue::new(0);
+        SyncQueue::enqueue(&db, "held", Priority::User, "sync now", 0).unwrap();
+        SyncQueue::enqueue(&db, "active", Priority::Local, "indexer", 0).unwrap();
+        let capture = SyncQueue::claim(&db, 0).unwrap().unwrap();
+        assert_eq!(capture.project, "held");
+        // Even an error string matching the network classifier cannot affect
+        // the service schedule when the job performs only local work.
+        queue
+            .settle(
+                &db,
+                capture,
+                &Err("503: Service unavailable".into()),
+                0,
+                &interval(),
+            )
+            .unwrap();
+        let jobs = rows(&db);
+        assert!(jobs[1].not_before > 0);
+        assert_eq!(jobs[1].attempts, 1);
+        assert!(db::get(&db, OUTAGE).unwrap().is_null());
+        assert_eq!(SyncQueue::next(&db, 0).unwrap().unwrap().project, "active");
+    }
+
+    #[test]
     fn outage_holds_new_and_merged_automatic_requests_from_another_connection() {
         let (root, db) = queue_db(&["a", "b"]);
         let mut queue = SyncQueue::new(0);
@@ -1113,6 +1291,48 @@ mod tests {
         assert!(rows(&db).iter().all(|job| job.project != "a"));
         queue.enqueue_due(&db, due, &interval).unwrap();
         assert!(rows(&db).iter().any(|job| job.project == "a"));
+    }
+
+    #[test]
+    fn a_deleted_restorable_project_captures_on_a_slower_timer() {
+        let (_root, db) = queue_db(&["a"]);
+        db.execute(
+            "INSERT INTO projects VALUES('held',?)",
+            [json!({"id":"held","deletedAt":"2026-11-01T00:00:00Z","purgeAfter":"2026-12-01T00:00:00Z"}).to_string()],
+        )
+        .unwrap();
+        let interval = interval();
+        let device = db::device(&db).unwrap();
+        let slow = interval.duration() * CAPTURE_INTERVAL_FACTOR;
+        let due = |id, every| millis(every) + millis(jitter(&device, id, every));
+        let mut queue = SyncQueue::new(0);
+        // The first timer pass binds the device, which resets the schedule.
+        queue.enqueue_due(&db, -1, &interval).unwrap();
+        for project in ["a", "held"] {
+            let job = Job {
+                project: project.into(),
+                priority: 0,
+                reason: "timer".into(),
+                requested_at: 0,
+                not_before: 0,
+                attempts: 0,
+            };
+            queue
+                .settle(&db, job, &Ok(Outcome::Synced), 0, &interval)
+                .unwrap();
+        }
+        queue
+            .enqueue_due(&db, due("a", interval.duration()), &interval)
+            .unwrap();
+        assert!(rows(&db).iter().any(|job| job.project == "a"));
+        queue
+            .enqueue_due(&db, due("held", slow) - 1, &interval)
+            .unwrap();
+        assert!(rows(&db).iter().all(|job| job.project != "held"));
+        queue
+            .enqueue_due(&db, due("held", slow), &interval)
+            .unwrap();
+        assert!(rows(&db).iter().any(|job| job.project == "held"));
     }
 
     #[test]

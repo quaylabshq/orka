@@ -32,6 +32,20 @@ type ProjectCapabilities = {
 
 type Dialog = { kind: "delete" | "purge" | "leave"; project: Project };
 
+export function changeProjectArchive(
+  target: Project,
+  action: "archive" | "restore",
+) {
+  return invoke("project_command", {
+    action,
+    input: {
+      projectId: target.id,
+      requestId: crypto.randomUUID(),
+      expectedRevision: target.lifecycleRevision ?? 0,
+    },
+  });
+}
+
 export function SettingsDanger({
   project,
   deletedProjects = [],
@@ -41,6 +55,7 @@ export function SettingsDanger({
   busy,
   run,
   onComplete,
+  standaloneDelete,
 }: {
   project?: Project;
   deletedProjects?: Project[];
@@ -50,10 +65,18 @@ export function SettingsDanger({
   busy: boolean;
   run: (action: () => Promise<unknown>) => Promise<unknown>;
   onComplete?: (message?: string) => void;
+  standaloneDelete?: {
+    onClose: () => void;
+    onCloseAutoFocus: (event: Event) => void;
+  };
 }) {
-  const [dialog, setDialog] = useState<Dialog | null>(null);
+  const [dialog, setDialog] = useState<Dialog | null>(() =>
+    standaloneDelete && project?.role === "owner"
+      ? { kind: "delete", project }
+      : null,
+  );
   const [typed, setTyped] = useState("");
-  const [memberCount, setMemberCount] = useState<number | null>(null);
+  const [memberCount, setMemberCount] = useState<number | null>(members);
   const [policyRevision, setPolicyRevision] = useState(0);
   const [dialogError, setDialogError] = useState("");
   const [lifecycleError, setLifecycleError] = useState<{
@@ -110,18 +133,37 @@ export function SettingsDanger({
     ? `This service keeps deleted projects for ${restoreWindow}.`
     : "It can be restored during this service’s restore window.";
 
-  const open = (kind: Dialog["kind"], target: Project) => {
-    setDialog({ kind, project: target });
-    setTyped("");
-    setDialogError("");
-    setMemberCount(kind === "delete" ? (members ?? null) : null);
-    setPolicyRevision(target.policyRevision ?? 0);
-    if (kind === "purge") return;
+  const deletionDescription =
+    capabilities === null
+      ? capabilityError
+        ? "Check deletion support to continue."
+        : "Checking deletion support…"
+      : supportsDelete
+        ? restorePromise
+        : "Update this service to use recoverable project deletion.";
+  const capabilityFeedback = capabilityError && (
+    <p className="project-lifecycle-feedback" role="alert">
+      {capabilityError}{" "}
+      <Button
+        size="sm"
+        disabled={disabled}
+        onClick={() => setCapabilityAttempt((attempt) => attempt + 1)}
+      >
+        Retry
+      </Button>
+    </p>
+  );
+
+  useEffect(() => {
+    if (!dialog || dialog.kind === "purge") return;
+    const { kind, project: target } = dialog;
+    let active = true;
     void invoke<{ members?: unknown[]; policyRevision?: number }>(
       "governance_command",
       { action: "catalog", input: { projectId: target.id } },
     )
       .then((catalog) => {
+        if (!active) return;
         if (kind === "delete" && Array.isArray(catalog.members))
           setMemberCount(catalog.members.length);
         if (kind === "leave" && typeof catalog.policyRevision === "number")
@@ -129,6 +171,22 @@ export function SettingsDanger({
       })
       // Membership counts are optional; never fabricate a team size.
       .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [dialog]);
+
+  const open = (kind: Dialog["kind"], target: Project) => {
+    setDialog({ kind, project: target });
+    setTyped("");
+    setDialogError("");
+    setMemberCount(kind === "delete" ? members : null);
+    setPolicyRevision(target.policyRevision ?? 0);
+  };
+
+  const close = () => {
+    setDialog(null);
+    standaloneDelete?.onClose();
   };
 
   const lifecycle = async (target: Project, action: "archive" | "restore") => {
@@ -136,16 +194,7 @@ export function SettingsDanger({
     setNotice("");
     setOperation({ projectId: target.id });
     try {
-      await run(() =>
-        invoke("project_command", {
-          action,
-          input: {
-            projectId: target.id,
-            requestId: crypto.randomUUID(),
-            expectedRevision: target.lifecycleRevision ?? 0,
-          },
-        }),
-      );
+      await run(() => changeProjectArchive(target, action));
       setNotice(`Project ${action === "archive" ? "archived" : "restored"}.`);
       onComplete?.();
     } catch (error) {
@@ -184,7 +233,7 @@ export function SettingsDanger({
               },
         }),
       );
-      setDialog(null);
+      close();
       setTyped("");
       onComplete?.(
         leaving
@@ -229,19 +278,8 @@ export function SettingsDanger({
 
   return (
     <>
-      {capabilityError && (
-        <p className="project-lifecycle-feedback" role="alert">
-          {capabilityError}{" "}
-          <Button
-            size="sm"
-            disabled={disabled}
-            onClick={() => setCapabilityAttempt((attempt) => attempt + 1)}
-          >
-            Retry
-          </Button>
-        </p>
-      )}
-      {project && (
+      {!standaloneDelete && capabilityFeedback}
+      {!standaloneDelete && project && (
         <section className="settings-danger" aria-label="Danger zone">
           <div className="settings-danger-heading">
             <h3>Danger zone</h3>
@@ -292,16 +330,7 @@ export function SettingsDanger({
                 <div className="settings-row">
                   <div>
                     <h3>Delete project</h3>
-                    <p>
-                      Remove it for all members.{" "}
-                      {capabilities === null
-                        ? capabilityError
-                          ? "Check deletion support to continue."
-                          : "Checking deletion support…"
-                        : supportsDelete
-                          ? restorePromise
-                          : "Update this service to use recoverable project deletion."}
-                    </p>
+                    <p>Remove it for all members. {deletionDescription}</p>
                   </div>
                   <Button
                     size="sm"
@@ -427,8 +456,9 @@ export function SettingsDanger({
           open
           title={title}
           className="settings-confirm project-lifecycle-confirm"
+          onCloseAutoFocus={standaloneDelete?.onCloseAutoFocus}
           onClose={() => {
-            if (!working) setDialog(null);
+            if (!working) close();
           }}
         >
           <h2>{title}</h2>
@@ -448,7 +478,8 @@ export function SettingsDanger({
                   ? "All members of this project will lose access."
                   : `The ${count} ${count === 1 ? "member" : "members"} of this project will lose access.`}
               </p>
-              <p className="project-lifecycle-policy">{restorePromise}</p>
+              <p className="project-lifecycle-policy">{deletionDescription}</p>
+              {standaloneDelete && capabilityFeedback}
             </>
           ) : (
             <p>
@@ -475,7 +506,7 @@ export function SettingsDanger({
             </p>
           )}
           <div className="settings-confirm-actions">
-            <Button disabled={working} onClick={() => setDialog(null)}>
+            <Button disabled={working} onClick={close}>
               {dialog.kind === "leave" ? "Stay" : "Cancel"}
             </Button>
             <Button

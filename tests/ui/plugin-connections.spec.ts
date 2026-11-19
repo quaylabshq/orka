@@ -281,6 +281,47 @@ test("connections show reconnect instructions and refresh recorded approval", as
   ).toEqual([]);
 });
 
+test("connector installation instructions open the maintained guide and recover from browser failure", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 900, height: 640 });
+  const settings = await settingsFixture(page, { noProjects: true });
+  await settings
+    .getByRole("button", { name: "Connectors", exact: true })
+    .click();
+  const panel = page.locator('.settings-panel[data-section="connections"]');
+  const instructions = panel.getByRole("button", {
+    name: "Installation instructions",
+    exact: true,
+  });
+  const url =
+    "https://github.com/quaylabshq/orka/blob/main/plugins/orka/README.md#connect";
+  await instructions.click();
+  expect(
+    (await settingsCalls(page)).find((call) => call.command === "open_web_link")
+      ?.args,
+  ).toEqual({ url });
+  await page.evaluate(() => {
+    const controls = (window as any).settingsControls;
+    const internals = (window as any).__TAURI_INTERNALS__;
+    const invoke = internals.invoke;
+    controls.browserOpenError = true;
+    internals.invoke = async (command: string, args: unknown) => {
+      if (command === "open_web_link" && controls.browserOpenError)
+        throw new Error("Cannot open your browser");
+      return invoke(command, args);
+    };
+  });
+  await instructions.click();
+  await expect(panel.getByRole("alert")).toContainText(url);
+  await expect(instructions).toBeEnabled();
+  await page.evaluate(() => {
+    (window as any).settingsControls.browserOpenError = false;
+  });
+  await instructions.click();
+  await expect(panel.getByRole("alert")).toHaveCount(0);
+});
+
 test("Connectors keeps account details visible during recheck and reports retryable errors", async ({
   page,
 }) => {
@@ -297,16 +338,17 @@ test("Connectors keeps account details visible during recheck and reports retrya
     exact: true,
   });
   const resting = await check.boundingBox();
-  const background = await check.evaluate(
-    (element) => getComputedStyle(element).backgroundColor,
+  // Hover lays the shared state overlay over the resting fill.
+  const overlay = await check.evaluate(
+    (element) => getComputedStyle(element).boxShadow,
   );
   await check.hover();
   expect(await check.boundingBox()).toEqual(resting);
   await expect
     .poll(() =>
-      check.evaluate((element) => getComputedStyle(element).backgroundColor),
+      check.evaluate((element) => getComputedStyle(element).boxShadow),
     )
-    .not.toBe(background);
+    .not.toBe(overlay);
   await page.evaluate(() => {
     (window as any).settingsControls.pluginStatusDelay = 1200;
   });

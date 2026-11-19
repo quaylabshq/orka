@@ -1,6 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
 import { memberViewCalls, memberViewFixture } from "./fixtures/member-view.js";
 
+test.use({ locale: "en-US", timezoneId: "UTC" });
+
 const badges = [
   ["Archived notes", "Archived by owner"],
   ["Deleted notes", "Deleted by owner, restorable until Jan 31, 2026"],
@@ -48,7 +50,9 @@ test("an inactive project explains the pause and offers export and removal", asy
   await expect(
     banner.getByRole("heading", { name: "Sync paused" }),
   ).toBeVisible();
-  await expect(banner).toContainText("It can be restored until Jan 31, 2026.");
+  await expect(banner).toContainText(
+    "3 changes are queued to sync if restored by Jan 31, 2026.",
+  );
   await page.screenshot({
     animations: "disabled",
     path: "/tmp/orka-briefs/member-view-2.png",
@@ -75,6 +79,11 @@ test("an inactive project explains the pause and offers export and removal", asy
     "Remove from this Mac?",
   );
   await expect(confirm).toContainText("local drafts");
+  await expect(confirm).toContainText("4 pending changes on this Mac.");
+  await expect(confirm).toContainText(
+    "The export excludes 1 encrypted ENV publication.",
+  );
+
   await page.getByRole("button", { name: "Remove", exact: true }).click();
   await expect
     .poll(async () =>
@@ -224,4 +233,66 @@ test("local removal shows progress and blocks dismissal until it finishes", asyn
   await expect(dialog).toBeVisible();
   await page.evaluate(() => window.memberViewFixture.releaseRemoval?.());
   await expect(dialog).toHaveCount(0);
+});
+
+test("a deleted project with nothing held hides the count", async ({
+  page,
+}) => {
+  await memberViewFixture(page, { heldChanges: 0 });
+  const projects = await openPicker(page);
+  await projects
+    .getByRole("option")
+    .filter({ hasText: "Deleted notes" })
+    .click();
+  const banner = page.locator(".inactive-project-banner");
+  await expect(banner).toContainText(
+    "Sync can resume if the project is restored by Jan 31, 2026.",
+  );
+  await expect(banner).not.toContainText("queued to sync");
+});
+
+test("an archived project keeps its own banner and warning", async ({
+  page,
+}) => {
+  await memberViewFixture(page);
+  const projects = await openPicker(page);
+  await projects
+    .getByRole("option")
+    .filter({ hasText: "Archived notes" })
+    .click();
+  const banner = page.locator(".inactive-project-banner");
+  await expect(banner).toContainText(
+    "This project is archived by its owner. Sync will resume when it’s restored.",
+  );
+  await expect(banner).not.toContainText("Orka keeps capturing");
+  await banner
+    .getByRole("button", { name: "Remove from this Mac", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog", {
+    name: "Remove from this Mac?",
+    exact: true,
+  });
+  await expect(dialog).toContainText("2 pending changes on this Mac.");
+  await expect(dialog).toContainText("local drafts");
+});
+
+test("the removal warning uses a singular change count", async ({ page }) => {
+  await memberViewFixture(page, { heldChanges: 1, pendingChanges: 1 });
+  const projects = await openPicker(page);
+  await projects
+    .getByRole("option")
+    .filter({ hasText: "Deleted notes" })
+    .click();
+  const banner = page.locator(".inactive-project-banner");
+  await expect(banner).toContainText(
+    "1 change is queued to sync if restored by Jan 31, 2026",
+  );
+  await banner
+    .getByRole("button", { name: "Remove from this Mac", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog", {
+    name: "Remove from this Mac?",
+    exact: true,
+  });
+  await expect(dialog).toContainText("1 pending change on this Mac.");
 });

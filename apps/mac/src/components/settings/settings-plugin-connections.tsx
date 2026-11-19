@@ -39,6 +39,9 @@ export function SettingsPluginConnections({ state }: { state: Snapshot }) {
   const check = useRef<() => void>(() => {});
   const [revoking, setRevoking] = useState<string | null>(null);
   const [actionError, setActionError] = useState("");
+  const [setupError, setSetupError] = useState("");
+  const installationUrl =
+    "https://github.com/quaylabshq/orka/blob/main/plugins/orka/README.md#connect";
   const revoke = async (connectionId: string) => {
     setRevoking(connectionId);
     setActionError("");
@@ -270,6 +273,20 @@ export function SettingsPluginConnections({ state }: { state: Snapshot }) {
             and approve a new session.
           </li>
         </ol>
+        <Button
+          size="sm"
+          onClick={() => {
+            setSetupError("");
+            void invoke("open_web_link", { url: installationUrl }).catch(() =>
+              setSetupError(
+                `Couldn’t open your browser. Open ${installationUrl} to view installation instructions.`,
+              ),
+            );
+          }}
+        >
+          Installation instructions
+        </Button>
+        {setupError && <p role="alert">{setupError}</p>}
       </section>
     </>
   );

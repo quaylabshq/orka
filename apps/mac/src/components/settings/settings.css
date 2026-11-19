@@ -69,16 +69,16 @@
     @apply flex shrink-0 text-muted;
   }
   .repository-access-icon[data-state="ready"] {
-    color: var(--status-connected);
+    color: var(--green-text);
   }
   .repository-access-icon[data-state="warning"] {
-    color: var(--status-error);
+    color: var(--red-text);
   }
   .repository-card-actions {
     @apply flex shrink-0 items-center gap-1;
   }
   .repository-source-options {
-    outline: 1px solid var(--surface-stroke);
+    outline: 1px solid var(--border-default);
     outline-offset: -1px;
   }
   .repository-job-feedback {
@@ -130,7 +130,7 @@
     @apply text-heading-md tracking-widest;
   }
   .repository-local-option {
-    outline: 1px solid var(--surface-stroke);
+    outline: 1px solid var(--border-default);
     outline-offset: -1px;
   }
   .repository-account-row {
@@ -138,7 +138,7 @@
   }
   .repository-account-trigger {
     @apply min-w-0;
-    outline: 1px solid var(--surface-stroke);
+    outline: 1px solid var(--border-default);
     outline-offset: -1px;
   }
   .repository-account-trigger > span {
@@ -208,7 +208,7 @@
     color: var(--text-disabled);
   }
   .settings-nav-group button:focus-visible {
-    outline: 1px solid var(--focus-ring);
+    outline: 1px solid var(--border-focus);
     outline-offset: 2px;
   }
   .settings-panel {
@@ -216,8 +216,6 @@
     --settings-content-right: 24px;
     --settings-heading-gap: 32px;
     --settings-scrollbar-width: 8px;
-    --switch-track-on: var(--status-info);
-    --switch-thumb-on: var(--text-primary);
     padding-right: calc(
       var(--settings-content-right) - var(--settings-scrollbar-width, 0px)
     );
@@ -306,13 +304,17 @@
   }
   .settings-update-check {
     background: var(--surface-tertiary);
-    box-shadow: inset 0 0 0 1px var(--surface-stroke);
+    box-shadow: inset 0 0 0 1px var(--border-default);
   }
   .settings-update-check:hover:not(:disabled) {
-    background: var(--interaction-hover);
+    box-shadow:
+      inset 0 0 0 1px var(--border-default),
+      inset 0 0 0 100vmax var(--state-hover);
   }
   .settings-update-check:active:not(:disabled) {
-    background: var(--interaction-selected);
+    box-shadow:
+      inset 0 0 0 1px var(--border-default),
+      inset 0 0 0 100vmax var(--state-pressed);
   }
   .settings-update-actions > [role="alert"],
   .settings-update-actions > .sidebar-update-progress {
@@ -396,7 +398,6 @@
   }
   .settings-source-list {
     border-radius: var(--radius-list);
-    --button-tertiary-bg: transparent;
   }
   .settings-folder-row {
     @apply flex h-[60px] min-w-0 items-center gap-3 px-4;
@@ -411,7 +412,7 @@
     @apply flex shrink-0 items-center gap-2;
   }
   .settings-folder-reconnect {
-    --button-secondary-bg: var(--interaction-hover);
+    background: var(--state-hover);
   }
   .settings-folder-name {
     @apply min-w-0 truncate;
@@ -441,10 +442,6 @@
   }
   .settings-lifecycle-actions .settings-row {
     @apply flex-wrap gap-4 px-4;
-  }
-  .settings-lifecycle-actions,
-  .settings-deleted-list {
-    --button-secondary-bg: var(--surface-tertiary);
   }
   .settings-deleted-list {
     @apply overflow-hidden;
@@ -512,7 +509,7 @@
     @apply mt-1 border-t border-line pt-5;
   }
   .project-lifecycle-danger {
-    --button-secondary-text: var(--text-danger);
+    color: var(--red-text);
   }
   .project-lifecycle-feedback {
     @apply rounded-lg border border-line bg-raised p-3;
@@ -589,14 +586,11 @@
     @apply text-body-caption;
   }
   .settings-service-action {
-    --button-secondary-bg: var(--surface-tertiary);
     --control-icon-container: 16px;
   }
   .settings-sign-out {
-    --button-secondary-text: var(--status-error);
-    --button-secondary-bg: var(--status-error-bg);
-    --button-secondary-bg-hover: var(--status-error-bg);
-    --button-secondary-bg-pressed: var(--status-error-bg);
+    color: var(--red-text);
+    background: var(--red-surface);
   }
   .settings-service-setup {
     @apply w-full space-y-4;
@@ -637,8 +631,8 @@
   }
   .settings-device-label {
     @apply shrink-0 rounded-md px-[9px] text-label-badge;
-    color: var(--status-info);
-    background: var(--status-info-bg);
+    color: var(--blue-text);
+    background: var(--blue-surface);
     display: inline-flex;
     align-items: center;
     height: 20px;
@@ -684,11 +678,10 @@
   }
   .settings-panel .settings-member-controls .permission-select-trigger {
     background: var(--surface-secondary);
-    border: 1px solid var(--border-subtle);
+    border: 1px solid var(--border-default);
   }
   .settings-add-member {
-    --button-secondary-bg: #252525;
-    --button-secondary-bg-hover: var(--interaction-hover);
+    background: var(--state-hover);
   }
   .settings-content > .settings-role-tables {
     @apply flex min-h-0 flex-col gap-6 overflow-y-scroll pb-4;
@@ -740,8 +733,8 @@
     background: var(--surface-tertiary);
     color: var(--text-tertiary);
   }
-  .settings-panel .ui-field[data-readonly] {
-    --field-text: var(--text-tertiary);
+  .settings-panel .ui-field[data-readonly] .ui-field__input {
+    color: var(--text-tertiary);
   }
   .settings-panel .project-sharing {
     @apply m-0;
@@ -895,15 +888,17 @@
 @layer components {
   .settings-source-list > .settings-add-folder-row {
     @apply flex h-[60px] items-center px-2;
-    border-top: 1px solid var(--border-subtle);
+    border-top: 1px solid var(--border-default);
   }
   .settings-source-list .settings-add-folder {
     @apply m-0 justify-start gap-3 px-3 py-0 text-label-item text-muted;
     --control-height: 40px;
     --control-icon-container: 16px;
     --control-icon-size: 16px;
-    --button-tertiary-bg-hover: transparent;
-    --button-tertiary-bg-pressed: transparent;
+  }
+  .settings-source-list .settings-add-folder:hover:not(:disabled),
+  .settings-source-list .settings-add-folder:active:not(:disabled) {
+    background: transparent;
   }
   .settings-add-folder .ui-icon {
     color: var(--text-tertiary);

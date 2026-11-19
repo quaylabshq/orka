@@ -1,4 +1,10 @@
-import { ArrowLeftIcon, ChevronRightIcon, UsersIcon } from "lucide-react";
+import {
+  ArrowLeftIcon,
+  ChevronRightIcon,
+  ShieldUserIcon,
+  UserMinusIcon,
+  UsersIcon,
+} from "lucide-react";
 import React, { useCallback, useEffect, useState } from "react";
 import { defaultProjectRules } from "@portable/protocol";
 import { ENV_ENABLED } from "../lib/features.js";
@@ -327,6 +333,7 @@ export function MembersPage({
                           const actions: ItemMenuAction[] = [
                             {
                               id: "permissions",
+                              icon: ShieldUserIcon,
                               label:
                                 catalog.owner && item.role !== "owner"
                                   ? "Edit permissions"
@@ -341,6 +348,7 @@ export function MembersPage({
                             actions.push({
                               id: "remove",
                               label: "Remove member",
+                              icon: UserMinusIcon,
                               danger: true,
                               separator: true,
                               disabled: busy,

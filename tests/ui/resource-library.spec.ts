@@ -811,3 +811,151 @@ test("configured sync timing refreshes local-only rows without clearing collecti
   await expect(table.locator("tbody tr")).toHaveCount(4);
   await expect(sessions).toContainText("4");
 });
+
+for (const { kind, label } of kinds) {
+  test(`${label} keeps large collections navigable a page at a time`, async ({
+    page,
+  }) => {
+    await resourceLibraryFixture(page, {
+      extraRows: 50,
+      emptyLocal: true,
+      defer: true,
+    });
+    await page.getByRole("button", { name: new RegExp(`^${label}`) }).click();
+    const table = page.getByRole("table");
+    const pages = page.getByRole("navigation", {
+      name: kind === "memory" ? "Memory pages" : `${label.slice(0, -1)} pages`,
+    });
+    const rows = table.locator(".resource-table-open");
+    const next = pages.getByRole("button", { name: "Next page" });
+    const previous = pages.getByRole("button", { name: "Previous page" });
+
+    await expect(rows).toHaveCount(40);
+    await expect(pages).toContainText("Page 1 of 2");
+    await expect(previous).toBeDisabled();
+
+    await next.press("Enter");
+    await expect(pages).toContainText("Page 2 of 2");
+    await expect(rows).toHaveCount(12);
+    await expect(next).toBeDisabled();
+    const item = table.getByRole("button", {
+      name: `Archive ${kind} 49`,
+      exact: true,
+    });
+    await expect(rows.first()).toBeFocused();
+    await item.press("Enter");
+    await page
+      .getByRole("button", { name: `Back to ${label}`, exact: true })
+      .click();
+    await expect(pages).toContainText("Page 2 of 2");
+    await expect(item).toBeFocused();
+
+    const search = page.getByRole("searchbox", {
+      name: `Search ${label.toLowerCase()}`,
+    });
+    await search.fill(`Archive ${kind} 1`);
+    await expect(rows).toHaveCount(11);
+    await expect(pages).toHaveCount(0);
+    await search.clear();
+    await expect(pages).toContainText("Page 1 of 2");
+  });
+}
+
+test("expanded session forks stay with the parent at the page boundary", async ({
+  page,
+}) => {
+  await resourceLibraryFixture(page, {
+    extraRows: 50,
+    emptyLocal: true,
+    boundaryFork: true,
+  });
+  await page.getByRole("button", { name: /^Sessions/ }).click();
+  const pages = page.getByRole("navigation", { name: "Session pages" });
+  const toggle = page.getByRole("button", {
+    name: "Expand 1 fork of Archive session 37",
+  });
+  await toggle.click();
+  const fork = page.getByRole("button", {
+    name: "Archived session fork",
+    exact: true,
+  });
+  await expect(fork).toBeVisible();
+  await expect(pages).toContainText("Page 1 of 2");
+  await fork.click();
+  await page.getByRole("button", { name: "Back to Sessions" }).click();
+  await expect(fork).toBeFocused();
+  await expect(pages).toContainText("Page 1 of 2");
+});
+
+test("a focused session stays reachable when its display title changes pages", async ({
+  page,
+}) => {
+  await resourceLibraryFixture(page, {
+    extraRows: 50,
+    emptyLocal: true,
+    deferredTitleId: "session-extra-0",
+  });
+  await page.getByRole("button", { name: /^Sessions/ }).click();
+  await page.getByRole("button", { name: "Sort by Recently updated" }).click();
+  await page.getByRole("menuitemradio", { name: "Title", exact: true }).click();
+  const item = page.locator('[data-resource-id="session-extra-0"]');
+  const pages = page.getByRole("navigation", { name: "Session pages" });
+  await item.focus();
+  await expect(item).toBeFocused();
+  await expect(pages).toContainText("Page 1 of 2");
+  await page.waitForFunction(
+    () => (window as unknown as LibraryWindow).library.finishTitle,
+  );
+  await page.evaluate(() =>
+    (window as unknown as LibraryWindow).library.finishTitle?.("Zulu Page B"),
+  );
+  await expect(item).toHaveText("Zulu Page B");
+  await expect(pages).toContainText("Page 2 of 2");
+  await expect(item).toBeFocused();
+});
+
+for (const mode of ["button", "context menu"] as const) {
+  test(`an open resource ${mode} stays available when its session changes pages`, async ({
+    page,
+  }) => {
+    await resourceLibraryFixture(page, {
+      extraRows: 50,
+      emptyLocal: true,
+      deferredTitleId: "session-extra-0",
+    });
+    await page.getByRole("button", { name: /^Sessions/ }).click();
+    await page
+      .getByRole("button", { name: "Sort by Recently updated" })
+      .click();
+    await page
+      .getByRole("menuitemradio", { name: "Title", exact: true })
+      .click();
+    const item = page.locator('[data-resource-id="session-extra-0"]');
+    if (mode === "button")
+      await page
+        .getByRole("button", {
+          name: "Actions for Archive session 0",
+          exact: true,
+        })
+        .press("Enter");
+    else await item.press("Shift+F10");
+
+    const menu = page.getByRole("menu");
+    await expect(menu).toBeVisible();
+    await page.waitForFunction(
+      () => (window as unknown as LibraryWindow).library.finishTitle,
+    );
+    await page.evaluate(() =>
+      (window as unknown as LibraryWindow).library.finishTitle?.("Zulu Page B"),
+    );
+    await expect(item).toHaveText("Zulu Page B");
+    await expect(menu).toBeVisible();
+    await expect(
+      page.getByRole("navigation", { name: "Session pages" }),
+    ).toContainText("Page 2 of 2");
+    await menu.getByRole("menuitem", { name: "Open", exact: true }).click();
+    await expect(
+      page.getByRole("button", { name: "Back to Sessions" }),
+    ).toBeVisible();
+  });
+}

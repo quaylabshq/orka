@@ -1,11 +1,14 @@
 import {
+  ArchiveIcon,
   ArrowLeftIcon,
   FolderIcon,
   FolderOpenIcon,
   LinkIcon,
   PencilIcon,
+  RotateCcwIcon,
   SettingsIcon,
   ShieldUserIcon,
+  Trash2Icon,
   UsersIcon,
 } from "lucide-react";
 import {
@@ -52,6 +55,11 @@ import {
   projectLabel,
 } from "./components/project-navigation.js";
 import { InactiveProject } from "./components/inactive-project.js";
+import { inactiveReason } from "./components/project-inactive.js";
+import {
+  changeProjectArchive,
+  SettingsDanger,
+} from "./components/settings/settings-danger.js";
 import {
   FolderConnectionPrompt,
   ProjectEmptyState,
@@ -83,17 +91,26 @@ import {
   useDesktopUpdates,
 } from "./components/desktop-updates.js";
 import { WorkspaceHeader } from "./components/workspace-header.js";
-import { projectAttention } from "./components/sync-attention.js";
+import {
+  projectAttention,
+  syncReviewItems,
+  type SyncReviewItem,
+} from "./components/sync-attention.js";
+import { skillReviewState } from "./components/skill-review-state.js";
 import { useDeepLinks } from "./components/use-deep-links.js";
 import { PluginAuthorization } from "./components/plugin-authorization.js";
 import { parseProjectInvite } from "./components/project-invite.js";
 import { useIndexFilters } from "./components/use-index-filters.js";
+import { defaultIndexFilters } from "./components/index-toolbar.js";
 import { useResourceView } from "./components/use-resource-view.js";
 import {
   useSkillSummaries,
   skillSummaryKey,
 } from "./components/use-skill-summaries.js";
-import { useSessionTitles } from "./components/use-session-titles.js";
+import {
+  useSessionTitleCache,
+  useSessionTitles,
+} from "./components/use-session-titles.js";
 import { useLocalResources } from "./components/use-local-resources.js";
 import { resourceCatalog } from "./components/resource-catalog.js";
 import { useWorkspace } from "./components/use-workspace.js";
@@ -244,14 +261,66 @@ function WorkspaceApp({
     if (!settings) setSettingsProject(null);
   }, [settings]);
   const settingsNavigation = useRef<SettingsNavigationHandle>(null);
-  const leaveSettings = (action: () => void) => {
+  const projectPickerTrigger = useRef<HTMLButtonElement>(null);
+  const [projectLifecycle, setProjectLifecycle] = useState<{
+    id: string;
+    scope: string;
+    action: "archive" | "restore" | "delete";
+  } | null>(null);
+  const lifecycleTarget =
+    projectLifecycle?.scope === workspaceScope
+      ? (projectLifecycle.action === "restore"
+          ? state.inactive
+          : state.projects
+        )?.find(
+          (item) => item.id === projectLifecycle.id && item.role === "owner",
+        )
+      : undefined;
+  useEffect(() => {
+    if (!projectLifecycle) return;
+    if (!lifecycleTarget) {
+      setProjectLifecycle(null);
+      return;
+    }
+    const { action } = projectLifecycle;
+    if (action === "delete") return;
+    setProjectLifecycle(null);
+    if (action === "restore" && inactiveReason(lifecycleTarget) !== "archived")
+      return;
+    // A settings save can advance the revision before the requested action.
+    void act(() => changeProjectArchive(lifecycleTarget, action), {
+      successTitle:
+        action === "archive" ? "Project archived" : "Project restored",
+      errorTitle:
+        action === "archive"
+          ? "Couldn’t archive project"
+          : "Couldn’t restore project",
+    });
+  }, [act, projectLifecycle, lifecycleTarget]);
+  const deleteTarget =
+    projectLifecycle?.action === "delete" ? lifecycleTarget : undefined;
+  const leaveSettings = (
+    action: () => void,
+    onGuardCloseAutoFocus?: (accepted: boolean) => void,
+  ) => {
     if (settings && settingsNavigation.current)
       settingsNavigation.current.requestExit(() => {
         setSettings(null);
         action();
-      });
+      }, onGuardCloseAutoFocus);
     else action();
   };
+  const requestProjectLifecycle = (
+    id: string,
+    action: NonNullable<typeof projectLifecycle>["action"],
+  ) =>
+    leaveSettings(
+      () => setProjectLifecycle({ id, scope: workspaceScope, action }),
+      (accepted) => {
+        if (!accepted || action !== "delete")
+          projectPickerTrigger.current?.focus();
+      },
+    );
   const openProjectSettings = (id: string, section: SettingsSection) => {
     if (settings && settingsNavigation.current) {
       settingsNavigation.current.requestProject(id, () => {
@@ -362,6 +431,14 @@ function WorkspaceApp({
   )
     ? index.repository
     : "all";
+  const collectionFilters =
+    tab === "home" || tab === "env" || tab === "members"
+      ? undefined
+      : index.filters[tab];
+  const filters = useMemo(
+    () => ({ ...defaultIndexFilters, ...collectionFilters, repository }),
+    [collectionFilters, repository],
+  );
   const projectPath = selectedProject?.path;
   const localCatalog = useLocalResources({
     scope: workspaceScope,
@@ -398,10 +475,11 @@ function WorkspaceApp({
       ),
     [catalogResources, project, tab],
   );
+  const titleCache = useSessionTitleCache(workspaceScope);
   const sessionTitles = useSessionTitles(
     resources,
     tab === "session",
-    workspaceScope,
+    titleCache,
   );
   const skillSummaries = useSkillSummaries(resources, workspaceScope);
   const skillUsage = useProjectSkillUsage(
@@ -430,6 +508,7 @@ function WorkspaceApp({
   const duplicateTitles = useMemo(() => {
     const counts = new Map<string, number>();
     for (const item of resources) {
+      if (item.kind === "session" || item.kind === "skill") continue;
       const title = displayTitle(item).toLocaleLowerCase();
       counts.set(title, (counts.get(title) ?? 0) + 1);
     }
@@ -553,6 +632,10 @@ function WorkspaceApp({
     () => projectAttention(state, project),
     [state, project],
   );
+  const syncReviews = useMemo(
+    () => syncReviewItems(state, project, attention),
+    [state, project, attention],
+  );
   const updatesDialog =
     settings === "updates" && (!state.user || state.onboarding?.active) ? (
       <Overlay
@@ -631,6 +714,27 @@ function WorkspaceApp({
       index.setRepository("all");
     setResource(id);
     view.setChanges(false);
+  };
+  const openSyncReview = ({ projectId, item }: SyncReviewItem) => {
+    const targetProject = state.projects.find((p) => p.id === projectId);
+    if (!targetProject) return;
+    const target = catalogResources.find(
+      (r) => r.resourceId === item.resourceId && r.projectId === projectId,
+    );
+    setProject(projectId);
+    setGovernance(null);
+    if (
+      target?.kind === "skill" &&
+      skillReviewState(target, state, targetProject).incoming
+    ) {
+      setGovernance({ resource: target.resourceId, mode: "incoming" });
+    }
+    if (target && !target.deleted && (target.kind === "skill" || !item.draft)) {
+      setTab(target.kind);
+      openResource(target.resourceId);
+    } else {
+      openManagement("requests");
+    }
   };
   const closeDetail = () => {
     setReturnFocus(resource);
@@ -750,6 +854,7 @@ function WorkspaceApp({
               projects={[...state.projects, ...(state.inactive ?? [])]}
               projectId={project}
               collapsed={sidebarCollapsed}
+              triggerRef={projectPickerTrigger}
               projectActions={(target) => {
                 const open: ItemMenuAction = {
                   id: "open",
@@ -763,9 +868,24 @@ function WorkspaceApp({
                       setTab("home");
                     }),
                 };
-                // A paused project has no settings to open on this Mac.
+                const archiveAction = (
+                  action: "archive" | "restore",
+                ): ItemMenuAction => ({
+                  id: action,
+                  label:
+                    action === "archive"
+                      ? "Archive project"
+                      : "Restore project",
+                  icon: action === "archive" ? ArchiveIcon : RotateCcwIcon,
+                  separator: true,
+                  disabled: busy,
+                  onSelect: () => requestProjectLifecycle(target.id, action),
+                });
                 if (!state.projects.some((item) => item.id === target.id))
-                  return [open];
+                  return target.role === "owner" &&
+                    inactiveReason(target) === "archived"
+                    ? [open, archiveAction("restore")]
+                    : [open];
                 const settingsAction = (
                   id: string,
                   label: string,
@@ -826,6 +946,17 @@ function WorkspaceApp({
                       ShieldUserIcon,
                     ),
                   );
+                if (target.role === "owner")
+                  actions.push(archiveAction("archive"), {
+                    id: "delete",
+                    label: "Delete project…",
+                    icon: Trash2Icon,
+                    danger: true,
+                    disabled: busy,
+                    restoreFocus: false,
+                    onSelect: () =>
+                      requestProjectLifecycle(target.id, "delete"),
+                  });
                 return actions;
               }}
               onProjectChange={(id) => {
@@ -892,6 +1023,11 @@ function WorkspaceApp({
                 canConnect={Boolean(selectedProject)}
                 state={state}
                 attention={attention}
+                projectId={project}
+                reviews={syncReviews}
+                onReviewItem={(review) =>
+                  leaveSettings(() => openSyncReview(review))
+                }
                 queue={queue}
                 onCancel={(projectId) =>
                   void act(
@@ -1058,6 +1194,7 @@ function WorkspaceApp({
                 ) : tab === "home" ? (
                   <ProjectHome
                     scope={workspaceScope}
+                    titleCache={titleCache}
                     project={selectedProject}
                     user={state.user}
                     resources={catalogResources}
@@ -1119,7 +1256,7 @@ function WorkspaceApp({
                     skillUsage={tab === "skill" ? skillUsage : undefined}
                     kind={tab}
                     resources={resources}
-                    filters={{ ...index.filters[tab], repository }}
+                    filters={filters}
                     onFilters={(next) => index.set(tab, next)}
                     user={state.user}
                     displayTitle={displayTitle}
@@ -1160,6 +1297,28 @@ function WorkspaceApp({
             </>
           )}
           <ToastViewport />
+          {deleteTarget && (
+            <SettingsDanger
+              key={deleteTarget.id}
+              project={deleteTarget}
+              serviceUrl={state.config?.apiUrl}
+              members={
+                state.governance?.find(
+                  (entry) => entry.projectId === deleteTarget.id,
+                )?.catalog.members?.length ?? null
+              }
+              busy={busy}
+              run={run}
+              onComplete={() => setNotice("Project deleted")}
+              standaloneDelete={{
+                onClose: () => setProjectLifecycle(null),
+                onCloseAutoFocus: (event) => {
+                  event.preventDefault();
+                  projectPickerTrigger.current?.focus();
+                },
+              }}
+            />
+          )}
         </main>
         {repositorySetupProject && !alreadyConnectedRepositories && (
           <RepositoryConnections

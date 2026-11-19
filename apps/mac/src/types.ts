@@ -59,6 +59,12 @@ export interface Project {
   archivedAt?: string | null;
   deletedAt?: string | null;
   purgeAfter?: string | null;
+  /** Outbox changes eligible for upload after restore. */
+  heldChanges?: number;
+  /** Pending local changes that removal discards, including failed uploads. */
+  pendingChanges?: number;
+  /** Pending encrypted publications included in the removal count and excluded from export. */
+  pendingEnvPublications?: number;
   purged?: boolean | null;
   revoked?: boolean | null;
   detachedAt?: string | null;
@@ -72,6 +78,7 @@ export interface Binding {
   needsCopy?: boolean;
   installationState?: string;
   availableRevision?: number;
+  skillReviewFingerprint?: string | null;
 }
 export type ServiceMode = "cloud" | "self-hosted";
 export interface SyncProgress {
@@ -130,6 +137,7 @@ export interface Snapshot {
     resourceId?: string | null;
     title?: string | null;
     kind?: Resource["kind"] | null;
+    reviewable?: boolean;
   }[];
   errors: { source: string; error: string }[];
   sync: { online: boolean; lastSync?: string; error?: string } | null;

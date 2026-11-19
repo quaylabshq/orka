@@ -12,6 +12,13 @@ use std::{
     sync::{Arc, LazyLock, Mutex},
 };
 use uuid::Uuid;
+
+const PENDING_UPLOADS: &str = "(SELECT count(*) FROM outbox WHERE project=projects.id)";
+const PENDING_ENV_PUBLICATIONS: &str =
+    "(SELECT count(*) FROM meta WHERE ? AND key LIKE 'env:%:pending:%'
+      AND json_extract(value,'$.sourceRemoval') IS NULL
+      AND json_extract(value,'$.header.manifest.projectId')=projects.id)";
+
 #[tauri::command]
 pub fn snapshot() -> Result<Value> {
     let db = db::open()?;
@@ -45,14 +52,28 @@ pub fn snapshot() -> Result<Value> {
     )?;
     // Archived, deleted, and unreachable projects keep their place in the
     // sidebar so the reason and the local copy stay visible.
-    let inactive = db::rows(
+    let mut inactive = db::rows(
         &db,
         &format!(
-            "SELECT value FROM projects WHERE coalesce(json_extract(value,'$.hidden'),0)=0 AND NOT ({}) ORDER BY json_extract(value,'$.name')",
+            "SELECT json_set(value,'$.pendingChanges',{PENDING_UPLOADS},'$.pendingEnvPublications',{PENDING_ENV_PUBLICATIONS})
+             FROM projects WHERE coalesce(json_extract(value,'$.hidden'),0)=0 AND NOT ({}) ORDER BY json_extract(value,'$.name')",
             projects::ACTIVE
         ),
-        &[],
+        // Removing an inactive copy discards pending publications even if ENV is disabled.
+        &[&true],
     )?;
+    // Only the changes eligible for upload are advertised in the banner.
+    for project in &mut inactive {
+        // ENV publications stay outside the ZIP but are discarded by removal.
+        project["pendingChanges"] = json!(
+            project["pendingChanges"].as_i64().unwrap_or(0)
+                + project["pendingEnvPublications"].as_i64().unwrap_or(0)
+        );
+        project["heldChanges"] = json!(crate::indexer::held_count(
+            &db,
+            project["id"].as_str().unwrap_or_default()
+        )?);
+    }
     for project in &mut projects {
         if let Some(sources) = project["sources"].as_array_mut() {
             for source in sources {
@@ -89,17 +110,25 @@ pub fn snapshot() -> Result<Value> {
         }
     }
     crate::session_forks::annotate(&db, &mut resources)?;
+    let outbox: Vec<Value> = db::rows(&db,&format!("SELECT json_object('id',o.id,'project',o.project,'error',o.error,'resourceId',coalesce(json_extract(o.value,'$.resource.resourceId'),json_extract(o.value,'$.resourceId')),'title',coalesce(json_extract(o.value,'$.resource.title'),json_extract(r.value,'$.title')),'kind',coalesce(json_extract(o.value,'$.resource.kind'),json_extract(r.value,'$.kind')),'reviewPath',o.path,'reviewResource',json_extract(o.value,'$.resource')) FROM outbox o LEFT JOIN resources r ON r.project=o.project AND r.id=coalesce(json_extract(o.value,'$.resource.resourceId'),json_extract(o.value,'$.resourceId')) WHERE o.project IN ({visible})"),&[])?.into_iter().map(|mut row| {
+        row["reviewable"] = json!(crate::upload_review::reviewable(row["reviewPath"].as_str().unwrap_or(""), row["error"].as_str(), &row["reviewResource"]));
+        if let Some(fields) = row.as_object_mut() {
+            fields.remove("reviewPath");
+            fields.remove("reviewResource");
+        }
+        row
+    }).collect();
     Ok(json!({
         "profile":crate::profiles::current(), "onboarding":onboarding, "accountProfile":db::get(&db,"accountProfile")?,
         "user":db::get(&db,"user")?, "config":db::get(&db,"config")?,
         "projects":projects, "inactive":inactive, "deletedProjects":deleted_projects, "archivedProjects":archived_projects, "localSkills":local_skills,
-        "managedProjects":db::rows(&db,"SELECT json_set(value,'$.pendingChanges',(SELECT count(*) FROM outbox WHERE project=projects.id)+(SELECT count(*) FROM meta WHERE ? AND key LIKE 'env:%:pending:%' AND json_extract(value,'$.sourceRemoval') IS NULL AND json_extract(value,'$.header.manifest.projectId')=projects.id)) FROM projects ORDER BY json_extract(value,'$.name')",&[&crate::env::enabled()])?,
+        "managedProjects":db::rows(&db,&format!("SELECT json_set(value,'$.pendingChanges',{PENDING_UPLOADS}+{PENDING_ENV_PUBLICATIONS}) FROM projects ORDER BY json_extract(value,'$.name')"),&[&crate::env::enabled()])?,
         "resources":resources, "bindings":scoped("bindings")?, "conflicts":scoped("conflicts")?,
         "drafts":scoped("drafts")?,
         "governance":db::rows(&db,&format!("SELECT json_object('projectId',substr(key,12),'catalog',json(value)) FROM meta WHERE key LIKE 'governance:%' AND substr(key,12) IN ({visible})"),&[])?,
         "reviewRequests":db::rows(&db,&format!("SELECT json_each.value FROM meta,json_each(meta.value) WHERE meta.key LIKE 'requests:%' AND json_each.type='object' AND substr(meta.key,10) IN ({visible})"),&[])?,
         "activity":db::rows(&db,&format!("SELECT value FROM activity WHERE json_extract(value,'$.resourceId') IN (SELECT id FROM resources WHERE project IN ({visible})) ORDER BY rowid DESC LIMIT 30"),&[])?,
-        "outbox":db::rows(&db,&format!("SELECT json_object('id',o.id,'project',o.project,'error',o.error,'resourceId',coalesce(json_extract(o.value,'$.resource.resourceId'),json_extract(o.value,'$.resourceId')),'title',coalesce(json_extract(o.value,'$.resource.title'),json_extract(r.value,'$.title')),'kind',coalesce(json_extract(o.value,'$.resource.kind'),json_extract(r.value,'$.kind'))) FROM outbox o LEFT JOIN resources r ON r.project=o.project AND r.id=coalesce(json_extract(o.value,'$.resource.resourceId'),json_extract(o.value,'$.resourceId')) WHERE o.project IN ({visible})"),&[])?,
+        "outbox":outbox,
         "errors":db::rows(&db,&format!("SELECT json_object('source',source,'error',error) FROM errors WHERE source IN ({visible}) OR source NOT IN (SELECT id FROM projects)"),&[])?,
         "sync":db::get(&db,"sync")?, "syncProgress":sync::current_progress(&db,daemon["running"]==true)?,
         "daemon":daemon, "devices":crate::device_metadata::devices(&db,&db::get(&db,"devices")?)?, "deviceId":db::device(&db)?, "localHardwareFamily":crate::device_metadata::local_family(&db)?, "background":background
@@ -616,7 +645,7 @@ pub async fn session_display_title(id: String) -> Result<Option<String>> {
             return Err("Session unavailable".into());
         }
         let records = crate::history::resource_records(&resource)?;
-        crate::session_presentation::title(&native::encode(&records))
+        Ok(crate::session_presentation::title(&records))
     })
     .await
     .map_err(|error| error.to_string())?
@@ -899,11 +928,58 @@ pub async fn resume_session(
 pub fn export_bundle(id: String, path: String) -> Result<()> {
     bundles::export(&db::open()?, &id, &PathBuf::from(path))
 }
-/// Keeps a copy of an inactive project's cached work before it leaves this Mac.
+/// Exports the authorized snapshot, returning true when fresh capture was
+/// unavailable for a restorable deleted project.
+pub(crate) fn export_project_with_capture(
+    cache: &db::CacheScope,
+    project_id: &str,
+    destination: &std::path::Path,
+) -> Result<bool> {
+    let capture_only: bool = cache
+        .open_read_only()?
+        .query_row(
+            &format!(
+                "SELECT EXISTS(SELECT 1 FROM projects WHERE id=? AND {})",
+                projects::CAPTURE_ONLY
+            ),
+            [project_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    let mut cached_only = false;
+    if capture_only {
+        if let Some(_workspace) = projects::try_lock()? {
+            // Capture writes blobs in the current service. Verify that it is
+            // still the invocation's service under the same lock as a switch.
+            if db::CacheScope::current()? != *cache {
+                return Err("The Orka account or service changed during export. Export again from the project.".into());
+            }
+            let db = cache.open()?;
+            cached_only = match sync::capture_held(&db, project_id) {
+                Ok(complete) => !complete,
+                Err(error) => {
+                    let _ = sync::record_result(&db, project_id, Err(error));
+                    true
+                }
+            };
+        } else {
+            cached_only = true;
+        }
+    }
+    // Compress a scoped, read-only snapshot after releasing the capture lock.
+    bundles::export_project(cache, project_id, destination)?;
+    Ok(cached_only)
+}
+
+/// Keeps a copy of an inactive project's work before it leaves this Mac.
 #[tauri::command]
-pub fn export_project(project_id: String, destination: String) -> Result<()> {
-    let _lock = projects::lock()?;
-    bundles::export_project(&db::open()?, &project_id, &PathBuf::from(destination))
+pub async fn export_project(project_id: String, destination: String) -> Result<bool> {
+    let cache = db::CacheScope::current()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        export_project_with_capture(&cache, &project_id, &PathBuf::from(destination))
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 #[tauri::command]
 pub fn import_bundle(

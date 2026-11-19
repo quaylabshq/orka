@@ -15,6 +15,11 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
+
+const PLAN_REVISION_CONFLICT: &str =
+    "409: Resource changed; refresh and review the exact version again";
+const PLAN_REVIEW_PENDING: &str = "Queued plan upload needs review";
+
 pub async fn api(method: &str, path: &str, body: Option<&Value>) -> Result<Value> {
     let owner = db::get(&db::open()?, "user")?;
     api_as(
@@ -851,7 +856,7 @@ fn automatic_skill_binding(
     project: &Value,
     resource: &Value,
     mut binding: Value,
-) -> Result<Value> {
+) -> Result<Option<Value>> {
     if resource["access"]["mode"] == "hidden" {
         return Err("Skill access denied; local files preserved".into());
     }
@@ -905,32 +910,39 @@ fn automatic_skill_binding(
             }
         }
     }
+    let copies = paths
+        .iter()
+        .map(|path| {
+            let files = if path.try_exists().map_err(|error| error.to_string())? {
+                packages::directory(path)?
+            } else {
+                Vec::new()
+            };
+            Ok((path, json!(files)))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    if crate::skill_reconciliation::kept(&binding, resource, &copies) {
+        return Ok(None);
+    }
     binding["paths"] = json!(paths);
-    let guards = live_hash(&binding, "skill", root)?;
+    let guards: Vec<_> = copies
+        .iter()
+        .map(|(_, files)| indexer::manifest_hash(files))
+        .collect();
     let empty = indexer::manifest_hash(&json!([]));
     let base = indexer::manifest_hash(&binding["base"]["files"]);
     let incoming = indexer::manifest_hash(&resource["files"]);
     if guards
         .iter()
         .any(|hash| hash != &empty && hash != &base && hash != &incoming)
+        && !crate::skill_reconciliation::reconcile(db, project, resource, &mut binding, &copies)?
     {
-        binding["installationState"] = json!("locally_modified");
-        binding["availableRevision"] = resource["revision"].clone();
-        db::upsert(
-            db,
-            "bindings",
-            resource["resourceId"].as_str().ok_or("Missing resource")?,
-            project["id"].as_str().ok_or("Missing project")?,
-            &binding,
-        )?;
-        return Err(
-            "Local skill edits preserved; resolve them before applying the shared update".into(),
-        );
+        return Err(crate::skill_reconciliation::LOCAL_EDITS.into());
     }
     binding["reviewedRevision"] = resource["revision"].clone();
     binding["guards"] = json!(guards);
     binding["installationState"] = json!("current");
-    Ok(binding)
+    Ok(Some(binding))
 }
 
 fn guard_unbound_destinations(
@@ -967,6 +979,23 @@ fn guard_unbound_destinations(
 }
 
 pub fn materialize(db: &rusqlite::Connection, project: &Value, resource: &Value) -> Result<()> {
+    materialize_install(db, project, resource, false)
+}
+
+pub(crate) fn materialize_reviewed(
+    db: &rusqlite::Connection,
+    project: &Value,
+    resource: &Value,
+) -> Result<()> {
+    materialize_install(db, project, resource, true)
+}
+
+fn materialize_install(
+    db: &rusqlite::Connection,
+    project: &Value,
+    resource: &Value,
+    reviewed: bool,
+) -> Result<()> {
     let scoped;
     let project = if project["sources"].is_array() && !project["sourceId"].is_string() {
         let Some(source) = crate::sources::for_resource(project, resource) else {
@@ -998,7 +1027,10 @@ pub fn materialize(db: &rusqlite::Connection, project: &Value, resource: &Value)
         && resource["revision"].as_u64().unwrap_or(0) > 0
         && b["reviewedRevision"] != resource["revision"]
     {
-        b = automatic_skill_binding(db, project, resource, b)?;
+        let Some(binding) = automatic_skill_binding(db, project, resource, b)? else {
+            return Ok(());
+        };
+        b = binding;
     }
     if project["governed"] == true
         && crate::governance::protected(resource)
@@ -1050,7 +1082,9 @@ pub fn materialize(db: &rusqlite::Connection, project: &Value, resource: &Value)
             }
         }
     }
-    if b["base"]["revision"] == resource["revision"] && b["base"]["deleted"] == resource["deleted"]
+    if b["base"]["revision"] == resource["revision"]
+        && b["base"]["deleted"] == resource["deleted"]
+        && !(reviewed && kind == "skill")
     {
         if kind == "skill" {
             crate::codex_skills::queue(db, project, false)?;
@@ -1058,6 +1092,9 @@ pub fn materialize(db: &rusqlite::Connection, project: &Value, resource: &Value)
         return db::upsert(db, "bindings", id, project_id, &b);
     }
     let pending:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM outbox WHERE json_extract(value,'$.resource.resourceId')=? OR json_extract(value,'$.resourceId')=?)",params![id,id],|r|r.get(0)).map_err(|e|e.to_string())?;
+    if kind == "plan" && pending && plan_upload_needs_review(db, project_id, id)? {
+        return Err(PLAN_REVIEW_PENDING.into());
+    }
     if pending || b["needsCopy"] == true {
         return Err("Local changes are queued; incoming version staged".into());
     }
@@ -1214,8 +1251,12 @@ pub fn materialize(db: &rusqlite::Connection, project: &Value, resource: &Value)
                 &path,
             )?;
             guard_unbound_destinations(&b, resource, &root, std::slice::from_ref(&path))?;
-            fs::create_dir_all(&base).map_err(|e| e.to_string())?;
-            packages::write_file(&base, &path, files.first().ok_or("Missing plan file")?)?;
+            let accepted_file = files.first().ok_or("Missing plan file")?;
+            if !crate::plans::file(&path).is_ok_and(|(local_file, _)| &local_file == accepted_file)
+            {
+                fs::create_dir_all(&base).map_err(|e| e.to_string())?;
+                packages::write_file(&base, &path, accepted_file)?;
+            }
             vec![path]
         } else {
             let (base, path) = if project["governed"] != true
@@ -1245,6 +1286,8 @@ pub fn materialize(db: &rusqlite::Connection, project: &Value, resource: &Value)
     b["managed"] = json!(true);
     b["installationState"] = json!("current");
     if kind == "skill" {
+        b["skillReviewFingerprint"] = Value::Null;
+        b["keptLocalSkill"] = Value::Null;
         crate::codex_skills::queue(db, project, true)?;
     }
     b["guards"] = json!(live_hash(
@@ -1706,15 +1749,33 @@ impl<'a> SyncPass<'a> {
         if crate::projects::foreground_waiting()? {
             return Ok(Break(()));
         }
-        for source in crate::sources::views(project) {
-            crate::repair::project_state(self.db, &source)?;
-        }
-        packages::recover_project_installations(self.db, project)?;
-        rebuild_unredacted_outbox_for(
-            self.db,
-            Some(project["id"].as_str().ok_or("Missing project")?),
-        )?;
+        prepare_local(self.db, project)?;
         Ok(Continue(()))
+    }
+
+    /// A deleted project that can still be restored: repair and scan its local
+    /// files into the outbox, with no authorization, upload, pull or other
+    /// request. Governed edits become drafts whose automatic sharing waits for
+    /// a restore.
+    fn capture_project(&mut self, p: &Value) -> Stage {
+        let project = p["id"].as_str().ok_or("Missing project")?;
+        if boundary(self.db, project)?.is_break() || self.prepare_project(p)?.is_break() {
+            return Ok(Break(()));
+        }
+        if crate::projects::foreground_waiting()? || boundary(self.db, project)?.is_break() {
+            return Ok(Break(()));
+        }
+        match scan_held(self.db, p) {
+            Ok(_) => {
+                self.db
+                    .execute("DELETE FROM errors WHERE source=?", [project])
+                    .map_err(|e| e.to_string())?;
+            }
+            Err(error) => {
+                self.db.execute("INSERT INTO errors VALUES(?,?) ON CONFLICT(source) DO UPDATE SET error=excluded.error",params![project,error]).map_err(|e|e.to_string())?;
+            }
+        }
+        boundary(self.db, project)
     }
 
     /// Repairs local state and queues pending session copies before any project syncs.
@@ -1929,6 +1990,7 @@ impl<'a> SyncPass<'a> {
             )?;
             let result = async {
                 let id = q["id"].as_str().ok_or("Missing request ID")?;
+                indexer::release_held_capture(db, id)?;
                 if db::get(db, &outbox_redaction_key(id))?.is_object() {
                     let capabilities =
                         api_as(owner, "GET", "/v2/projects/capabilities", None).await?;
@@ -2151,6 +2213,7 @@ impl<'a> SyncPass<'a> {
         if db::get(&db::open()?, "user")? != owner {
             return Err("Account changed; sync will restart with its own cache".into());
         }
+        reconcile_shared_plan_uploads(db, project)?;
         let resources = db::rows(
             db,
             "SELECT value FROM resources WHERE project=?",
@@ -2265,6 +2328,21 @@ async fn sync_workspace(
             return Ok(WorkspaceSync::Yielded);
         }
     }
+    if pass.mode == ProjectMode::Full {
+        let held = db::rows(
+            pass.db,
+            &format!(
+                "SELECT value FROM projects WHERE {}",
+                crate::projects::CAPTURE_ONLY
+            ),
+            &[],
+        )?;
+        for p in &held {
+            if pass.capture_project(p)?.is_break() {
+                return Ok(WorkspaceSync::Yielded);
+            }
+        }
+    }
     if connected?.is_break() {
         return Ok(WorkspaceSync::Yielded);
     }
@@ -2323,10 +2401,17 @@ async fn run_job(db: &mut rusqlite::Connection, job: &crate::sync_queue::Job) ->
     } else {
         result
     };
+    let capture_failed = result.is_err() && SyncQueue::is_capture_only(db, &job.project)?;
     let previous = db::get(db, "sync")?;
     let status = match &result {
-        Ok(Outcome::Yielded | Outcome::Cancelled | Outcome::Skipped) => previous,
+        Ok(Outcome::Yielded | Outcome::Cancelled | Outcome::Skipped | Outcome::Captured) => {
+            previous
+        }
         Ok(_) => json!({"online":true,"lastSync":db::now(),"updatedAt":db::now()}),
+        Err(error) if capture_failed => {
+            record_result(db, &job.project, Err(error.clone()))?;
+            previous
+        }
         Err(error) => {
             json!({"online":false,"lastSync":previous["lastSync"],"error":error,"updatedAt":db::now()})
         }
@@ -2338,10 +2423,12 @@ async fn run_job(db: &mut rusqlite::Connection, job: &crate::sync_queue::Job) ->
     if !more || crate::projects::foreground_waiting()? {
         db::set(db, "syncProgress", &Value::Null)?;
     }
-    if !matches!(
-        result,
-        Ok(Outcome::Yielded | Outcome::Cancelled | Outcome::Skipped)
-    ) {
+    if !capture_failed
+        && !matches!(
+            result,
+            Ok(Outcome::Yielded | Outcome::Cancelled | Outcome::Skipped | Outcome::Captured)
+        )
+    {
         let error = result.as_ref().err().map(String::as_str);
         let _ = crate::onboarding::reconcile_workspace_sync(db, error);
     }
@@ -2365,30 +2452,141 @@ async fn sync_job(db: &mut rusqlite::Connection, job: &crate::sync_queue::Job) -
         ),
         &[&job.project],
     )?;
-    let mut pass = SyncPass::new(db, &owner, None);
-    let flow = match project.first() {
-        _ if job.project == WORKSPACE => pass.sync_workspace_global().await?,
-        Some(p) => pass.sync_project(p).await?,
-        // Removed or archived since it was queued.
-        None => return Ok(Outcome::Skipped),
+    let held = if project.is_empty() && job.project != WORKSPACE {
+        db::rows(
+            db,
+            &format!(
+                "SELECT value FROM projects WHERE id=? AND {}",
+                crate::projects::CAPTURE_ONLY
+            ),
+            &[&job.project],
+        )?
+    } else {
+        Vec::new()
     };
-    let errors: bool = pass
-        .db
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM errors WHERE source=?1 OR substr(source,1,length(?1)+1)=?1||':' OR source IN (SELECT id FROM resources WHERE project=?1))",
-            [&job.project],
-            |r| r.get(0),
-        )
-        .map_err(|e| e.to_string())?;
+    let mut pass = SyncPass::new(db, &owner, None);
+    let flow = match (project.first(), held.first()) {
+        _ if job.project == WORKSPACE => pass.sync_workspace_global().await?,
+        (Some(p), _) => pass.sync_project(p).await?,
+        // Deleted but restorable: capture locally and send nothing.
+        (None, Some(p)) => {
+            let flow = pass.capture_project(p)?;
+            return Ok(if SyncQueue::cancelled(pass.db, &job.project)? {
+                Outcome::Cancelled
+            } else if flow.is_break() {
+                Outcome::Yielded
+            } else {
+                Outcome::Captured
+            });
+        }
+        // Removed or archived since it was queued.
+        (None, None) => return Ok(Outcome::Skipped),
+    };
     Ok(if SyncQueue::cancelled(pass.db, &job.project)? {
         Outcome::Cancelled
     } else if flow.is_break() {
         Outcome::Yielded
-    } else if !pass.deferred.is_empty() || !pass.held.is_empty() || errors {
+    } else if !pass.deferred.is_empty()
+        || !pass.held.is_empty()
+        || project_has_retryable_errors(pass.db, &job.project)?
+    {
         Outcome::Deferred
     } else {
         Outcome::Synced
     })
+}
+
+fn project_has_retryable_errors(db: &rusqlite::Connection, project: &str) -> Result<bool> {
+    db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM errors
+         WHERE (source=?1 OR substr(source,1,length(?1)+1)=?1||':'
+           OR source IN (SELECT id FROM resources WHERE project=?1))
+         AND error NOT IN (?2,?3,?4))",
+        params![
+            project,
+            crate::skill_reconciliation::LOCAL_EDITS,
+            indexer::SKILL_MIRROR_REVIEW,
+            PLAN_REVIEW_PENDING
+        ],
+        |row| row.get(0),
+    )
+    .map_err(|error| error.to_string())
+}
+
+fn plan_upload_needs_review(
+    db: &rusqlite::Connection,
+    project: &str,
+    resource: &str,
+) -> Result<bool> {
+    let uploads = db::rows(
+        db,
+        "SELECT json_object('path',path,'error',error,'resource',json_extract(value,'$.resource'))
+         FROM outbox WHERE project=? AND error IS NOT NULL
+           AND json_extract(value,'$.resource.resourceId')=?",
+        &[&project, &resource],
+    )?;
+    Ok(uploads.iter().any(|upload| {
+        crate::upload_review::reviewable(
+            upload["path"].as_str().unwrap_or(""),
+            upload["error"].as_str(),
+            &upload["resource"],
+        )
+    }))
+}
+
+/// A rejected exact-version upload is already satisfied when the fresh feed
+/// contains the identical live plan. Leave differing and unrecognized requests
+/// in the outbox so neither a local edit nor an explicit review is lost.
+fn reconcile_shared_plan_uploads(db: &mut rusqlite::Connection, project: &str) -> Result<()> {
+    let tx = db.transaction().map_err(|error| error.to_string())?;
+    let stale = db::rows(
+        &tx,
+        "SELECT json_object('id',o.id,'change',json(o.value),'current',json(r.value))
+         FROM outbox o JOIN resources r ON r.project=o.project
+           AND r.id=json_extract(o.value,'$.resource.resourceId')
+         WHERE o.project=? AND o.path='/v2/sync/push' AND o.error=?
+           AND json_extract(o.value,'$.resource.kind')='plan'",
+        &[&project, &PLAN_REVISION_CONFLICT],
+    )?;
+    for row in stale {
+        let change = &row["change"];
+        let current = &row["current"];
+        let Some(input) = change["resource"].as_object() else {
+            continue;
+        };
+        if change["id"] != row["id"]
+            || change["projectId"] != project
+            || current["projectId"] != project
+            || current["access"]["mode"] == "hidden"
+            || current["kind"] != "plan"
+            || change["resource"]["deleted"] != false
+            || ["resourceId", "source", "logicalPath", "title", "files"]
+                .iter()
+                .any(|key| input.get(*key).is_none_or(Value::is_null))
+            || current["revision"]
+                .as_u64()
+                .zip(change["baseRevision"].as_u64())
+                .is_none_or(|(revision, base)| revision <= base)
+        {
+            continue;
+        }
+        // Compare every submitted protocol field and account for any optional
+        // fields present only in the accepted resource.
+        if input
+            .iter()
+            .all(|(key, value)| current.get(key) == Some(value))
+            && ["sourceId", "memory", "contextSources"]
+                .iter()
+                .all(|key| current[*key].is_null() || input.contains_key(*key))
+        {
+            tx.execute(
+                "DELETE FROM outbox WHERE project=? AND id=? AND error=?",
+                params![project, row["id"].as_str(), PLAN_REVISION_CONFLICT],
+            )
+            .map_err(|error| error.to_string())?;
+        }
+    }
+    tx.commit().map_err(|error| error.to_string())
 }
 
 pub(crate) fn record_result(
@@ -2764,6 +2962,45 @@ async fn run_mode(foreground: bool) {
     }
 }
 
+/// Local repair every project pass does before it looks at files.
+fn prepare_local(db: &rusqlite::Connection, project: &Value) -> Result<()> {
+    for source in crate::sources::views(project) {
+        crate::repair::project_state(db, &source)?;
+    }
+    packages::recover_project_installations(db, project)?;
+    rebuild_unredacted_outbox_for(db, Some(project["id"].as_str().ok_or("Missing project")?))
+}
+
+/// Scans a deleted project's files into the outbox as held captures.
+fn scan_held(db: &rusqlite::Connection, project: &Value) -> Result<bool> {
+    indexer::clear_orphan_held_captures(db)?;
+    let mut capture = project.clone();
+    capture["captureOnly"] = json!(true);
+    capture["deferAutomaticSharing"] = json!(true);
+    indexer::scan_with_status(db, &capture, false)
+}
+
+/// Captures changes made while a project is deleted but still restorable, so an
+/// export taken before a restore contains them. A copy the catalog has detached
+/// is left alone and keeps exporting what it has.
+pub fn capture_held(db: &rusqlite::Connection, project: &str) -> Result<bool> {
+    let saved = db::rows(
+        db,
+        &format!(
+            "SELECT value FROM projects WHERE id=? AND {}",
+            crate::projects::CAPTURE_ONLY
+        ),
+        &[&project],
+    )?
+    .into_iter()
+    .next();
+    let Some(saved) = saved else {
+        return Ok(true);
+    };
+    prepare_local(db, &saved)?;
+    scan_held(db, &saved)
+}
+
 #[cfg(test)]
 mod queue_tests {
     use super::*;
@@ -2942,6 +3179,174 @@ mod queue_tests {
         assert!(!outbox.fail(&db, &row, error).unwrap());
         assert_eq!(saved().as_deref(), Some(error));
         assert!(outbox.queued(&db).unwrap().is_empty());
+    }
+
+    #[test]
+    fn identical_rejected_plan_upload_is_settled_without_resending_or_dropping_other_edits() {
+        let (_root, mut db) = outbox_db(&["a", "b"]);
+        let shared_fields = json!({
+            "resourceId":"plan","sourceId":"source","kind":"plan","source":"codex",
+            "logicalPath":"codex/files/plan.md","title":"Shared plan","deleted":false,
+            "files":[{"path":"content.md","hash":"shared","size":10,"executable":false}],
+            "contextSources":["related"]
+        });
+        let mut accepted = shared_fields.clone();
+        accepted["projectId"] = json!("a");
+        accepted["revision"] = json!(1);
+        accepted["owner"] = json!("teammate");
+        accepted["access"] = json!({"mode":"publish"});
+        db::upsert(&db, "resources", "plan", "a", &accepted).unwrap();
+        let put = |id: &str, project: &str, base: u64, resource: Value, error: Option<&str>| {
+            let request =
+                json!({"id":id,"projectId":project,"baseRevision":base,"resource":resource});
+            db.execute(
+                "INSERT INTO outbox VALUES(?,?,'/v2/sync/push',?,?)",
+                params![id, project, request.to_string(), error],
+            )
+            .unwrap();
+        };
+        put(
+            "identical",
+            "a",
+            0,
+            shared_fields.clone(),
+            Some(PLAN_REVISION_CONFLICT),
+        );
+        put(
+            "another-project",
+            "b",
+            0,
+            shared_fields.clone(),
+            Some(PLAN_REVISION_CONFLICT),
+        );
+        put("newer-request", "a", 1, shared_fields.clone(), None);
+        put(
+            "different-error",
+            "a",
+            0,
+            shared_fields.clone(),
+            Some("403: Forbidden"),
+        );
+        let mut different_copy = shared_fields.clone();
+        different_copy["files"][0]["hash"] = json!("local-only");
+        put(
+            "different-content",
+            "a",
+            0,
+            different_copy,
+            Some(PLAN_REVISION_CONFLICT),
+        );
+        let mut different_context = shared_fields;
+        different_context
+            .as_object_mut()
+            .unwrap()
+            .remove("contextSources");
+        put(
+            "different-context",
+            "a",
+            0,
+            different_context,
+            Some(PLAN_REVISION_CONFLICT),
+        );
+
+        reconcile_shared_plan_uploads(&mut db, "a").unwrap();
+        reconcile_shared_plan_uploads(&mut db, "a").unwrap();
+        assert_eq!(
+            db::rows(&db, "SELECT json_quote(id) FROM outbox ORDER BY rowid", &[]).unwrap(),
+            [
+                json!("another-project"),
+                json!("newer-request"),
+                json!("different-error"),
+                json!("different-content"),
+                json!("different-context"),
+            ]
+        );
+        assert_eq!(
+            db::rows(&db, "SELECT value FROM resources WHERE id='plan'", &[]).unwrap(),
+            [accepted]
+        );
+        assert!(plan_upload_needs_review(&db, "a", "plan").unwrap());
+    }
+
+    #[test]
+    fn review_only_items_do_not_schedule_failure_backoff_or_hide_other_errors() {
+        let (_root, db) = outbox_db(&["a", "b"]);
+        for (source, error) in [
+            ("a:skills", crate::skill_reconciliation::LOCAL_EDITS),
+            ("a:mirrors", indexer::SKILL_MIRROR_REVIEW),
+            ("a:plans", PLAN_REVIEW_PENDING),
+            ("b:pull", "Could not download an update"),
+        ] {
+            record_result(&db, source, Err(error.into())).unwrap();
+        }
+        assert!(!project_has_retryable_errors(&db, "a").unwrap());
+        assert!(project_has_retryable_errors(&db, "b").unwrap());
+        record_result(&db, "a:pull", Err("Could not download an update".into())).unwrap();
+        assert!(project_has_retryable_errors(&db, "a").unwrap());
+        assert_eq!(
+            db::rows(&db, "SELECT json_quote(error) FROM errors", &[])
+                .unwrap()
+                .len(),
+            5
+        );
+    }
+
+    #[test]
+    fn reconciled_plan_installs_its_baseline_without_rewriting_an_identical_file() {
+        use std::os::unix::fs::MetadataExt;
+
+        let (home, mut db) = outbox_db(&["a"]);
+        std::env::set_var("ORKA_TEST_HOME", home.path());
+        let root = home.path().join("workspace");
+        let path = root.join(".codex/plans/plan.md");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "# Shared plan\n").unwrap();
+        let original_inode = fs::metadata(&path).unwrap().ino();
+        let project = json!({"id":"a","path":root,"sharing":{"plan":true}});
+        let files = json!([crate::plans::content(b"# Shared plan\n").unwrap()]);
+        let guard = indexer::manifest_hash(&files);
+        let input = json!({"resourceId":"plan","kind":"plan","source":"codex","logicalPath":"codex/files/plan.md","title":"Shared plan","deleted":false,"files":files});
+        let mut accepted = input.clone();
+        accepted["projectId"] = json!("a");
+        accepted["revision"] = json!(1);
+        db::upsert(&db, "resources", "plan", "a", &accepted).unwrap();
+        db::upsert(
+            &db,
+            "bindings",
+            "plan",
+            "a",
+            &json!({"paths":[path],"base":{"source":"codex","revision":0,"files":[]},"guards":[guard]}),
+        )
+        .unwrap();
+        let change = json!({"id":"upload","projectId":"a","baseRevision":0,"resource":input});
+        db.execute(
+            "INSERT INTO outbox VALUES('upload','a','/v2/sync/push',?,?)",
+            params![change.to_string(), PLAN_REVISION_CONFLICT],
+        )
+        .unwrap();
+
+        db.execute(
+            "UPDATE outbox SET error='409: Unknown base revision' WHERE id='upload'",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            materialize(&db, &project, &accepted).unwrap_err(),
+            PLAN_REVIEW_PENDING
+        );
+        reconcile_shared_plan_uploads(&mut db, "a").unwrap();
+        assert!(plan_upload_needs_review(&db, "a", "plan").unwrap());
+        db.execute(
+            "UPDATE outbox SET error=? WHERE id='upload'",
+            [PLAN_REVISION_CONFLICT],
+        )
+        .unwrap();
+        reconcile_shared_plan_uploads(&mut db, "a").unwrap();
+        materialize(&db, &project, &accepted).unwrap();
+
+        assert_eq!(indexer::binding(&db, "plan").unwrap()["base"], accepted);
+        assert!(!plan_upload_needs_review(&db, "a", "plan").unwrap());
+        assert_eq!(fs::metadata(path).unwrap().ino(), original_inode);
     }
 
     #[tokio::test]
@@ -3474,3 +3879,7 @@ mod queue_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "capture_tests.rs"]
+mod capture_tests;

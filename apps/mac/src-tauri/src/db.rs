@@ -90,25 +90,63 @@ pub fn guest() -> Result<()> {
     }
     Ok(())
 }
+#[derive(PartialEq, Eq)]
+pub(crate) struct CacheScope {
+    root: PathBuf,
+    account: String,
+    origin: String,
+}
+
+impl CacheScope {
+    pub(crate) fn current() -> Result<Self> {
+        let root = root()?;
+        let account = fs::read_to_string(root.join("account")).unwrap_or("guest".into());
+        if account != "guest" {
+            Uuid::parse_str(&account).map_err(|e| e.to_string())?;
+        }
+        let config = global_setting("config")?;
+        let origin = config["apiUrl"].as_str().unwrap_or("").to_owned();
+        Ok(Self {
+            root,
+            account,
+            origin,
+        })
+    }
+
+    pub(crate) fn open(&self) -> Result<Connection> {
+        // Bind pre-mode caches to their original service once, before any switch.
+        let legacy = self.root.join("legacy-service.json");
+        if !self.origin.is_empty() && !legacy.exists() {
+            fs::create_dir_all(&self.root).map_err(|e| e.to_string())?;
+            atomic(&legacy, json!(self.origin).to_string().as_bytes())?;
+        }
+        open_at(&self.path()?)
+    }
+
+    fn path(&self) -> Result<PathBuf> {
+        if self.account == "guest" {
+            Ok(self.root.join(&self.account))
+        } else {
+            profile_path(&self.account, &self.origin)
+        }
+    }
+
+    pub(crate) fn open_read_only(&self) -> Result<Connection> {
+        Connection::open_with_flags(
+            self.path()?.join("sync.sqlite"),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .map_err(|e| e.to_string())
+    }
+
+    pub(crate) fn blob_reader(&self) -> impl Fn(&str) -> Result<Vec<u8>> {
+        let dir = blob_dir(&self.root, &self.origin);
+        move |hash| read_blob(&dir, hash)
+    }
+}
+
 pub fn open() -> Result<Connection> {
-    let r = root()?;
-    let profile = fs::read_to_string(r.join("account")).unwrap_or("guest".into());
-    if profile != "guest" {
-        Uuid::parse_str(&profile).map_err(|e| e.to_string())?;
-    }
-    let config = global_setting("config")?;
-    let origin = config["apiUrl"].as_str().unwrap_or("");
-    // Bind pre-mode caches to their original service once, before any switch.
-    let legacy = r.join("legacy-service.json");
-    if !origin.is_empty() && !legacy.exists() {
-        fs::create_dir_all(&r).map_err(|e| e.to_string())?;
-        atomic(&legacy, json!(origin).to_string().as_bytes())?;
-    }
-    if profile == "guest" {
-        open_at(&r.join(profile))
-    } else {
-        open_at(&profile_path(&profile, origin)?)
-    }
+    CacheScope::current()?.open()
 }
 pub fn profile_path(id: &str, origin: &str) -> Result<PathBuf> {
     Uuid::parse_str(id).map_err(|e| e.to_string())?;
@@ -242,26 +280,33 @@ pub fn atomic(path: &Path, bytes: &[u8]) -> Result<()> {
         .map_err(|e| e.to_string())?;
     Ok(())
 }
-pub fn blob_path(hash: &str) -> Result<PathBuf> {
+fn checked_blob_path(dir: &Path, hash: &str) -> Result<PathBuf> {
     if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err("Invalid hash".into());
     }
-    let root = root()?;
-    let config = global_setting("config")?;
-    let origin = config["apiUrl"].as_str().unwrap_or("");
+    Ok(dir.join(hash))
+}
+
+fn blob_dir(root: &Path, origin: &str) -> PathBuf {
     let legacy: Value = fs::read(root.join("legacy-service.json"))
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or(Value::Null);
-    let dir = if origin.is_empty() || legacy.as_str() == Some(origin) {
+    if origin.is_empty() || legacy.as_str() == Some(origin) {
         root.join("blobs")
     } else {
         root.join("services")
             .join(digest(origin.as_bytes()))
             .join("blobs")
-    };
+    }
+}
+
+pub fn blob_path(hash: &str) -> Result<PathBuf> {
+    let config = global_setting("config")?;
+    let dir = blob_dir(&root()?, config["apiUrl"].as_str().unwrap_or(""));
+    let path = checked_blob_path(&dir, hash)?;
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    Ok(dir.join(hash))
+    Ok(path)
 }
 pub fn blob(bytes: &[u8]) -> Result<String> {
     let h = digest(bytes);
@@ -272,7 +317,15 @@ pub fn blob(bytes: &[u8]) -> Result<String> {
     Ok(h)
 }
 pub fn blob_read(hash: &str) -> Result<Vec<u8>> {
-    let b = fs::read(blob_path(hash)?).map_err(|e| e.to_string())?;
+    let config = global_setting("config")?;
+    read_blob(
+        &blob_dir(&root()?, config["apiUrl"].as_str().unwrap_or("")),
+        hash,
+    )
+}
+
+fn read_blob(dir: &Path, hash: &str) -> Result<Vec<u8>> {
+    let b = fs::read(checked_blob_path(dir, hash)?).map_err(|e| e.to_string())?;
     if digest(&b) != hash {
         return Err("Blob hash mismatch".into());
     }

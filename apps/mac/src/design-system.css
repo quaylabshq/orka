@@ -1,20 +1,6 @@
-/* Canonical Pitch color, typography, and control tokens. */
+/* Canonical color, typography, and control tokens. */
 @layer base {
   :root {
-    --status-connected: #4ade80;
-    --status-connected-dot: #43be6f;
-    --status-connected-bg: rgb(74 222 128 / 12%);
-    --status-error: #f87171;
-    --status-error-bg: rgb(248 113 113 / 12%);
-    --status-info: #60a5fa;
-    --status-info-bg: rgb(96 165 250 / 12%);
-    --status-warning: #fbbf24;
-    --status-warning-bg: rgb(251 191 36 / 12%);
-    /* Resource category colors from Orka Figma, Sync resource grid 211:836. */
-    --resource-icon-memory: #4ade80;
-    --resource-icon-session: #60a5fa;
-    --resource-icon-skill: #f87171;
-    --resource-icon-plan: #fbbf24;
     --shell-header-height: 52px;
     --sidebar-content-inset: 12px;
     --sidebar-item-height: 36px;
@@ -26,8 +12,6 @@
     --shadow-modal: 0 24px 80px #0008;
     --shadow-drawer: -16px 0 64px #0006;
     --shadow-tooltip: 0 8px 12px rgb(0 0 0 / 30%);
-    --overlay-scrim: #000b;
-    --scrollbar-thumb: #404040;
     --radius-none: 0px;
     --radius-detail: 4px;
     --radius-control: 9px;
@@ -36,36 +20,34 @@
     --radius-list: 15px;
     --radius-full: 9999px;
     color-scheme: dark;
+    /* Colors. These 24 tokens mirror the "Colors" collection in the Orka
+       Library Figma file. Hover and pressed are translucent overlays that sit
+       on any surface, so components need no hover grays of their own. */
     --surface-primary: #0a0a0a;
     --surface-secondary: #121212;
     --surface-tertiary: #1c1c1c;
-    --surface-stroke: #252525;
-    --interaction-hover: #252525;
-    --interaction-selected: #2e2e2e;
-    --border-subtle: var(--surface-stroke);
+    --border-default: #252525;
+    --border-focus: #888888;
     --text-primary: #f2f2f2;
-    --text-danger: #f17878;
     --text-secondary: #b5b5b5;
     --text-tertiary: #999999;
     --text-disabled: #626262;
-    --text-inverse: #141414;
-    --border-strong: #777777;
-    --focus-ring: #888888;
-    --switch-track-off: var(--interaction-selected);
-    --switch-track-on: #2563eb;
-    --switch-thumb-off: var(--text-secondary);
-    --switch-thumb-on: #ffffff;
-    --metadata-pill-surface: var(--surface-secondary);
-    --field-surface: var(--surface-tertiary);
-    --field-interaction-hover: var(--interaction-hover);
-    --field-surface-disabled: var(--surface-secondary);
-    --field-surface-readonly: var(--surface-secondary);
+    --text-on-solid: #141414;
+    --state-hover: rgb(255 255 255 / 6%);
+    --state-pressed: rgb(255 255 255 / 10%);
+    --state-scrim: rgb(0 0 0 / 73%);
+    --action-solid: #f2eeeb;
+    --action-solid-hover: #dddbd9;
+    --brand-copper: #c4865a;
+    --green-text: #4ade80;
+    --green-surface: rgb(74 222 128 / 12%);
+    --red-text: #f87171;
+    --red-surface: rgb(248 113 113 / 12%);
+    --amber-text: #fbbf24;
+    --amber-surface: rgb(251 191 36 / 12%);
+    --blue-text: #60a5fa;
+    --blue-surface: rgb(96 165 250 / 12%);
     --field-radius: var(--radius-control);
-    --field-focus-ring: var(--focus-ring);
-    --field-text: var(--text-primary);
-    --field-placeholder: var(--text-tertiary);
-    --field-text-disabled: var(--text-disabled);
-    --field-text-error: var(--text-primary);
     --field-lg-icon-gap: 12px;
     --field-md-icon-gap: 12px;
     --field-sm-icon-gap: 8px;
@@ -107,38 +89,9 @@
     --button-sm-gap: 6px;
     --icon-xs-container: 16px;
     --icon-xs-size: 12px;
-    --orka-neutral-100: #f2eeeb;
-    --orka-neutral-200: #dddbd9;
-    --orka-neutral-400: #a5a5a5;
-    --orka-copper-500: #aa6c42;
-    --orka-copper-400: #c4865a;
-    --orka-copper-800: #472b1e;
     /* Skill source and comparison readers, from Orka Figma 1491:5544 and 1463:4745. */
     --font-mono:
       "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-    --code-punctuation: var(--orka-copper-400);
-    --code-keyword: var(--status-info);
-    --code-string: #d4a27d;
-    --diff-added: var(--status-connected);
-    --diff-removed: var(--status-error);
-    --diff-added-bg: var(--status-connected-bg);
-    --diff-removed-bg: var(--status-error-bg);
-    --diff-added-emphasis: rgb(74 222 128 / 24%);
-    --diff-removed-emphasis: rgb(248 113 113 / 24%);
-    --button-primary-bg: var(--orka-neutral-100);
-    --button-primary-bg-hover: var(--orka-neutral-200);
-    --button-primary-bg-pressed: var(--orka-neutral-400);
-    --button-primary-text: var(--text-inverse);
-    --button-secondary-bg: var(--surface-secondary);
-    --button-secondary-bg-hover: var(--surface-tertiary);
-    --button-secondary-bg-pressed: var(--interaction-selected);
-    --button-secondary-text: var(--text-primary);
-    --button-tertiary-bg: var(--surface-tertiary);
-    --button-tertiary-bg-hover: var(--interaction-hover);
-    --button-tertiary-bg-pressed: var(--interaction-selected);
-    --button-tertiary-text: var(--text-primary);
-    --button-disabled-bg: var(--surface-tertiary);
-    --button-disabled-text: var(--text-disabled);
 
     --heading-lg-font-size: 32px;
     --heading-lg-line-height: 40px;
@@ -248,9 +201,14 @@
     inset: 0;
     border: 0;
     border-radius: var(--radius-full);
-    background: var(--switch-track-off);
+    /* Off sits one overlay step above the tertiary surface so the track
+       stays visible on cards as well as on the page. */
+    background: var(--surface-tertiary);
+    box-shadow: inset 0 0 0 100vmax var(--state-pressed);
     pointer-events: none;
-    transition: background-color var(--switch-color-duration) ease-out;
+    transition:
+      background-color var(--switch-color-duration) ease-out,
+      box-shadow var(--switch-color-duration) ease-out;
   }
   .ui-switch-thumb {
     position: absolute;
@@ -259,15 +217,16 @@
     width: 20px;
     height: 20px;
     border-radius: var(--radius-full);
-    background: var(--switch-thumb-off);
+    background: var(--text-secondary);
     transform-origin: top left;
     transition: background-color var(--switch-color-duration) ease-out;
   }
   .ui-switch:checked + .ui-switch-track {
-    background: var(--switch-track-on);
+    background: var(--action-solid);
+    box-shadow: inset 0 0 0 100vmax transparent;
   }
   .ui-switch:checked + .ui-switch-track .ui-switch-thumb {
-    background: var(--switch-thumb-on);
+    background: var(--text-on-solid);
   }
   .ui-switch:disabled {
     cursor: not-allowed;
@@ -276,7 +235,7 @@
     opacity: 0.5;
   }
   .ui-switch:focus-visible + .ui-switch-track {
-    outline: 1px solid var(--focus-ring);
+    outline: 1px solid var(--border-focus);
     outline-offset: 2px;
   }
   .ui-switch:focus-visible + .ui-switch-track,
@@ -330,62 +289,52 @@
       background 120ms ease,
       box-shadow 120ms ease,
       color 120ms ease,
+      filter 120ms ease,
       transform var(--motion-control-duration) var(--motion-control-ease);
   }
+  /* Solid fills carry their own hover color. Secondary and tertiary take the
+     shared state overlays: tertiary has no fill, so the overlay is its
+     background; secondary has one, so the overlay is laid over it. */
   .ui-button--primary {
-    color: var(--button-primary-text);
-    background: var(--button-primary-bg);
+    color: var(--text-on-solid);
+    background: var(--action-solid);
     box-shadow: none;
   }
-  .ui-button--primary:hover:not(:disabled) {
-    background: var(--button-primary-bg-hover);
+  .ui-button--primary:hover:not(:disabled),
+  .ui-button--primary:active:not(:disabled),
+  .ui-button--primary[aria-pressed="true"] {
+    background: var(--action-solid-hover);
   }
   .ui-button--primary:active:not(:disabled) {
-    background: var(--button-primary-bg-pressed);
-  }
-  .ui-button--primary-brand {
-    color: var(--text-primary);
-    background: var(--orka-copper-500);
-  }
-  .ui-button--primary-brand:hover:not(:disabled) {
-    background: var(--orka-copper-400);
-  }
-  .ui-button--primary-brand:active:not(:disabled) {
-    background: var(--orka-copper-800);
-  }
-  .ui-button[aria-pressed="true"] {
-    box-shadow: inset 0 0 0 1px var(--interaction-selected);
+    filter: brightness(0.76);
   }
   .ui-button--secondary {
-    color: var(--button-secondary-text);
-    background: var(--button-secondary-bg);
+    color: var(--text-primary);
+    background: var(--surface-tertiary);
     box-shadow: none;
   }
   .ui-button--secondary:hover:not(:disabled) {
-    background: var(--button-secondary-bg-hover);
+    box-shadow: inset 0 0 0 100vmax var(--state-hover);
   }
-  .ui-button--secondary:active:not(:disabled) {
-    background: var(--button-secondary-bg-pressed);
-    box-shadow: none;
-  }
+  .ui-button--secondary:active:not(:disabled),
   .ui-button--secondary[aria-pressed="true"] {
-    background: var(--interaction-selected);
-    box-shadow: none;
+    box-shadow: inset 0 0 0 100vmax var(--state-pressed);
   }
   .ui-button--tertiary {
-    color: var(--button-tertiary-text);
-    background: var(--button-tertiary-bg);
+    color: var(--text-primary);
+    background: transparent;
     box-shadow: none;
   }
   .ui-button--tertiary:hover:not(:disabled) {
-    background: var(--button-tertiary-bg-hover);
+    background: var(--state-hover);
   }
-  .ui-button--tertiary:active:not(:disabled) {
-    background: var(--button-tertiary-bg-pressed);
+  .ui-button--tertiary:active:not(:disabled),
+  .ui-button--tertiary[aria-pressed="true"] {
+    background: var(--state-pressed);
   }
   .ui-button:disabled {
-    color: var(--button-disabled-text);
-    background: var(--button-disabled-bg);
+    color: var(--text-disabled);
+    background: var(--surface-tertiary);
     box-shadow: none;
     transform: none;
     cursor: not-allowed;
@@ -394,7 +343,7 @@
     background: transparent;
   }
   .ui-button:focus-visible {
-    outline: 1px solid var(--focus-ring);
+    outline: 1px solid var(--border-focus);
     outline-offset: 2px;
   }
   /* Keep text and icons stationary on hover; reserve scale for press feedback. */
@@ -548,15 +497,15 @@
     padding: var(--field-padding-y) var(--field-padding-x);
     border: 0;
     border-radius: var(--field-radius);
-    background: var(--field-surface);
+    background: var(--surface-tertiary);
     color: var(--text-tertiary);
-    transition: background 120ms ease;
+    transition: box-shadow 120ms ease;
   }
   .ui-field:not([data-disabled]):not([data-readonly]) .ui-field__control:hover {
-    background: var(--field-interaction-hover);
+    box-shadow: inset 0 0 0 100vmax var(--state-hover);
   }
   .ui-field:not([data-disabled]) .ui-field__control:focus-within {
-    outline: 1px solid var(--field-focus-ring);
+    outline: 1px solid var(--border-focus);
     outline-offset: 2px;
   }
   .ui-field .ui-field__input {
@@ -573,7 +522,7 @@
     outline: none;
     box-shadow: none;
     background: transparent;
-    color: var(--field-text);
+    color: var(--text-primary);
     font-family: inherit;
     font-size: var(--field-font);
     line-height: var(--field-line);
@@ -584,30 +533,30 @@
     outline: none;
   }
   .ui-field__input::placeholder {
-    color: var(--field-placeholder);
+    color: var(--text-tertiary);
     opacity: 1;
   }
   .ui-field__input::selection {
-    background: var(--interaction-selected);
-    color: var(--field-text);
+    background: var(--state-pressed);
+    color: var(--text-primary);
   }
   .ui-field__input[type="search"]::-webkit-search-cancel-button {
     -webkit-appearance: none;
     display: none;
   }
   .ui-field[data-disabled] .ui-field__control {
-    background: var(--field-surface-disabled);
+    background: var(--surface-secondary);
   }
   .ui-field[data-readonly] .ui-field__control {
-    background: var(--field-surface-readonly);
+    background: var(--surface-secondary);
   }
   .ui-field[data-disabled] .ui-field__control,
   .ui-field[data-disabled] .ui-field__input,
   .ui-field[data-disabled] .ui-field__input::placeholder {
-    color: var(--field-text-disabled);
+    color: var(--text-disabled);
     cursor: not-allowed;
     opacity: 1;
-    -webkit-text-fill-color: var(--field-text-disabled);
+    -webkit-text-fill-color: var(--text-disabled);
   }
   .ui-field__control--trailing {
     padding-right: calc(var(--field-height) + 8px);
@@ -643,7 +592,7 @@
     display: flex;
     align-items: flex-start;
     gap: 8px;
-    color: var(--field-text-error);
+    color: var(--text-primary);
   }
   .ui-field__error:empty {
     display: none;

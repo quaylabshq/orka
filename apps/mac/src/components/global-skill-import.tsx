@@ -1,4 +1,11 @@
-import { CheckIcon, PlusIcon, RefreshCwIcon, XIcon } from "lucide-react";
+import {
+  ArrowDownAZIcon,
+  ChartNoAxesColumnIncreasingIcon,
+  CheckIcon,
+  PlusIcon,
+  RefreshCwIcon,
+  XIcon,
+} from "lucide-react";
 import React, {
   useCallback,
   useEffect,
@@ -18,7 +25,8 @@ import { readSkillMarkdown } from "./skill-markdown.js";
 import { projectLabel } from "./project-navigation.js";
 import { SkillUsageCount, type SkillUsage } from "./skill-usage.js";
 import { SortMenu } from "./sort-menu.js";
-import { activeSources, repositoryLabel } from "./project-sources.js";
+import { activeSources } from "./project-sources.js";
+import { RepositorySelect } from "./repository-filter.js";
 import { LoadingRegion } from "./loading-region.js";
 
 interface GlobalSkill {
@@ -218,10 +226,11 @@ function GlobalSkillsDialog({
       .toLocaleLowerCase()
       .includes(search),
   );
+  const destinations = activeSources(project.sources).filter(
+    (source) => source.path,
+  );
   const connected = project.sources
-    ? activeSources(project.sources).some(
-        (source) => source.id === sourceId && source.path,
-      )
+    ? destinations.some((source) => source.id === sourceId)
     : Boolean(project.path);
   const selectable = visible.filter((skill) => !skill.exists && !skill.error);
   const selectedSkills = skills.filter(
@@ -340,29 +349,26 @@ function GlobalSkillsDialog({
         />
       </div>
       <div className="global-skills-toolbar">
-        {Boolean(project.sources?.length) && (
-          <select
-            className="repository-filter"
-            aria-label="Install into repository"
+        {destinations.length > 0 && (
+          <RepositorySelect
+            className="global-skills-destination"
+            label="Install into repository"
+            placeholder="Choose repository"
+            size="lg"
+            align="start"
             disabled={Boolean(pending)}
             value={sourceId}
-            onChange={(event) => {
-              setSourceId(event.target.value);
+            repositories={destinations}
+            labelSources={project.sources}
+            onChange={(nextSourceId) => {
+              setSourceId(nextSourceId);
               setAdded(new Set());
               setSelected(new Set());
               setScan(null);
               setMessage("");
               setReviewable(false);
             }}
-          >
-            {activeSources(project.sources)
-              .filter((source) => source.path)
-              .map((source) => (
-                <option key={source.id} value={source.id}>
-                  {repositoryLabel(project.sources ?? [], source.id)}
-                </option>
-              ))}
-          </select>
+          />
         )}
         <SearchField
           size="lg"
@@ -391,8 +397,12 @@ function GlobalSkillsDialog({
           value={sort}
           onChange={setSort}
           options={[
-            { value: "usage", label: "Most used" },
-            { value: "name", label: "Name" },
+            {
+              value: "usage",
+              label: "Most used",
+              icon: ChartNoAxesColumnIncreasingIcon,
+            },
+            { value: "name", label: "Name", icon: ArrowDownAZIcon },
           ]}
         />
       </div>
@@ -420,11 +430,7 @@ function GlobalSkillsDialog({
             This can wait for an active sync to finish.
           </p>
         )}
-        {!(project.sources
-          ? activeSources(project.sources).some(
-              (source) => source.id === sourceId && source.path,
-            )
-          : project.path) && (
+        {!connected && (
           <p className="global-skills-notice">
             Connect a project folder to add skills.
           </p>
@@ -555,11 +561,7 @@ function GlobalSkillsDialog({
                         loading ||
                         busy ||
                         Boolean(pending) ||
-                        !(project.sources
-                          ? activeSources(project.sources).some(
-                              (source) => source.id === sourceId && source.path,
-                            )
-                          : project.path) ||
+                        !connected ||
                         skill.exists ||
                         Boolean(skill.error)
                       }

@@ -1,4 +1,14 @@
-import { HistoryIcon, MailIcon, UserPlusIcon } from "lucide-react";
+import {
+  HistoryIcon,
+  KeyRoundIcon,
+  MailIcon,
+  MailXIcon,
+  SendIcon,
+  ShieldUserIcon,
+  UserMinusIcon,
+  UserPlusIcon,
+  UserRoundIcon,
+} from "lucide-react";
 import { RepositoryRequests } from "../repository-connections.js";
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -21,6 +31,7 @@ import { LoadingRegion } from "../loading-region.js";
 import { ActivityIndicator } from "../activity-indicator.js";
 import { SettingsHeading } from "./settings-shared.js";
 import { useWorkspaceScope } from "../workspace-cache.js";
+import { actionableRequest, visibleRequest } from "../../lib/features.js";
 
 const samples: ProjectMember[] = [
   {
@@ -120,10 +131,12 @@ export function MemberRows({
           actions.push({
             id: "role",
             label: "Change role",
+            icon: ShieldUserIcon,
             onSelect: () => {},
             children: ["admin", "member"].map((role) => ({
               id: role,
               label: roleName(role),
+              icon: role === "admin" ? ShieldUserIcon : UserRoundIcon,
               disabled: Boolean(busy) || member.role === role,
               onSelect: () => onRole(member.id, role),
             })),
@@ -137,12 +150,14 @@ export function MemberRows({
             actions.push({
               id: "transfer",
               label: "Transfer ownership",
+              icon: KeyRoundIcon,
               disabled: Boolean(busy),
               onSelect: () => onTransfer(member),
             });
           actions.push({
             id: "remove",
             label: `Remove ${roleName(member.role)}`,
+            icon: UserMinusIcon,
             danger: true,
             separator: actions.length > 0,
             disabled: Boolean(busy),
@@ -270,6 +285,10 @@ export function SettingsMembers({
     catalog.data?.members ??
     (Array.isArray(stored?.members) ? stored.members : null);
   const pendingInvites = query.data?.pendingInvites ?? [];
+  const requests = (query.data?.requests ?? []).filter(
+    (request) => request.projectId === projectId && visibleRequest(request),
+  );
+  const pendingRequests = requests.filter(actionableRequest);
   const [busy, setBusy] = useState(""),
     [error, setError] = useState(""),
     [notice, setNotice] = useState("");
@@ -473,6 +492,7 @@ export function SettingsMembers({
                 {
                   id: "resend",
                   label: "Resend",
+                  icon: SendIcon,
                   disabled,
                   onSelect: () => resend(invite.email),
                 },
@@ -481,6 +501,7 @@ export function SettingsMembers({
                 actions.push({
                   id: "revoke",
                   label: "Revoke",
+                  icon: MailXIcon,
                   danger: true,
                   separator: true,
                   disabled,
@@ -539,9 +560,11 @@ export function SettingsMembers({
       )}
       {error && <p role="alert">{error}</p>}
       {notice && <p role="status">{notice}</p>}
-      {(query.data?.requests.length ?? 0) > 0 && (
+      {requests.length > 0 && (
         <Button onClick={onReviews}>
-          Review pending requests ({query.data!.requests.length})
+          {pendingRequests.length > 0
+            ? `Review pending requests (${pendingRequests.length})`
+            : "View requests and history"}
         </Button>
       )}
       {query.data && (

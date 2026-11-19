@@ -26,7 +26,7 @@ const font = readFileSync(
 ).toString("base64");
 const h = React.createElement;
 const sizes: ControlSize[] = ["lg", "md", "sm"];
-const variants = ["primary", "primary-brand", "secondary", "tertiary"] as const;
+const variants = ["primary", "secondary", "tertiary"] as const;
 const states = ["Default", "Hover", "Pressed", "Focus", "Disabled"] as const;
 // Pin real production pseudo-states for side-by-side comparison. These
 // aliases exist only in the gallery, not in the component API or app CSS.
@@ -235,7 +235,7 @@ ${stateRules.join("\n")}
 .component-sheet{max-width:1040px;margin:auto;padding:40px}
 .component-sheet h1{font-size:var(--heading-lg-font-size);line-height:var(--heading-lg-line-height);letter-spacing:var(--heading-lg-letter-spacing)}
 .component-sheet>p{margin-top:12px;color:var(--text-secondary)}
-.component-sheet section{padding:28px 0;border-bottom:1px solid var(--border-subtle)}
+.component-sheet section{padding:28px 0;border-bottom:1px solid var(--border-default)}
 .component-sheet h2{font-size:var(--body-md-font-size);line-height:var(--body-md-line-height);font-weight:500;margin-bottom:20px}
 .component-sheet h3{font-size:var(--body-xs-font-size);line-height:var(--body-xs-line-height);font-weight:400;color:var(--text-tertiary);margin:24px 0 12px}
 .component-row{display:flex;align-items:center;flex-wrap:wrap;gap:16px}
@@ -244,14 +244,14 @@ ${stateRules.join("\n")}
 .states-heading p,.state-note{color:var(--text-tertiary);font-size:12px;line-height:18px}
 .size-control{display:flex;align-items:center;gap:12px;font-size:12px;color:var(--text-secondary);white-space:nowrap}
 .size-control select{background:var(--surface-tertiary);color:var(--text-primary);padding:8px 12px;border:0;border-radius:8px;font:inherit;cursor:pointer}
-.size-control select:focus-visible{outline:2px solid var(--focus-ring);outline-offset:4px}
+.size-control select:focus-visible{outline:2px solid var(--border-focus);outline-offset:4px}
 .states-scroll{overflow-x:auto;padding:6px;margin:-6px}
 .states-table{width:100%;min-width:700px;border-collapse:collapse;text-align:left}
 .states-table th{font-size:12px;line-height:18px;font-weight:400;color:var(--text-tertiary)}
 .states-table thead th{padding:0 0 16px;text-transform:capitalize}
 .states-table tbody th{width:100px;color:var(--text-secondary)}
 .states-table td{padding:18px 0}
-.states-table tbody tr{border-top:1px solid var(--border-subtle)}
+.states-table tbody tr{border-top:1px solid var(--border-default)}
 .state-pair{display:flex;align-items:center;gap:12px;padding-right:16px}
 .state-pair .ui-button{pointer-events:none;transition:none}
 .state-note{margin-top:20px}
