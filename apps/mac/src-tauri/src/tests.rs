@@ -1,7 +1,10 @@
-use crate::{bundles, db, history::History, indexer, native, packages, sync};
+use crate::{
+    bundles, db, history::History, indexer, native, packages, projects::ProjectLifecycle, sync,
+};
 use serde_json::{json, Value};
 use std::{
     fs,
+    io::Read,
     path::{Path, PathBuf},
     sync::{Mutex, MutexGuard},
 };
@@ -247,6 +250,10 @@ mod plan_tests;
 mod plugin_connection_tests;
 #[path = "plugin_operations_tests.rs"]
 mod plugin_operations_tests;
+#[path = "project_conflict_tests.rs"]
+mod project_conflict_tests;
+#[path = "project_export_tests.rs"]
+mod project_export_tests;
 #[path = "repository_tests.rs"]
 mod repository_tests;
 #[path = "resource_command_tests.rs"]
@@ -466,6 +473,58 @@ fn removed_projects_stay_removed_and_keep_source_files() {
 }
 
 #[test]
+fn detach_and_local_removal_clear_only_their_pending_session_rebuild_state() {
+    for detach in [true, false] {
+        let f = Fixture::new();
+        let id = f.project["id"].as_str().unwrap();
+        fs::write(f.root.join("CLAUDE.md"), "Keep my local work\n").unwrap();
+        indexer::scan(&f.db, &f.project).unwrap();
+        let mut keys = Vec::new();
+        for queued in f.outbox() {
+            let key = format!("sessionOutboxRedaction:{}", queued["id"].as_str().unwrap());
+            db::set(&f.db, &key, &json!({"drop":true})).unwrap();
+            keys.push(key);
+        }
+        assert!(!keys.is_empty());
+        if !detach {
+            db::set(
+                &f.db,
+                "sessionCopy:orphan",
+                &json!({"source":{"projectId":id}}),
+            )
+            .unwrap();
+            db::set(
+                &f.db,
+                "sessionOutboxRedaction:orphan",
+                &json!({"drop":true}),
+            )
+            .unwrap();
+            keys.extend([
+                "sessionCopy:orphan".into(),
+                "sessionOutboxRedaction:orphan".into(),
+            ]);
+        }
+        db::set(&f.db, "sessionOutboxRedaction:other", &json!({"drop":true})).unwrap();
+        if detach {
+            crate::governance::DetachProject::detach_project(&f.db, id).unwrap();
+        } else {
+            crate::projects::remove_local(&f.db, id).unwrap();
+        }
+        for key in keys {
+            assert!(db::get(&f.db, &key).unwrap().is_null(), "{key}");
+        }
+        assert_eq!(
+            db::get(&f.db, "sessionOutboxRedaction:other").unwrap(),
+            json!({"drop":true})
+        );
+        assert_eq!(
+            fs::read_to_string(f.root.join("CLAUDE.md")).unwrap(),
+            "Keep my local work\n"
+        );
+    }
+}
+
+#[test]
 fn archived_projects_keep_their_mapping_but_are_excluded_from_active_work() {
     let f = Fixture::new();
     let id = f.project["id"].as_str().unwrap();
@@ -526,7 +585,7 @@ fn deleted_projects_leave_the_active_list_but_keep_their_row() {
     assert_eq!(saved["purged"], true);
     assert_eq!(saved["name"], "test");
     assert!(crate::projects::active(&f.db, id).is_err());
-    // A restored project is active again and forgets the purge.
+    // Purging is terminal: a stale pre-purge catalog cannot restore the row.
     crate::projects::merge_catalog(
         &f.db,
         &json!([{"id":id,"name":"test","role":"member","lifecycleRevision":4}]),
@@ -535,9 +594,172 @@ fn deleted_projects_leave_the_active_list_but_keep_their_row() {
     let saved = db::rows(&f.db, "SELECT value FROM projects WHERE id=?", &[&id])
         .unwrap()
         .remove(0);
-    assert!(saved["deletedAt"].is_null() && saved["purged"].is_null());
+    assert_eq!(saved["purged"], true);
     assert_eq!(saved["path"], f.project["path"]);
-    crate::projects::active(&f.db, id).unwrap();
+    assert!(crate::projects::active(&f.db, id).is_err());
+}
+
+#[test]
+fn recoverable_project_deletion_requires_advertised_server_support() {
+    for caps in [
+        json!({}),
+        json!({"lifecycle":1}),
+        json!({"softDelete":0}),
+        json!({"softDelete":"1"}),
+    ] {
+        assert!(crate::projects::require_soft_delete(&caps)
+            .unwrap_err()
+            .contains("Update the server"));
+    }
+    crate::projects::require_soft_delete(&json!({"lifecycle":1,"softDelete":1})).unwrap();
+}
+
+#[test]
+fn a_successful_soft_delete_pauses_even_with_an_older_minimal_receipt() {
+    let f = Fixture::new();
+    let id = f.project["id"].as_str().unwrap();
+    f.db.mark_deleted(
+        id,
+        &json!({"projectId":id,"action":"delete","lifecycleRevision":1}),
+    )
+    .unwrap();
+    assert!(crate::projects::active(&f.db, id).is_err());
+    let saved = db::rows(&f.db, "SELECT value FROM projects WHERE id=?", &[&id])
+        .unwrap()
+        .remove(0);
+    assert!(saved["deletedAt"].is_string());
+    assert!(
+        saved["purgeAfter"].is_null(),
+        "Do not fabricate a restore deadline"
+    );
+    assert_eq!(saved["path"], f.project["path"]);
+}
+
+#[test]
+fn deleted_owner_catalog_refreshes_recovery_metadata_on_existing_and_fresh_macs() {
+    let mut f = Fixture::new();
+    let id = f.project["id"].as_str().unwrap().to_string();
+    let source = uuid::Uuid::new_v4().to_string();
+    f.project["role"] = json!("owner");
+    f.project["lifecycleRevision"] = json!(1);
+    f.project["sources"] = json!([{"id":source,"name":"repo","path":f.root,"folderIdentity":indexer::folder_identity(&f.root).unwrap()}]);
+    db::upsert(&f.db, "projects", &id, &id, &f.project).unwrap();
+    let deleted = json!([{"id":id,"name":"test","role":"owner","lifecycleRevision":2,"deletedAt":"2026-11-19T00:00:00Z","archivedAt":"2026-11-19T00:00:00Z","purgeAfter":"2026-12-19T00:00:00Z","sources":[{"id":source,"name":"repo"}]}]);
+    crate::projects::merge_catalog(&f.db, &deleted).unwrap();
+    let saved = db::rows(&f.db, "SELECT value FROM projects WHERE id=?", &[&id])
+        .unwrap()
+        .remove(0);
+    assert_eq!(saved["role"], "owner");
+    assert_eq!(saved["lifecycleRevision"], 2);
+    assert_eq!(saved["sources"][0]["path"], json!(f.root));
+    assert!(crate::projects::active(&f.db, &id).is_err());
+
+    // A response fetched before deletion must not overwrite its newer revision.
+    crate::projects::merge_catalog(
+        &f.db,
+        &json!([{"id":id,"name":"test","role":"owner","lifecycleRevision":1}]),
+    )
+    .unwrap();
+    assert!(crate::projects::active(&f.db, &id).is_err());
+    crate::projects::merge_catalog(&f.db, &json!([{"id":id,"name":"test","role":"owner","lifecycleRevision":3,"sources":[{"id":source,"name":"repo"}]}])).unwrap();
+    crate::projects::active(&f.db, &id).unwrap();
+    let restored = db::rows(&f.db, "SELECT value FROM projects WHERE id=?", &[&id])
+        .unwrap()
+        .remove(0);
+    assert_eq!(restored["sources"][0]["path"], json!(f.root));
+
+    f.db.execute("DELETE FROM projects", []).unwrap();
+    crate::projects::merge_catalog(&f.db, &deleted).unwrap();
+    let fresh = db::rows(&f.db, "SELECT value FROM projects WHERE id=?", &[&id])
+        .unwrap()
+        .remove(0);
+    assert_eq!(fresh["role"], "owner");
+    assert_eq!(fresh["lifecycleRevision"], 2);
+    assert_eq!(fresh["purgeAfter"], "2026-12-19T00:00:00Z");
+}
+
+#[test]
+fn reduced_deleted_member_rows_order_lifecycle_and_update_membership_without_losing_bindings() {
+    let mut f = Fixture::new();
+    let id = f.project["id"].as_str().unwrap().to_string();
+    f.project["role"] = json!("owner");
+    f.project["lifecycleRevision"] = json!(2);
+    f.project["revoked"] = json!(true);
+    f.project["detachedAt"] = json!("2026-11-18T00:00:00Z");
+    db::upsert(&f.db, "projects", &id, &id, &f.project).unwrap();
+    let deleted = json!([{"id":id,"name":"test","role":"admin","lifecycleRevision":3,"deletedAt":"2026-11-19T00:00:00Z","purgeAfter":"2026-12-19T00:00:00Z"}]);
+    crate::projects::merge_catalog(&f.db, &deleted).unwrap();
+    let saved = db::rows(&f.db, "SELECT value FROM projects WHERE id=?", &[&id])
+        .unwrap()
+        .remove(0);
+    assert_eq!(saved["role"], "admin");
+    assert_eq!(saved["lifecycleRevision"], 3);
+    assert!(saved["revoked"].is_null() && saved["detachedAt"].is_null());
+    assert_eq!(saved["path"], f.project["path"]);
+    crate::projects::merge_catalog(
+        &f.db,
+        &json!([{"id":id,"name":"test","role":"member","lifecycleRevision":4}]),
+    )
+    .unwrap();
+    crate::projects::merge_catalog(&f.db, &deleted).unwrap();
+    crate::projects::active(&f.db, &id).unwrap();
+}
+
+#[test]
+fn snapshot_lists_archived_owned_projects_even_when_hidden() {
+    let f = Fixture::new();
+    let id = f.project["id"].as_str().unwrap();
+    let mut project = f.project.clone();
+    project["role"] = json!("owner");
+    project["archivedAt"] = json!("2026-01-01T00:00:00Z");
+    project["hidden"] = json!(true);
+    db::upsert(&f.db, "projects", id, id, &project).unwrap();
+    let state = crate::commands::snapshot().unwrap();
+    assert!(state["projects"].as_array().unwrap().is_empty());
+    assert_eq!(state["archivedProjects"][0]["id"], id);
+    project["role"] = json!("member");
+    db::upsert(&f.db, "projects", id, id, &project).unwrap();
+    assert!(crate::commands::snapshot().unwrap()["archivedProjects"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn snapshot_lists_deleted_owned_projects_until_they_are_purged() {
+    let f = Fixture::new();
+    let id = f.project["id"].as_str().unwrap();
+    crate::projects::merge_catalog(
+        &f.db,
+        &json!([{"id":id,"name":"test","role":"owner","lifecycleRevision":1}]),
+    )
+    .unwrap();
+    f.db.mark_deleted(
+        id,
+        &json!({
+            "deletedAt":"2026-01-01T00:00:00Z",
+            "purgeAfter":"2026-01-31T00:00:00Z",
+            "lifecycleRevision":2
+        }),
+    )
+    .unwrap();
+    let snapshot = crate::commands::snapshot().unwrap();
+    assert!(snapshot["projects"].as_array().unwrap().is_empty());
+    assert_eq!(snapshot["deletedProjects"][0]["id"], id);
+    assert_eq!(
+        snapshot["deletedProjects"][0]["purgeAfter"],
+        "2026-01-31T00:00:00Z"
+    );
+    // Purging detaches the project, so it leaves the recent list too.
+    crate::projects::merge_catalog(
+        &f.db,
+        &json!([{"id":id,"name":"test","deletedAt":"2026-01-01T00:00:00Z","purged":true}]),
+    )
+    .unwrap();
+    assert!(crate::commands::snapshot().unwrap()["deletedProjects"]
+        .as_array()
+        .unwrap()
+        .is_empty());
 }
 
 #[test]
@@ -602,6 +824,206 @@ fn a_restored_project_clears_the_errors_its_403_left() {
     .unwrap();
     crate::projects::active(&f.db, id).unwrap();
     assert_eq!(queued("refused"), None);
+}
+
+#[test]
+fn snapshot_keeps_archived_deleted_and_removed_projects_visible_until_hidden() {
+    let f = Fixture::new();
+    let id = f.project["id"].as_str().unwrap();
+    let snapshot = || crate::commands::snapshot().unwrap();
+    crate::projects::merge_catalog(&f.db,&json!([{"id":id,"name":"test","role":"member","archivedAt":"2026-10-03T00:00:00Z","lifecycleRevision":1}])).unwrap();
+    let state = snapshot();
+    assert!(state["projects"].as_array().unwrap().is_empty());
+    assert_eq!(state["inactive"].as_array().unwrap().len(), 1);
+    assert_eq!(state["inactive"][0]["archivedAt"], "2026-10-03T00:00:00Z");
+    assert!(state["inactive"][0]["deletedAt"].is_null());
+    crate::projects::merge_catalog(&f.db,&json!([{"id":id,"name":"test","deletedAt":"2026-01-01T00:00:00Z","purgeAfter":"2026-01-31T00:00:00Z"}])).unwrap();
+    let state = snapshot();
+    assert!(state["projects"].as_array().unwrap().is_empty());
+    assert_eq!(state["inactive"][0]["purgeAfter"], "2026-01-31T00:00:00Z");
+    // Leaving the catalog detaches the project instead of hiding it.
+    crate::projects::merge_catalog(&f.db, &json!([])).unwrap();
+    let state = snapshot();
+    assert_eq!(state["inactive"][0]["revoked"], true);
+    assert!(state["inactive"][0]["detachedAt"].is_string());
+    // Removing it from this Mac hides it for good.
+    crate::projects::remove_local(&f.db, id).unwrap();
+    assert!(snapshot()["inactive"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn exporting_a_project_writes_cached_resources_and_drafts() {
+    let f = Fixture::new();
+    let id = f.project["id"].as_str().unwrap();
+    let cached = b"# Cached memory\n";
+    let draft = b"# Unpublished draft\n";
+    let resource = json!({"resourceId":"cached","projectId":id,"kind":"memory","source":"shared","logicalPath":"knowledge/cached.md","title":"Cached","deleted":false,"files":[{"path":"content.md","hash":db::blob(cached).unwrap(),"size":cached.len(),"executable":false}]});
+    db::upsert(&f.db, "resources", "cached", id, &resource).unwrap();
+    let queued = json!({"id":"draft","projectId":id,"status":"local","createdAt":db::now(),"resource":{"resourceId":"draft-resource","kind":"memory","source":"shared","logicalPath":"knowledge/draft.md","title":"Draft","deleted":false,"files":[{"path":"content.md","hash":db::blob(draft).unwrap(),"size":draft.len(),"executable":false}]}});
+    db::upsert(&f.db, "drafts", "draft", id, &queued).unwrap();
+    let path = f.root.join("project.zip");
+    bundles::export_project(&f.db, id, &path).unwrap();
+    let mut zip = zip::ZipArchive::new(fs::File::open(&path).unwrap()).unwrap();
+    let mut names = Vec::new();
+    for index in 0..zip.len() {
+        names.push(zip.by_index(index).unwrap().name().unwrap().to_string());
+    }
+    let memory_hash = db::blob(cached).unwrap();
+    let draft_hash = db::blob(draft).unwrap();
+    for name in [
+        "project.json".to_string(),
+        "resources/cached/resource.json".to_string(),
+        format!("resources/cached/blobs/{memory_hash}"),
+        "drafts/draft/draft.json".to_string(),
+        format!("drafts/draft/blobs/{draft_hash}"),
+    ] {
+        assert!(names.contains(&name), "missing {name}: {names:?}");
+    }
+    let mut header = String::new();
+    zip.by_name("project.json")
+        .unwrap()
+        .read_to_string(&mut header)
+        .unwrap();
+    let header: Value = serde_json::from_str(&header).unwrap();
+    assert_eq!(header["project"]["name"], "test");
+    assert_eq!(header["resources"], 1);
+    assert_eq!(header["drafts"], 1);
+    let mut blob = Vec::new();
+    zip.by_name(&format!("drafts/draft/blobs/{draft_hash}"))
+        .unwrap()
+        .read_to_end(&mut blob)
+        .unwrap();
+    assert_eq!(blob, draft);
+    // Local folders and cached work are untouched by the export.
+    assert_eq!(f.resources().len(), 1);
+    assert_eq!(
+        db::rows(&f.db, "SELECT value FROM drafts", &[])
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn deleting_a_project_with_queued_changes_is_refused() {
+    let f = Fixture::new();
+    let id = f.project["id"].as_str().unwrap();
+    f.db.execute(
+        "INSERT INTO outbox VALUES('queued',?,'/test','{}',NULL)",
+        [id],
+    )
+    .unwrap();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    for action in ["delete", "purge"] {
+        let error = runtime
+            .block_on(crate::projects::project_command(
+                action.into(),
+                json!({"projectId":id,"expectedRevision":0,"confirmation":"test"}),
+            ))
+            .unwrap_err();
+        assert!(
+            error.contains("before deleting this project"),
+            "{action}: {error}"
+        );
+    }
+    assert_eq!(f.outbox().len(), 1);
+}
+
+#[test]
+fn leaving_a_project_with_queued_changes_is_refused() {
+    let f = Fixture::new();
+    let id = f.project["id"].as_str().unwrap();
+    f.db.execute(
+        "INSERT INTO outbox VALUES('queued',?,'/test','{}',NULL)",
+        [id],
+    )
+    .unwrap();
+    let error = tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(crate::projects::project_command(
+            "leave".into(),
+            json!({"projectId":id,"expectedPolicyRevision":1}),
+        ))
+        .unwrap_err();
+    assert!(error.contains("before leaving this project"), "{error}");
+    assert_eq!(f.outbox().len(), 1);
+}
+
+#[test]
+fn leaving_a_project_detaches_it_and_keeps_local_work() {
+    let f = Fixture::new();
+    let id = f.project["id"].as_str().unwrap();
+    let file = f.root.join("CLAUDE.md");
+    fs::write(&file, "Keep my local work\n").unwrap();
+    indexer::scan(&f.db, &f.project).unwrap();
+    assert!(!f.outbox().is_empty());
+    f.db.leave(id).unwrap();
+    let saved = db::rows(&f.db, "SELECT value FROM projects WHERE id=?", &[&id])
+        .unwrap()
+        .remove(0);
+    assert_eq!(saved["revoked"], true);
+    assert!(saved["detachedAt"].is_string());
+    assert!(saved["hidden"].is_null());
+    assert_eq!(saved["path"], f.project["path"]);
+    assert!(f.outbox().is_empty());
+    assert!(!db::rows(&f.db, "SELECT value FROM drafts", &[])
+        .unwrap()
+        .is_empty());
+    assert_eq!(fs::read_to_string(file).unwrap(), "Keep my local work\n");
+}
+
+#[test]
+fn deleting_a_project_keeps_its_local_copy_for_a_restore() {
+    let f = Fixture::new();
+    let id = f.project["id"].as_str().unwrap();
+    let file = f.root.join("CLAUDE.md");
+    fs::write(&file, "Keep my local work\n").unwrap();
+    indexer::scan(&f.db, &f.project).unwrap();
+    assert!(!f.outbox().is_empty());
+    f.db.mark_deleted(
+        id,
+        &json!({
+            "deletedAt":"2026-01-01T00:00:00Z",
+            "purgeAfter":"2026-01-31T00:00:00Z",
+            "lifecycleRevision":4
+        }),
+    )
+    .unwrap();
+    let saved = db::rows(&f.db, "SELECT value FROM projects WHERE id=?", &[&id])
+        .unwrap()
+        .remove(0);
+    assert_eq!(saved["deletedAt"], "2026-01-01T00:00:00Z");
+    assert_eq!(saved["purgeAfter"], "2026-01-31T00:00:00Z");
+    assert_eq!(saved["lifecycleRevision"], 4);
+    assert!(saved["revoked"].is_null() && saved["hidden"].is_null());
+    assert_eq!(saved["path"], f.project["path"]);
+    assert!(crate::projects::active(&f.db, id).is_err());
+    assert!(!f.resources().is_empty());
+    assert!(!f.outbox().is_empty());
+    assert_eq!(fs::read_to_string(file).unwrap(), "Keep my local work\n");
+}
+
+#[test]
+fn purging_a_project_detaches_it_then_removes_its_local_state() {
+    let f = Fixture::new();
+    let id = f.project["id"].as_str().unwrap();
+    let file = f.root.join("CLAUDE.md");
+    fs::write(&file, "Keep my local work\n").unwrap();
+    indexer::scan(&f.db, &f.project).unwrap();
+    assert!(!f.outbox().is_empty());
+    f.db.purge_local(id).unwrap();
+    let saved = db::rows(&f.db, "SELECT value FROM projects WHERE id=?", &[&id])
+        .unwrap()
+        .remove(0);
+    assert_eq!(saved["revoked"], true);
+    assert!(saved["detachedAt"].is_string());
+    assert_eq!(saved["hidden"], true);
+    assert!(saved["path"].is_null());
+    assert!(f.outbox().is_empty());
+    assert!(f.resources().is_empty());
+    let drafts = db::rows(&f.db, "SELECT value FROM drafts", &[]).unwrap();
+    assert!(!drafts.is_empty());
+    assert_eq!(fs::read_to_string(file).unwrap(), "Keep my local work\n");
 }
 
 #[test]

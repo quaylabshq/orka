@@ -41,6 +41,7 @@ import {
   ProjectPicker,
   projectLabel,
 } from "./components/project-navigation.js";
+import { InactiveProject } from "./components/inactive-project.js";
 import {
   FolderConnectionPrompt,
   ProjectEmptyState,
@@ -325,7 +326,9 @@ function WorkspaceApp({
     if (actionNotice) setNotice(actionNotice.title);
   }, [actionNotice, setNotice]);
   const index = useIndexFilters(JSON.stringify([workspaceScope, project]));
-  const selectedProject = state.projects.find((p) => p.id === project);
+  const inactiveProject = state.inactive?.find((item) => item.id === project);
+  const selectedProject =
+    state.projects.find((p) => p.id === project) ?? inactiveProject;
   const repositorySetupProject = state.projects.find(
     (item) => item.id === repositorySetup,
   );
@@ -352,7 +355,7 @@ function WorkspaceApp({
   const projectPath = selectedProject?.path;
   const localCatalog = useLocalResources({
     scope: workspaceScope,
-    project: selectedProject,
+    project: inactiveProject ? undefined : selectedProject,
     page: tab,
     user: state.user,
     serviceOrigin: state.config?.apiUrl,
@@ -729,10 +732,24 @@ function WorkspaceApp({
               onJoin={() => leaveSettings(() => setup.show("join"))}
             />
             <ProjectPicker
-              projects={state.projects}
+              projects={[...state.projects, ...(state.inactive ?? [])]}
               projectId={project}
               collapsed={sidebarCollapsed}
               projectActions={(target) => {
+                const open: ItemMenuAction = {
+                  id: "open",
+                  label: "Open project",
+                  onSelect: () =>
+                    leaveSettings(() => {
+                      setProject(target.id);
+                      setResource("");
+                      setEnvSet("");
+                      setTab("home");
+                    }),
+                };
+                // A paused project has no settings to open on this Mac.
+                if (!state.projects.some((item) => item.id === target.id))
+                  return [open];
                 const settingsAction = (
                   id: string,
                   label: string,
@@ -743,17 +760,7 @@ function WorkspaceApp({
                   onSelect: () => openProjectSettings(target.id, section),
                 });
                 const actions: ItemMenuAction[] = [
-                  {
-                    id: "open",
-                    label: "Open project",
-                    onSelect: () =>
-                      leaveSettings(() => {
-                        setProject(target.id);
-                        setResource("");
-                        setEnvSet("");
-                        setTab("home");
-                      }),
-                  },
+                  open,
                   {
                     id: "link",
                     label: "Copy project link",
@@ -816,9 +823,11 @@ function WorkspaceApp({
             title={
               settings
                 ? "Settings"
-                : selectedProject
-                  ? collectionLabel
-                  : "Your projects"
+                : inactiveProject
+                  ? projectLabel(inactiveProject)
+                  : selectedProject
+                    ? collectionLabel
+                    : "Your projects"
             }
             instant={sidebarInstant}
             collapsed={sidebarCollapsed}
@@ -828,6 +837,7 @@ function WorkspaceApp({
             }}
             repositoryFilter={
               selectedProject &&
+              !inactiveProject &&
               repositories.length > 1 &&
               tab !== "home" &&
               tab !== "members" ? (
@@ -953,6 +963,13 @@ function WorkspaceApp({
                     ?.focus(),
                 );
               }}
+            />
+          ) : inactiveProject ? (
+            <InactiveProject
+              key={inactiveProject.id}
+              project={inactiveProject}
+              busy={busy}
+              run={act}
             />
           ) : !selectedProject ? (
             <ProjectEmptyState

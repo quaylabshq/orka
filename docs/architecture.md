@@ -45,6 +45,31 @@ not resolve differing files or pending operations. Existing instruction files
 that exactly match an authorized revision can acquire a baseline without a file
 write.
 
+## Project lifecycle
+
+Project lifecycle, account membership and attachment to this Mac are separate
+states. Archive and recoverable deletion pause synchronization without discarding
+local folders or queued work. Owners recover archived and deleted projects from
+Settings → Projects, independently of the selected active project. Leaving a
+project removes account membership on every device; removing it from one Mac
+only clears that Mac's attachment and cached project state.
+
+The desktop explicitly requests the versioned lifecycle catalog with
+`includeArchived=true&projectLifecycle=1`. Owners receive complete deleted project
+entries, members receive reduced entries with their role and lifecycle revision,
+and purged projects arrive as tombstones. Every catalog consumer uses the same
+request and merge path. Local source bindings survive the restore window; stale
+revisions cannot overwrite newer state, and a purged project cannot be revived by
+a stale active catalog.
+
+Recoverable deletion and permanent purge require the server's `softDelete: 1`
+capability. Older services remain usable, with those destructive actions disabled.
+The API's configured restore duration and mutation receipts supply the displayed
+policy and deletion markers; the desktop does not invent a recovery deadline.
+The public server snapshot and protocol package must be updated through their
+normal reviewed release/export process before shipping the feature for that
+snapshot. Capability fallback also protects self-hosted services upgraded later.
+
 ## Native modules
 
 `indexer.rs`, `plans.rs`, and session readers discover scoped native content. `sync.rs` handles exchange and local materialization. `codex_import.rs` and `claude_import.rs` preserve native identities. `env/` owns dotenv parsing, encryption, device approval, and guarded file writes. `db.rs` and `auth.rs` isolate local persistence and credentials.

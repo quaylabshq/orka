@@ -71,7 +71,8 @@ export function useWorkspace() {
       setHasSnapshot(true);
       setRefreshError("");
       setProject((selected) =>
-        next.projects.some((item) => item.id === selected)
+        next.projects.some((item) => item.id === selected) ||
+        (next.inactive ?? []).some((item) => item.id === selected)
           ? selected
           : (next.projects[0]?.id ?? ""),
       );

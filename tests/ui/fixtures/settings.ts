@@ -64,6 +64,22 @@ export async function settingsFixture(
       folderState: "connected" | "reconnect" | "locate";
       removedAt?: string | null;
     }[];
+    deletedProjects?: {
+      id: string;
+      name: string;
+      role?: "owner" | "admin" | "member";
+      deletedAt: string;
+      purgeAfter?: string;
+      lifecycleRevision?: number;
+    }[];
+    archivedProjects?: {
+      id: string;
+      name: string;
+      role?: "owner" | "admin" | "member";
+      archivedAt: string;
+      lifecycleRevision?: number;
+    }[];
+    projectRestoreWindowDays?: number;
     policyFailure?: "drop" | "offline" | "conflict";
     legacy?: boolean;
     long?: boolean;
@@ -180,6 +196,8 @@ export async function settingsFixture(
             governed: true,
           },
         ];
+    const deletedProjects = (options.deletedProjects ?? []) as any[];
+    const archivedProjects = (options.archivedProjects ?? []) as any[];
     const state = {
       user,
       profile: "settings-test",
@@ -191,6 +209,8 @@ export async function settingsFixture(
         selfHostedUrl: "https://selfhost.orka",
       },
       projects,
+      deletedProjects,
+      archivedProjects,
       resources: [],
       bindings: [],
       conflicts: [],
@@ -574,11 +594,100 @@ export async function settingsFixture(
               url: "https://test.orka/join/join-once",
             };
           if (command === "project_command") {
+            const restoreWindowDays = options.projectRestoreWindowDays ?? 7;
+            if (args.action === "capabilities")
+              return {
+                softDelete: options.olderService ? 0 : 1,
+                projectRestoreWindowDays: restoreWindowDays,
+              };
             if (args.action === "list")
               return { supported: true, projects: structuredClone(projects) };
-            const project = projects.find(
+            const project = (projects.find(
               (project) => project.id === args.input.projectId,
-            )!;
+            ) ??
+              deletedProjects.find(
+                (project) => project.id === args.input.projectId,
+              ) ??
+              archivedProjects.find(
+                (project) => project.id === args.input.projectId,
+              ))! as any;
+            if (args.action === "delete" || args.action === "purge") {
+              const deletedAt = "2026-01-01T00:00:00Z";
+              const purgeAfter = new Date(
+                Date.parse(deletedAt) + restoreWindowDays * 86400_000,
+              ).toISOString();
+              if (options.queued)
+                throw new Error(
+                  "Sync queued changes and finish pending ENV publications before deleting this project",
+                );
+              if (args.input.confirmation !== project.name)
+                throw new Error("Type the project name to confirm deletion");
+              if (args.action === "delete") {
+                projects.splice(
+                  projects.findIndex(
+                    (item) => item.id === args.input.projectId,
+                  ),
+                  1,
+                );
+                deletedProjects.push({
+                  ...project,
+                  deletedAt,
+                  purgeAfter,
+                });
+              } else {
+                deletedProjects.splice(
+                  deletedProjects.findIndex(
+                    (item) => item.id === args.input.projectId,
+                  ),
+                  1,
+                );
+              }
+              return {
+                ok: true,
+                purgeAfter: args.action === "delete" ? purgeAfter : null,
+              };
+            }
+            if (args.action === "leave") {
+              if (options.queued)
+                throw new Error(
+                  "Sync queued changes and finish pending ENV publications before leaving this project",
+                );
+              Object.assign(project, {
+                revoked: true,
+                detachedAt: "2026-01-01T00:00:00Z",
+              });
+              return { ok: true };
+            }
+            if (args.action === "archive") {
+              archivedProjects.push({
+                ...project,
+                archivedAt: "2026-01-01T00:00:00Z",
+                lifecycleRevision: (project.lifecycleRevision ?? 0) + 1,
+              });
+              projects.splice(
+                projects.findIndex((item) => item.id === args.input.projectId),
+                1,
+              );
+              return { ok: true };
+            }
+            if (args.action === "restore") {
+              const bucket = deletedProjects.some(
+                (item) => item.id === args.input.projectId,
+              )
+                ? deletedProjects
+                : archivedProjects;
+              const index = bucket.findIndex(
+                (item) => item.id === args.input.projectId,
+              );
+              if (index >= 0) {
+                const restored = bucket.splice(index, 1)[0];
+                delete restored.deletedAt;
+                delete restored.purgeAfter;
+                delete restored.archivedAt;
+                projects.push(restored as (typeof projects)[number]);
+              }
+              return { ok: true };
+            }
             if (args.action === "rename") {
               if (options.failRename && !failedRename) {
                 failedRename = true;
@@ -591,7 +700,7 @@ export async function settingsFixture(
               if (options.failSourceRemoval)
                 throw new Error("Service unavailable. Try again.");
               const source = project.sources.find(
-                (source) => source.id === args.input.sourceId,
+                (source: { id: string }) => source.id === args.input.sourceId,
               )!;
               Object.assign(source, {
                 removedAt: "2026-11-13T00:00:00Z",

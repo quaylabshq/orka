@@ -193,16 +193,12 @@ pub(crate) fn preserve_removed_queue(
         let request_id = entry["id"].as_str().ok_or("Missing queued request")?;
         let resource = if entry["value"]["resource"].is_object() {
             entry["value"]["resource"].clone()
-        } else if entry["path"] == "/v2/sessions/copy" {
-            match sync::queued_session_snapshot(db, &entry["value"])? {
-                Some(snapshot) => snapshot,
-                None => crate::governance::resource(
-                    db,
-                    entry["value"]["resourceId"]
-                        .as_str()
-                        .ok_or("Missing queued resource")?,
-                )?,
-            }
+        } else if matches!(
+            entry["path"].as_str(),
+            Some("/v2/sessions/copy" | "/v2/sessions/resolve")
+        ) {
+            sync::queued_session_snapshot(db, &entry["value"])?
+                .ok_or("The queued session selection is unavailable; local work was preserved")?
         } else {
             crate::governance::resource(
                 db,
@@ -240,9 +236,7 @@ pub(crate) fn preserve_removed_queue(
         }
         db.execute("DELETE FROM outbox WHERE id=?", [request_id])
             .map_err(|e| e.to_string())?;
-        if entry["path"] == "/v2/sessions/copy" {
-            sync::clear_session_copy(db, request_id)?;
-        }
+        sync::clear_session_copy(db, request_id)?;
     }
     for mut pending in db::rows(db, "SELECT json_object('key',key,'value',json(value)) FROM meta WHERE key LIKE 'env:%:pending:%' AND json_extract(value,'$.header.manifest.projectId')=?1 AND coalesce(json_extract(value,'$.header.manifest.sourceId'),?1)=?2", &[&project,&source_id])? {
         pending["value"]["sourceRemoval"] = json!({"sourceId":source_id,"removedAt":source["removedAt"]});

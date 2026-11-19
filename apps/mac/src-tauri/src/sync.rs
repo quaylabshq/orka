@@ -319,6 +319,47 @@ pub(crate) fn queue_session_copy(
     Ok(request)
 }
 
+fn selected_resolution_snapshot(db: &rusqlite::Connection, input: &Value) -> Result<Option<Value>> {
+    let source = if input["selected"] == "candidate" {
+        db::rows(db,"SELECT json_extract(value,'$.candidate') FROM conflicts WHERE id=? AND project=? AND json_extract(value,'$.resourceId')=?",&[&input["conflictId"].as_str(),&input["projectId"].as_str(),&input["resourceId"].as_str()])?
+            .into_iter()
+            .next()
+    } else if input["selected"] == "current" {
+        db::rows(db,"SELECT value FROM resources WHERE id=? AND project=? AND json_extract(value,'$.revision')=?",&[&input["resourceId"].as_str(),&input["projectId"].as_str(),&input["expectedRevision"].as_i64()])?
+            .into_iter()
+            .next()
+    } else {
+        None
+    };
+    Ok(source.filter(|source| {
+        source["kind"] == "session"
+            && source["resourceId"] == input["resourceId"]
+            && source["projectId"] == input["projectId"]
+    }))
+}
+
+/// A resolution's wire body names a version but carries no files. Freeze that
+/// selection locally so a later pull or project removal cannot replace it.
+pub(crate) fn queue_session_resolution(db: &rusqlite::Connection, input: &Value) -> Result<()> {
+    let tx = db
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
+    let source = selected_resolution_snapshot(&tx, input)?
+        .ok_or("The selected session version is unavailable; refresh before resolving")?;
+    indexer::queue(
+        &tx,
+        input["projectId"].as_str().ok_or("Missing project")?,
+        "/v2/sessions/resolve",
+        input,
+    )?;
+    db::set(
+        &tx,
+        &copy_state_key(input["id"].as_str().ok_or("Missing request ID")?),
+        &json!({"source":source,"resolution":input}),
+    )?;
+    tx.commit().map_err(|error| error.to_string())
+}
+
 /// Freeze the wire body before its first attempt. A service upgrade must not
 /// change the identity of an uncertain legacy request.
 pub(crate) fn prepare_session_copy(
@@ -371,6 +412,18 @@ pub(crate) fn queued_session_snapshot(
         Some(request) => db::get(db, &copy_state_key(request))?,
         None => Value::Null,
     };
+    if input["conflictId"].is_string() {
+        if state["resolution"] == *input
+            && state["source"]["kind"] == "session"
+            && state["source"]["resourceId"] == input["resourceId"]
+            && state["source"]["projectId"] == input["projectId"]
+        {
+            return Ok(Some(state["source"].clone()));
+        }
+        // Old queued resolutions have no frozen local snapshot. A selected
+        // current version must still have precisely the observed revision.
+        return selected_resolution_snapshot(db, input);
+    }
     let mut wire = input["sourceSnapshot"].clone();
     if wire.is_object() {
         wire["projectId"] = input["projectId"].clone();
@@ -674,7 +727,7 @@ pub(crate) fn acknowledge_session(
             )?;
         }
     }
-    if path == "/v2/sessions/copy" {
+    if matches!(path, "/v2/sessions/copy" | "/v2/sessions/resolve") {
         clear_session_copy(db, input["id"].as_str().ok_or("Missing request ID")?)?;
     }
     Ok(())
@@ -1720,7 +1773,7 @@ impl<'a> SyncPass<'a> {
             .ok_or("Configure the service")?
             .to_string();
         register_device(owner, &origin, &device).await?;
-        let projects = api_as(owner, "GET", "/v2/projects?includeArchived=true", None).await?;
+        let projects = api_as(owner, "GET", crate::projects::CATALOG_PATH, None).await?;
         crate::projects::merge_catalog(db, &projects)?;
         Ok(Continue(()))
     }
@@ -3124,45 +3177,6 @@ mod queue_tests {
         assert_eq!(select_uploads(&queue, 1000)[0]["sequence"], 1);
     }
 
-    #[test]
-    fn only_a_cancelled_project_stops_at_a_stage_boundary() {
-        let (_root, db) = outbox_db(&[]);
-        let project = uuid::Uuid::new_v4().to_string();
-        assert!(boundary(&db, &project).unwrap().is_continue());
-        SyncQueue::mark_cancelled(&db, &project).unwrap();
-        assert!(boundary(&db, &project).unwrap().is_break());
-        assert!(boundary(&db, &uuid::Uuid::new_v4().to_string())
-            .unwrap()
-            .is_continue());
-    }
-
-    #[tokio::test]
-    async fn a_cancelled_job_stops_before_its_next_request_and_keeps_the_outbox() {
-        let (_root, db) = outbox_db(&[]);
-        let project = uuid::Uuid::new_v4().to_string();
-        db.execute(
-            "INSERT INTO projects VALUES(?,?)",
-            params![project, json!({"id": project}).to_string()],
-        )
-        .unwrap();
-        db::set(&db, "user", &json!(uuid::Uuid::new_v4().to_string())).unwrap();
-        let mut db = db;
-        enqueue(&db, &project, "memory");
-        enqueue(&db, &project, "skill");
-        SyncQueue::request(&db, &project, Priority::User, "sync now").unwrap();
-        let job = SyncQueue::next(&db, i64::MAX - 1).unwrap().unwrap();
-        SyncQueue::mark_cancelled(&db, &project).unwrap();
-        let outcome = sync_job(&mut db, &job).await;
-        assert!(matches!(outcome, Ok(Outcome::Cancelled)), "{outcome:?}");
-        // Nothing already sent is rolled back and nothing unsent is dropped.
-        assert_eq!(
-            db::rows(&db, "SELECT value FROM outbox", &[])
-                .unwrap()
-                .len(),
-            2
-        );
-    }
-
     fn outbox_db(projects: &[&str]) -> (tempfile::TempDir, rusqlite::Connection) {
         let root = tempfile::tempdir().unwrap();
         let db = db::open_at(root.path()).unwrap();
@@ -3216,6 +3230,48 @@ mod queue_tests {
     }
 
     #[test]
+    fn project_batches_reconcile_fenced_terminal_rows_without_overtaking_them() {
+        let (_root, db) = outbox_db(&["a", "b"]);
+        let fenced = enqueue(&db, "a", "session");
+        let later = enqueue(&db, "a", "session");
+        let other = enqueue(&db, "a", "independent");
+        let terminal = enqueue(&db, "a", "terminal");
+        let peer = enqueue(&db, "b", "peer-session");
+        for sequence in [fenced, later, peer] {
+            db.execute(
+                "UPDATE outbox SET value=json_set(value,'$.resource.kind','session') WHERE rowid=?",
+                [sequence],
+            )
+            .unwrap();
+        }
+        for sequence in [fenced, terminal, peer] {
+            db.execute(
+                "UPDATE outbox SET error='422: Session upload blocked' WHERE rowid=?",
+                [sequence],
+            )
+            .unwrap();
+        }
+        for sequence in [fenced, peer] {
+            let id: String = db
+                .query_row("SELECT id FROM outbox WHERE rowid=?", [sequence], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            db::set(&db, &outbox_redaction_key(&id), &json!({"drop":true})).unwrap();
+        }
+        assert_eq!(batch(&db, "a"), vec![fenced, other]);
+        assert_eq!(batch(&db, "b"), vec![peer]);
+        // A rotated cursor still cannot let a later edit of the same session
+        // overtake the fenced request while its service outcome is unknown.
+        let mut outbox = ProjectOutbox::open(&db, "a").unwrap();
+        outbox.advance(&db, &json!(other)).unwrap();
+        assert_eq!(batch(&db, "a"), vec![fenced, other]);
+        db.execute("DELETE FROM outbox WHERE rowid=?", [fenced])
+            .unwrap();
+        assert_eq!(batch(&db, "a"), vec![later, other]);
+    }
+
+    #[test]
     fn projects_drain_independently_without_overtaking_a_resource() {
         let (_root, db) = outbox_db(&["a", "b"]);
         let a1 = enqueue(&db, "a", "shared");
@@ -3238,6 +3294,45 @@ mod queue_tests {
         b.advance(&db, &json!(b2)).unwrap();
         assert_eq!(batch(&db, "b"), vec![b1, b2]);
         assert_eq!(batch(&db, "a"), vec![a2, a3]);
+    }
+
+    #[test]
+    fn only_a_cancelled_project_stops_at_a_stage_boundary() {
+        let (_root, db) = outbox_db(&[]);
+        let project = uuid::Uuid::new_v4().to_string();
+        assert!(boundary(&db, &project).unwrap().is_continue());
+        SyncQueue::mark_cancelled(&db, &project).unwrap();
+        assert!(boundary(&db, &project).unwrap().is_break());
+        assert!(boundary(&db, &uuid::Uuid::new_v4().to_string())
+            .unwrap()
+            .is_continue());
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_job_stops_before_its_next_request_and_keeps_the_outbox() {
+        let (_root, db) = outbox_db(&[]);
+        let project = uuid::Uuid::new_v4().to_string();
+        db.execute(
+            "INSERT INTO projects VALUES(?,?)",
+            params![project, json!({"id": project}).to_string()],
+        )
+        .unwrap();
+        db::set(&db, "user", &json!(uuid::Uuid::new_v4().to_string())).unwrap();
+        let mut db = db;
+        enqueue(&db, &project, "memory");
+        enqueue(&db, &project, "skill");
+        SyncQueue::request(&db, &project, Priority::User, "sync now").unwrap();
+        let job = SyncQueue::next(&db, i64::MAX - 1).unwrap().unwrap();
+        SyncQueue::mark_cancelled(&db, &project).unwrap();
+        let outcome = sync_job(&mut db, &job).await;
+        assert!(matches!(outcome, Ok(Outcome::Cancelled)), "{outcome:?}");
+        // Nothing already sent is rolled back and nothing unsent is dropped.
+        assert_eq!(
+            db::rows(&db, "SELECT value FROM outbox", &[])
+                .unwrap()
+                .len(),
+            2
+        );
     }
 
     #[test]
