@@ -342,11 +342,45 @@ fn indexed_v2_segment<'a>(home: &Path, id: &str, candidates: &'a [Segment]) -> O
         return None;
     }
     let record: Value = serde_json::from_str(&first_line(&selected.path).ok()?).ok()?;
-    if record["payload"]["session_id"] != id
+    if record["type"] != "session_meta"
+        || record["payload"]["id"] != id
+        || record["payload"]["session_id"] != id
+        || record["payload"]["multi_agent_version"] != "v2"
+        || record["payload"]["cwd"]
+            .as_str()
+            .map(PathBuf::from)
+            .as_ref()
+            != Some(cwd)
         || record["payload"]["history_mode"] != "paginated"
         || record["ordinal"].as_u64() != Some(selected.ordinal)
     {
         return None;
+    }
+    // A valid index can lag behind an appended segment. Do not mistake an
+    // indexed ancestor for the current generation and silently omit its child.
+    for child in candidates
+        .iter()
+        .filter(|child| child.ordinal > selected.ordinal)
+    {
+        let record: Value = serde_json::from_str(&first_line(&child.path).ok()?).ok()?;
+        let base = &record["payload"]["history_base"];
+        if base["thread_id"] != id || base["end_ordinal_exclusive"].as_u64() != Some(child.ordinal)
+        {
+            continue;
+        }
+        let offset = base["end_byte_offset"].as_u64()?;
+        let prefix = read(&selected.path, Some(offset)).ok()?;
+        if prefix.len() as u64 == offset
+            && prefix.last() == Some(&b'\n')
+            && native::complete_records(&prefix)
+                .ok()?
+                .last()
+                .and_then(|record| record["ordinal"].as_u64())
+                .and_then(|ordinal| ordinal.checked_add(1))
+                == Some(child.ordinal)
+        {
+            return None;
+        }
     }
     Some(selected)
 }
@@ -355,9 +389,6 @@ pub fn current_path(path: &Path, id: &str) -> Result<PathBuf> {
     let home = native::codex_home()?;
     let candidates = segments(&home, id)?;
     if candidates.len() > 1 && candidates.iter().any(|segment| segment.multi_agent_v2) {
-        if let Some(selected) = indexed_v2_segment(&home, id, &candidates) {
-            return Ok(selected.path.clone());
-        }
         let reset = candidates
             .iter()
             .any(|segment| segment.multi_agent_v2 && segment.ordinal == 0);
@@ -366,6 +397,9 @@ pub fn current_path(path: &Path, id: &str) -> Result<PathBuf> {
             .any(|pair| pair[0].ordinal == pair[1].ordinal);
         if duplicate_ordinal || (reset && candidates.iter().any(|segment| !segment.multi_agent_v2))
         {
+            if let Some(selected) = indexed_v2_segment(&home, id, &candidates) {
+                return Ok(selected.path.clone());
+            }
             return Err("Ambiguous native history segments; source preserved".into());
         }
     }

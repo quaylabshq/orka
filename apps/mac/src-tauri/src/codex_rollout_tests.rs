@@ -405,3 +405,56 @@ fn codex_v2_uses_numeric_latest_state_and_preserves_identical_compressed_copies(
     unchanged(&before);
     assert!(f.outbox().is_empty());
 }
+
+#[test]
+fn codex_v2_stale_index_never_hides_a_later_continuation() {
+    for collision in [false, true] {
+        let f = setup();
+        let id = uuid::Uuid::new_v4().to_string();
+        let parent_records = records(&f, &id, true, 0, "V2 parent");
+        let parent = write_rollout(&id, "", &parent_records);
+        let mut child_records = records(&f, &id, true, 3, "Latest continuation");
+        child_records[0]["payload"]["history_base"] = json!({"thread_id":id,"end_ordinal_exclusive":3,"end_byte_offset":native::encode(&parent_records).len()});
+        let child = write_rollout(&id, &format!("_{}", uuid::Uuid::new_v4()), &child_records);
+        let parent = if collision {
+            let archive = native::codex_home().unwrap().join("archived_sessions");
+            fs::create_dir(&archive).unwrap();
+            let archived = archive.join(parent.file_name().unwrap());
+            fs::rename(&parent, &archived).unwrap();
+            archived
+        } else {
+            parent
+        };
+        let mut paths = vec![parent.clone(), child.clone()];
+        if collision {
+            paths.push(write_rollout(
+                &id,
+                &format!("_{}", uuid::Uuid::new_v4()),
+                &records(&f, &id, false, 0, "Obsolete generation"),
+            ));
+        }
+        drop(state(5, &id, &parent));
+        let refs = paths.iter().map(PathBuf::as_path).collect::<Vec<_>>();
+        let before = snapshot(&refs);
+        if collision {
+            assert_eq!(history::current_path(&parent, &id).unwrap_err(), AMBIGUOUS);
+            let db =
+                rusqlite::Connection::open(native::codex_home().unwrap().join("state_5.sqlite"))
+                    .unwrap();
+            db.execute(
+                "UPDATE threads SET rollout_path=? WHERE id=?",
+                rusqlite::params![child.to_str().unwrap(), id],
+            )
+            .unwrap();
+        }
+        assert_eq!(history::current_path(&parent, &id).unwrap(), child);
+        assert_eq!(
+            History::local(&child, Some(&f.root))
+                .unwrap()
+                .records()
+                .len(),
+            6
+        );
+        unchanged(&before);
+    }
+}
