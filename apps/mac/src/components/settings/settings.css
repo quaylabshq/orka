@@ -430,6 +430,40 @@
   .settings-notice {
     @apply space-y-3 rounded-lg border border-line p-4;
   }
+  .settings-danger {
+    @apply flex flex-col border border-line p-4;
+    border-radius: var(--radius-list);
+  }
+  .settings-danger-heading p {
+    @apply mt-1;
+  }
+  .settings-danger .settings-row {
+    @apply px-0;
+  }
+  .settings-danger-heading + .settings-row {
+    border-top: 1px solid var(--surface-stroke);
+  }
+  .settings-deleted-list {
+    @apply mt-3 overflow-hidden;
+  }
+  .settings-deleted-row {
+    @apply flex min-w-0 items-center justify-between gap-4 px-4 py-3;
+  }
+  .settings-project-summary {
+    @apply min-w-0 flex-1;
+  }
+  .settings-deleted-row > .settings-inline-actions {
+    @apply shrink-0;
+  }
+  .settings-deleted-row + .settings-deleted-row {
+    @apply border-t border-line;
+  }
+  .settings-deleted-row strong {
+    @apply block truncate text-label-item font-medium;
+  }
+  .settings-deleted-row p {
+    @apply mt-1 text-body-xs;
+  }
   .settings-confirm {
     @apply z-40 w-[480px];
   }
@@ -440,6 +474,9 @@
   .settings-confirm p,
   .modal.settings-migration p {
     @apply text-body-sm text-secondary;
+  }
+  .settings-confirm p {
+    overflow-wrap: anywhere;
   }
   .settings-confirm-actions {
     @apply flex flex-wrap justify-end gap-2;

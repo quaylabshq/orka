@@ -42,6 +42,16 @@ pub fn snapshot() -> Result<Value> {
         ),
         &[],
     )?;
+    // Archived, deleted, and unreachable projects keep their place in the
+    // sidebar so the reason and the local copy stay visible.
+    let inactive = db::rows(
+        &db,
+        &format!(
+            "SELECT value FROM projects WHERE coalesce(json_extract(value,'$.hidden'),0)=0 AND NOT ({}) ORDER BY json_extract(value,'$.name')",
+            projects::ACTIVE
+        ),
+        &[],
+    )?;
     for project in &mut projects {
         if let Some(sources) = project["sources"].as_array_mut() {
             for source in sources {
@@ -51,6 +61,16 @@ pub fn snapshot() -> Result<Value> {
             project["folderState"] = json!(crate::sources::folder_state(project));
         }
     }
+    let deleted_projects = db::rows(
+        &db,
+        "SELECT value FROM projects WHERE coalesce(json_extract(value,'$.revoked'),0)=0 AND json_extract(value,'$.role')='owner' AND json_extract(value,'$.deletedAt') IS NOT NULL AND coalesce(json_extract(value,'$.purged'),0)=0 AND json_extract(value,'$.detachedAt') IS NULL ORDER BY json_extract(value,'$.name')",
+        &[],
+    )?;
+    let archived_projects = db::rows(
+        &db,
+        "SELECT value FROM projects WHERE coalesce(json_extract(value,'$.revoked'),0)=0 AND json_extract(value,'$.role')='owner' AND json_extract(value,'$.archivedAt') IS NOT NULL AND json_extract(value,'$.deletedAt') IS NULL AND coalesce(json_extract(value,'$.purged'),0)=0 AND json_extract(value,'$.detachedAt') IS NULL ORDER BY json_extract(value,'$.name')",
+        &[],
+    )?;
     let mut local_skills = Vec::new();
     for project in &projects {
         for source in crate::sources::views(project) {
@@ -71,7 +91,7 @@ pub fn snapshot() -> Result<Value> {
     Ok(json!({
         "profile":crate::profiles::current(), "onboarding":onboarding, "accountProfile":db::get(&db,"accountProfile")?,
         "user":db::get(&db,"user")?, "config":db::get(&db,"config")?,
-        "projects":projects, "localSkills":local_skills,
+        "projects":projects, "inactive":inactive, "deletedProjects":deleted_projects, "archivedProjects":archived_projects, "localSkills":local_skills,
         "managedProjects":db::rows(&db,"SELECT json_set(value,'$.pendingChanges',(SELECT count(*) FROM outbox WHERE project=projects.id)+(SELECT count(*) FROM meta WHERE ? AND key LIKE 'env:%:pending:%' AND json_extract(value,'$.sourceRemoval') IS NULL AND json_extract(value,'$.header.manifest.projectId')=projects.id)) FROM projects ORDER BY json_extract(value,'$.name')",&[&crate::env::enabled()])?,
         "resources":resources, "bindings":scoped("bindings")?, "conflicts":scoped("conflicts")?,
         "drafts":scoped("drafts")?,
@@ -732,6 +752,12 @@ pub async fn resume_session(
 #[tauri::command]
 pub fn export_bundle(id: String, path: String) -> Result<()> {
     bundles::export(&db::open()?, &id, &PathBuf::from(path))
+}
+/// Keeps a copy of an inactive project's cached work before it leaves this Mac.
+#[tauri::command]
+pub fn export_project(project_id: String, destination: String) -> Result<()> {
+    let _lock = projects::lock()?;
+    bundles::export_project(&db::open()?, &project_id, &PathBuf::from(destination))
 }
 #[tauri::command]
 pub fn import_bundle(
