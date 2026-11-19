@@ -13,6 +13,8 @@ export async function settingsFixture(
   page: Page,
   options: {
     noProjects?: boolean;
+    openSettings?: boolean;
+    websiteRole?: "owner" | "admin" | "member";
     emailInvites?: boolean;
     pendingInvites?: { email: string; expiresAt: string }[];
     failEmailInvite?: boolean;
@@ -183,7 +185,7 @@ export async function settingsFixture(
           {
             id: "two",
             name: "Website",
-            role: "member",
+            role: options.websiteRole ?? "member",
             path: null,
             sources: [
               {
@@ -321,7 +323,11 @@ export async function settingsFixture(
         },
         unregisterCallback: () => {},
         invoke: async (command: string, args: any = {}) => {
-          if (command === "snapshot") return structuredClone(state);
+          if (command === "snapshot")
+            return structuredClone({
+              ...state,
+              inactive: [...archivedProjects, ...deletedProjects],
+            });
           if (command === "sync_progress")
             return { user: state.user, progress: null };
           calls.push({ command, args: structuredClone(args) });
@@ -764,8 +770,9 @@ export async function settingsFixture(
     });
   }, options);
   await page.goto(options.debug ? "/?skullet-debug" : "/");
-  await page.getByRole("button", { name: "Settings", exact: true }).click();
   const settings = page.getByRole("region", { name: "Settings", exact: true });
+  if (options.openSettings === false) return settings;
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
   await expect(settings).toBeVisible();
   return settings;
 }
