@@ -27,7 +27,7 @@ function loadMermaid() {
           background: token("--surface-secondary"),
           primaryColor: token("--surface-tertiary"),
           primaryTextColor: token("--text-primary"),
-          primaryBorderColor: token("--surface-stroke"),
+          primaryBorderColor: token("--border-default"),
           secondaryColor: token("--surface-secondary"),
           tertiaryColor: token("--surface-tertiary"),
           lineColor: token("--text-secondary"),

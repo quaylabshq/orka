@@ -157,11 +157,11 @@ test("the wide reader shows frontmatter, facts, files, and header navigation", a
   });
   await expect(info.locator('.detail-file[aria-current="true"]')).toHaveCSS(
     "background-color",
-    "rgb(46, 46, 46)",
+    "rgba(255, 255, 255, 0.1)",
   );
   await expect(
     info.getByRole("button", { name: "View changes", exact: true }),
-  ).toHaveCSS("background-color", "rgb(37, 37, 37)");
+  ).toHaveCSS("background-color", "rgba(255, 255, 255, 0.06)");
   await expect(info.getByRole("button", { name: /Review local/ })).toHaveCount(
     0,
   );

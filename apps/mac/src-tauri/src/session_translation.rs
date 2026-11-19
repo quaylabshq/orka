@@ -362,9 +362,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            crate::session_presentation::title(&crate::native::encode(&records))
-                .unwrap()
-                .as_deref(),
+            crate::session_presentation::title(&records).as_deref(),
             Some("Fix compatibility")
         );
     }

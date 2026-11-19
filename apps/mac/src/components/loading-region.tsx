@@ -7,12 +7,12 @@ import { clearPermissionDrafts } from "./settings/settings-permission-model.js";
 const LoadingScope = createContext("");
 const theme = {
   light: {
-    base: "var(--surface-stroke)",
-    highlight: "var(--interaction-selected)",
+    base: "var(--border-default)",
+    highlight: "var(--state-pressed)",
   },
   dark: {
-    base: "var(--surface-stroke)",
-    highlight: "var(--interaction-selected)",
+    base: "var(--border-default)",
+    highlight: "var(--state-pressed)",
   },
   radius: "var(--radius-detail)",
   animation: "pulse" as const,
