@@ -6,13 +6,22 @@ declare global {
     attentionFixture: {
       state: Snapshot;
       calls: { name: string; args?: Record<string, unknown> }[];
+      failUploadPreview?: boolean;
+      uploadReviewFailure?: string;
+      uploadPreviewCount: number;
     };
   }
 }
 
 /** Matched synthetic notification state for regression and before/after captures. */
-export async function syncAttentionFixture(page: Page) {
-  await page.addInitScript(() => {
+export async function syncAttentionFixture(
+  page: Page,
+  options: {
+    planUploadReview?: boolean;
+    planUnavailable?: "deleted" | "missing";
+  } = {},
+) {
+  await page.addInitScript((options) => {
     const resource = (
       id: string,
       title: string,
@@ -77,6 +86,7 @@ export async function syncAttentionFixture(page: Page) {
     });
     const fixture: Window["attentionFixture"] = {
       calls: [],
+      uploadPreviewCount: 0,
       state: {
         user: "user",
         config: { apiUrl: "https://fixture.invalid", syncMinutes: 15 },
@@ -242,6 +252,12 @@ export async function syncAttentionFixture(page: Page) {
         background: true,
       },
     };
+    if (options.planUploadReview) fixture.state.outbox[0].reviewable = true;
+    if (options.planUnavailable === "deleted") plan.deleted = true;
+    if (options.planUnavailable === "missing")
+      fixture.state.resources = fixture.state.resources.filter(
+        (resource) => resource.resourceId !== plan.resourceId,
+      );
     Object.assign(window, {
       attentionFixture: fixture,
       isTauri: true,
@@ -254,6 +270,45 @@ export async function syncAttentionFixture(page: Page) {
           if (name === "sync_progress") return { user: "user", progress: null };
           fixture.calls.push({ name, args });
           if (name.startsWith("plugin:")) return null;
+          if (name === "resource_command") {
+            if (args?.action === "preview-upload") {
+              if (options.planUnavailable)
+                throw new Error(
+                  "The shared plan is unavailable. The queued snapshot was kept.",
+                );
+              if (fixture.failUploadPreview)
+                throw new Error(
+                  "Cloud unavailable; the queued snapshot was kept",
+                );
+              fixture.uploadPreviewCount++;
+              return {
+                previewToken: `review-${fixture.uploadPreviewCount}`,
+                title: plan.title,
+                kind: "plan",
+                revision: 3,
+                before: {
+                  "content.md": "# Shared checklist\nShared milestone\n",
+                },
+                files: {
+                  "content.md": "# Queued checklist\nQueued milestone\n",
+                },
+                beforeManifest: [
+                  { path: "content.md", hash: "shared-plan", binary: false },
+                ],
+                afterManifest: [
+                  { path: "content.md", hash: "queued-plan", binary: false },
+                ],
+                note: "Only this queued snapshot will be resent against the reviewed shared version. It replaces that shared plan after sync. Files on this Mac are kept; later local edits are not included.",
+              };
+            }
+            if (args?.action === "retry-upload") {
+              if (fixture.uploadReviewFailure)
+                throw new Error(fixture.uploadReviewFailure);
+              fixture.state.outbox[0].error = null;
+              fixture.state.outbox[0].reviewable = false;
+              return { status: "queued", requestId: "reviewed-upload" };
+            }
+          }
           if (name === "governance_command") {
             const input = args?.input as Record<string, unknown> | undefined;
             if (args?.action === "catalog")
@@ -317,5 +372,5 @@ export async function syncAttentionFixture(page: Page) {
         },
       },
     });
-  });
+  }, options);
 }
