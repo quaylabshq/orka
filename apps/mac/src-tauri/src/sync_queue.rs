@@ -35,6 +35,10 @@ fn cancelled_at_key(project: &str) -> String {
 /// keep the row when the job finishes.
 const RUNNING: i64 = i64::MAX;
 
+/// How many sync intervals a deleted, restorable project waits between its
+/// capture-only timer jobs. Local changes and user requests still run at once.
+const CAPTURE_INTERVAL_FACTOR: u32 = 4;
+
 #[derive(Clone, Copy)]
 pub(crate) enum Priority {
     Timer = 0,
@@ -59,6 +63,9 @@ pub(crate) enum Outcome {
     Skipped,
     /// Finished with item errors or deferred uploads; retried with backoff.
     Deferred,
+    /// A deleted, restorable project scanned its local files into the outbox
+    /// without any request. Its timer restarts, but no cloud sync is recorded.
+    Captured,
     /// Stopped early for foreground work; queued again as it was.
     Yielded,
     /// The user cancelled it at a stage boundary: no backoff for the rest of
@@ -164,14 +171,32 @@ impl SyncQueue {
         .map_err(|e| e.to_string())
     }
 
+    /// The workspace, every active project, and every deleted project that can
+    /// still be restored, whose job only captures local changes.
     fn targets(db: &Connection) -> Result<Vec<String>> {
-        let sql = format!("SELECT id FROM projects WHERE {}", crate::projects::ACTIVE);
+        let sql = format!(
+            "SELECT id FROM projects WHERE {}",
+            *crate::projects::CAPTURABLE
+        );
         let mut query = db.prepare(&sql).map_err(|e| e.to_string())?;
         let ids = query
             .query_map([], |row| row.get(0))
             .and_then(|rows| rows.collect::<rusqlite::Result<Vec<String>>>())
             .map_err(|e| e.to_string())?;
         Ok(std::iter::once(WORKSPACE.to_string()).chain(ids).collect())
+    }
+
+    fn capture_only(db: &Connection) -> Result<std::collections::HashSet<String>> {
+        let sql = format!(
+            "SELECT id FROM projects WHERE {}",
+            crate::projects::CAPTURE_ONLY
+        );
+        let mut query = db.prepare(&sql).map_err(|e| e.to_string())?;
+        let ids = query
+            .query_map([], |row| row.get(0))
+            .and_then(|rows| rows.collect::<rusqlite::Result<_>>())
+            .map_err(|e| e.to_string())?;
+        Ok(ids)
     }
 
     /// Queues the workspace steps and every active project.
@@ -253,8 +278,14 @@ impl SyncQueue {
             self.synced.clear();
             self.device = device;
         }
-        let every = interval.duration();
+        let capture_only = Self::capture_only(db)?;
         for project in Self::targets(db)? {
+            // A deleted project only scans its own files, so it checks less often.
+            let every = if capture_only.contains(&project) {
+                interval.duration() * CAPTURE_INTERVAL_FACTOR
+            } else {
+                interval.duration()
+            };
             let mut base = self
                 .synced
                 .get(&project)
@@ -358,14 +389,18 @@ impl SyncQueue {
     /// job has no time the user acts on.
     pub(crate) fn states(db: &Connection, now: i64) -> Result<Value> {
         let mut query = db
-            .prepare(
+            // A deleted project's capture job is local bookkeeping, not a sync
+            // the user can follow or cancel, so the panel leaves it out.
+            .prepare(&format!(
                 "SELECT project,reason,attempts,not_before,EXISTS(
                  SELECT 1 FROM meta WHERE key='syncClaim:'||project AND json_type(value)='text'),EXISTS(
                  SELECT 1 FROM meta claim JOIN meta cancel ON cancel.value=claim.value
                  WHERE claim.key='syncClaim:'||project AND cancel.key='syncCancel:'||project
                  AND json_type(claim.value)='text') FROM sync_queue
-                 WHERE project<>?1 ORDER BY priority DESC,requested_at,project",
-            )
+                 WHERE project<>?1 AND project NOT IN (SELECT id FROM projects WHERE {})
+                 ORDER BY priority DESC,requested_at,project",
+                crate::projects::CAPTURE_ONLY
+            ))
             .map_err(|e| e.to_string())?;
         let jobs = query
             .query_map([WORKSPACE], |row| {
@@ -491,7 +526,7 @@ impl SyncQueue {
                 "DELETE FROM sync_queue WHERE project=?1 AND not_before=?2",
                 params![project, RUNNING],
             )),
-            Ok(Outcome::Synced | Outcome::Cancelled) => {
+            Ok(Outcome::Synced | Outcome::Cancelled | Outcome::Captured) => {
                 let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
                 sql(tx.execute(
                     "DELETE FROM sync_queue WHERE project=?1 AND not_before=?2",
@@ -506,7 +541,7 @@ impl SyncQueue {
                     sql(tx.execute("DELETE FROM meta WHERE key=?", [OUTAGE]))?;
                 }
                 tx.commit().map_err(|e| e.to_string())?;
-                if matches!(result, Ok(Outcome::Synced)) {
+                if matches!(result, Ok(Outcome::Synced | Outcome::Captured)) {
                     self.synced.insert(job.project.clone(), now);
                     sql(db.execute("DELETE FROM meta WHERE key=?", [cancelled_at_key(project)]))?;
                 }
@@ -1113,6 +1148,48 @@ mod tests {
         assert!(rows(&db).iter().all(|job| job.project != "a"));
         queue.enqueue_due(&db, due, &interval).unwrap();
         assert!(rows(&db).iter().any(|job| job.project == "a"));
+    }
+
+    #[test]
+    fn a_deleted_restorable_project_captures_on_a_slower_timer() {
+        let (_root, db) = queue_db(&["a"]);
+        db.execute(
+            "INSERT INTO projects VALUES('held',?)",
+            [json!({"id":"held","deletedAt":"2026-11-01T00:00:00Z","purgeAfter":"2026-12-01T00:00:00Z"}).to_string()],
+        )
+        .unwrap();
+        let interval = interval();
+        let device = db::device(&db).unwrap();
+        let slow = interval.duration() * CAPTURE_INTERVAL_FACTOR;
+        let due = |id, every| millis(every) + millis(jitter(&device, id, every));
+        let mut queue = SyncQueue::new(0);
+        // The first timer pass binds the device, which resets the schedule.
+        queue.enqueue_due(&db, -1, &interval).unwrap();
+        for project in ["a", "held"] {
+            let job = Job {
+                project: project.into(),
+                priority: 0,
+                reason: "timer".into(),
+                requested_at: 0,
+                not_before: 0,
+                attempts: 0,
+            };
+            queue
+                .settle(&db, job, &Ok(Outcome::Synced), 0, &interval)
+                .unwrap();
+        }
+        queue
+            .enqueue_due(&db, due("a", interval.duration()), &interval)
+            .unwrap();
+        assert!(rows(&db).iter().any(|job| job.project == "a"));
+        queue
+            .enqueue_due(&db, due("held", slow) - 1, &interval)
+            .unwrap();
+        assert!(rows(&db).iter().all(|job| job.project != "held"));
+        queue
+            .enqueue_due(&db, due("held", slow), &interval)
+            .unwrap();
+        assert!(rows(&db).iter().any(|job| job.project == "held"));
     }
 
     #[test]

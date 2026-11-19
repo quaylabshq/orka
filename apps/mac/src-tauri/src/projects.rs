@@ -15,6 +15,18 @@ use std::{
 };
 
 pub const ACTIVE: &str = "coalesce(json_extract(value,'$.revoked'),0)=0 AND coalesce(json_extract(value,'$.hidden'),0)=0 AND json_extract(value,'$.archivedAt') IS NULL AND json_extract(value,'$.deletedAt') IS NULL";
+/// A deleted project that can still be restored. Only a soft-delete service
+/// (0.7.4 and later) publishes `purgeAfter`, so an older server never enables
+/// capture. An archive alone, an access removal, a hidden or detached copy and
+/// a purge all stop capture. The deadline is not compared with this Mac's
+/// clock: the window ends when the catalog delivers a purge tombstone or no
+/// longer lists the project, which detaches it.
+pub const CAPTURE_ONLY: &str = "coalesce(json_extract(value,'$.revoked'),0)=0 AND coalesce(json_extract(value,'$.hidden'),0)=0 AND json_extract(value,'$.detachedAt') IS NULL AND coalesce(json_extract(value,'$.purged'),0)=0 AND json_extract(value,'$.deletedAt') IS NOT NULL AND julianday(json_extract(value,'$.purgeAfter')) IS NOT NULL";
+/// Projects whose local edits are captured into the outbox: every `ACTIVE`
+/// project, plus a deleted one in its restore window, which captures without
+/// sending until it is restored.
+pub static CAPTURABLE: std::sync::LazyLock<String> =
+    std::sync::LazyLock::new(|| format!("(({ACTIVE}) OR ({CAPTURE_ONLY}))"));
 pub const CATALOG_PATH: &str = "/v2/projects?includeArchived=true&projectLifecycle=1";
 
 pub(crate) fn require_soft_delete(capabilities: &Value) -> Result<()> {
@@ -91,6 +103,25 @@ pub fn require_sharing(db: &Connection, id: &str, kind: &str) -> Result<()> {
         .into_iter()
         .next()
         .ok_or("Project not found")?;
+    if !sharing_allowed(&project, kind) {
+        return Err(format!(
+            "Sharing for {kind} is off on this Mac. Enable it in Settings → Project sharing."
+        ));
+    }
+    Ok(())
+}
+
+/// The capture-only counterpart of `require_sharing`: the project must be
+/// deleted but restorable, and the kind shared on this Mac.
+pub fn require_capture(db: &Connection, id: &str, kind: &str) -> Result<()> {
+    let project = db::rows(
+        db,
+        &format!("SELECT value FROM projects WHERE id=? AND {CAPTURE_ONLY}"),
+        &[&id],
+    )?
+    .into_iter()
+    .next()
+    .ok_or("Project can no longer be restored; local changes are not captured")?;
     if !sharing_allowed(&project, kind) {
         return Err(format!(
             "Sharing for {kind} is off on this Mac. Enable it in Settings → Project sharing."
@@ -418,6 +449,11 @@ pub fn remove_local(db: &Connection, id: &str) -> Result<()> {
         .map_err(|e| e.to_string())?;
     // Keep signed trust pins, but discard encrypted pending publications for this project.
     tx.execute("DELETE FROM meta WHERE key LIKE 'env:%' AND (json_extract(value,'$.header.manifest.projectId')=? OR json_extract(value,'$.projectId')=?)",[id,id]).map_err(|e| e.to_string())?;
+    tx.execute(
+        "DELETE FROM meta WHERE key GLOB 'heldCapture:*' AND json_extract(value,'$.projectId')=?",
+        [id],
+    )
+    .map_err(|e| e.to_string())?;
     tx.execute("DELETE FROM meta WHERE (key LIKE 'share-preview:%' OR key LIKE 'selected-share:%' OR key LIKE 'resource-delete:%') AND json_extract(value,'$.projectId')=?",[id]).map_err(|e|e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
     env::clear();

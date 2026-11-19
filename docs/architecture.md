@@ -77,6 +77,19 @@ The public server snapshot and protocol package must be updated through their
 normal reviewed release/export process before shipping the feature for that
 snapshot. Capability fallback also protects self-hosted services upgraded later.
 
+While a deleted project can still be restored (`deletedAt` with a
+`purgeAfter`, which only soft-delete services publish), its queue job keeps
+scanning local files into the outbox with no request to the service, on a
+timer four times slower than an active project's. The window ends when the
+catalog delivers a purge tombstone or drops the project, not by this Mac's
+clock. Governed
+edits become drafts whose automatic sharing waits for a restore. Each captured
+row is marked as never sent by a `heldCapture:<request id>` entry in local
+metadata rather than in the request, so older clients send it unchanged; the
+marker is cleared just before the row is first uploaded. A restore sends the
+rows as ordinary changes. Archived-only, revoked, hidden, detached and purged
+projects, and catalogs without `purgeAfter`, capture nothing.
+
 ## Native modules
 
 `indexer.rs`, `plans.rs`, and session readers discover scoped native content. `sync.rs` handles exchange and local materialization. `codex_import.rs` and `claude_import.rs` preserve native identities. `env/` owns dotenv parsing, encryption, device approval, and guarded file writes. `db.rs` and `auth.rs` isolate local persistence and credentials.

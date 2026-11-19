@@ -1729,6 +1729,35 @@ impl<'a> SyncPass<'a> {
         Ok(Continue(()))
     }
 
+    /// A deleted project that can still be restored: repair and scan its local
+    /// files into the outbox, with no authorization, upload, pull or other
+    /// request. Governed edits become drafts whose automatic sharing waits for
+    /// a restore.
+    fn capture_project(&mut self, p: &Value) -> Stage {
+        let project = p["id"].as_str().ok_or("Missing project")?;
+        if boundary(self.db, project)?.is_break() || self.prepare_project(p)?.is_break() {
+            return Ok(Break(()));
+        }
+        if crate::projects::foreground_waiting()? || boundary(self.db, project)?.is_break() {
+            return Ok(Break(()));
+        }
+        let db = &mut *self.db;
+        indexer::clear_orphan_held_captures(db)?;
+        let mut capture = p.clone();
+        capture["captureOnly"] = json!(true);
+        capture["deferAutomaticSharing"] = json!(true);
+        match indexer::scan(db, &capture) {
+            Ok(()) => {
+                db.execute("DELETE FROM errors WHERE source=?", [project])
+                    .map_err(|e| e.to_string())?;
+            }
+            Err(error) => {
+                db.execute("INSERT INTO errors VALUES(?,?) ON CONFLICT(source) DO UPDATE SET error=excluded.error",params![project,error]).map_err(|e|e.to_string())?;
+            }
+        }
+        boundary(self.db, project)
+    }
+
     /// Repairs local state and queues pending session copies before any project syncs.
     async fn prepare(&mut self) -> Stage {
         let project_filter = self.project_filter;
@@ -1940,6 +1969,7 @@ impl<'a> SyncPass<'a> {
             )?;
             let result = async {
                 let id = q["id"].as_str().ok_or("Missing request ID")?;
+                indexer::release_held_capture(db, id)?;
                 if db::get(db, &outbox_redaction_key(id))?.is_object() {
                     let capabilities =
                         api_as(owner, "GET", "/v2/projects/capabilities", None).await?;
@@ -2277,6 +2307,21 @@ async fn sync_workspace(
             return Ok(WorkspaceSync::Yielded);
         }
     }
+    if pass.mode == ProjectMode::Full {
+        let held = db::rows(
+            pass.db,
+            &format!(
+                "SELECT value FROM projects WHERE {}",
+                crate::projects::CAPTURE_ONLY
+            ),
+            &[],
+        )?;
+        for p in &held {
+            if pass.capture_project(p)?.is_break() {
+                return Ok(WorkspaceSync::Yielded);
+            }
+        }
+    }
     if connected?.is_break() {
         return Ok(WorkspaceSync::Yielded);
     }
@@ -2337,7 +2382,9 @@ async fn run_job(db: &mut rusqlite::Connection, job: &crate::sync_queue::Job) ->
     };
     let previous = db::get(db, "sync")?;
     let status = match &result {
-        Ok(Outcome::Yielded | Outcome::Cancelled | Outcome::Skipped) => previous,
+        Ok(Outcome::Yielded | Outcome::Cancelled | Outcome::Skipped | Outcome::Captured) => {
+            previous
+        }
         Ok(_) => json!({"online":true,"lastSync":db::now(),"updatedAt":db::now()}),
         Err(error) => {
             json!({"online":false,"lastSync":previous["lastSync"],"error":error,"updatedAt":db::now()})
@@ -2352,7 +2399,7 @@ async fn run_job(db: &mut rusqlite::Connection, job: &crate::sync_queue::Job) ->
     }
     if !matches!(
         result,
-        Ok(Outcome::Yielded | Outcome::Cancelled | Outcome::Skipped)
+        Ok(Outcome::Yielded | Outcome::Cancelled | Outcome::Skipped | Outcome::Captured)
     ) {
         let error = result.as_ref().err().map(String::as_str);
         let _ = crate::onboarding::reconcile_workspace_sync(db, error);
@@ -2377,12 +2424,35 @@ async fn sync_job(db: &mut rusqlite::Connection, job: &crate::sync_queue::Job) -
         ),
         &[&job.project],
     )?;
+    let held = if project.is_empty() && job.project != WORKSPACE {
+        db::rows(
+            db,
+            &format!(
+                "SELECT value FROM projects WHERE id=? AND {}",
+                crate::projects::CAPTURE_ONLY
+            ),
+            &[&job.project],
+        )?
+    } else {
+        Vec::new()
+    };
     let mut pass = SyncPass::new(db, &owner, None);
-    let flow = match project.first() {
+    let flow = match (project.first(), held.first()) {
         _ if job.project == WORKSPACE => pass.sync_workspace_global().await?,
-        Some(p) => pass.sync_project(p).await?,
+        (Some(p), _) => pass.sync_project(p).await?,
+        // Deleted but restorable: capture locally and send nothing.
+        (None, Some(p)) => {
+            let flow = pass.capture_project(p)?;
+            return Ok(if SyncQueue::cancelled(pass.db, &job.project)? {
+                Outcome::Cancelled
+            } else if flow.is_break() {
+                Outcome::Yielded
+            } else {
+                Outcome::Captured
+            });
+        }
         // Removed or archived since it was queued.
-        None => return Ok(Outcome::Skipped),
+        (None, None) => return Ok(Outcome::Skipped),
     };
     Ok(if SyncQueue::cancelled(pass.db, &job.project)? {
         Outcome::Cancelled
@@ -3704,3 +3774,7 @@ mod queue_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "capture_tests.rs"]
+mod capture_tests;

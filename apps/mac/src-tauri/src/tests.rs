@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{Mutex, MutexGuard},
 };
-static SERIAL: Mutex<()> = Mutex::new(());
+pub(crate) static SERIAL: Mutex<()> = Mutex::new(());
 #[path = "attention_tests.rs"]
 mod attention_tests;
 #[path = "codex_rollout_tests.rs"]

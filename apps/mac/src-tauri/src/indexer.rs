@@ -240,6 +240,70 @@ pub fn queue(db: &rusqlite::Connection, project: &str, path: &str, value: &Value
     .map_err(|e| e.to_string())?;
     Ok(())
 }
+
+const HELD_CAPTURE: &str = "heldCapture:";
+
+/// The sidecar that marks an outbox row as captured while its project was
+/// deleted and not yet sent. It lives in `meta`, not in the request: the push
+/// contract rejects unknown fields and hashes the body for retries, and older
+/// clients send queued values unchanged, so a field in the row would break a
+/// downgrade. A row without it is an ordinary outbox row.
+pub(crate) fn held_capture_key(id: &str) -> String {
+    format!("{HELD_CAPTURE}{id}")
+}
+
+/// Queues a change found by a scan. A deleted project that can still be
+/// restored captures without sending: its new rows are marked `heldCapture`.
+fn queue_scanned(
+    db: &rusqlite::Connection,
+    project: &Value,
+    path: &str,
+    value: &Value,
+) -> Result<()> {
+    let project_id = project["id"].as_str().ok_or("Missing project ID")?;
+    if project["captureOnly"] != true {
+        return queue(db, project_id, path, value);
+    }
+    crate::projects::require_capture(db, project_id, crate::projects::queued_kind(path, value))?;
+    let id = value["id"].as_str().ok_or("Missing request ID")?;
+    db.execute(
+        "INSERT INTO outbox VALUES(?,?,?,?,NULL)",
+        params![id, project_id, path, value.to_string()],
+    )
+    .map_err(|e| e.to_string())?;
+    // The row is written first: a crash in between leaves an ordinary row,
+    // which is never rewritten.
+    db::set(
+        db,
+        &held_capture_key(id),
+        &json!({
+            "heldCapture": true,
+            "projectId": project_id,
+            "resourceId": value["resource"]["resourceId"],
+            "deletedAt": project["deletedAt"],
+        }),
+    )
+}
+
+/// A held row is about to be sent, so it may already have reached the service
+/// and must never be rewritten again.
+pub(crate) fn release_held_capture(db: &rusqlite::Connection, id: &str) -> Result<()> {
+    db.execute("DELETE FROM meta WHERE key=?", [held_capture_key(id)])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Drops markers whose row was sent, removed or turned into a draft elsewhere,
+/// including by an older client that does not know them.
+pub(crate) fn clear_orphan_held_captures(db: &rusqlite::Connection) -> Result<()> {
+    db.execute(
+        "DELETE FROM meta WHERE key GLOB ?1||'*' AND substr(key,length(?1)+1) NOT IN (SELECT id FROM outbox)",
+        [HELD_CAPTURE],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 pub fn binding(db: &rusqlite::Connection, id: &str) -> Result<Value> {
     Ok(
         db::rows(db, "SELECT value FROM bindings WHERE id=?", &[&id])?
@@ -489,7 +553,7 @@ fn collect(
             }
         }
         let change = json!({"version":2,"id":Uuid::new_v4().to_string(),"projectId":project_id,"deviceId":db::device(db)?,"baseRevision":base_revision,"resource":input});
-        queue(db, project_id, "/v2/sync/push", &change)?;
+        queue_scanned(db, project, "/v2/sync/push", &change)?;
         let mut guards = crate::sync::live_hash(
             &b,
             kind,
@@ -1312,7 +1376,7 @@ fn scan_source(
                 {
                     let mut input = json!({"version":2,"id":Uuid::new_v4().to_string(),"projectId":project_id,"deviceId":db::device(db)?,"baseRevision":base["revision"].as_u64().unwrap_or(0),"resource":{"resourceId":id,"kind":"skill","source":"shared","logicalPath":name,"title":name,"files":changed[1].1,"deleted":false}});
                     crate::sources::scope(project, &mut input["resource"]);
-                    queue(db, project_id, "/v2/sync/push", &input)?;
+                    queue_scanned(db, project, "/v2/sync/push", &input)?;
                     let mut b = binding(db, &id)?;
                     if let Some(i) = b["paths"].as_array().and_then(|mapped| {
                         mapped
