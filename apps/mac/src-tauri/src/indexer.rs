@@ -278,22 +278,32 @@ fn queue_scanned(
     } else {
         Value::Null
     };
-    let marker = json!({
-        "heldCapture": true,
-        "projectId": project_id,
-        "resourceId": resource_id,
-        "deletedAt": project["deletedAt"],
-        "mirror": mirror,
-    });
     let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
     let Some(held) = replaceable_held(&tx, project, resource_id)? else {
         crate::governance::capture(&tx, project, resource, &json!(paths))?;
         tx.commit().map_err(|e| e.to_string())?;
         return Ok(false);
     };
-    let mut matching = held
-        .iter()
-        .filter(|row| mirror.is_null() || row["mirror"] == mirror || row["resource"] == *resource);
+    let aligned_mirrors = !mirror.is_null()
+        && held.iter().any(|row| {
+            row["resource"] == *resource
+                && (row["mirror"].is_string() && row["mirror"] != mirror
+                    || row["alignedMirrors"] == 1)
+        });
+    let marker = json!({
+        "heldCapture": true,
+        "projectId": project_id,
+        "resourceId": resource_id,
+        "deletedAt": project["deletedAt"],
+        "mirror": mirror,
+        "alignedMirrors": aligned_mirrors,
+    });
+    let mut matching = held.iter().filter(|row| {
+        mirror.is_null()
+            || row["mirror"] == mirror
+            || row["alignedMirrors"] == 1
+            || row["resource"] == *resource
+    });
     if let Some(first) = matching.next() {
         // Preserve queue order and the original base. Mint a fresh ID for the
         // changed body. The marker check prevents rewriting a released row.
@@ -342,6 +352,7 @@ fn replaceable_held(
            'base',json_extract(o.value,'$.baseRevision'),
            'resource',json_extract(o.value,'$.resource'),
            'mirror',json_extract(m.value,'$.mirror'),
+           'alignedMirrors',json_extract(m.value,'$.alignedMirrors'),
            'held',json(m.value),
            'rebuilding',EXISTS(SELECT 1 FROM meta WHERE key='sessionOutboxRedaction:'||o.id))
          FROM outbox o LEFT JOIN meta m ON m.key=?2||o.id
@@ -1489,7 +1500,7 @@ fn scan_source(
                     seen.insert(id.clone());
                     return Ok(());
                 }
-                if b["mirrorReview"] == true {
+                if b["mirrorReview"] == true && !pending {
                     b["mirrorReview"] = json!(false);
                     db::upsert(db, "bindings", &id, project_id, &b)?;
                 }
