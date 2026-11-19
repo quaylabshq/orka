@@ -11,16 +11,21 @@ export function inactiveReason(project: Project): InactiveReason | null {
   return null;
 }
 
+/** Use the same restore deadline format in the banner and sidebar badge. */
 function restoreDeadline(project: Project): string | null {
   const value = project.purgeAfter;
   if (!value) return null;
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return null;
-  return date.toLocaleDateString("en-US", {
+  return date.toLocaleDateString(undefined, {
     day: "numeric",
     month: "short",
     year: "numeric",
   });
+}
+
+function changeCount(count = 0): number {
+  return Number.isFinite(count) && count > 0 ? Math.floor(count) : 0;
 }
 
 /** Sidebar badge: what happened, and the date a restore still works. */
@@ -50,9 +55,14 @@ export function inactiveMessage(project: Project): string {
       return "This project is archived by its owner. Sync will resume when it’s restored.";
     case "deleted": {
       const deadline = restoreDeadline(project);
-      return deadline
-        ? `This project is deleted by its owner. It can be restored until ${deadline}.`
-        : "This project is deleted by its owner.";
+      const reason = "This project is deleted by its owner.";
+      if (!deadline) return reason;
+      const held = changeCount(project.heldChanges);
+      const waiting =
+        held > 0
+          ? `${held} ${held === 1 ? "change is" : "changes are"} queued to sync if restored by ${deadline}.`
+          : `Sync can resume if the project is restored by ${deadline}.`;
+      return `${reason} Orka keeps capturing your changes on this Mac. ${waiting} Captured edits become local drafts if the project is purged.`;
     }
     case "purged":
       return "This project was permanently deleted. Its shared content is no longer available.";
@@ -64,6 +74,14 @@ export function inactiveMessage(project: Project): string {
 }
 
 /** Local removal clears the reading cache and queue, while retaining drafts. */
-export function removalWarning(): string {
-  return "Export first to keep pending changes and private content. Removing this project clears its cached files and pending changes on this Mac. Saved local drafts and your project folders stay on disk.";
+export function removalWarning(project?: Project): string {
+  const pending = changeCount(project?.pendingChanges);
+  const included = pending
+    ? `${pending} pending ${pending === 1 ? "change" : "changes"}`
+    : "pending changes";
+  const encrypted = changeCount(project?.pendingEnvPublications);
+  const env = encrypted
+    ? ` The export excludes ${encrypted} encrypted ENV ${encrypted === 1 ? "publication" : "publications"}.`
+    : "";
+  return `Export first to save captured project content.${env} Removing this project clears cached files and ${included} on this Mac. Saved local drafts and your project folders stay on disk.`;
 }

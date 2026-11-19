@@ -1,25 +1,47 @@
 import {
   ChevronDownIcon,
+  ChevronLeftIcon,
   ChevronRightIcon,
   GitForkIcon,
   TriangleAlertIcon,
 } from "lucide-react";
 import { ResourceItemMenu } from "./resource-menu.js";
 import { ItemMenuButton } from "./item-menu.js";
-import React, { useMemo, useState } from "react";
+import React, { useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ProjectResource as Resource } from "../types.js";
 import { useMemberLabel } from "./member-names.js";
 import { RepositoryLabel } from "./repository-label.js";
 import { sessionAncestors, sessionTree } from "./session-tree.js";
 import { Button } from "./button.js";
+import { IconButton } from "./icon-button.js";
 import { ResourceIdentity } from "./resource-identity.js";
 import { useQueryClient } from "@tanstack/react-query";
 import { useWorkspaceScope } from "./workspace-cache.js";
 import { SessionMessagesQuery } from "./use-session-messages.js";
 
+const rootsPerPage = 40;
+
+const shortDate = new Intl.DateTimeFormat(undefined, {
+  month: "short",
+  day: "numeric",
+});
+const shortDateWithYear = new Intl.DateTimeFormat(undefined, {
+  month: "short",
+  day: "numeric",
+  year: "numeric",
+});
+const dateTime = new Intl.DateTimeFormat(undefined, {
+  year: "numeric",
+  month: "numeric",
+  day: "numeric",
+  hour: "numeric",
+  minute: "numeric",
+  second: "numeric",
+});
+
 /** "23h ago" style labels for recent activity, calendar dates beyond a week. */
-function relativeUpdated(value: string, now = Date.now()) {
-  const date = new Date(value);
+function relativeUpdated(date: Date, now: number, year: number) {
+  if (Number.isNaN(date.getTime())) return date.toString();
   const seconds = Math.max(0, Math.round((now - date.getTime()) / 1000));
   if (seconds < 60) return "Just now";
   const minutes = Math.round(seconds / 60);
@@ -28,14 +50,9 @@ function relativeUpdated(value: string, now = Date.now()) {
   if (hours < 24) return `${hours}h ago`;
   const days = Math.round(hours / 24);
   if (days < 7) return `${days}d ago`;
-  return date.toLocaleDateString(undefined, {
-    month: "short",
-    day: "numeric",
-    year:
-      date.getFullYear() === new Date(now).getFullYear()
-        ? undefined
-        : "numeric",
-  });
+  return (date.getFullYear() === year ? shortDate : shortDateWithYear).format(
+    date,
+  );
 }
 
 /** Disambiguates repeated display titles without exposing full paths in the row. */
@@ -56,6 +73,7 @@ export interface ResourceTableProps {
   loading?: boolean;
   focusResource?: string;
   filtered?: boolean;
+  pageKey?: string;
   onOpen: (id: string) => void;
 }
 
@@ -70,6 +88,7 @@ export function ResourceTable({
   loading = false,
   focusResource,
   filtered = false,
+  pageKey = "",
   onOpen,
 }: ResourceTableProps) {
   const client = useQueryClient();
@@ -78,15 +97,13 @@ export function ResourceTable({
   const sessions = resources[0]?.kind === "session";
   const showRepository = resources.some((resource) => resource.repositoryName);
   const tree = useMemo(() => sessionTree(resources), [resources]);
-  const [expanded, setExpanded] = useState(
-    () => new Set(sessionAncestors(focusResource, tree.parents)),
+  const [ancestors] = useState(() =>
+    sessionAncestors(focusResource, tree.parents),
   );
+  const [expanded, setExpanded] = useState(() => new Set(ancestors));
   const [limits, setLimits] = useState<Record<string, number>>(() => {
     const initial: Record<string, number> = {};
-    for (const id of [
-      focusResource,
-      ...sessionAncestors(focusResource, tree.parents),
-    ]) {
+    for (const id of [focusResource, ...ancestors]) {
       if (!id) continue;
       const parent = tree.parents.get(id);
       if (parent)
@@ -99,28 +116,93 @@ export function ResourceTable({
     }
     return initial;
   });
-  const rows: (
-    | { resource: Resource; depth: number }
-    | { parent: Resource; remaining: number; depth: number }
-  )[] = [];
-  const append = (resource: Resource, depth: number) => {
-    rows.push({ resource, depth });
-    const children = tree.children.get(resource.resourceId) ?? [];
-    if (!expanded.has(resource.resourceId) && !filtered) return;
-    const limit = filtered
-      ? children.length
-      : (limits[resource.resourceId] ?? 5);
-    children.slice(0, limit).forEach((child) => append(child, depth + 1));
-    if (children.length > limit)
-      rows.push({
-        parent: resource,
-        remaining: children.length - limit,
-        depth: depth + 1,
-      });
+  const pageCount = Math.max(1, Math.ceil(tree.roots.length / rootsPerPage));
+  const [position, setPosition] = useState(() => {
+    const focusRoot = ancestors.at(-1) ?? focusResource;
+    const index = focusRoot
+      ? tree.roots.findIndex((resource) => resource.resourceId === focusRoot)
+      : -1;
+    return {
+      key: pageKey,
+      page: Math.floor(Math.max(0, index) / rootsPerPage),
+    };
+  });
+  const [focusedResource, setFocusedResource] = useState<string>();
+  const [menuResource, setMenuResource] = useState<string>();
+  const anchoredResource = menuResource ?? focusedResource;
+  const focusedRoot =
+    sessionAncestors(anchoredResource, tree.parents).at(-1) ?? anchoredResource;
+  const focusedIndex = focusedRoot
+    ? tree.roots.findIndex((resource) => resource.resourceId === focusedRoot)
+    : -1;
+  // Title replies and discovery can move the focused row across a page boundary.
+  const page =
+    position.key !== pageKey
+      ? 0
+      : focusedIndex >= 0
+        ? Math.floor(focusedIndex / rootsPerPage)
+        : Math.min(position.page, pageCount - 1);
+  if (position.key !== pageKey || (anchoredResource && focusedIndex < 0)) {
+    setFocusedResource(undefined);
+    setMenuResource(undefined);
+  }
+  if (page !== position.page || position.key !== pageKey) {
+    setPosition({ key: pageKey, page });
+  }
+  const rows = useMemo(() => {
+    const flattened: (
+      | { resource: Resource; depth: number }
+      | { parent: Resource; remaining: number; depth: number }
+    )[] = [];
+    const append = (resource: Resource, depth: number) => {
+      flattened.push({ resource, depth });
+      if (!expanded.has(resource.resourceId) && !filtered) return;
+      const children = tree.children.get(resource.resourceId) ?? [];
+      const limit = filtered
+        ? children.length
+        : (limits[resource.resourceId] ?? 5);
+      children.slice(0, limit).forEach((child) => append(child, depth + 1));
+      if (children.length > limit)
+        flattened.push({
+          parent: resource,
+          remaining: children.length - limit,
+          depth: depth + 1,
+        });
+    };
+    // A page starts at a top-level item, keeping displayed forks with their parent.
+    const start = page * rootsPerPage;
+    tree.roots
+      .slice(start, start + rootsPerPage)
+      .forEach((resource) => append(resource, 0));
+    return flattened;
+  }, [tree, expanded, limits, filtered, page]);
+  const table = useRef<HTMLTableElement>(null);
+  const pageChanged = useRef(false);
+  const goToPage = (page: number) => {
+    pageChanged.current = true;
+    setFocusedResource(undefined);
+    setMenuResource(undefined);
+    setPosition({ key: pageKey, page });
   };
-  tree.roots.forEach((resource) => append(resource, 0));
-  return (
-    <table className="resource-table" aria-busy={loading}>
+  useLayoutEffect(() => {
+    if (!pageChanged.current) return;
+    pageChanged.current = false;
+    table.current?.scrollIntoView({ block: "start" });
+    table.current
+      ?.querySelector<HTMLButtonElement>("tbody button:not(:disabled)")
+      ?.focus({ preventScroll: true });
+  }, [page]);
+  const now = new Date();
+  const content = (
+    <table
+      ref={table}
+      className="resource-table"
+      aria-busy={loading}
+      onBlurCapture={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget))
+          setFocusedResource(undefined);
+      }}
+    >
       <colgroup>
         <col />
         {showRepository && <col className="resource-table-col-repository" />}
@@ -146,6 +228,7 @@ export function ResourceTable({
               <tr
                 key={`more:${row.parent.resourceId}`}
                 className="session-forks-more"
+                onFocus={() => setFocusedResource(row.parent.resourceId)}
               >
                 <td colSpan={showRepository ? 5 : 4}>
                   <Button
@@ -167,19 +250,37 @@ export function ResourceTable({
             );
           const { resource, depth } = row;
           const title = displayTitle(resource);
+          const updated = new Date(resource.updatedAt);
+          const updatedTooltip = Number.isNaN(updated.getTime())
+            ? updated.toString()
+            : dateTime.format(updated);
           const children = tree.children.get(resource.resourceId) ?? [];
           const open = filtered || expanded.has(resource.resourceId);
+          const onMenuChange = (open: boolean) =>
+            setMenuResource((current) =>
+              open
+                ? resource.resourceId
+                : current === resource.resourceId
+                  ? undefined
+                  : current,
+            );
           return (
-            <ResourceItemMenu key={resource.resourceId} resource={resource}>
+            <ResourceItemMenu
+              key={resource.resourceId}
+              resource={resource}
+              onOpenChange={onMenuChange}
+            >
               {(actions) => (
                 <tr
                   className={depth > 0 ? "session-fork-row" : undefined}
                   onPointerEnter={() =>
                     void SessionMessagesQuery.prefetch(client, scope, resource)
                   }
-                  onFocus={() =>
-                    void SessionMessagesQuery.prefetch(client, scope, resource)
-                  }
+                  onFocus={(event) => {
+                    if (event.currentTarget.contains(event.target))
+                      setFocusedResource(resource.resourceId);
+                    void SessionMessagesQuery.prefetch(client, scope, resource);
+                  }}
                   onClick={() => onOpen(resource.resourceId)}
                 >
                   <th scope="row" className="resource-table-title">
@@ -284,9 +385,13 @@ export function ResourceTable({
                   <td className="resource-table-updated">
                     <time
                       dateTime={resource.updatedAt}
-                      title={`Updated ${new Date(resource.updatedAt).toLocaleString()}`}
+                      title={`Updated ${updatedTooltip}`}
                     >
-                      {relativeUpdated(resource.updatedAt)}
+                      {relativeUpdated(
+                        updated,
+                        now.getTime(),
+                        now.getFullYear(),
+                      )}
                     </time>
                   </td>
                   <td className="resource-table-actions">
@@ -294,6 +399,7 @@ export function ResourceTable({
                       <ItemMenuButton
                         actions={actions}
                         label={`Actions for ${title}`}
+                        onOpenChange={onMenuChange}
                       />
                     ) : (
                       <ChevronRightIcon size={16} aria-hidden="true" />
@@ -306,5 +412,38 @@ export function ResourceTable({
         })}
       </tbody>
     </table>
+  );
+  return (
+    <>
+      {content}
+      {pageCount > 1 && (
+        <nav
+          className="resource-table-pagination"
+          aria-label={`${label} pages`}
+        >
+          <IconButton
+            icon={ChevronLeftIcon}
+            aria-label="Previous page"
+            title="Previous page"
+            size="sm"
+            variant="tertiary"
+            disabled={page === 0}
+            onClick={() => goToPage(page - 1)}
+          />
+          <span role="status">
+            Page {page + 1} of {pageCount}
+          </span>
+          <IconButton
+            icon={ChevronRightIcon}
+            aria-label="Next page"
+            title="Next page"
+            size="sm"
+            variant="tertiary"
+            disabled={page === pageCount - 1}
+            onClick={() => goToPage(page + 1)}
+          />
+        </nav>
+      )}
+    </>
   );
 }

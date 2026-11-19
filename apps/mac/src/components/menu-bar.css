@@ -137,7 +137,7 @@ html.menu-bar-window,
   max-height: 36px;
   overflow-y: auto;
   margin: 0;
-  color: var(--text-danger);
+  color: var(--red-text);
   font-size: 12px;
   line-height: 18px;
   overflow-wrap: anywhere;

@@ -13,7 +13,7 @@ import {
   inactiveMessage,
   removalWarning,
 } from "./project-inactive.js";
-import { ToastProvider } from "./toasts.js";
+import { ToastProvider, ToastViewport } from "./toasts.js";
 
 const mocks = vi.hoisted(() => ({ invoke: vi.fn(), save: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
@@ -33,6 +33,11 @@ const deleted = project({
   deletedAt: "2026-01-01T00:00:00Z",
   purgeAfter: "2026-01-31T00:00:00Z",
 });
+const deadline = new Intl.DateTimeFormat(undefined, {
+  day: "numeric",
+  month: "short",
+  year: "numeric",
+}).format(new Date(deleted.purgeAfter!));
 
 function renderBanner(value: Project) {
   const run = vi.fn(async (action: () => Promise<unknown>) => {
@@ -41,6 +46,7 @@ function renderBanner(value: Project) {
   render(
     <ToastProvider scope="test">
       <InactiveProject project={value} busy={false} run={run} />
+      <ToastViewport modal />
     </ToastProvider>,
   );
   return run;
@@ -49,7 +55,7 @@ function renderBanner(value: Project) {
 test("each inactive state gets its own sidebar badge", () => {
   expect(inactiveBadge(archived)).toBe("Archived by owner");
   expect(inactiveBadge(deleted)).toBe(
-    "Deleted by owner, restorable until Jan 31, 2026",
+    `Deleted by owner, restorable until ${deadline}`,
   );
   expect(
     inactiveBadge(project({ deletedAt: "2026-01-01T00:00:00Z", purged: true })),
@@ -64,7 +70,23 @@ test("each inactive state gets its own sidebar badge", () => {
     "Deleted by owner",
   );
   expect(inactiveMessage(archived)).toContain("archived by its owner");
-  expect(inactiveMessage(deleted)).toContain("restored until Jan 31, 2026");
+  expect(inactiveMessage(deleted)).toContain(
+    `Sync can resume if the project is restored by ${deadline}.`,
+  );
+  expect(inactiveMessage({ ...deleted, heldChanges: 3 })).toContain(
+    `3 changes are queued to sync if restored by ${deadline}.`,
+  );
+  expect(inactiveMessage({ ...deleted, heldChanges: 1 })).toContain(
+    `1 change is queued to sync if restored by ${deadline}.`,
+  );
+  expect(inactiveMessage({ ...deleted, heldChanges: 0 })).not.toContain(
+    "queued to sync",
+  );
+  // A server before 0.7.4 sends no purgeAfter, so capture is off and the old
+  // sentence stays.
+  expect(inactiveMessage(project({ deletedAt: "2026-01-01T00:00:00Z" }))).toBe(
+    "This project is deleted by its owner.",
+  );
   expect(inactiveMessage(project({ revoked: true }))).toContain(
     "Access to this project was removed",
   );
@@ -101,6 +123,35 @@ test("export writes the project to the path the user picks", async () => {
   expect(mocks.invoke).toHaveBeenCalledTimes(1);
 });
 
+test("a cached export warns that recent edits may be missing", async () => {
+  mocks.save.mockResolvedValue("/tmp/orka.zip");
+  mocks.invoke.mockResolvedValue(true);
+  renderBanner(deleted);
+  fireEvent.click(screen.getByRole("button", { name: "Export" }));
+  expect(
+    await screen.findByText(
+      "Saved content exported. Recent edits may be missing.",
+    ),
+  ).toBeTruthy();
+});
+
+test("the removal warning counts all pending changes, not just restorable uploads", () => {
+  renderBanner({
+    ...deleted,
+    heldChanges: 1,
+    pendingChanges: 2,
+    pendingEnvPublications: 1,
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Remove from this Mac" }));
+  expect(
+    screen.getByRole("dialog", { name: "Remove from this Mac?" }),
+  ).toBeTruthy();
+  expect(screen.getByText(/2 pending changes on this Mac/)).toBeTruthy();
+  expect(
+    screen.getByText(/The export excludes 1 encrypted ENV publication/),
+  ).toBeTruthy();
+});
+
 test("removing from this Mac explains export and retained local drafts", async () => {
   mocks.invoke.mockResolvedValue({ ok: true });
   const run = renderBanner(archived);
@@ -108,11 +159,19 @@ test("removing from this Mac explains export and retained local drafts", async (
   expect(
     screen.getByRole("dialog", { name: "Remove from this Mac?" }),
   ).toBeTruthy();
-  expect(screen.getByText(removalWarning())).toBeTruthy();
-  expect(removalWarning()).toContain("Export first");
-  expect(removalWarning()).toContain(
+  expect(screen.getByText(removalWarning(deleted))).toBeTruthy();
+  expect(removalWarning(deleted)).toContain("Export first");
+  expect(removalWarning(deleted)).toContain(
     "Saved local drafts and your project folders stay on disk",
   );
+  expect(removalWarning({ ...deleted, pendingChanges: 3 })).toContain(
+    "3 pending changes on this Mac.",
+  );
+  expect(removalWarning({ ...deleted, pendingChanges: 1 })).toContain(
+    "1 pending change on this Mac.",
+  );
+  expect(removalWarning(deleted)).not.toContain("encrypted ENV");
+  expect(removalWarning(archived)).not.toContain("encrypted ENV");
   fireEvent.click(screen.getByRole("button", { name: "Remove" }));
   await waitFor(() => expect(run).toHaveBeenCalledTimes(1));
   expect(mocks.invoke).toHaveBeenCalledWith("project_command", {

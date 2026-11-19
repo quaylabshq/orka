@@ -53,15 +53,15 @@
   letter-spacing: 0;
 }
 .workspace-header.workspace-header--detail .sync-status[data-offline] {
-  background: var(--status-warning-bg);
-  color: var(--status-warning);
+  background: var(--amber-surface);
+  color: var(--amber-text);
 }
 .workspace-header--detail .sync-status[data-offline] .sync-status-indicator {
-  background: var(--status-warning-bg);
+  background: var(--amber-surface);
 }
 .workspace-header--detail .sync-status[data-offline] .dot {
-  border-color: var(--status-warning);
-  background: var(--status-warning);
+  border-color: var(--amber-text);
+  background: var(--amber-text);
 }
 .workspace-header--detail
   .sync-status[data-only-offline-notice]
@@ -82,7 +82,7 @@
 }
 .app[data-detail-kind]:not([data-detail-kind="session"])
   .toast-action.ui-button {
-  background: var(--interaction-hover);
+  background: var(--state-hover);
 }
 .workspace-header--detail .ui-button,
 .detail-layout .ui-button {
@@ -169,12 +169,12 @@
   gap: 8px;
 }
 .detail-status--info {
-  background: var(--status-info-bg);
-  color: var(--status-info);
+  background: var(--blue-surface);
+  color: var(--blue-text);
 }
 .detail-status--warning {
-  background: var(--status-warning-bg);
-  color: var(--status-warning);
+  background: var(--amber-surface);
+  color: var(--amber-text);
 }
 .detail-status--neutral {
   background: var(--surface-tertiary);
@@ -309,15 +309,15 @@
 .detail-comparison-timeline > span {
   width: 24px;
   height: 24px;
-  border: 7px solid var(--status-connected-bg);
+  border: 7px solid var(--green-surface);
   border-radius: 50%;
-  background: var(--status-connected-dot);
+  background: var(--green-text);
   background-clip: content-box;
 }
 .detail-comparison-timeline::after {
   content: "";
   flex: 1 1 auto;
-  border-left: 1px dashed var(--border-subtle);
+  border-left: 1px dashed var(--border-default);
 }
 .detail-document .markdown-content h1 {
   font-family: "Orka Display Inter", "Inter Variable", sans-serif;
@@ -378,7 +378,7 @@
   z-index: 100;
   transform: translate(-50%, -100%);
   padding: 4px 8px;
-  border: 1px solid var(--surface-stroke);
+  border: 1px solid var(--border-default);
   border-radius: 6px;
   background: var(--surface-tertiary);
   color: var(--text-primary);
@@ -393,7 +393,7 @@
 
 /* Rail cards */
 .detail-card {
-  border: 1px solid var(--border-subtle);
+  border: 1px solid var(--border-default);
   border-radius: 12px;
   background: var(--surface-tertiary);
   overflow: hidden;
@@ -438,7 +438,7 @@
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--status-info);
+  background: var(--blue-text);
   pointer-events: none;
 }
 .detail-facts {
@@ -482,7 +482,7 @@
   margin-top: -10px;
 }
 .detail-info-note.detail-info-note--error {
-  color: var(--status-error);
+  color: var(--red-text);
 }
 .detail-info-note {
   display: flex;
@@ -498,11 +498,7 @@
   display: flex;
   gap: 12px;
   padding: 16px;
-  border-top: 1px solid var(--border-subtle);
-}
-.detail-actions,
-.detail-actions-inline {
-  --button-primary-bg: var(--text-primary);
+  border-top: 1px solid var(--border-default);
 }
 .detail-actions > .ui-button {
   flex: 1 1 0;
@@ -510,11 +506,11 @@
 }
 .detail-actions .ui-button--tertiary,
 .detail-actions-inline .ui-button--tertiary {
-  background: var(--interaction-hover);
+  background: var(--state-hover);
 }
 .detail-actions .ui-button--tertiary:hover:not(:disabled),
 .detail-actions-inline .ui-button--tertiary:hover:not(:disabled) {
-  background: var(--interaction-selected);
+  background: var(--state-pressed);
 }
 .detail-layout .session-launcher {
   gap: 1px;
@@ -578,18 +574,18 @@
     color 120ms ease;
 }
 .detail-file:hover {
-  background: var(--interaction-hover);
+  background: var(--state-hover);
   color: var(--text-primary);
 }
 .detail-file > .ui-icon {
   --icon-container: 14px;
 }
 .detail-file[aria-current="true"] {
-  background: var(--interaction-selected);
+  background: var(--state-pressed);
   color: var(--text-primary);
 }
 .detail-file:focus-visible {
-  outline: 1px solid var(--focus-ring);
+  outline: 1px solid var(--border-focus);
   outline-offset: 2px;
 }
 .detail-file-name {
@@ -676,7 +672,7 @@
 .source-card,
 .diff-card {
   min-width: 0;
-  border: 1px solid var(--border-subtle);
+  border: 1px solid var(--border-default);
   border-radius: 12px;
   background: var(--surface-tertiary);
   overflow: hidden;
@@ -692,7 +688,7 @@
   gap: 12px;
   height: 40px;
   padding: 0 12px;
-  border-bottom: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-default);
   background: var(--surface-tertiary);
 }
 .source-card--file {
@@ -759,15 +755,15 @@
   white-space: nowrap;
 }
 .diff-count--removed {
-  color: var(--diff-removed);
+  color: var(--red-text);
 }
 .diff-count--added {
-  color: var(--diff-added);
+  color: var(--green-text);
 }
 .diff-card-removed {
   font-family: "Inter Variable", sans-serif;
   font-size: 12px;
-  color: var(--status-error);
+  color: var(--red-text);
 }
 .diff-card-summary-status {
   font-family: "Inter Variable", sans-serif;
@@ -811,7 +807,7 @@
   font-size: 12px;
   line-height: 20px;
   color: var(--text-tertiary);
-  background: var(--interaction-hover);
+  background: var(--border-default);
   user-select: none;
 }
 .source-line {
@@ -832,14 +828,14 @@
   overflow-wrap: anywhere;
 }
 .code-punct {
-  color: var(--code-punctuation);
+  color: var(--text-tertiary);
 }
 .code-heading,
 .code-key {
-  color: var(--code-keyword);
+  color: var(--blue-text);
 }
 .code-string {
-  color: var(--code-string);
+  color: var(--brand-copper);
 }
 .source-plain {
   margin: 0;
@@ -903,7 +899,7 @@
   justify-content: space-between;
   gap: 16px;
   padding: 12px 24px;
-  border-bottom: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-default);
 }
 .review-drawer--empty .review-header {
   padding-block: 16px;
@@ -914,9 +910,13 @@
 .review-drawer--empty .review-body {
   padding: 0;
 }
-.review-drawer--empty .reader-state-action {
-  --button-tertiary-bg: var(--interaction-hover);
-  --button-tertiary-bg-hover: var(--interaction-selected);
+.review-drawer--empty .reader-state-action .ui-button--tertiary {
+  background: var(--state-hover);
+}
+.review-drawer--empty
+  .reader-state-action
+  .ui-button--tertiary:hover:not(:disabled) {
+  background: var(--state-pressed);
 }
 .review-heading {
   display: flex;
@@ -944,7 +944,7 @@
   display: inline-flex;
   padding: 0 8px;
   border-radius: 4px;
-  background: var(--interaction-hover);
+  background: var(--state-hover);
   font-weight: var(--font-weight-regular);
   color: var(--text-tertiary);
 }
@@ -990,7 +990,7 @@
   margin: 0;
 }
 .review-drawer .detail-status--warning {
-  color: var(--status-warning);
+  color: var(--amber-text);
 }
 /* Leave the last changed line clear of the 48px bottom scroll mask. */
 .review-files:has(.diff-lines) {
@@ -1022,7 +1022,7 @@
   justify-content: flex-end;
   gap: 10px;
   padding: 16px 24px;
-  border-top: 1px solid var(--border-subtle);
+  border-top: 1px solid var(--border-default);
 }
 .review-drawer .review-footer-note {
   margin: 0 auto 0 0;
@@ -1048,7 +1048,7 @@
   align-items: center;
   gap: 8px;
   padding: 5px 12px;
-  border: 1px solid var(--border-subtle);
+  border: 1px solid var(--border-default);
   border-radius: 8px;
   font-size: 13px;
   line-height: 20px;
@@ -1060,16 +1060,16 @@
   flex: 0 0 14px;
 }
 .access-pill--publish {
-  background: var(--interaction-hover);
+  background: var(--state-hover);
   color: var(--text-primary);
 }
 .access-pill--suggest {
-  background: var(--status-info-bg);
-  color: var(--status-info);
+  background: var(--blue-surface);
+  color: var(--blue-text);
 }
 .access-pill--read {
-  background: var(--status-warning-bg);
-  color: var(--status-warning);
+  background: var(--amber-surface);
+  color: var(--amber-text);
 }
 .access-pill--hidden {
   background: var(--surface-tertiary);
@@ -1079,8 +1079,8 @@
   position: relative;
 }
 .review-footer .review-action[aria-busy="true"] {
-  color: var(--button-primary-text);
-  background: var(--button-primary-bg);
+  color: var(--text-on-solid);
+  background: var(--action-solid);
   cursor: wait;
 }
 .review-action-label {

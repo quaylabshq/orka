@@ -9,7 +9,7 @@ import { Icon } from "./icon.js";
 import { ActivityIndicator } from "./activity-indicator.js";
 import { projectLabel } from "./project-navigation.js";
 import { inactiveMessage, removalWarning } from "./project-inactive.js";
-import { useToastNotice } from "./toasts.js";
+import { useToasts } from "./toasts.js";
 import type { Run } from "./use-resource-actions.js";
 
 const errorText = (error: unknown) => String(error).replace(/^Error:\s*/, "");
@@ -24,7 +24,7 @@ export function InactiveProject({
   busy: boolean;
   run: Run;
 }) {
-  const notice = useToastNotice();
+  const { notify } = useToasts();
   const [exporting, setExporting] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [removing, setRemoving] = useState(false);
@@ -61,11 +61,18 @@ export function InactiveProject({
         filters: [{ name: "Zip archive", extensions: ["zip"] }],
       });
       if (!destination) return;
-      await invoke("export_project", {
+      const cachedOnly = await invoke<boolean>("export_project", {
         projectId: project.id,
         destination,
       });
-      notice("Project exported");
+      notify(
+        cachedOnly
+          ? {
+              kind: "warning",
+              title: "Saved content exported. Recent edits may be missing.",
+            }
+          : { kind: "success", title: "Project exported" },
+      );
     } catch (cause) {
       setError(errorText(cause));
     } finally {
@@ -125,7 +132,7 @@ export function InactiveProject({
             <Icon icon={FolderIcon} variant="tertiary" />
             <span>{name}</span>
           </div>
-          <p>{removalWarning()}</p>
+          <p>{removalWarning(project)}</p>
           {removalError && (
             <p className="project-lifecycle-feedback" role="alert">
               {removalError}

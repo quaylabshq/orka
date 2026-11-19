@@ -365,6 +365,11 @@ impl DetachProject for Connection {
         }
         self.execute("DELETE FROM outbox WHERE project=?", [project_id])
             .map_err(|e| e.to_string())?;
+        self.execute(
+            "DELETE FROM meta WHERE key GLOB 'heldCapture:*' AND json_extract(value,'$.projectId')=?",
+            [project_id],
+        )
+        .map_err(|e| e.to_string())?;
         self.execute("DELETE FROM sync_queue WHERE project=?", [project_id])
             .map_err(|e| e.to_string())?;
         self.execute("DELETE FROM cursors WHERE project=?", [project_id])

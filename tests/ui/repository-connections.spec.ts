@@ -54,6 +54,7 @@ async function fixture(
     pollDeclined?: boolean;
     localMatch?: boolean;
     matchingFailsOnce?: boolean;
+    manyRepositories?: number;
   } = {},
 ) {
   await page.addInitScript((options) => {
@@ -330,6 +331,14 @@ async function fixture(
                         },
                       ]
                     : []),
+                  ...Array.from(
+                    { length: options.manyRepositories ?? 0 },
+                    (_, index) => ({
+                      ...available,
+                      id: `many-${index}`,
+                      fullName: `fixtures/repo-${index}`,
+                    }),
+                  ),
                 ],
                 nextPage: options.pagination && input.page === 1 ? 2 : null,
               };
@@ -807,6 +816,33 @@ test("accounts and paginated repository discovery retain simple selection", asyn
   await page.keyboard.press("Escape");
 });
 
+test("a long repository list stays on screen and scrolls to every repository", async ({
+  page,
+}) => {
+  await fixture(page, { manyRepositories: 40 });
+  await panel(page)
+    .getByRole("button", { name: "Connect repository", exact: true })
+    .click();
+  const repository = picker(page).getByRole("combobox", {
+    name: "Repository",
+    exact: true,
+  });
+  await repository.click();
+  const menu = page.getByRole("listbox");
+  await expect(menu).toBeVisible();
+  const box = (await menu.boundingBox())!;
+  const viewport = page.viewportSize()!;
+  expect(box.y).toBeGreaterThanOrEqual(0);
+  expect(box.y + box.height).toBeLessThanOrEqual(viewport.height);
+  const last = page.getByRole("option", {
+    name: "fixtures/repo-39 · Private",
+    exact: true,
+  });
+  await last.scrollIntoViewIfNeeded();
+  await last.click();
+  await expect(repository).toHaveText("fixtures/repo-39 · Private");
+});
+
 test("existing local folders can be linked without cloning again", async ({
   page,
 }) => {
@@ -862,9 +898,16 @@ test("account controls and unlinking are tucked into explicit menus", async ({
   await picker(page)
     .getByRole("button", { name: /GitHub account options/ })
     .click();
-  await expect(
-    page.getByRole("button", { name: "Disconnect GitHub", exact: true }),
-  ).toBeVisible();
+  const accountMenu = page.getByRole("dialog", {
+    name: "GitHub account options",
+    exact: true,
+  });
+  await expect(accountMenu.getByRole("button")).toHaveText([
+    "Manage GitHub access",
+    "Connect another GitHub account",
+    "Disconnect GitHub",
+  ]);
+  await expect(accountMenu.locator("button > .ui-icon > svg")).toHaveCount(3);
 });
 
 test("a saved checkout needing reconnection is reused without cloning", async ({

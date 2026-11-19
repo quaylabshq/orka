@@ -240,6 +240,190 @@ pub fn queue(db: &rusqlite::Connection, project: &str, path: &str, value: &Value
     .map_err(|e| e.to_string())?;
     Ok(())
 }
+
+const HELD_CAPTURE: &str = "heldCapture:";
+
+/// The sidecar that marks an outbox row as captured while its project was
+/// deleted and not yet sent. It lives in `meta`, not in the request: the push
+/// contract rejects unknown fields and hashes the body for retries, and older
+/// clients send queued values unchanged, so a field in the row would break a
+/// downgrade. A row without it is an ordinary outbox row.
+pub(crate) fn held_capture_key(id: &str) -> String {
+    format!("{HELD_CAPTURE}{id}")
+}
+
+/// Returns whether the scan recorded a sendable request. When an earlier request
+/// must stay intact, back up the new bytes as a draft and leave the scanner's
+/// upload guards alone so a later active scan can pick up the live edit.
+fn queue_scanned(
+    db: &rusqlite::Connection,
+    project: &Value,
+    value: &Value,
+    paths: &[PathBuf],
+) -> Result<bool> {
+    let project_id = project["id"].as_str().ok_or("Missing project ID")?;
+    let path = "/v2/sync/push";
+    if project["captureOnly"] != true {
+        queue(db, project_id, path, value)?;
+        return Ok(true);
+    }
+    let resource = &value["resource"];
+    crate::projects::require_capture(db, project_id, crate::projects::queued_kind(path, value))?;
+    let id = value["id"].as_str().ok_or("Missing request ID")?;
+    let resource_id = resource["resourceId"].as_str().ok_or("Missing resource")?;
+    // Each skill mirror can change independently. A resource deletion has no
+    // origin path and supersedes every unsent variant of that resource.
+    let mirror = if resource["kind"] == "skill" {
+        json!(paths.first())
+    } else {
+        Value::Null
+    };
+    let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
+    let Some(held) = replaceable_held(&tx, project, resource_id)? else {
+        crate::governance::capture(&tx, project, resource, &json!(paths))?;
+        tx.commit().map_err(|e| e.to_string())?;
+        return Ok(false);
+    };
+    let aligned_mirrors = !mirror.is_null()
+        && held.iter().any(|row| {
+            row["resource"] == *resource
+                && (row["mirror"].is_string() && row["mirror"] != mirror
+                    || row["alignedMirrors"] == 1)
+        });
+    let marker = json!({
+        "heldCapture": true,
+        "projectId": project_id,
+        "resourceId": resource_id,
+        "deletedAt": project["deletedAt"],
+        "mirror": mirror,
+        "alignedMirrors": aligned_mirrors,
+    });
+    let mut matching = held.iter().filter(|row| {
+        mirror.is_null()
+            || row["mirror"] == mirror
+            || row["alignedMirrors"] == 1
+            || row["resource"] == *resource
+    });
+    if let Some(first) = matching.next() {
+        // Preserve queue order and the original base. Mint a fresh ID for the
+        // changed body. The marker check prevents rewriting a released row.
+        let mut value = value.clone();
+        value["baseRevision"] = first["base"].clone();
+        let first = first["id"].as_str().ok_or("Missing held request ID")?;
+        if tx
+            .execute(
+                "UPDATE outbox SET id=?1,value=?2 WHERE id=?3 AND error IS NULL
+                 AND EXISTS(SELECT 1 FROM meta WHERE key=?4)",
+                params![id, value.to_string(), first, held_capture_key(first)],
+            )
+            .map_err(|e| e.to_string())?
+            != 1
+        {
+            return Err("A held change was sent meanwhile; capture will retry".into());
+        }
+        release_held_capture(&tx, first)?;
+        crate::sync::clear_session_copy(&tx, first)?;
+        for old in matching {
+            discard_held(&tx, old["id"].as_str().ok_or("Missing held request ID")?)?;
+        }
+    } else {
+        tx.execute(
+            "INSERT INTO outbox VALUES(?,?,?,?,NULL)",
+            params![id, project_id, path, value.to_string()],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    db::set(&tx, &held_capture_key(id), &marker)?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+/// Returns the current deletion's replaceable requests in queue order, or
+/// None if any older, attempted, failed or rebuilding request blocks the item.
+fn replaceable_held(
+    db: &rusqlite::Connection,
+    project: &Value,
+    resource: &str,
+) -> Result<Option<Vec<Value>>> {
+    let project_id = project["id"].as_str().ok_or("Missing project ID")?;
+    let rows = db::rows(
+        db,
+        "SELECT json_object('id',o.id,'path',o.path,'error',o.error,
+           'base',json_extract(o.value,'$.baseRevision'),
+           'resource',json_extract(o.value,'$.resource'),
+           'mirror',json_extract(m.value,'$.mirror'),
+           'alignedMirrors',json_extract(m.value,'$.alignedMirrors'),
+           'held',json(m.value),
+           'rebuilding',EXISTS(SELECT 1 FROM meta WHERE key='sessionOutboxRedaction:'||o.id))
+         FROM outbox o LEFT JOIN meta m ON m.key=?2||o.id
+         WHERE o.project=?3 AND (json_extract(o.value,'$.resource.resourceId')=?1
+           OR json_extract(o.value,'$.resourceId')=?1)
+         ORDER BY o.rowid",
+        &[&resource, &HELD_CAPTURE, &project_id],
+    )?;
+    Ok(rows
+        .iter()
+        .all(|row| {
+            row["path"] == "/v2/sync/push"
+                && row["error"].is_null()
+                && row["rebuilding"] == 0
+                && held_in_deletion(&row["held"], project)
+        })
+        .then_some(rows))
+}
+
+fn held_in_deletion(marker: &Value, project: &Value) -> bool {
+    !project["deletedAt"].is_null()
+        && marker["heldCapture"] == true
+        && marker["projectId"] == project["id"]
+        && marker["deletedAt"] == project["deletedAt"]
+}
+
+fn discard_held(db: &rusqlite::Connection, id: &str) -> Result<()> {
+    if db
+        .execute(
+            "DELETE FROM outbox WHERE id=?1 AND error IS NULL
+         AND EXISTS(SELECT 1 FROM meta WHERE key=?2)",
+            params![id, held_capture_key(id)],
+        )
+        .map_err(|e| e.to_string())?
+        != 1
+    {
+        return Err("A held change was sent meanwhile; capture will retry".into());
+    }
+    release_held_capture(db, id)?;
+    crate::sync::clear_session_copy(db, id)
+}
+
+/// A held row is about to be sent, so it may already have reached the service
+/// and must never be rewritten again.
+pub(crate) fn release_held_capture(db: &rusqlite::Connection, id: &str) -> Result<()> {
+    db.execute("DELETE FROM meta WHERE key=?", [held_capture_key(id)])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Drops markers whose row was sent, removed or turned into a draft elsewhere,
+/// including by an older client that does not know them.
+pub(crate) fn clear_orphan_held_captures(db: &rusqlite::Connection) -> Result<()> {
+    db.execute(
+        "DELETE FROM meta WHERE key GLOB ?1||'*' AND substr(key,length(?1)+1) NOT IN (SELECT id FROM outbox)",
+        [HELD_CAPTURE],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Outbox rows eligible to send after a restore clears the project's 403s.
+pub(crate) fn held_count(db: &rusqlite::Connection, project: &str) -> Result<i64> {
+    db.query_row(
+        "SELECT count(*) FROM outbox WHERE project=? AND (error IS NULL OR error LIKE '403:%')",
+        [project],
+        |row| row.get(0),
+    )
+    .map_err(|e| e.to_string())
+}
+
 pub fn binding(db: &rusqlite::Connection, id: &str) -> Result<Value> {
     Ok(
         db::rows(db, "SELECT value FROM bindings WHERE id=?", &[&id])?
@@ -456,7 +640,20 @@ fn collect(
     let deleted = files.as_array().is_none_or(|a| a.is_empty());
     let base_revision = b["base"]["revision"].as_u64().unwrap_or(0);
     let pending:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM outbox WHERE json_extract(value,'$.resource.resourceId')=? OR json_extract(value,'$.resourceId')=?)",params![id,id],|r|r.get(0)).map_err(|e|e.to_string())?;
-    let last = b["lastSeenHash"].as_str().unwrap_or("").to_string();
+    let captured_mirror = if project["captureOnly"] == true && kind == "skill" {
+        paths.first().and_then(|origin| {
+            b["paths"]
+                .as_array()?
+                .iter()
+                .position(|path| path.as_str() == origin.to_str())
+        })
+    } else {
+        None
+    };
+    let last = captured_mirror
+        .and_then(|index| b["guards"][index].as_str())
+        .or_else(|| b["lastSeenHash"].as_str())
+        .unwrap_or("");
     let changed = hash != last;
     if b["paths"].is_null() {
         b["paths"] = json!(&paths);
@@ -466,7 +663,7 @@ fn collect(
             b["nativeId"] = json!(n);
         }
     }
-    if changed && !pending {
+    if changed && (!pending || project["captureOnly"] == true) {
         let title = if kind == "plan" {
             title
         } else {
@@ -489,12 +686,23 @@ fn collect(
             }
         }
         let change = json!({"version":2,"id":Uuid::new_v4().to_string(),"projectId":project_id,"deviceId":db::device(db)?,"baseRevision":base_revision,"resource":input});
-        queue(db, project_id, "/v2/sync/push", &change)?;
+        if !queue_scanned(db, project, &change, &paths)? {
+            return db::upsert(db, "bindings", &id, project_id, &b);
+        }
         let mut guards = crate::sync::live_hash(
             &b,
             kind,
             Path::new(project["path"].as_str().ok_or("Connect a folder")?),
         )?;
+        if let Some(origin_index) = captured_mirror {
+            let base = manifest_hash(&b["base"]["files"]);
+            for (index, guard) in guards.iter_mut().enumerate() {
+                if index != origin_index && *guard != hash {
+                    // A differing mirror has its own capture and write guard.
+                    *guard = b["guards"][index].as_str().unwrap_or(&base).to_owned();
+                }
+            }
+        }
         if let Some(origin) = paths.first() {
             if let Some(index) = b["paths"]
                 .as_array()
@@ -627,10 +835,11 @@ fn collect_embedded_plan(
         return Ok(());
     }
     let pending: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM outbox WHERE json_extract(value,'$.resource.resourceId')=?)", [&id], |r| r.get(0)).map_err(|e| e.to_string())?;
-    if pending {
+    if pending && project["captureOnly"] != true {
         return Ok(());
     }
     let file = plans::content(text.as_bytes())?;
+    let hash = manifest_hash(&json!([&file]));
     let path = plans::destination(root, &json!({"source":source,"logicalPath":logical}))?;
     plans::check_path(root, &path)?;
     if b["paths"].is_null() && !path.try_exists().map_err(|e| e.to_string())? {
@@ -651,8 +860,13 @@ fn collect_embedded_plan(
         seen,
     )?;
     let mut b = binding(db, &id)?;
-    b["planOriginHash"] = json!(origin);
-    db::upsert(db, "bindings", &id, project_id, &b)
+    // A draft made behind a blocked request leaves the original plan eligible
+    // for a later active scan, even when its materialized file is stale.
+    if !pending || project["captureOnly"] != true || b["lastSeenHash"] == hash {
+        b["planOriginHash"] = json!(origin);
+        db::upsert(db, "bindings", &id, project_id, &b)?;
+    }
+    Ok(())
 }
 
 pub fn discover(db: &rusqlite::Connection, project: &Value, kind: &str) -> Result<Vec<Value>> {
@@ -821,19 +1035,21 @@ fn refresh_catalog(
 }
 
 pub fn scan(db: &rusqlite::Connection, project: &Value) -> Result<()> {
-    scan_with_status(db, project, false)
+    scan_with_status(db, project, false).map(|_| ())
 }
 
 pub(crate) fn scan_with_progress(db: &rusqlite::Connection, project: &Value) -> Result<()> {
-    scan_with_status(db, project, true)
+    scan_with_status(db, project, true).map(|_| ())
 }
 
-fn scan_with_status(
+/// Records per-source errors and reports whether all attached content was captured.
+pub(crate) fn scan_with_status(
     db: &rusqlite::Connection,
     project: &Value,
     report_progress: bool,
-) -> Result<()> {
+) -> Result<bool> {
     let mut failures = Vec::new();
+    let mut complete = true;
     for source in crate::sources::views(project) {
         let result = scan_source(db, &source, report_progress, None);
         let key = format!(
@@ -845,13 +1061,29 @@ fn scan_with_status(
             failures.push(error.clone());
         }
         crate::sync::record_result(db, &key, result)?;
+        if project["captureOnly"] == true {
+            let id = project["id"].as_str().ok_or("Missing project ID")?;
+            let prefix = match source["sourceId"].as_str() {
+                Some(source_id) => format!("{id}:{source_id}:scan:*"),
+                None => format!("{id}:scan:*"),
+            };
+            // Individual files can fail independently of a source scan.
+            let has_errors: bool = db
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM errors WHERE source GLOB ?)",
+                    [&prefix],
+                    |row| row.get(0),
+                )
+                .map_err(|error| error.to_string())?;
+            complete &= !has_errors;
+        }
     }
     // Other repositories still scan when one checkout is missing. Filesystem
     // application validates each source independently after the project pull.
     if !project["sources"].is_array() && !failures.is_empty() {
         return Err(failures.join("; "));
     }
-    Ok(())
+    Ok(complete && failures.is_empty())
 }
 
 fn scan_source(
@@ -893,6 +1125,15 @@ fn scan_source(
     };
     fs::read_dir(&root).map_err(|e| e.to_string())?;
     let project_id = project["id"].as_str().ok_or("Missing project ID")?;
+    let earlier_plans: BTreeSet<String> = if project["governed"] == true
+        && project["catalogOnly"] != true
+        && project["captureOnly"] != true
+    {
+        db::rows(db, "SELECT json_quote(id) FROM outbox WHERE project=? AND json_extract(value,'$.resource.kind')='plan'", &[&project_id])?
+            .into_iter().filter_map(|value| value.as_str().map(str::to_owned)).collect()
+    } else {
+        BTreeSet::new()
+    };
     let scan_id = project["sourceId"]
         .as_str()
         .map(|source| format!("{project_id}:{source}"))
@@ -1246,10 +1487,30 @@ fn scan_source(
                         crate::sources::scope(project, &mut resource);
                         crate::governance::capture(&tx, project, &resource, &json!([path]))?;
                     }
-                    for queued in db::rows(&tx,"SELECT value FROM outbox WHERE project=? AND json_extract(value,'$.resource.resourceId')=?",&[&project_id,&id])? {
-                    crate::governance::capture(&tx, project, &queued["resource"], &json!(paths))?;
-                }
-                    tx.execute("DELETE FROM outbox WHERE project=? AND json_extract(value,'$.resource.resourceId')=?",params![project_id,id]).map_err(|e|e.to_string())?;
+                    let held = if project["captureOnly"] == true {
+                        replaceable_held(&tx, project, &id)?
+                    } else {
+                        None
+                    };
+                    // A pending row already protected by a deleted-project
+                    // mirror review must also survive the first active scan.
+                    if (project["captureOnly"] != true && b["mirrorReview"] != true)
+                        || held.is_some()
+                    {
+                        for queued in db::rows(&tx, "SELECT value FROM outbox WHERE project=? AND json_extract(value,'$.resource.resourceId')=?", &[&project_id, &id])? {
+                            crate::governance::capture(&tx, project, &queued["resource"], &json!(paths))?;
+                        }
+                        if let Some(held) = held {
+                            for row in held {
+                                discard_held(
+                                    &tx,
+                                    row["id"].as_str().ok_or("Missing held request ID")?,
+                                )?;
+                            }
+                        } else {
+                            tx.execute("DELETE FROM outbox WHERE project=? AND json_extract(value,'$.resource.resourceId')=?", params![project_id,id]).map_err(|e|e.to_string())?;
+                        }
+                    }
                     b["mirrorReview"] = json!(true);
                     db::upsert(&tx, "bindings", &id, project_id, &b)?;
                     tx.commit().map_err(|e| e.to_string())?;
@@ -1257,7 +1518,7 @@ fn scan_source(
                     seen.insert(id.clone());
                     return Ok(());
                 }
-                if b["mirrorReview"] == true {
+                if b["mirrorReview"] == true && !pending {
                     b["mirrorReview"] = json!(false);
                     db::upsert(db, "bindings", &id, project_id, &b)?;
                 }
@@ -1306,13 +1567,15 @@ fn scan_source(
                     &mut seen,
                 )?;
                 if project["governed"] != true
-                    && !pending
                     && changed.len() > 1
-                    && changed[0].1 != changed[1].1
+                    && (changed[0].1 != changed[1].1 || project["captureOnly"] == true)
+                    && (!pending || project["captureOnly"] == true)
                 {
                     let mut input = json!({"version":2,"id":Uuid::new_v4().to_string(),"projectId":project_id,"deviceId":db::device(db)?,"baseRevision":base["revision"].as_u64().unwrap_or(0),"resource":{"resourceId":id,"kind":"skill","source":"shared","logicalPath":name,"title":name,"files":changed[1].1,"deleted":false}});
                     crate::sources::scope(project, &mut input["resource"]);
-                    queue(db, project_id, "/v2/sync/push", &input)?;
+                    if !queue_scanned(db, project, &input, std::slice::from_ref(changed[1].0))? {
+                        return Ok(());
+                    }
                     let mut b = binding(db, &id)?;
                     if let Some(i) = b["paths"].as_array().and_then(|mapped| {
                         mapped
@@ -1681,14 +1944,27 @@ fn scan_source(
     if project["governed"] == true {
         // A plan file can be seen before its transcript references. Reconcile all
         // discovered sources before any queued version is sent to the service.
-        for queued in db::rows(db,"SELECT json_object('id',id,'value',json(value)) FROM outbox WHERE project=? AND json_extract(value,'$.resource.kind')='plan'",&[&project_id])? {
+        for queued in db::rows(db,"SELECT json_object('id',id,'value',json(value),'error',error) FROM outbox WHERE project=? AND json_extract(value,'$.resource.kind')='plan'",&[&project_id])? {
             let mut change=queued["value"].clone();
             if !crate::sources::matches(project, &change["resource"]) { continue; }
             let mut known=change["resource"]["contextSources"].as_array().cloned().unwrap_or_default();
             for source in scanned_sources(db,project,change["resource"]["logicalPath"].as_str().ok_or("Missing plan path")?,None)?.as_array().cloned().unwrap_or_default() {if !known.contains(&source){known.push(source);}}
             if change["resource"]["contextSources"]!=json!(known) {
+                let old_id=queued["id"].as_str().ok_or("Missing request ID")?;
+                let held=held_capture_key(old_id);
+                // While deleted, only never-sent captures are rewritten; a row
+                // queued before the deletion stays exactly as it was.
+                let tx=db.unchecked_transaction().map_err(|e|e.to_string())?;
+                if earlier_plans.contains(old_id)
+                    || (project["captureOnly"] == true
+                        && (!queued["error"].is_null() || !held_in_deletion(&db::get(&tx, &held)?, project))) {
+                    continue;
+                }
                 let new_id=Uuid::new_v4().to_string();change["id"]=json!(new_id);change["resource"]["contextSources"]=json!(known);
-                db.execute("UPDATE outbox SET id=?,value=?,error=NULL WHERE id=?",params![new_id,change.to_string(),queued["id"].as_str()]).map_err(|e|e.to_string())?;
+                tx.execute("UPDATE outbox SET id=?,value=?,error=NULL WHERE id=?",params![new_id,change.to_string(),old_id]).map_err(|e|e.to_string())?;
+                // The held marker follows the row to its new request ID.
+                tx.execute("UPDATE meta SET key=? WHERE key=?",params![held_capture_key(&new_id),held]).map_err(|e|e.to_string())?;
+                tx.commit().map_err(|e|e.to_string())?;
             }
         }
     }
