@@ -143,40 +143,49 @@ fn git_dirs(path: &Path) -> Option<(PathBuf, PathBuf)> {
 fn resolved(path: &Path) -> PathBuf {
     fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
+fn linked_common_dir(path: &Path) -> Option<PathBuf> {
+    let (directory, common) = git_dirs(path)?;
+    (directory != common).then_some(common)
+}
+
 #[derive(Default)]
 struct MainCheckouts(BTreeMap<PathBuf, BTreeSet<PathBuf>>);
 impl MainCheckouts {
     fn from_paths<'a>(paths: impl Iterator<Item = &'a PathBuf>, home: &Path) -> Self {
         let mut checkouts = Self::default();
-        for path in paths {
-            let Some((directory, common)) = git_dirs(path) else {
+        for path in paths.filter_map(|path| fs::canonicalize(path).ok()) {
+            if !usable_root(&path, home) {
                 continue;
-            };
-            if directory == common && common.is_dir() && usable_root(path, home) {
-                checkouts.0.entry(common).or_default().insert(path.clone());
             }
+            let git = path.join(".git");
+            let common = if git.is_dir() {
+                resolved(&git)
+            } else {
+                let Some((directory, common)) = git_dirs(&path) else {
+                    continue;
+                };
+                if directory != common || !common.is_dir() {
+                    continue;
+                }
+                common
+            };
+            checkouts.0.entry(common).or_default().insert(path);
         }
         checkouts
     }
 
-    /// Returns a linked worktree's main checkout when its location is known.
     fn main_of(&self, path: &Path) -> Option<PathBuf> {
-        let (directory, common) = git_dirs(path)?;
-        if directory == common {
-            return None;
+        self.main_for(&linked_common_dir(path)?).cloned()
+    }
+
+    fn main_for(&self, common: &Path) -> Option<&PathBuf> {
+        // A Git directory named .git can live outside its checkout. Its parent
+        // is not enough to identify the primary without a known project path.
+        let mut matches = self.0.get(common)?.iter();
+        match (matches.next(), matches.next()) {
+            (Some(only), None) => Some(only),
+            _ => None,
         }
-        // An external Git directory has no backlink to its primary checkout.
-        if let Some(matches) = self.0.get(&common) {
-            let mut matches = matches.iter();
-            return match (matches.next(), matches.next()) {
-                (Some(only), None) => Some(only.clone()),
-                _ => None,
-            };
-        }
-        if common.file_name()? != ".git" || !common.is_dir() {
-            return None;
-        }
-        common.parent().map(Path::to_path_buf)
     }
 }
 /// Worktrees connect to their main checkout, so they are one project, not two.
@@ -746,6 +755,10 @@ mod tests {
 
         found.clear();
         add(&mut found, &feature, &home, Some("codex"), 20, 2);
+        fold_worktrees(&mut found, &home, &BTreeMap::new());
+        assert_eq!(found.keys().collect::<Vec<_>>(), vec![&feature]);
+        assert_eq!(found[&feature].worktrees, 0);
+
         fold_worktrees(&mut found, &home, &BTreeMap::from([(main.clone(), 0)]));
         assert_eq!(found.keys().collect::<Vec<_>>(), vec![&main]);
         assert_eq!(found[&main].sessions, 2);
@@ -774,8 +787,9 @@ mod tests {
         let submodule = superproject.join("sub");
         fs::create_dir_all(&submodule).unwrap();
         fs::write(submodule.join(".git"), "gitdir: ../.git/modules/sub\n").unwrap();
-        let bare = home.join("repos/orka.git");
+        let bare = home.join("repos/.git");
         fs::create_dir_all(bare.join("worktrees/feature")).unwrap();
+        fs::write(bare.join("config"), "[core]\n bare = true\n").unwrap();
         fs::write(bare.join("worktrees/feature/commondir"), "../..\n").unwrap();
         let checkout = home.join(".t3/worktrees/orka/feature");
         fs::create_dir_all(&checkout).unwrap();
