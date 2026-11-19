@@ -3,8 +3,11 @@ import {
   CodeIcon,
   CopyIcon,
   DownloadIcon,
+  EllipsisIcon,
   EyeIcon,
   FileIcon,
+  FilesIcon,
+  FileTextIcon,
   FolderIcon,
   GitCompareIcon,
   GitForkIcon,
@@ -232,6 +235,7 @@ export function resourceViewMenuActions(
     items.push({
       id: "show-content",
       label: "Show content",
+      icon: FileTextIcon,
       onSelect: () => view.setChanges(false),
     });
   if (session ? !view.fullTranscript : view.canRenderMarkdown && !view.changes)
@@ -333,6 +337,7 @@ function ResourceMenuTarget({
       items.push({
         id: "copy",
         label: "Create copy",
+        icon: FilesIcon,
         disabled: context.busy,
         onSelect: () => void actions.sessionAction("copy"),
       });
@@ -498,6 +503,7 @@ function ResourceMenuTarget({
     primary.push({
       id: "more",
       label: "More actions",
+      icon: EllipsisIcon,
       group: "more",
       children: secondary.map(configureAction),
       onSelect: () => {},
