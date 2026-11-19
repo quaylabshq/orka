@@ -614,15 +614,20 @@ fn credited_root(
         return Some((main, Some(worktree)));
     }
     let t3 = t3?;
-    match siblings.len() {
-        1 => return siblings.into_iter().next().map(|main| (main, Some(t3))),
-        2.. => return None,
-        _ => {}
-    }
     let basename = t3.parent()?.file_name();
     let mut named = roots
         .iter()
         .filter(|root| root.file_name() == basename && root.join(".git").exists());
+    // A T3 workspace name can be reused. Without a remote, these clues may
+    // credit activity only when they agree and never migrate a saved selection.
+    match siblings.len() {
+        1 => {
+            let main = siblings.into_iter().next()?;
+            return (!named.any(|root| root != &main)).then_some((main, None));
+        }
+        2.. => return None,
+        _ => {}
+    }
     match (named.next(), named.next()) {
         (Some(only), None) => Some((only.clone(), None)),
         _ => None,
@@ -885,10 +890,31 @@ mod tests {
         assert_eq!(found.keys().collect::<Vec<_>>(), vec![&main]);
         assert_eq!(found[&main].sessions, 4);
         assert_eq!(found[&main].last, 20);
-        assert_eq!(
-            found[&main].worktree_paths,
-            BTreeSet::from([home.join(".t3/worktrees/orka/deleted")])
+        assert!(found[&main].worktree_paths.is_empty());
+    }
+    #[test]
+    fn t3_siblings_do_not_override_a_competing_repository_name() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = fs::canonicalize(temp.path()).unwrap();
+        let sibling_main = home.join("Development/orka");
+        let other = home.join("Archive/orka");
+        fs::create_dir_all(sibling_main.join(".git")).unwrap();
+        fs::create_dir_all(other.join(".git")).unwrap();
+        let _live = linked_worktree(&home, &sibling_main, "live");
+        let records = vec![
+            history_record(&other, 10, 1),
+            history_record(&home.join(".t3/worktrees/orka/deleted"), 20, 3),
+        ];
+        let mut found = BTreeMap::new();
+        resolve(
+            records,
+            &home,
+            &home.join(".codex"),
+            &mut found,
+            &BTreeMap::new(),
         );
+        assert_eq!(found.keys().collect::<Vec<_>>(), vec![&other]);
+        assert_eq!(found[&other].sessions, 1);
     }
     #[test]
     fn deleted_worktree_history_is_credited_by_a_unique_folder_name() {
