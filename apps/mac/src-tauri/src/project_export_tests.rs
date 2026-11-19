@@ -35,7 +35,24 @@ fn project_export_preserves_held_edits_before_local_removal() {
         }
         crate::projects::merge_catalog(&f.db, &json!([remote])).unwrap();
         let path = f.root.join("project.zip");
-        bundles::export_project(&f.db, id, &path).unwrap();
+        let workspace = crate::projects::lock().unwrap();
+        let writer = db::open().unwrap();
+        writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+        db::upsert(
+            &writer,
+            "projects",
+            "another-project",
+            "",
+            &json!({"id":"another-project","name":"Another project"}),
+        )
+        .unwrap();
+        tauri::async_runtime::block_on(crate::commands::export_project(
+            id.into(),
+            path.to_string_lossy().into_owned(),
+        ))
+        .unwrap();
+        writer.execute_batch("ROLLBACK").unwrap();
+        drop(workspace);
         let mut zip = zip::ZipArchive::new(fs::File::open(&path).unwrap()).unwrap();
         assert_eq!(header(&mut zip)["pendingChanges"], 1);
         let prefix = format!("pending/{}/", request["id"].as_str().unwrap());
@@ -58,6 +75,53 @@ fn project_export_preserves_held_edits_before_local_removal() {
 }
 
 #[test]
+fn project_export_waits_for_access_cleanup_before_reading_stale_shared_cache() {
+    let f = Fixture::new();
+    let project = f.project["id"].as_str().unwrap();
+    session_conflict(&f, "Cached teammate conversation", "teammate");
+    let mut saved = f.project.clone();
+    saved["revoked"] = json!(true);
+    db::upsert(&f.db, "projects", project, project, &saved).unwrap();
+    let path = f.root.join("project.zip");
+    fs::write(&path, b"previous export").unwrap();
+    let error =
+        bundles::export_project(&db::CacheScope::current().unwrap(), project, &path).unwrap_err();
+    assert!(error.contains("updating access"));
+    assert_eq!(fs::read(path).unwrap(), b"previous export");
+}
+
+#[test]
+fn project_export_keeps_its_blob_scope_and_discards_output_after_service_switch() {
+    let f = Fixture::new();
+    let project = f.project["id"].as_str().unwrap();
+    db::set(&f.db, "config", &json!({"apiUrl":"https://first.example"})).unwrap();
+    db::profile(&uuid::Uuid::new_v4().to_string()).unwrap();
+    let db = db::open().unwrap();
+    let mut saved = f.project.clone();
+    saved["archivedAt"] = json!("2026-11-19T00:00:00Z");
+    db::upsert(&db, "projects", project, project, &saved).unwrap();
+    let bytes = b"Only cached on the first service";
+    let hash = db::blob(bytes).unwrap();
+    let resource = json!({"resourceId":"memory","kind":"memory","files":[{"hash":hash}]});
+    db::upsert(&db, "resources", "memory", project, &resource).unwrap();
+    let cache = db::CacheScope::current().unwrap();
+    let read_blob = cache.blob_reader();
+    db::set(&db, "config", &json!({"apiUrl":"https://second.example"})).unwrap();
+    assert!(
+        db::rows(&db::open().unwrap(), "SELECT value FROM projects", &[])
+            .unwrap()
+            .is_empty()
+    );
+    assert!(db::blob_read(&hash).is_err());
+    assert_eq!(read_blob(&hash).unwrap(), bytes);
+    let path = f.root.join("project.zip");
+    fs::write(&path, b"previous export").unwrap();
+    let error = bundles::export_project(&cache, project, &path).unwrap_err();
+    assert!(error.contains("account or service changed"), "{error}");
+    assert_eq!(fs::read(path).unwrap(), b"previous export");
+}
+
+#[test]
 fn project_export_reads_private_cache_without_discovery_or_writes() {
     let mut f = Fixture::new();
     f.project["sharing"] =
@@ -74,15 +138,13 @@ fn project_export_reads_private_cache_without_discovery_or_writes() {
     fs::remove_file(&original).unwrap();
     f.project["archivedAt"] = json!("2026-11-19T00:00:00Z");
     db::upsert(&f.db, "projects", &id, &id, &f.project).unwrap();
-    let before: i64 =
-        f.db.query_row("SELECT total_changes()", [], |r| r.get(0))
-            .unwrap();
+    let before = db::rows(&f.db, "SELECT value FROM local_resources", &[]).unwrap();
     let path = f.root.join("project.zip");
-    bundles::export_project(&f.db, &id, &path).unwrap();
-    let after: i64 =
-        f.db.query_row("SELECT total_changes()", [], |r| r.get(0))
-            .unwrap();
-    assert_eq!(after, before);
+    bundles::export_project(&db::CacheScope::current().unwrap(), &id, &path).unwrap();
+    assert_eq!(
+        db::rows(&f.db, "SELECT value FROM local_resources", &[]).unwrap(),
+        before
+    );
     assert!(!original.exists());
     assert!(f.outbox().is_empty());
     let mut zip = zip::ZipArchive::new(fs::File::open(path).unwrap()).unwrap();
@@ -113,7 +175,7 @@ fn project_export_does_not_resurrect_revoked_teammate_cache() {
     saved["detachedAt"] = json!("2026-11-19T00:00:00Z");
     db::upsert(&f.db, "projects", id, id, &saved).unwrap();
     let path = f.root.join("project.zip");
-    bundles::export_project(&f.db, id, &path).unwrap();
+    bundles::export_project(&db::CacheScope::current().unwrap(), id, &path).unwrap();
     let mut zip = zip::ZipArchive::new(fs::File::open(path).unwrap()).unwrap();
     assert_eq!(header(&mut zip)["localResources"], 0);
     assert_eq!(zip.len(), 1);
@@ -143,7 +205,7 @@ fn project_export_keeps_the_selected_legacy_session_copy_snapshot() {
     saved["archivedAt"] = json!("2026-11-19T00:00:00Z");
     db::upsert(&f.db, "projects", id, id, &saved).unwrap();
     let path = f.root.join("project.zip");
-    bundles::export_project(&f.db, id, &path).unwrap();
+    bundles::export_project(&db::CacheScope::current().unwrap(), id, &path).unwrap();
     let mut zip = zip::ZipArchive::new(fs::File::open(path).unwrap()).unwrap();
     let prefix = format!("pending/{}/", request["id"].as_str().unwrap());
     assert_eq!(blob(&mut zip, &format!("{prefix}blobs/{hash}")), bytes);
@@ -207,7 +269,7 @@ fn project_export_preserves_cached_conflict_versions_while_inactive() {
             "The rejected upload is already acknowledged"
         );
         let path = f.root.join("project.zip");
-        bundles::export_project(&f.db, project, &path).unwrap();
+        bundles::export_project(&db::CacheScope::current().unwrap(), project, &path).unwrap();
         let mut zip = zip::ZipArchive::new(fs::File::open(path).unwrap()).unwrap();
         assert_eq!(header(&mut zip)["conflicts"], 1);
         let prefix = format!("conflicts/{}/", conflict["id"].as_str().unwrap());
@@ -239,7 +301,7 @@ fn project_export_after_detach_contains_only_preserved_private_conflicts() {
     );
     crate::projects::merge_catalog(&f.db, &json!([])).unwrap();
     let path = f.root.join("project.zip");
-    bundles::export_project(&f.db, project, &path).unwrap();
+    bundles::export_project(&db::CacheScope::current().unwrap(), project, &path).unwrap();
     let mut zip = zip::ZipArchive::new(fs::File::open(path).unwrap()).unwrap();
     assert_eq!(header(&mut zip)["conflicts"], 0);
     assert_eq!(header(&mut zip)["drafts"], 1);
@@ -295,7 +357,7 @@ fn project_export_keeps_a_frozen_resolution_after_newer_remote_state() {
         saved["archivedAt"] = json!("2026-11-19T00:00:00Z");
         db::upsert(&f.db, "projects", project, project, &saved).unwrap();
         let path = f.root.join("project.zip");
-        bundles::export_project(&f.db, project, &path).unwrap();
+        bundles::export_project(&db::CacheScope::current().unwrap(), project, &path).unwrap();
         let mut zip = zip::ZipArchive::new(fs::File::open(path).unwrap()).unwrap();
         let prefix = format!("pending/{}/", request["id"].as_str().unwrap());
         let exported: Value =
