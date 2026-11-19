@@ -1,4 +1,10 @@
-import { RefreshCwIcon } from "lucide-react";
+import {
+  ArrowDownAZIcon,
+  ChartNoAxesColumnIncreasingIcon,
+  ClockIcon,
+  RefreshCwIcon,
+  UserRoundIcon,
+} from "lucide-react";
 import React from "react";
 import type { Resource } from "@portable/protocol";
 import { IconButton } from "./icon-button.js";
@@ -6,6 +12,7 @@ import { SearchField } from "./search-field.js";
 import { SegmentedControl } from "./segmented-control.js";
 import { SourceLabel } from "./source-label.js";
 import { SortMenu } from "./sort-menu.js";
+import type { IconGlyph } from "./icons.js";
 import { memberLabel } from "./project-permissions.js";
 
 export type IndexSort = "updated" | "title" | "author" | "usage";
@@ -28,11 +35,11 @@ export const defaultIndexFilters: IndexFilters = {
   ownership: "all",
 };
 
-const sortLabels: Record<IndexSort, string> = {
-  usage: "Most used",
-  updated: "Recently updated",
-  title: "Title",
-  author: "Author",
+const sortOptions: Record<IndexSort, { label: string; icon: IconGlyph }> = {
+  usage: { label: "Most used", icon: ChartNoAxesColumnIncreasingIcon },
+  updated: { label: "Recently updated", icon: ClockIcon },
+  title: { label: "Title", icon: ArrowDownAZIcon },
+  author: { label: "Author", icon: UserRoundIcon },
 };
 
 const nouns: Record<Resource["kind"], [string, string]> = {
@@ -188,9 +195,9 @@ export function IndexToolbar({
         </span>
       )}
       <SortMenu
-        options={(Object.keys(sortLabels) as IndexSort[])
+        options={(Object.keys(sortOptions) as IndexSort[])
           .filter((sort) => sort !== "usage" || kind === "skill")
-          .map((sort) => ({ value: sort, label: sortLabels[sort] }))}
+          .map((sort) => ({ value: sort, ...sortOptions[sort] }))}
         value={filters.sort}
         onChange={(sort) => onChange({ ...filters, sort })}
       />
