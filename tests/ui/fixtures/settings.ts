@@ -3,6 +3,7 @@ import { expect, type Page } from "@playwright/test";
 interface UpdateStatus {
   installedVersion: string;
   update?: { version: string; notes: string; sha256: string };
+  updateAudience?: "early" | "public";
   release?: { version: string; notes: string; sha256: string };
   message?: string;
   supported?: boolean;

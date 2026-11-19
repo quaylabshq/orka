@@ -71,21 +71,22 @@ extension Installation {
 }
 
 @MainActor
-func installApprovedUpdate(_ installation: Installation, version: String, sha256: String, profile: String) throws -> Never {
+func installApprovedUpdate(_ installation: Installation, version: String, sha256: String, profile: String,
+                           useRolloutSession: Bool) throws -> Never {
     let caller = getppid()
     try installation.verifyDesktopCaller(caller)
+    let token = useRolloutSession ? readRolloutToken() : nil
     signal(SIGPIPE, SIG_IGN)
     let application = NSApplication.shared
     application.setActivationPolicy(.prohibited)
     Task {
         do {
-            guard let feed = installation.feed else { throw UpdateError("Updates are unavailable for this build.") }
             let current = try InstalledBuild(at: installation.app)
-            let policy = try await feed.refresh(bypassCache: true)
-            guard let release = feed.candidate(policy, current: current), release.version == version, release.sha256 == sha256 else {
+            let (_, offer) = try await installation.refreshOffer(current: current, bypassCache: true, token: token)
+            guard let release = offer?.release, release.version == version, release.sha256 == sha256 else {
                 throw UpdateError("This update changed or is no longer available. Review the available update again.")
             }
-            try await installation.install(release, replacing: current, progress: { progress in
+            try await installation.install(release, replacing: current, token: token, progress: { progress in
                 if let data = try? JSONEncoder().encode(progress) {
                     try? FileHandle.standardOutput.write(contentsOf: data + Data("\n".utf8))
                 }

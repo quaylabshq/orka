@@ -23,6 +23,7 @@ void test("desktop publisher promotes, renews and permanently withdraws signed r
     const previous = join(directory, "previous.json");
     const output = join(directory, "policy.json");
     const artifact = join(directory, "release.json");
+    const approval = join(directory, "approval.json");
     writeFileSync(previous, "");
     const release = (version: string) =>
       writeFileSync(
@@ -47,6 +48,7 @@ void test("desktop publisher promotes, renews and permanently withdraws signed r
           previous,
           output,
           artifact,
+          approval,
         ],
         { env: { ...env, ORKA_WITHDRAW_VERSION: withdraw }, encoding: "utf8" },
       );
@@ -60,15 +62,57 @@ void test("desktop publisher promotes, renews and permanently withdraws signed r
       writeFileSync(previous, envelope);
       return JSON.parse(bytes.toString());
     };
+    const approve = (audience: "early" | "public") => {
+      const staged = execute("stage");
+      assert.equal(staged.status, 0, staged.stderr);
+      const manifest = JSON.parse(readFileSync(output, "utf8"));
+      const payload = JSON.parse(
+        Buffer.from(manifest.payload, "base64").toString(),
+      );
+      assert.equal(payload.purpose, "orka-desktop-rollout");
+      writeFileSync(approval, JSON.stringify({ audience, manifest }));
+    };
     release("0.4.0");
-    assert.equal(publish("promote").release.version, "0.4.0");
+    assert.notEqual(
+      execute("promote").status,
+      0,
+      "missing approval fails closed",
+    );
+    approve("early");
+    assert.notEqual(
+      execute("promote").status,
+      0,
+      "testers-only approval cannot reach the public feed",
+    );
+    approve("public");
+    const published = publish("promote");
+    assert.equal(published.release.version, "0.4.0");
+    assert.equal(published.release.notes, "Fixture");
     assert.equal(publish("renew").sequence, 2);
     const withdrawn = publish("withdraw", "0.4.0");
     assert.deepEqual(withdrawn.withdrawn, ["0.4.0"]);
     assert.equal(withdrawn.release, null);
     assert.notEqual(execute("promote").status, 0);
     release("0.4.1");
+    assert.notEqual(
+      execute("promote").status,
+      0,
+      "approval for another version fails",
+    );
+    approve("public");
+    const archive = JSON.parse(readFileSync(artifact, "utf8"));
+    writeFileSync(
+      artifact,
+      JSON.stringify({ ...archive, sha256: "b".repeat(64) }),
+    );
+    assert.notEqual(
+      execute("promote").status,
+      0,
+      "changed archives require fresh review",
+    );
+    writeFileSync(artifact, JSON.stringify({ ...archive, notes: "Ignored" }));
     const fixed = publish("promote");
+    assert.equal(fixed.release.notes, "Fixture");
     assert.equal(fixed.release.version, "0.4.1");
     assert.deepEqual(fixed.withdrawn, ["0.4.0"]);
   } finally {

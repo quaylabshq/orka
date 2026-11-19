@@ -43,14 +43,18 @@ struct SignedPolicy: Codable {
     let payload: Data
     let signature: Data
 
+    func verifiedPayload(key: Data) throws -> Data {
+        let publicKey = try Curve25519.Signing.PublicKey(rawRepresentation: key)
+        guard publicKey.isValidSignature(signature, for: payload) else {
+            throw UpdateError("The update feed signature is invalid.")
+        }
+        return payload
+    }
+
     static func verify(_ data: Data, key: Data, now: Date = Date(), requireFresh: Bool = true) throws -> Policy {
         let decoder = JSONDecoder()
         let envelope = try decoder.decode(Self.self, from: data)
-        let publicKey = try Curve25519.Signing.PublicKey(rawRepresentation: key)
-        guard publicKey.isValidSignature(envelope.signature, for: envelope.payload) else {
-            throw UpdateError("The update feed signature is invalid.")
-        }
-        let policy = try decoder.decode(Policy.self, from: envelope.payload)
+        let policy = try decoder.decode(Policy.self, from: envelope.verifiedPayload(key: key))
         guard policy.schema == 1, policy.sequence > 0, versionParts(policy.minimumVersion) != nil,
               policy.withdrawn.allSatisfy({ versionParts($0) != nil }) else {
             throw UpdateError("The update feed format is invalid.")
@@ -157,7 +161,11 @@ struct Feed {
     }
 
     func candidate(_ policy: Policy, current: InstalledBuild) -> Release? {
-        guard let release = policy.release, policy.allows(release.version),
+        candidate(policy.release, policy: policy, current: current)
+    }
+
+    func candidate(_ offer: Release?, policy: Policy, current: InstalledBuild) -> Release? {
+        guard let release = offer, policy.allows(release.version),
               compareVersion(release.version, current.version) == .orderedDescending,
               release.architectures.contains(hostArchitecture()), release.dataEpoch >= current.dataEpoch,
               !FileManager.default.fileExists(atPath: directory.appendingPathComponent("skipped-\(release.version)").path) else { return nil }
