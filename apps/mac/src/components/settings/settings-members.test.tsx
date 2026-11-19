@@ -80,6 +80,55 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
+test("Members counts only requests that need this user's decision", async () => {
+  render(<Members state={snapshot("alice")} />);
+  const request = (id: string, status: string, canReview: boolean) => ({
+    id,
+    projectId: project.id,
+    status,
+    canReview,
+  });
+  await act(async () =>
+    answer({
+      ...catalog(member("alice", "Alice")),
+      requests: [
+        request("approved", "approved", true),
+        request("rejected", "rejected", true),
+        request("waiting", "pending", false),
+        request("review", "pending", true),
+        { ...request("foreign", "pending", true), projectId: "other" },
+        { ...request("env", "pending", true), requestedClass: "env" },
+      ],
+    }),
+  );
+  expect(
+    await screen.findByRole("button", { name: "Review pending requests (1)" }),
+  ).toBeTruthy();
+});
+
+test("Members does not offer pending review when all requests are complete or waiting", async () => {
+  render(<Members state={snapshot("alice")} />);
+  await act(async () =>
+    answer({
+      ...catalog(member("alice", "Alice")),
+      requests: [
+        { projectId: project.id, status: "approved", canReview: true },
+        { projectId: project.id, status: "rejected", canReview: true },
+        { projectId: project.id, status: "pending", canReview: false },
+      ],
+    }),
+  );
+  await screen.findByText("Alice");
+  await waitFor(() =>
+    expect(
+      screen.queryByRole("button", { name: /Review pending requests/ }),
+    ).toBeNull(),
+  );
+  expect(
+    screen.getByRole("button", { name: "View requests and history" }),
+  ).toBeTruthy();
+});
+
 function deferredCatalogs() {
   const requests: {
     projectId: string;

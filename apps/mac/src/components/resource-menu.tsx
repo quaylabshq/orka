@@ -42,6 +42,9 @@ import type { ResourceView } from "./use-resource-view.js";
 import { sourcePath } from "./project-sources.js";
 import { skillReviewState } from "./skill-review-state.js";
 import { useResourceActions, type Run } from "./use-resource-actions.js";
+import { QueuedUploadReview } from "./queued-upload-review.js";
+
+type ResourceRequest = "share" | "delete" | "launch" | "retry-upload";
 
 interface ResourceMenuContextValue {
   scope: string;
@@ -55,9 +58,11 @@ interface ResourceMenuContextValue {
   onRefresh: () => Promise<void>;
   isCurrent: (resource: ProjectResource) => boolean;
   request: (
-    kind: "share" | "delete" | "launch",
+    kind: ResourceRequest,
     resource: ProjectResource,
+    uploadId?: string,
   ) => void;
+  reviewUpload: (uploadId: string) => void;
 }
 
 const ResourceMenuContext = createContext<ResourceMenuContextValue | null>(
@@ -112,7 +117,7 @@ export function ResourceMenuProvider({
   resources,
   children,
   ...props
-}: Omit<ResourceMenuContextValue, "isCurrent" | "request"> & {
+}: Omit<ResourceMenuContextValue, "isCurrent" | "request" | "reviewUpload"> & {
   resources: ProjectResource[];
   children: React.ReactNode;
 }) {
@@ -127,11 +132,19 @@ export function ResourceMenuProvider({
       active.current = false;
     };
   }, []);
-  const [request, setRequest] = useState<{
-    kind: "share" | "delete" | "launch";
-    resource: ProjectResource;
-    scope: string;
-  } | null>(null);
+  const [request, setRequest] = useState<
+    | {
+        kind: "retry-upload";
+        upload: Snapshot["outbox"][number];
+        scope: string;
+      }
+    | {
+        kind: Exclude<ResourceRequest, "retry-upload">;
+        resource: ProjectResource;
+        scope: string;
+      }
+    | null
+  >(null);
   useEffect(() => {
     setRequest(null);
   }, [props.scope]);
@@ -144,25 +157,70 @@ export function ResourceMenuProvider({
   const context: ResourceMenuContextValue = {
     ...props,
     isCurrent,
-    request: (kind, resource) => {
-      if (isCurrent(resource))
-        setRequest({ kind, resource, scope: props.scope });
+    request: (kind, resource, uploadId) => {
+      if (!isCurrent(resource)) return;
+      const upload = props.state.outbox.find(
+        (entry) =>
+          entry.reviewable &&
+          entry.project === resource.projectId &&
+          entry.resourceId === resource.resourceId &&
+          (!uploadId || entry.id === uploadId),
+      );
+      if (kind === "retry-upload") {
+        if (upload) setRequest({ kind, upload, scope: props.scope });
+      } else setRequest({ kind, resource, scope: props.scope });
+    },
+    reviewUpload: (uploadId) => {
+      const upload = props.state.outbox.find(
+        (entry) =>
+          entry.id === uploadId && entry.reviewable && entry.resourceId,
+      );
+      if (upload)
+        setRequest({ kind: "retry-upload", upload, scope: props.scope });
     },
   };
   return (
     <ResourceMenuContext.Provider value={context}>
       {children}
-      {request && request.scope === props.scope && (
-        <ResourceCommandDialog
-          key={`${props.scope}:${request.kind}:${identity(request.resource)}`}
-          kind={request.kind}
-          resource={request.resource}
-          context={context}
-          onClose={() => setRequest(null)}
-        />
-      )}
+      {request &&
+        request.scope === props.scope &&
+        (request.kind === "retry-upload" ? (
+          <QueuedUploadReview
+            key={`${props.scope}:upload:${request.upload.id}`}
+            input={{
+              accountId: props.state.user,
+              serviceOrigin: props.state.config?.apiUrl,
+              projectId: request.upload.project,
+              resourceId: request.upload.resourceId!,
+              uploadId: request.upload.id,
+            }}
+            title={request.upload.title ?? "Queued plan"}
+            stale={
+              !props.state.outbox.some(
+                (upload) =>
+                  upload.id === request.upload.id && upload.reviewable,
+              )
+            }
+            parentBusy={props.busy}
+            onClose={() => setRequest(null)}
+            onRefresh={props.onRefresh}
+            onNotice={props.onNotice}
+          />
+        ) : (
+          <ResourceCommandDialog
+            key={`${props.scope}:${request.kind}:${identity(request.resource)}`}
+            kind={request.kind}
+            resource={request.resource}
+            context={context}
+            onClose={() => setRequest(null)}
+          />
+        ))}
     </ResourceMenuContext.Provider>
   );
+}
+
+export function useQueuedUploadReview() {
+  return useContext(ResourceMenuContext)?.reviewUpload;
 }
 
 export function resourceViewMenuActions(
@@ -192,6 +250,7 @@ const actionGroups: Record<string, string> = {
   "review-incoming": "review",
   "review-outgoing": "review",
   "review-instructions": "review",
+  "review-upload": "review",
   delete: "remove",
 };
 
@@ -241,6 +300,12 @@ function ResourceMenuTarget({
     );
   };
   const review = skillReviewState(resource, context.state, project);
+  const queuedUpload = context.state.outbox.find(
+    (entry) =>
+      entry.reviewable &&
+      entry.project === resource.projectId &&
+      entry.resourceId === resource.resourceId,
+  );
   const items: ItemMenuAction[] = [
     {
       id: "open",
@@ -367,6 +432,15 @@ function ResourceMenuTarget({
         : undefined,
       onSelect: () => context.request("share", resource),
     });
+  if (queuedUpload)
+    items.push({
+      id: "review-upload",
+      icon: EyeIcon,
+      label: "Review queued upload…",
+      disabled: context.busy,
+      onSelect: () =>
+        context.request("retry-upload", resource, queuedUpload.id),
+    });
   if (review.incoming)
     secondary.push({
       id: "review-incoming",
@@ -414,6 +488,7 @@ function ResourceMenuTarget({
       "share",
       "delete",
       "review-incoming",
+      "review-upload",
       "review-outgoing",
       "review-instructions",
     ].includes(item.id),

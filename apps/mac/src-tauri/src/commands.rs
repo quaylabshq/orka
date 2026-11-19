@@ -89,6 +89,14 @@ pub fn snapshot() -> Result<Value> {
         }
     }
     crate::session_forks::annotate(&db, &mut resources)?;
+    let outbox: Vec<Value> = db::rows(&db,&format!("SELECT json_object('id',o.id,'project',o.project,'error',o.error,'resourceId',coalesce(json_extract(o.value,'$.resource.resourceId'),json_extract(o.value,'$.resourceId')),'title',coalesce(json_extract(o.value,'$.resource.title'),json_extract(r.value,'$.title')),'kind',coalesce(json_extract(o.value,'$.resource.kind'),json_extract(r.value,'$.kind')),'reviewPath',o.path,'reviewResource',json_extract(o.value,'$.resource')) FROM outbox o LEFT JOIN resources r ON r.project=o.project AND r.id=coalesce(json_extract(o.value,'$.resource.resourceId'),json_extract(o.value,'$.resourceId')) WHERE o.project IN ({visible})"),&[])?.into_iter().map(|mut row| {
+        row["reviewable"] = json!(crate::upload_review::reviewable(row["reviewPath"].as_str().unwrap_or(""), row["error"].as_str(), &row["reviewResource"]));
+        if let Some(fields) = row.as_object_mut() {
+            fields.remove("reviewPath");
+            fields.remove("reviewResource");
+        }
+        row
+    }).collect();
     Ok(json!({
         "profile":crate::profiles::current(), "onboarding":onboarding, "accountProfile":db::get(&db,"accountProfile")?,
         "user":db::get(&db,"user")?, "config":db::get(&db,"config")?,
@@ -99,7 +107,7 @@ pub fn snapshot() -> Result<Value> {
         "governance":db::rows(&db,&format!("SELECT json_object('projectId',substr(key,12),'catalog',json(value)) FROM meta WHERE key LIKE 'governance:%' AND substr(key,12) IN ({visible})"),&[])?,
         "reviewRequests":db::rows(&db,&format!("SELECT json_each.value FROM meta,json_each(meta.value) WHERE meta.key LIKE 'requests:%' AND json_each.type='object' AND substr(meta.key,10) IN ({visible})"),&[])?,
         "activity":db::rows(&db,&format!("SELECT value FROM activity WHERE json_extract(value,'$.resourceId') IN (SELECT id FROM resources WHERE project IN ({visible})) ORDER BY rowid DESC LIMIT 30"),&[])?,
-        "outbox":db::rows(&db,&format!("SELECT json_object('id',o.id,'project',o.project,'error',o.error,'resourceId',coalesce(json_extract(o.value,'$.resource.resourceId'),json_extract(o.value,'$.resourceId')),'title',coalesce(json_extract(o.value,'$.resource.title'),json_extract(r.value,'$.title')),'kind',coalesce(json_extract(o.value,'$.resource.kind'),json_extract(r.value,'$.kind'))) FROM outbox o LEFT JOIN resources r ON r.project=o.project AND r.id=coalesce(json_extract(o.value,'$.resource.resourceId'),json_extract(o.value,'$.resourceId')) WHERE o.project IN ({visible})"),&[])?,
+        "outbox":outbox,
         "errors":db::rows(&db,&format!("SELECT json_object('source',source,'error',error) FROM errors WHERE source IN ({visible}) OR source NOT IN (SELECT id FROM projects)"),&[])?,
         "sync":db::get(&db,"sync")?, "syncProgress":sync::current_progress(&db,daemon["running"]==true)?,
         "daemon":daemon, "devices":crate::device_metadata::devices(&db,&db::get(&db,"devices")?)?, "deviceId":db::device(&db)?, "localHardwareFamily":crate::device_metadata::local_family(&db)?, "background":background

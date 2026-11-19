@@ -1229,6 +1229,13 @@ fn scan_source(
                     .iter()
                     .map(|p| packages::directory(p).map(|f| (p, json!(f))))
                     .collect::<Result<Vec<_>>>()?;
+                if project["governed"] == true
+                    && crate::skill_reconciliation::defer_scan(
+                        db, project, &id, &name, &mut b, &copies,
+                    )?
+                {
+                    return Ok(());
+                }
                 if project["governed"] != true
                     && base["revision"].as_u64().unwrap_or(0) == 0
                     && copies.windows(2).any(|pair| pair[0].1 != pair[1].1)

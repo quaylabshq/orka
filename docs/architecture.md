@@ -45,6 +45,13 @@ not resolve differing files or pending operations. Existing instruction files
 that exactly match an authorized revision can acquire a baseline without a file
 write.
 
+After a successful pull, the desktop clears a stale plan upload when every
+submitted field matches the accepted revision. An upload with differing content
+keeps its local version. For skills, the installed revision and file manifests
+give the desktop a common base for comparing local mirrors with the shared
+version. Clean merges become local drafts for review. Skill and plan conflicts
+remain visible in Sync while other items continue at the normal cadence.
+
 ## Project lifecycle
 
 Project lifecycle, account membership and attachment to this Mac are separate
