@@ -11,6 +11,23 @@ The implementation follows four boundaries:
 3. **Translate on native import.** Source snapshots remain unchanged. Known execution coordinates are remapped in the receiving copy. Claude keeps message UUIDs, parent links, tool IDs, content, and version provenance. Codex keeps its validated inherited prefix, response payloads, compaction, and retained metadata while remapping session references and execution folders.
 4. **Negotiate the receiving server.** Codex initialization establishes the configured native home, rather than matching a user-agent version. A direct child explicitly receives `CODEX_HOME`; an older direct server may omit the home response, but a proxy must prove its home. Standard `app-server` stdio startup works without the newer `--stdio` flag. Version commands are bounded to ten seconds.
 
+## Codex multi-agent rollout replacements
+
+Codex can enter multi-agent v2 by writing a replacement rollout with the same
+thread ID and ordinals starting at zero. Local discovery resolves these files
+against the newest numeric `state_*.sqlite` index in the configured Codex home.
+The lookup opens that index read-only and accepts only a matching native history
+candidate with the same session and folder identity. It never starts Codex's app
+server or changes an existing rollout.
+
+Compressed histories and archived current rollouts retain their native state.
+Normal segmented histories, including legacy segments inherited by a v2
+continuation, still use exact inherited byte and ordinal boundaries. If the
+index is unavailable, unfamiliar, or cannot identify a safe replacement,
+conflicting histories remain preserved and discovery reports the problem.
+Repeated identical discovery warnings appear once; distinct failures remain
+visible, and a successful local refresh clears resolved warnings.
+
 ## Native import strategies
 
 ### Latest shared session snapshots

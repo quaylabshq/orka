@@ -1,4 +1,13 @@
-import { ArrowLeftIcon } from "lucide-react";
+import {
+  ArrowLeftIcon,
+  FolderIcon,
+  FolderOpenIcon,
+  LinkIcon,
+  PencilIcon,
+  SettingsIcon,
+  ShieldUserIcon,
+  UsersIcon,
+} from "lucide-react";
 import {
   activeSources,
   hasConnectedSource,
@@ -17,6 +26,7 @@ import { motion, useReducedMotion } from "motion/react";
 import { spring } from "./lib/springs.js";
 import { ResourceMenuProvider } from "./components/resource-menu.js";
 import type { ItemMenuAction } from "./components/item-menu.js";
+import type { IconGlyph } from "./components/icons.js";
 import { useWebViewMenuPolicy } from "./hooks/use-web-view-menu-policy.js";
 import { ENV_ENABLED } from "./lib/features.js";
 import { invoke, isTauri } from "@tauri-apps/api/core";
@@ -744,6 +754,7 @@ function WorkspaceApp({
                 const open: ItemMenuAction = {
                   id: "open",
                   label: "Open project",
+                  icon: FolderOpenIcon,
                   onSelect: () =>
                     leaveSettings(() => {
                       setProject(target.id);
@@ -759,9 +770,11 @@ function WorkspaceApp({
                   id: string,
                   label: string,
                   section: SettingsSection,
+                  icon: IconGlyph,
                 ): ItemMenuAction => ({
                   id,
                   label,
+                  icon,
                   onSelect: () => openProjectSettings(target.id, section),
                 });
                 const actions: ItemMenuAction[] = [
@@ -769,6 +782,7 @@ function WorkspaceApp({
                   {
                     id: "link",
                     label: "Copy project link",
+                    icon: LinkIcon,
                     onSelect: () =>
                       void act(
                         () =>
@@ -781,16 +795,27 @@ function WorkspaceApp({
                         },
                       ),
                   },
-                  settingsAction("settings", "Project settings…", "general"),
+                  settingsAction(
+                    "settings",
+                    "Project settings…",
+                    "general",
+                    SettingsIcon,
+                  ),
                   settingsAction(
                     "rename",
                     target.role === "owner"
                       ? "Rename project…"
                       : "Rename on this Mac…",
                     "general",
+                    PencilIcon,
                   ),
-                  settingsAction("members", "Members…", "members"),
-                  settingsAction("folders", "Source folders…", "folder"),
+                  settingsAction("members", "Members…", "members", UsersIcon),
+                  settingsAction(
+                    "folders",
+                    "Source folders…",
+                    "folder",
+                    FolderIcon,
+                  ),
                 ];
                 if (target.role === "owner" || target.role === "admin")
                   actions.push(
@@ -798,6 +823,7 @@ function WorkspaceApp({
                       "permissions",
                       "Permissions…",
                       "permissions",
+                      ShieldUserIcon,
                     ),
                   );
                 return actions;
