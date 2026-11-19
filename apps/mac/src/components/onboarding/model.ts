@@ -47,6 +47,8 @@ export interface DiscoveredProject {
   // Drafts saved before 0.3.16 have no relevance, so ranking falls back to recency.
   relevance?: number;
   worktrees?: number;
+  // Set on rows that came from a folder pick, so a rescan checks them again.
+  folderPick?: boolean;
   pendingChanges?: number;
   projectId?: string;
   status?:

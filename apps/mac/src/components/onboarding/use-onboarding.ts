@@ -17,6 +17,57 @@ export const onboardingCommand = <T>(
 ) =>
   invoke<T>("onboarding_command", { action, input, context: context ?? null });
 
+function ranked(projects: DiscoveredProject[]) {
+  return [...projects].sort(
+    (a, b) =>
+      (b.relevance ?? 0) - (a.relevance ?? 0) ||
+      (b.lastActiveAt ?? 0) - (a.lastActiveAt ?? 0) ||
+      (b.pendingChanges ?? 0) - (a.pendingChanges ?? 0) ||
+      a.name.localeCompare(b.name) ||
+      a.path.localeCompare(b.path),
+  );
+}
+const folder = (path: string) => path.split("/").filter(Boolean).pop() ?? "";
+/** A T3 worktree lives under its repository's workspace folder. */
+function workspace(path: string) {
+  const marker = "/.t3/worktrees/";
+  const index = path.indexOf(marker);
+  return index < 0
+    ? undefined
+    : (path.slice(index + marker.length).split("/")[0] ?? undefined);
+}
+const sameRows = (a: DiscoveredProject[], b: DiscoveredProject[]) =>
+  a.length === b.length && a.every((row, index) => row.path === b[index].path);
+/** Replaces rows, keeps selections, and moves a worktree's selection to its repository. */
+function reconcile(
+  before: OnboardingDraft,
+  projects: DiscoveredProject[],
+  extra: string[] = [],
+) {
+  const rows = ranked(projects);
+  const listed = new Set(rows.map((row) => row.path));
+  const keep = new Set(extra);
+  for (const path of before.selected) {
+    if (listed.has(path)) {
+      keep.add(path);
+      continue;
+    }
+    const name = workspace(path);
+    const matches = name
+      ? rows.filter(
+          (row) => folder(row.path) === name && row.readable !== false,
+        )
+      : [];
+    if (matches.length === 1) keep.add(matches[0].path);
+  }
+  return {
+    projects: rows,
+    selected: rows
+      .filter((row) => row.readable !== false && keep.has(row.path))
+      .map((row) => row.path),
+  };
+}
+
 export function useOnboarding(
   state: Snapshot,
   refresh: () => Promise<void>,
@@ -58,17 +109,20 @@ export function useOnboarding(
       active.current = false;
     };
   }, []);
-  const checkpoint = async (patch: Partial<OnboardingDraft>) => {
-    if (!active.current)
-      throw new Error("Account or service changed. Reopen onboarding.");
-    const next = { ...current.current, ...patch };
-    await command("checkpoint", next);
-    if (active.current) {
-      current.current = next;
-      setDraft(next);
-    }
-    return next;
-  };
+  const checkpoint = useCallback(
+    async (patch: Partial<OnboardingDraft>) => {
+      if (!active.current)
+        throw new Error("Account or service changed. Reopen onboarding.");
+      const next = { ...current.current, ...patch };
+      await command("checkpoint", next);
+      if (active.current) {
+        current.current = next;
+        setDraft(next);
+      }
+      return next;
+    },
+    [command],
+  );
   const updateChoices = (
     patch: (
       draft: OnboardingDraft,
@@ -163,10 +217,72 @@ export function useOnboarding(
     };
   }, [draft.step, command]);
   const go = (step: OnboardingStep) => void run(() => checkpoint({ step }));
+  /** Re-checks picked folders, dropping the rows whose folder is gone. */
+  const recheck = useCallback(
+    async (rows: DiscoveredProject[]) =>
+      (
+        await Promise.all(
+          rows.map(async (saved): Promise<DiscoveredProject | undefined> => {
+            try {
+              const result = await command<{ projects: DiscoveredProject[] }>(
+                "discover",
+                { path: saved.path },
+              );
+              return {
+                ...(result.projects.find(
+                  (found) => found.path === saved.path,
+                ) ?? saved),
+                folderPick: true,
+              };
+            } catch {
+              return undefined;
+            }
+          }),
+        )
+      ).filter((row) => row !== undefined),
+    [command],
+  );
+  /** A restored list can name folders that were deleted since it was saved. */
+  const rescan = useCallback(async () => {
+    try {
+      const results = (
+        await command<{ projects: DiscoveredProject[] }>("discover")
+      ).projects;
+      if (!active.current) return;
+      const listed = new Set(results.map((row) => row.path));
+      const kept = await recheck(
+        current.current.projects.filter(
+          (row) => row.folderPick && !listed.has(row.path),
+        ),
+      );
+      if (!active.current) return;
+      // Choices the user made after this scan started land first.
+      await choiceWrites.current;
+      if (!active.current) return;
+      const before = current.current;
+      const next = reconcile(before, [...results, ...kept]);
+      // The user may have moved on, so never replace another step's list.
+      if (!["select", "partial-access", "empty"].includes(before.step)) return;
+      if (sameRows(before.projects, next.projects)) return;
+      await checkpoint(next);
+    } catch {
+      // A background rescan never blocks the step the user is on.
+    }
+  }, [command, checkpoint, recheck]);
+  const restored = useRef(draft.step);
+  const rescanned = useRef(false);
+  useEffect(() => {
+    if (rescanned.current || current.current.reviewed) return;
+    if (!["select", "partial-access", "empty"].includes(restored.current))
+      return;
+    rescanned.current = true;
+    void rescan();
+  }, [rescan]);
   const find = async (paths?: string[], append = false) => {
     const before = current.current;
     setDraft({ ...before, step: "scanning" });
     try {
+      // A picked folder is honored as chosen, so its rows keep that marker.
       const results = paths
         ? await Promise.all(
             paths.map((path) =>
@@ -175,40 +291,47 @@ export function useOnboarding(
               }),
             ),
           )
-        : [await command<{ projects: DiscoveredProject[] }>("discover")];
-      const projects = [
-        ...new Map(
-          [
-            ...(append ? before.projects : []),
-            ...results.flatMap((r) => r.projects),
-          ].map((p) => [p.path, p]),
-        ).values(),
-      ];
-      projects.sort(
-        (a, b) =>
-          (b.relevance ?? 0) - (a.relevance ?? 0) ||
-          (b.lastActiveAt ?? 0) - (a.lastActiveAt ?? 0) ||
-          (b.pendingChanges ?? 0) - (a.pendingChanges ?? 0) ||
-          a.name.localeCompare(b.name) ||
-          a.path.localeCompare(b.path),
+        : [];
+      const picks = results.flatMap((result) =>
+        result.projects.map((project) => ({ ...project, folderPick: true })),
       );
+      // Adding to a saved list rescans history instead of trusting saved rows.
+      const history =
+        paths && !append
+          ? []
+          : (await command<{ projects: DiscoveredProject[] }>("discover"))
+              .projects;
+      const listed = new Set(
+        [...history, ...picks].map((project) => project.path),
+      );
+      // Adding more keeps picked folders that the new scan did not list.
+      const kept = append
+        ? await recheck(
+            before.projects.filter(
+              (project) => project.folderPick && !listed.has(project.path),
+            ),
+          )
+        : [];
+      const merged = new Map<string, DiscoveredProject>();
+      for (const project of [...history, ...kept, ...picks])
+        merged.set(project.path, project);
       const picked = new Set(
         results.flatMap((result) =>
           result.projects.length === 1 ? [result.projects[0].path] : [],
         ),
       );
-      const selected = projects
-        .filter(
-          (p) =>
-            p.readable !== false &&
-            (before.selected.includes(p.path) ||
-              (paths &&
-                picked.has(p.path) &&
+      const { projects, selected } = reconcile(
+        before,
+        [...merged.values()],
+        paths
+          ? [...picked].filter(
+              (path) =>
                 !before.projects.some(
-                  (old) => old.path === p.path && old.readable !== false,
-                ))),
-        )
-        .map((p) => p.path);
+                  (old) => old.path === path && old.readable !== false,
+                ),
+            )
+          : [],
+      );
       await checkpoint({
         projects,
         selected,

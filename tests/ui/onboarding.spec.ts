@@ -92,6 +92,10 @@ async function fixture(
     legacyMatch?: boolean;
     pauseDiscovery?: boolean;
     reverseRank?: boolean;
+    staleRows?: string[];
+    goneFolderPicks?: string[];
+    staleSelection?: string[];
+    unselected?: number[];
     clipboardFailure?: boolean;
     projectNames?: string[];
     reviewPending?: boolean;
@@ -206,10 +210,40 @@ async function fixture(
         sessionStorage.getItem("onboarding-draft") ?? "null",
       ) ?? {
         step: options.step ?? "profile",
-        projects: options.step ? projects : [],
+        projects: options.step
+          ? [
+              ...projects,
+              ...(options.staleRows ?? []).map((path) => ({
+                name: path.split("/").pop() ?? path,
+                path,
+                displayPath: path,
+                sources: ["claude"],
+                readable: true,
+                lastActiveAt: 1,
+              })),
+              ...(options.goneFolderPicks ?? []).map((path) => ({
+                name: path.split("/").pop() ?? path,
+                path,
+                displayPath: path,
+                sources: ["claude"],
+                readable: true,
+                lastActiveAt: 1,
+                folderPick: true,
+              })),
+            ]
+          : [],
         selected:
           options.step && options.step !== "discover"
-            ? projects.map((p) => p.path)
+            ? [
+                ...projects
+                  .map((p) => p.path)
+                  .filter(
+                    (_, index) => !(options.unselected ?? []).includes(index),
+                  ),
+                ...(options.staleRows ?? []),
+                ...(options.goneFolderPicks ?? []),
+                ...(options.staleSelection ?? []),
+              ]
             : [],
         folder: options.folder ?? "",
         sharing: {
@@ -426,7 +460,14 @@ async function fixture(
                 );
                 return { ok: true };
               }
-              if (action === "discover")
+              if (action === "discover") {
+                if (
+                  input.path &&
+                  (options.goneFolderPicks ?? []).includes(input.path)
+                )
+                  throw new Error(
+                    "Orka couldn’t read this folder. Choose it again to give Orka access.",
+                  );
                 return options.pauseDiscovery && !input.path
                   ? new Promise((resolve) => {
                       Object.assign(window, {
@@ -440,12 +481,14 @@ async function fixture(
                               ...(projects.find((p) => p.path === input.path) ??
                                 projects[0]),
                               readable: true,
+                              folderPick: true,
                             },
                           ]
                         : options.empty
                           ? []
                           : projects,
                     };
+              }
               if (action === "review")
                 return {
                   ...(options.suggestedMatch || options.destinationChanged
@@ -1426,6 +1469,43 @@ test("fetching uses the Figma progress overlay and can finish without a fake per
   await expect(
     page.getByText("0 of 7 selected", { exact: true }),
   ).toBeVisible();
+});
+
+test("a restored list drops projects whose folder no longer exists", async ({
+  page,
+}) => {
+  await fixture(page, {
+    step: "select",
+    staleRows: ["/Users/fixture/.t3/worktrees/orka/removed"],
+    goneFolderPicks: ["/Users/fixture/Developer/gone"],
+  });
+  await expect(
+    page.getByText("7 of 7 selected", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText("/Users/fixture/Developer/gone")).toHaveCount(0);
+  await expect(
+    page.getByText("/Users/fixture/.t3/worktrees/orka/removed"),
+  ).toHaveCount(0);
+});
+
+test("a selected worktree moves its selection to its main repository", async ({
+  page,
+}) => {
+  await fixture(page, {
+    step: "select",
+    projectNames: ["Orka", "Nimbus"],
+    unselected: [0],
+    staleRows: ["/Users/fixture/.t3/worktrees/orka/removed"],
+    staleSelection: ["/Users/fixture/.t3/worktrees/orka/feature"],
+  });
+  await expect(
+    page.getByText("2 of 2 selected", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page
+      .locator(".onboarding-flow__project", { hasText: "~/Developer/orka" })
+      .getByRole("checkbox"),
+  ).toBeChecked();
 });
 
 test("finding projects ranks them by relevance, not only by recency", async ({
