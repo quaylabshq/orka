@@ -614,7 +614,7 @@ test("empty collections omit tools and source filters stay clearable after items
   await selector.click();
   await page.getByRole("option", { name: "Studio", exact: true }).click();
   await expect(
-    page.getByText("No memories yet.", { exact: true }),
+    page.getByRole("heading", { name: "No memories yet", exact: true }),
   ).toBeVisible();
   await expect(
     page.getByRole("searchbox", { name: "Search memories" }),
@@ -648,6 +648,9 @@ test("empty collections omit tools and source filters stay clearable after items
   await page
     .getByRole("button", { name: "Clear filters", exact: true })
     .click();
+  await expect(
+    page.getByRole("searchbox", { name: "Search memories" }),
+  ).toBeFocused();
   await expect(
     page.getByRole("button", { name: "Design decisions", exact: true }),
   ).toBeVisible();

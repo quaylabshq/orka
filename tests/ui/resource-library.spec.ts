@@ -467,9 +467,9 @@ test("a pending local scan does not report an empty collection", async ({
       ),
     )
     .toBe("function");
-  await expect(page.getByText("No sessions yet.", { exact: true })).toHaveCount(
-    0,
-  );
+  await expect(
+    page.getByRole("heading", { name: "No sessions yet", exact: true }),
+  ).toHaveCount(0);
   await page.evaluate(() =>
     (window as unknown as LibraryWindow).library.finishCatalog?.(),
   );

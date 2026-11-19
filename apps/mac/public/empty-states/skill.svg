@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="192" height="128" viewBox="0 0 192 128" fill="none">
+  <defs>
+    <linearGradient id="metal" x1="0" y1="0" x2="1" y2="1" gradientUnits="objectBoundingBox">
+      <stop stop-color="#a39c93"/>
+      <stop offset=".28" stop-color="#5b5650"/>
+      <stop offset=".73" stop-color="#32302e"/>
+      <stop offset="1" stop-color="#252322"/>
+    </linearGradient>
+    <linearGradient id="recess" x1="0" y1="0" x2="0" y2="1" gradientUnits="objectBoundingBox">
+      <stop stop-color="#4e4a46"/>
+      <stop offset="1" stop-color="#242322"/>
+    </linearGradient>
+    <linearGradient id="paper" x1="0" y1="0" x2=".8" y2="1" gradientUnits="objectBoundingBox">
+      <stop stop-color="#ded4c7"/>
+      <stop offset=".47" stop-color="#9b9083"/>
+      <stop offset="1" stop-color="#61534b"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2=".65" y2="1" gradientUnits="objectBoundingBox">
+      <stop stop-color="#e5d6c4"/>
+      <stop offset=".42" stop-color="#81766a"/>
+      <stop offset="1" stop-color="#a46a47"/>
+    </linearGradient>
+    <radialGradient id="shadow">
+      <stop stop-color="#000" stop-opacity=".75"/>
+      <stop offset="1" stop-color="#000" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="ridges" width="4" height="3" patternUnits="userSpaceOnUse">
+      <path d="M0 .5h4" stroke="#141313" stroke-opacity=".25"/>
+      <path d="M0 1.5h4" stroke="#f2e4d4" stroke-opacity=".12"/>
+      <path d="M.5 1v1M2.5 0v1" stroke="#171616" stroke-opacity=".19"/>
+    </pattern>
+  </defs>
+  <ellipse cx="96" cy="109" rx="64" ry="12" fill="url(#shadow)"/>
+  <g transform="rotate(-9 80 65)">
+    <rect x="48" y="33" width="61" height="66" rx="7" fill="url(#recess)" stroke="url(#edge)"/>
+    <rect x="48" y="33" width="61" height="66" rx="7" fill="url(#ridges)"/>
+    <path d="M55 45h21m-21 8h12" fill="none" stroke="#c9b7a5" stroke-width="1.5" stroke-opacity=".5" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <g transform="rotate(8 117 65)">
+    <path d="M94 28h31l18 18v49a6 6 0 0 1-6 6H94a6 6 0 0 1-6-6V34a6 6 0 0 1 6-6Z" fill="url(#paper)" stroke="url(#edge)"/>
+    <path d="M94 28h31l18 18v49a6 6 0 0 1-6 6H94a6 6 0 0 1-6-6V34a6 6 0 0 1 6-6Z" fill="url(#ridges)"/>
+    <path d="M125 28v13a5 5 0 0 0 5 5h13Z" fill="url(#metal)" stroke="url(#edge)"/>
+    <path d="M125 28v13a5 5 0 0 0 5 5h13Z" fill="url(#ridges)"/>
+    <path d="M101 57h26m-26 8h19" fill="none" stroke="#292521" stroke-width="1.5" stroke-opacity=".68" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <rect x="56" y="57" width="69" height="45" rx="7" fill="url(#metal)" stroke="url(#edge)"/>
+    <rect x="56" y="57" width="69" height="45" rx="7" fill="url(#ridges)"/>
+  <path d="M68 64h45" fill="none" stroke="#e0d0bd" stroke-width="1" stroke-opacity=".35" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M79 74l-7 6 7 6m23-12 7 6-7 6m-9-14-5 16" fill="none" stroke="#d0a17e" stroke-width="2" stroke-opacity=".95" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
