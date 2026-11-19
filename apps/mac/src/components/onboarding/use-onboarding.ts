@@ -186,6 +186,7 @@ export function useOnboarding(
       ];
       projects.sort(
         (a, b) =>
+          (b.relevance ?? 0) - (a.relevance ?? 0) ||
           (b.lastActiveAt ?? 0) - (a.lastActiveAt ?? 0) ||
           (b.pendingChanges ?? 0) - (a.pendingChanges ?? 0) ||
           a.name.localeCompare(b.name) ||

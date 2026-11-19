@@ -18,23 +18,114 @@ struct Candidate {
     last: u64,
     sessions: usize,
     worktrees: usize,
+    days: BTreeSet<u64>,
     worktree_paths: BTreeSet<PathBuf>,
 }
 impl Candidate {
-    fn activity(&mut self, tool: Option<&str>, last: u64, sessions: usize) {
+    fn activity(&mut self, tool: Option<&str>, last: u64, sessions: usize, days: BTreeSet<u64>) {
         if let Some(tool) = tool {
             self.tools.insert(tool.into());
         }
         self.last = self.last.max(last);
         self.sessions += sessions;
+        self.days.extend(days);
     }
     fn fold(&mut self, other: Self) {
         self.tools.extend(other.tools);
         self.last = self.last.max(other.last);
         self.sessions += other.sessions;
         self.worktrees += other.worktrees;
+        self.days.extend(other.days);
         self.worktree_paths.extend(other.worktree_paths);
     }
+}
+const DAY: u64 = 86_400_000;
+/// Day numbers for history file times, used for the active-day signal.
+fn active_days<I: IntoIterator<Item = u64>>(times: I) -> BTreeSet<u64> {
+    times
+        .into_iter()
+        .filter(|time| *time > 0)
+        .map(|time| time / DAY)
+        .collect()
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kind {
+    Project,
+    Folder,
+    Chat,
+}
+impl Kind {
+    fn of(path: &Path, home: &Path) -> Self {
+        if path.join(".git").exists() {
+            Kind::Project
+        } else if chat(path, home) {
+            Kind::Chat
+        } else {
+            Kind::Folder
+        }
+    }
+    fn multiplier(self) -> f64 {
+        match self {
+            Self::Project => 1.0,
+            Self::Folder => 0.6,
+            Self::Chat => 0.2,
+        }
+    }
+}
+/// Conversation folders hold one chat each, so they are not offers of a project.
+fn chat(path: &Path, home: &Path) -> bool {
+    ["Documents/Codex", ".t3/scratch"].iter().any(|root| {
+        let root = home.join(root);
+        path != root && path.starts_with(root)
+    })
+}
+/// Relevance blends recency, sessions, active days, and a working tree.
+fn relevance(candidate: &Candidate, kind: Kind, now: u64) -> f64 {
+    let age = now.saturating_sub(candidate.last) as f64 / DAY as f64;
+    let recency = (-age / 14.0).exp();
+    // 50 sessions and 30 active days saturate their terms.
+    let sessions = (1.0 + candidate.sessions as f64).ln() / 51.0_f64.ln();
+    // Today and the 89 days before it.
+    let active = candidate
+        .days
+        .iter()
+        .filter(|day| **day + 90 > now / DAY)
+        .count();
+    let active = (1.0 + active as f64).ln() / 31.0_f64.ln();
+    let git = if kind == Kind::Project { 1.0 } else { 0.0 };
+    let both = if candidate.tools.len() > 1 { 3.0 } else { 0.0 };
+    100.0
+        * (0.35 * recency + 0.25 * sessions.min(1.0) + 0.25 * active.min(1.0) + 0.15 * git)
+        * kind.multiplier()
+        + both
+}
+struct Ranked {
+    path: PathBuf,
+    candidate: Candidate,
+    kind: Kind,
+    relevance: f64,
+}
+fn ranked(found: BTreeMap<PathBuf, Candidate>, home: &Path, now: u64) -> Vec<Ranked> {
+    let mut rows: Vec<Ranked> = found
+        .into_iter()
+        .map(|(path, candidate)| {
+            let kind = Kind::of(&path, home);
+            let relevance = relevance(&candidate, kind, now);
+            Ranked {
+                path,
+                candidate,
+                kind,
+                relevance,
+            }
+        })
+        .collect();
+    rows.sort_by(|a, b| {
+        b.relevance
+            .total_cmp(&a.relevance)
+            .then(b.candidate.last.cmp(&a.candidate.last))
+            .then(a.path.cmp(&b.path))
+    });
+    rows
 }
 struct Budget {
     start: Instant,
@@ -70,8 +161,14 @@ impl Budget {
         true
     }
     fn entries(&mut self, path: &Path) -> Vec<fs::DirEntry> {
+        const MAX_ENTRIES: usize = 2001;
         match fs::read_dir(path) {
-            Ok(entries) => entries.flatten().take(2001).collect(),
+            Ok(entries) => {
+                let mut entries = entries.flatten();
+                let listed = entries.by_ref().take(MAX_ENTRIES).collect();
+                self.truncated |= entries.next().is_some();
+                listed
+            }
             Err(e) => {
                 self.denied |= e.kind() == std::io::ErrorKind::PermissionDenied;
                 vec![]
@@ -300,7 +397,7 @@ fn add(
     found
         .entry(path)
         .or_default()
-        .activity(tool, last, sessions);
+        .activity(tool, last, sessions, active_days([last]));
 }
 fn cwd_record(path: &Path, codex: bool, budget: &mut Budget) -> Option<Value> {
     if fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
@@ -360,6 +457,7 @@ fn claude(
             .collect();
         files.sort_by_key(|f| std::cmp::Reverse(modified(&f.path())));
         let count = files.len();
+        let days = active_days(files.iter().map(|f| modified(&f.path())));
         for file in files {
             if !budget.next() {
                 break;
@@ -370,6 +468,7 @@ fn claude(
                     tool: Some("claude"),
                     last: modified(&file.path()),
                     sessions: count,
+                    days,
                     remote: None,
                 });
                 break;
@@ -396,11 +495,13 @@ fn claude(
                         if !budget.next() {
                             break;
                         }
+                        let last = data["lastSessionDate"].as_u64().unwrap_or(0);
                         records.push(Record {
                             cwd: PathBuf::from(path),
                             tool: Some("claude"),
-                            last: data["lastSessionDate"].as_u64().unwrap_or(0),
+                            last,
                             sessions: 0,
+                            days: active_days([last]),
                             remote: None,
                         });
                     }
@@ -417,7 +518,11 @@ fn codex_files(root: &Path, depth: usize, budget: &mut Budget, files: &mut Vec<P
     let mut entries = budget.entries(root);
     entries.sort_by_key(|e| std::cmp::Reverse(e.file_name()));
     for entry in entries {
-        if files.len() >= 1000 || !budget.tick() {
+        if files.len() >= 1000 {
+            budget.truncated = true;
+            break;
+        }
+        if !budget.tick() {
             break;
         }
         let Ok(kind) = entry.file_type() else {
@@ -500,14 +605,22 @@ fn history(
             {
                 continue;
             }
+            let payload = &record["payload"];
+            // Subagent and review rollouts continue another thread, not a new session.
+            let derived = payload["parent_thread_id"]
+                .as_str()
+                .is_some_and(|parent| Some(parent) != payload["id"].as_str())
+                || matches!(
+                    payload["thread_source"].as_str(),
+                    Some("subagent") | Some("guardian_review")
+                );
             records.push(Record {
-                cwd: PathBuf::from(record["payload"]["cwd"].as_str().unwrap()),
+                cwd: PathBuf::from(payload["cwd"].as_str().unwrap()),
                 tool: Some("codex"),
                 last: modified(&file),
-                sessions: 1,
-                remote: record["payload"]["git"]["repository_url"]
-                    .as_str()
-                    .map(str::to_owned),
+                sessions: usize::from(!derived),
+                days: active_days([modified(&file)]),
+                remote: payload["git"]["repository_url"].as_str().map(str::to_owned),
             });
         }
     }
@@ -519,6 +632,7 @@ struct Record {
     tool: Option<&'static str>,
     last: u64,
     sessions: usize,
+    days: BTreeSet<u64>,
     remote: Option<String>,
 }
 /// Attributes history to projects, including history from folders that were deleted.
@@ -532,12 +646,12 @@ fn resolve(
     let mut missing = Vec::new();
     for record in records {
         match project_root(&record.cwd, home) {
-            Some(path) => {
-                found
-                    .entry(path)
-                    .or_default()
-                    .activity(record.tool, record.last, record.sessions)
-            }
+            Some(path) => found.entry(path).or_default().activity(
+                record.tool,
+                record.last,
+                record.sessions,
+                record.days,
+            ),
             None if record.cwd.is_absolute()
                 && !record
                     .cwd
@@ -573,7 +687,7 @@ fn resolve(
             credited_root(&record, home, codex, &roots, &mains, &mut remotes, claude)
         {
             let candidate = found.entry(path).or_default();
-            candidate.activity(record.tool, record.last, record.sessions);
+            candidate.activity(record.tool, record.last, record.sessions, record.days);
             candidate.worktree_paths.extend(worktree);
         }
     }
@@ -735,16 +849,52 @@ pub fn discover(path: Option<&str>) -> Result<Value> {
     if found.is_empty() && budget.denied {
         return Err("Orka couldn’t read your coding history. Check Privacy & Security in System Settings, or choose a folder instead.".into());
     }
-    let projects: Vec<Value> = found.into_iter().map(|(path, c)| {
-        let display = path.strip_prefix(&home).map(|p| format!("~/{}", p.display())).unwrap_or_else(|_| path.display().to_string());
-        json!({"name":path.file_name().unwrap_or_default().to_string_lossy(),"path":path,"displayPath":display,"sources":c.tools,"lastActiveAt":c.last,"sessions":c.sessions,"worktrees":c.worktrees,"readable":fs::read_dir(&path).is_ok(),"alreadyConnected":connected_folders.contains_key(&path),"pendingChanges":connected_folders.get(&path).copied().unwrap_or(0)})
-    }).collect();
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|v| v.as_millis() as u64)
+        .unwrap_or(0);
+    let projects: Vec<Value> = ranked(found, &home, now)
+        .into_iter()
+        // Chats stay available as folder picks, but never fill the history scan.
+        .filter(|row| {
+            path.is_some() || row.kind != Kind::Chat || connected_folders.contains_key(&row.path)
+        })
+        .map(|row| {
+            let path = row.path;
+            let c = row.candidate;
+            let display = path
+                .strip_prefix(&home)
+                .map(|p| format!("~/{}", p.display()))
+                .unwrap_or_else(|_| path.display().to_string());
+            let relevance = (row.relevance * 10.0).round() / 10.0;
+            let mut project = json!({
+                "name":path.file_name().unwrap_or_default().to_string_lossy(),
+                "path":path,
+                "displayPath":display,
+                "sources":c.tools,
+                "lastActiveAt":c.last,
+                "sessions":c.sessions,
+                "worktrees":c.worktrees,
+                "relevance":relevance,
+                "readable":fs::read_dir(&path).is_ok(),
+                "alreadyConnected":connected_folders.contains_key(&path),
+                "pendingChanges":connected_folders.get(&path).copied().unwrap_or(0)
+            });
+            if !c.worktree_paths.is_empty() {
+                project["worktreePaths"] = json!(c.worktree_paths);
+            }
+            project
+        })
+        .collect();
     if budget.truncated {
         eprintln!("Some history was skipped (onboarding discovery budget)");
     }
-    Ok(
-        json!({"projects":projects,"tools":{"claude":native::binary("claude").is_ok(),"codex":native::binary("codex").is_ok()},"truncated":budget.truncated}),
-    )
+    Ok(json!({
+        "projects":projects,
+        "tools":{"claude":native::binary("claude").is_ok(),"codex":native::binary("codex").is_ok()},
+        "truncated":budget.truncated,
+        "incomplete":budget.denied || budget.truncated
+    }))
 }
 
 pub fn normalize_remote(raw: &str) -> Option<String> {
@@ -919,6 +1069,7 @@ mod tests {
             tool: Some("claude"),
             last,
             sessions,
+            days: active_days([last]),
             remote: None,
         }
     }
@@ -1061,6 +1212,7 @@ mod tests {
                 tool: Some("codex"),
                 last: 20,
                 sessions: 1,
+                days: active_days([20]),
                 remote: Some("https://github.com/owner/repo.git".into()),
             },
         ];
@@ -1075,6 +1227,166 @@ mod tests {
         assert_eq!(found.keys().collect::<Vec<_>>(), vec![&main]);
         assert_eq!(found[&main].sessions, 2);
         assert!(found[&main].tools.contains("codex"));
+    }
+    fn candidate(sessions: usize, last: u64, days: &[u64], tools: &[&str]) -> Candidate {
+        let mut candidate = Candidate::default();
+        for tool in tools {
+            candidate.activity(
+                Some(tool),
+                last,
+                sessions,
+                active_days(days.iter().copied()),
+            );
+        }
+        candidate
+    }
+    #[test]
+    fn relevance_ranks_active_repositories_above_quiet_folders_and_chats() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = fs::canonicalize(temp.path()).unwrap();
+        let repository = home.join("Development/orka");
+        fs::create_dir_all(repository.join(".git")).unwrap();
+        let quiet = home.join("Development/quiet");
+        fs::create_dir_all(quiet.join(".git")).unwrap();
+        let notes = home.join("Development/notes");
+        fs::create_dir_all(&notes).unwrap();
+        let conversation = home.join("Documents/Codex/2026-11-19/hi");
+        fs::create_dir_all(&conversation).unwrap();
+        let now = 1_795_000_000_000;
+        let found = BTreeMap::from([
+            (
+                repository.clone(),
+                candidate(
+                    12,
+                    now - DAY,
+                    &[now, now - DAY, now - 2 * DAY, now - 3 * DAY],
+                    &["claude", "codex"],
+                ),
+            ),
+            (
+                quiet.clone(),
+                candidate(
+                    3,
+                    now - 40 * DAY,
+                    &[now - 40 * DAY, now - 41 * DAY],
+                    &["claude"],
+                ),
+            ),
+            (
+                notes.clone(),
+                candidate(2, now - DAY, &[now, now - DAY], &["claude"]),
+            ),
+            (
+                conversation.clone(),
+                candidate(3, now - DAY, &[now, now - DAY, now - 2 * DAY], &["codex"]),
+            ),
+        ]);
+        let rows = ranked(found, &home, now);
+        let order: Vec<_> = rows.iter().map(|row| row.path.clone()).collect();
+        assert_eq!(
+            order,
+            vec![repository, quiet, notes, conversation],
+            "recent sessions on a checkout outrank a quiet checkout, a plain folder, and a chat"
+        );
+        assert_eq!(rows.last().unwrap().kind, Kind::Chat);
+        assert!(rows.last().unwrap().relevance < 11.0);
+        assert!(rows[0].relevance > 70.0);
+    }
+    #[test]
+    fn active_days_count_the_last_ninety_days() {
+        let now = 1_795_000_000_000;
+        let score = |days: &[u64]| {
+            relevance(
+                &candidate(1, now - 200 * DAY, days, &["claude"]),
+                Kind::Project,
+                now,
+            )
+        };
+        assert_eq!(score(&[now - 90 * DAY]), score(&[]));
+        assert!(score(&[now - 89 * DAY]) > score(&[]));
+    }
+    #[test]
+    fn conversation_folders_are_chats_but_the_workspace_root_is_not() {
+        let home = Path::new("/Users/test");
+        for path in [
+            "/Users/test/Documents/Codex/2026-11-19/hi",
+            "/Users/test/.t3/scratch/2026-11-19-hello",
+        ] {
+            assert_eq!(Kind::of(Path::new(path), home), Kind::Chat, "{path}");
+        }
+        for path in [
+            "/Users/test/Documents/Codex",
+            "/Users/test/.t3/scratch",
+            "/Users/test/Development/orka",
+        ] {
+            assert_ne!(Kind::of(Path::new(path), home), Kind::Chat, "{path}");
+        }
+    }
+    #[test]
+    fn git_checkouts_inside_conversation_roots_are_projects() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = fs::canonicalize(temp.path()).unwrap();
+        for root in ["Documents/Codex/2026-11-19", ".t3/scratch"] {
+            let project = home.join(root).join("repository");
+            fs::create_dir_all(project.join(".git")).unwrap();
+            let conversation = home.join(root).join("conversation");
+            fs::create_dir_all(&conversation).unwrap();
+            assert_eq!(Kind::of(&project, &home), Kind::Project);
+            assert_eq!(Kind::of(&conversation, &home), Kind::Chat);
+        }
+    }
+    #[test]
+    fn codex_subagent_rollouts_do_not_add_sessions() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = fs::canonicalize(temp.path()).unwrap();
+        let project = home.join("Development/orka");
+        fs::create_dir_all(project.join(".git")).unwrap();
+        let sessions = home.join(".codex/sessions/2026/11/19");
+        fs::create_dir_all(&sessions).unwrap();
+        for (name, payload) in [
+            ("rollout-user.jsonl", json!({"id":"a","cwd":project})),
+            (
+                "rollout-child.jsonl",
+                json!({"id":"b","parent_thread_id":"a","cwd":project}),
+            ),
+            (
+                "rollout-review.jsonl",
+                json!({"id":"c","thread_source":"guardian_review","cwd":project}),
+            ),
+        ] {
+            fs::write(
+                sessions.join(name),
+                format!("{}\n", json!({"type":"session_meta","payload":payload})),
+            )
+            .unwrap();
+        }
+        let records = history(
+            &home,
+            &home.join(".claude"),
+            &home.join(".codex"),
+            &ImportedHistory::default(),
+            &mut Budget::new(),
+        )
+        .unwrap();
+        let mut found = BTreeMap::new();
+        resolve(
+            records,
+            &home,
+            &home.join(".codex"),
+            &mut found,
+            &BTreeMap::new(),
+        );
+        assert_eq!(found[&project].sessions, 1);
+    }
+    #[test]
+    fn codex_file_limit_reports_skipped_history() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(temp.path().join("rollout-next.jsonl"), "{}\n").unwrap();
+        let mut files = vec![PathBuf::new(); 1000];
+        let mut budget = Budget::new();
+        codex_files(temp.path(), 5, &mut budget, &mut files);
+        assert_eq!(files.len(), 1000);
+        assert!(budget.truncated);
     }
     fn add_origin(project: &Path, repo: &str) {
         fs::create_dir_all(project.join(".git")).unwrap();
@@ -1218,6 +1530,7 @@ mod tests {
                 tool: Some("codex"),
                 last: 20,
                 sessions: 1,
+                days: BTreeSet::new(),
                 remote: Some("https://github.com/owner/b.git".into()),
             };
             assert_eq!(
