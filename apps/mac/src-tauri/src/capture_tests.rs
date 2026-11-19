@@ -430,6 +430,54 @@ async fn a_restore_sends_held_rows_as_ordinary_uploads() {
 }
 
 #[tokio::test]
+async fn a_catalog_restore_queues_a_local_sync_and_hands_off_the_held_row() {
+    let f = Capture::new(restorable());
+    f.edit_memory("Held until the catalog restores it\n");
+    assert!(matches!(f.run_job().await, Some(Outcome::Captured)));
+    let held = f.outbox();
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0]["held"], 1);
+    let id = held[0]["id"].as_str().unwrap().to_string();
+    let jobs = || {
+        db::rows(
+            &f.db,
+            "SELECT json_object('project',project,'priority',priority,'reason',reason) FROM sync_queue",
+            &[],
+        )
+        .unwrap()
+    };
+    assert!(jobs().is_empty());
+    // The catalog merge, not a manual request, wakes the restored project at
+    // local priority so the held row does not wait for a timer.
+    f.restore();
+    assert_eq!(
+        jobs(),
+        [json!({"project":f.id.as_str(),"priority":Priority::Local as i64,"reason":"restore"})]
+    );
+    // The held row is an ordinary upload candidate, and the upload stage
+    // releases its marker before the request goes out.
+    let project = f.project();
+    let outbox = ProjectOutbox::open(&f.db, &f.id).unwrap();
+    let queued = outbox.queued(&f.db).unwrap();
+    assert_eq!(
+        outbox
+            .batch(&queued)
+            .iter()
+            .map(|row| row["id"].clone())
+            .collect::<Vec<_>>(),
+        [json!(id)]
+    );
+    let mut db = db::open().unwrap();
+    let mut pass = SyncPass::new(&mut db, &f.owner, None);
+    assert!(pass.drain_outbox(&project).await.is_err());
+    let after = f.outbox();
+    assert_eq!(after.len(), 1);
+    assert_eq!(after[0]["id"], id);
+    assert_eq!(after[0]["held"], 0);
+    assert_eq!(after[0]["value"], held[0]["value"]);
+}
+
+#[tokio::test]
 async fn a_row_without_the_held_marker_still_loads_and_is_kept() {
     let f = Capture::new(restorable());
     // A row queued before the deletion, or by an older client, has no marker.

@@ -277,11 +277,49 @@ pub fn active(db: &Connection, id: &str) -> Result<()> {
     Ok(())
 }
 
+/// The exact text of an uncoded 403. Today's client still writes it for any
+/// uncoded refusal, for example from a pre-0.7.4 server or a response without
+/// a code, so it is not unique to 0.3.13. The sweep is a one-time retry of
+/// such rows on active projects; a genuinely denied row fails again.
+const LEGACY_DENIED: &str = "403: Project access denied";
+/// `meta` marks the one-time retry as done. It is plain local sync state:
+/// older versions ignore a key they do not know and nothing sweeps unknown
+/// keys, so a downgrade neither replays the retry nor breaks on it.
+const LEGACY_DENIED_CLEANUP: &str = "legacyDeniedRetry";
+
+/// Retries uncoded 403 rows on active projects, once. The marker is written in
+/// the same transaction, so the sweep cannot run a second time. A row that was
+/// genuinely denied fails again and records the current message.
+fn retry_legacy_denials(db: &Connection) -> Result<Vec<String>> {
+    if !db::get(db, LEGACY_DENIED_CLEANUP)?.is_null() {
+        return Ok(Vec::new());
+    }
+    let active = format!("project IN (SELECT id FROM projects WHERE {ACTIVE})");
+    let mut retried = Vec::new();
+    for id in db::rows(
+        db,
+        &format!("SELECT DISTINCT json_quote(project) FROM outbox WHERE error=? AND {active}"),
+        &[&LEGACY_DENIED],
+    )? {
+        if let Some(id) = id.as_str() {
+            retried.push(id.to_string());
+        }
+    }
+    db.execute(
+        &format!("UPDATE outbox SET error=NULL WHERE error=? AND {active}"),
+        [LEGACY_DENIED],
+    )
+    .map_err(|e| e.to_string())?;
+    db::set(db, LEGACY_DENIED_CLEANUP, &json!(true))?;
+    Ok(retried)
+}
+
 pub fn merge_catalog(db: &Connection, remote: &Value) -> Result<()> {
     let remote = remote.as_array().ok_or("Invalid project list")?;
     let tx = rusqlite::Transaction::new_unchecked(db, rusqlite::TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
     let mut detached = Vec::new();
+    let mut woken = Vec::new();
     let mut revoked = false;
     for item in remote {
         let id = item["id"].as_str().ok_or("Missing project")?;
@@ -384,6 +422,7 @@ pub fn merge_catalog(db: &Connection, remote: &Value) -> Result<()> {
                 [id],
             )
             .map_err(|e| e.to_string())?;
+            woken.push(id.to_string());
         }
     }
     for mut project in db::rows(&tx, "SELECT value FROM projects", &[])? {
@@ -397,6 +436,7 @@ pub fn merge_catalog(db: &Connection, remote: &Value) -> Result<()> {
             db::upsert(&tx, "projects", &id, "", &project)?;
         }
     }
+    let retried = retry_legacy_denials(&tx)?;
     tx.commit().map_err(|e| e.to_string())?;
     if revoked {
         env::clear();
@@ -405,6 +445,18 @@ pub fn merge_catalog(db: &Connection, remote: &Value) -> Result<()> {
     // recovers a crash between the commit and the local draft capture.
     for id in detached {
         db.detach_project(&id)?;
+    }
+    // A restored project uploads its held changes now instead of waiting for
+    // its timer. Only an inactive to active transition queues, so merging the
+    // same catalog again adds nothing.
+    woken.sort();
+    woken.dedup();
+    for (ids, reason) in [(woken, "restore"), (retried, "retry")] {
+        for id in ids {
+            if active(db, &id).is_ok() {
+                SyncQueue::request(db, &id, Priority::Local, reason)?;
+            }
+        }
     }
     Ok(())
 }

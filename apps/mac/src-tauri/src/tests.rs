@@ -256,6 +256,8 @@ mod plugin_operations_tests;
 mod project_conflict_tests;
 #[path = "project_export_tests.rs"]
 mod project_export_tests;
+#[path = "project_restore_tests.rs"]
+mod project_restore_tests;
 #[path = "repository_tests.rs"]
 mod repository_tests;
 #[path = "resource_command_tests.rs"]
