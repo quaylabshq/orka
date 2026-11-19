@@ -138,8 +138,8 @@ pub(crate) trait ProjectLifecycle {
     /// Records a server soft delete without touching the local copy, so a
     /// restore keeps its folders and queue.
     fn mark_deleted(&self, project: &str, receipt: &Value) -> Result<()>;
-    /// Detaches the project, then removes its local state. The user's files
-    /// stay on disk.
+    /// Detaches the project, retaining an exportable entry for local drafts
+    /// from a recoverable deletion.
     fn purge_local(&self, project: &str) -> Result<()>;
     /// Ends this Mac's access but keeps the local copy as an inactive project.
     fn leave(&self, project: &str) -> Result<()>;
@@ -163,7 +163,7 @@ impl ProjectLifecycle for Connection {
                 AND json_extract(value,'$.header.manifest.projectId')=?1
                 AND json_extract(value,'$.sourceRemoval') IS NULL
             )",
-            params![project, purging],
+            rusqlite::params![project, purging],
             |row| row.get(0),
         )
         .map_err(|e| e.to_string())
@@ -193,6 +193,24 @@ impl ProjectLifecycle for Connection {
 
     fn purge_local(&self, project: &str) -> Result<()> {
         self.detach_project(project)?;
+        let has_drafts: bool = self
+            .query_row(
+                "SELECT EXISTS(
+                SELECT 1 FROM projects JOIN drafts ON drafts.project=projects.id
+                WHERE projects.id=? AND json_extract(projects.value,'$.purgeAfter') IS NOT NULL
+                AND json_extract(drafts.value,'$.status')='local'
+            )",
+                [project],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if has_drafts {
+            self.execute(
+                "UPDATE projects SET value=json_set(value,'$.purged',json('true'),'$.purgeAfter',NULL) WHERE id=?",
+                [project],
+            ).map_err(|error| error.to_string())?;
+            return Ok(());
+        }
         remove_local(self, project)
     }
 
