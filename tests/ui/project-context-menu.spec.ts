@@ -520,3 +520,35 @@ test("archiving from the picker respects the unsaved settings guard", async ({
     { action: "archive", input: { projectId: "one", expectedRevision: 2 } },
   ]);
 });
+
+test("staying on a settings draft after a keyboard delete returns focus to the picker", async ({
+  page,
+}) => {
+  const settings = await settingsFixture(page);
+  const picker = page.getByRole("combobox", { name: "Select project" });
+  const name = settings.getByRole("textbox", {
+    name: "Project name",
+    exact: true,
+  });
+  await name.fill("Unsaved project name");
+
+  for (const fromRow of [false, true]) {
+    if (fromRow) await picker.press("ArrowDown");
+    const target = fromRow
+      ? page.getByRole("option", { name: "Orka", exact: true })
+      : picker;
+    await target.press("Shift+F10");
+    const item = page.getByRole("menuitem", { name: "Delete project…" });
+    await item.press("Enter");
+    const guard = page.getByRole("dialog", { name: "Save your changes?" });
+    await guard
+      .getByRole("button", { name: "Stay", exact: true })
+      .press("Enter");
+    await expect(guard).toHaveCount(0);
+    await expect(picker).toBeFocused();
+    await expect(name).toHaveValue("Unsaved project name");
+  }
+  expect(
+    (await settingsCalls(page)).some((call) => call.args.action === "delete"),
+  ).toBe(false);
+});

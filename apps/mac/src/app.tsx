@@ -306,10 +306,13 @@ function WorkspaceApp({
   const requestProjectLifecycle = (
     id: string,
     action: NonNullable<typeof projectLifecycle>["action"],
-  ) =>
+  ) => {
+    // The settings guard needs a return target after the menu unmounts.
+    if (settings) projectPickerTrigger.current?.focus();
     leaveSettings(() =>
       setProjectLifecycle({ id, scope: workspaceScope, action }),
     );
+  };
   const openProjectSettings = (id: string, section: SettingsSection) => {
     if (settings && settingsNavigation.current) {
       settingsNavigation.current.requestProject(id, () => {
