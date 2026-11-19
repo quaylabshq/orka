@@ -96,6 +96,12 @@ async function fixture(
     goneFolderPicks?: string[];
     staleSelection?: string[];
     unselected?: number[];
+    savedPicks?: string[];
+    legacyPicks?: string[];
+    pickFolders?: string[];
+    historyDenied?: boolean;
+    pauseFirstRecheck?: boolean;
+    restoredUnreadable?: number[];
     clipboardFailure?: boolean;
     projectNames?: string[];
     reviewPending?: boolean;
@@ -138,6 +144,15 @@ async function fixture(
         "Pulsar",
         "Aether",
       ];
+      const pickRow = (path: string) => ({
+        name: path.split("/").pop() ?? path,
+        path,
+        displayPath: path,
+        sources: ["claude"],
+        readable: true,
+        lastActiveAt: 1,
+      });
+      let rechecks = 0;
       const projects = (options.sample ? names.slice(0, 3) : names).map(
         (name, index) => ({
           name,
@@ -212,7 +227,16 @@ async function fixture(
         step: options.step ?? "profile",
         projects: options.step
           ? [
-              ...projects,
+              ...projects.map((project, index) =>
+                (options.restoredUnreadable ?? []).includes(index)
+                  ? { ...project, readable: false }
+                  : project,
+              ),
+              ...(options.savedPicks ?? []).map((path) => ({
+                ...pickRow(path),
+                folderPick: true,
+              })),
+              ...(options.legacyPicks ?? []).map(pickRow),
               ...(options.staleRows ?? []).map((path) => ({
                 name: path.split("/").pop() ?? path,
                 path,
@@ -240,6 +264,8 @@ async function fixture(
                   .filter(
                     (_, index) => !(options.unselected ?? []).includes(index),
                   ),
+                ...(options.savedPicks ?? []),
+                ...(options.legacyPicks ?? []),
                 ...(options.staleRows ?? []),
                 ...(options.goneFolderPicks ?? []),
                 ...(options.staleSelection ?? []),
@@ -379,7 +405,9 @@ async function fixture(
             if (command === "plugin:dialog|open") {
               pickers.push(args.options);
               const chosen =
-                args.options?.defaultPath ?? "/Users/fixture/Developer/orka";
+                args.options?.defaultPath ??
+                options.pickFolders?.[pickers.length - 1] ??
+                "/Users/fixture/Developer/orka";
               return args.options?.multiple ? [chosen] : chosen;
             }
             if (command.startsWith("plugin:")) return null;
@@ -468,6 +496,20 @@ async function fixture(
                   throw new Error(
                     "Orka couldn’t read this folder. Choose it again to give Orka access.",
                   );
+                if (options.historyDenied && !input.path)
+                  throw new Error(
+                    "Orka couldn’t read your coding history. Check Privacy & Security in System Settings, or choose a folder instead.",
+                  );
+                if (input.path && options.pauseFirstRecheck && !rechecks++)
+                  await new Promise((resolve) =>
+                    Object.assign(window, { resolveRecheck: resolve }),
+                  );
+                const extraPick = [
+                  ...(options.savedPicks ?? []),
+                  ...(options.legacyPicks ?? []),
+                  ...(options.pickFolders ?? []),
+                ].includes(input.path);
+                if (extraPick) return { projects: [pickRow(input.path)] };
                 return options.pauseDiscovery && !input.path
                   ? new Promise((resolve) => {
                       Object.assign(window, {
@@ -1506,6 +1548,129 @@ test("a selected worktree moves its selection to its main repository", async ({
       .locator(".onboarding-flow__project", { hasText: "~/Developer/orka" })
       .getByRole("checkbox"),
   ).toBeChecked();
+});
+
+test("adding a folder works when coding history is unreadable", async ({
+  page,
+}) => {
+  await fixture(page, {
+    step: "access-error",
+    historyDenied: true,
+    pickFolders: [
+      "/Users/fixture/Elsewhere/atlas",
+      "/Users/fixture/Elsewhere/beacon",
+    ],
+  });
+  await page
+    .getByRole("button", { name: "Choose another folder", exact: true })
+    .click();
+  await expect(
+    page.getByText("1 of 1 selected", { exact: true }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Add more", exact: true }).click();
+  await expect(
+    page.getByText("2 of 2 selected", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText("/Users/fixture/Elsewhere/beacon")).toBeVisible();
+});
+
+test("adding a folder keeps saved history rows when history became unreadable", async ({
+  page,
+}) => {
+  await fixture(page, {
+    step: "select",
+    historyDenied: true,
+    pickFolders: ["/Users/fixture/Elsewhere/atlas"],
+  });
+  await page.getByRole("button", { name: "Add more", exact: true }).click();
+  await expect(
+    page.getByText("8 of 8 selected", { exact: true }),
+  ).toBeVisible();
+});
+
+test("a background rescan never overwrites folders added while it ran", async ({
+  page,
+}) => {
+  await fixture(page, {
+    step: "select",
+    savedPicks: ["/Users/fixture/Elsewhere/kept"],
+    pickFolders: ["/Users/fixture/Elsewhere/atlas"],
+    pauseFirstRecheck: true,
+  });
+  await page.waitForFunction(() => "resolveRecheck" in window);
+  await page.getByRole("button", { name: "Add more", exact: true }).click();
+  await expect(
+    page.getByText("9 of 9 selected", { exact: true }),
+  ).toBeVisible();
+  await page.evaluate(async () => {
+    (window as any).resolveRecheck();
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  });
+  await expect(
+    page.getByText("9 of 9 selected", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText("/Users/fixture/Elsewhere/atlas")).toBeVisible();
+});
+
+test("a restored list from an older version keeps its picked folders", async ({
+  page,
+}) => {
+  await fixture(page, {
+    step: "select",
+    folder: "/Users/fixture/Elsewhere/legacy",
+    legacyPicks: ["/Users/fixture/Elsewhere/legacy"],
+  });
+  await expect
+    .poll(async () =>
+      (await calls(page)).some(
+        (c) =>
+          c.args.action === "discover" &&
+          c.args.input.path === "/Users/fixture/Elsewhere/legacy",
+      ),
+    )
+    .toBe(true);
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 200)));
+  await expect(
+    page.getByText("8 of 8 selected", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText("/Users/fixture/Elsewhere/legacy")).toBeVisible();
+});
+
+test("a restored list that empties moves to the empty step", async ({
+  page,
+}) => {
+  await fixture(page, { step: "select", empty: true });
+  await expect(
+    page.getByRole("heading", { name: "No projects found", exact: true }),
+  ).toBeVisible();
+});
+
+test("a restored list saves folders that became readable", async ({ page }) => {
+  await fixture(page, { step: "select", restoredUnreadable: [2] });
+  await expect(
+    page.getByText("7 of 7 selected", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText("Needs access", { exact: true })).toHaveCount(0);
+});
+
+test("selected Claude and Codex worktrees move to their main repository", async ({
+  page,
+}) => {
+  await fixture(page, {
+    step: "select",
+    projectNames: ["Orka", "Nimbus", "Zephyr"],
+    unselected: [1, 2],
+    staleSelection: [
+      "/Users/fixture/.codex/worktrees/a1b2/nimbus",
+      "/Users/fixture/Developer/zephyr/.claude/worktrees/fix-menu",
+    ],
+  });
+  for (const path of ["~/Developer/nimbus", "~/Developer/zephyr"])
+    await expect(
+      page
+        .locator(".onboarding-flow__project", { hasText: path })
+        .getByRole("checkbox"),
+    ).toBeChecked();
 });
 
 test("finding projects ranks them by relevance, not only by recency", async ({

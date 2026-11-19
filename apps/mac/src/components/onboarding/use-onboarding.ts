@@ -28,16 +28,40 @@ function ranked(projects: DiscoveredProject[]) {
   );
 }
 const folder = (path: string) => path.split("/").filter(Boolean).pop() ?? "";
-/** A T3 worktree lives under its repository's workspace folder. */
-function workspace(path: string) {
-  const marker = "/.t3/worktrees/";
+const after = (path: string, marker: string) => {
   const index = path.indexOf(marker);
   return index < 0
     ? undefined
-    : (path.slice(index + marker.length).split("/")[0] ?? undefined);
+    : path
+        .slice(index + marker.length)
+        .split("/")
+        .filter(Boolean);
+};
+/** Finds the repository row a worktree path belongs to. */
+function repository(path: string, rows: DiscoveredProject[]) {
+  // Claude Code keeps its worktrees inside the repository.
+  const claude = path.indexOf("/.claude/worktrees/");
+  if (claude > 0)
+    return rows.filter((row) => row.path === path.slice(0, claude));
+  // T3 uses <repository>/<branch>; Codex uses <id>/<repository>.
+  const name =
+    after(path, "/.t3/worktrees/")?.[0] ??
+    after(path, "/.codex/worktrees/")?.[1];
+  return name ? rows.filter((row) => folder(row.path) === name) : [];
 }
+/** Rows saved before 0.3.16 carry no pick marker, but the draft names the picked folder. */
+const legacyPicks = (draft: OnboardingDraft) =>
+  Boolean(draft.folder) &&
+  !draft.projects.some((row) => row.folderPick !== undefined);
+const picked = (draft: OnboardingDraft) => (row: DiscoveredProject) =>
+  Boolean(row.folderPick) || legacyPicks(draft);
 const sameRows = (a: DiscoveredProject[], b: DiscoveredProject[]) =>
-  a.length === b.length && a.every((row, index) => row.path === b[index].path);
+  a.length === b.length &&
+  a.every(
+    (row, index) =>
+      row.path === b[index].path &&
+      (row.readable !== false) === (b[index].readable !== false),
+  );
 /** Replaces rows, keeps selections, and moves a worktree's selection to its repository. */
 function reconcile(
   before: OnboardingDraft,
@@ -52,12 +76,9 @@ function reconcile(
       keep.add(path);
       continue;
     }
-    const name = workspace(path);
-    const matches = name
-      ? rows.filter(
-          (row) => folder(row.path) === name && row.readable !== false,
-        )
-      : [];
+    const matches = repository(path, rows).filter(
+      (row) => row.readable !== false,
+    );
     if (matches.length === 1) keep.add(matches[0].path);
   }
   return {
@@ -245,14 +266,15 @@ export function useOnboarding(
   /** A restored list can name folders that were deleted since it was saved. */
   const rescan = useCallback(async () => {
     try {
+      const start = current.current;
       const results = (
         await command<{ projects: DiscoveredProject[] }>("discover")
       ).projects;
       if (!active.current) return;
       const listed = new Set(results.map((row) => row.path));
       const kept = await recheck(
-        current.current.projects.filter(
-          (row) => row.folderPick && !listed.has(row.path),
+        start.projects.filter(
+          (row) => picked(start)(row) && !listed.has(row.path),
         ),
       );
       if (!active.current) return;
@@ -260,11 +282,21 @@ export function useOnboarding(
       await choiceWrites.current;
       if (!active.current) return;
       const before = current.current;
-      const next = reconcile(before, [...results, ...kept]);
+      // A list the user changed while this scan ran is newer than the scan.
+      if (before.projects !== start.projects) return;
       // The user may have moved on, so never replace another step's list.
       if (!["select", "partial-access", "empty"].includes(before.step)) return;
-      if (sameRows(before.projects, next.projects)) return;
-      await checkpoint(next);
+      const next = reconcile(before, [...results, ...kept]);
+      if (
+        sameRows(before.projects, next.projects) &&
+        before.selected.join("\n") === next.selected.join("\n")
+      )
+        return;
+      await checkpoint({
+        ...next,
+        // An emptied list has nothing to select.
+        ...(next.projects.length ? {} : { step: "empty" as const }),
+      });
     } catch {
       // A background rescan never blocks the step the user is on.
     }
@@ -295,12 +327,18 @@ export function useOnboarding(
       const picks = results.flatMap((result) =>
         result.projects.map((project) => ({ ...project, folderPick: true })),
       );
-      // Adding to a saved list rescans history instead of trusting saved rows.
-      const history =
-        paths && !append
-          ? []
-          : (await command<{ projects: DiscoveredProject[] }>("discover"))
-              .projects;
+      const isPick = picked(before);
+      const saved = before.projects.filter((project) => !isPick(project));
+      // Adding to a list with history rows rescans history instead of trusting them.
+      const history = !paths
+        ? (await command<{ projects: DiscoveredProject[] }>("discover"))
+            .projects
+        : append && saved.length
+          ? await command<{ projects: DiscoveredProject[] }>("discover")
+              .then((result) => result.projects)
+              // Unreadable history must not undo the folders the user just chose.
+              .catch(() => saved)
+          : [];
       const listed = new Set(
         [...history, ...picks].map((project) => project.path),
       );
@@ -308,14 +346,14 @@ export function useOnboarding(
       const kept = append
         ? await recheck(
             before.projects.filter(
-              (project) => project.folderPick && !listed.has(project.path),
+              (project) => isPick(project) && !listed.has(project.path),
             ),
           )
         : [];
       const merged = new Map<string, DiscoveredProject>();
       for (const project of [...history, ...kept, ...picks])
         merged.set(project.path, project);
-      const picked = new Set(
+      const chosen = new Set(
         results.flatMap((result) =>
           result.projects.length === 1 ? [result.projects[0].path] : [],
         ),
@@ -324,7 +362,7 @@ export function useOnboarding(
         before,
         [...merged.values()],
         paths
-          ? [...picked].filter(
+          ? [...chosen].filter(
               (path) =>
                 !before.projects.some(
                   (old) => old.path === path && old.readable !== false,
