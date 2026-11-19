@@ -86,11 +86,11 @@ clock. Governed edits become drafts whose automatic sharing waits for a
 restore. Each captured row is marked as never sent by a
 `heldCapture:<request id>` entry in local metadata rather than in the request,
 so older clients send it unchanged; the marker is cleared just before the row
-is first uploaded. A newer edit to the same item replaces its held rows in
-place with a fresh request ID and the same base revision, so the latest edit
-wins. Rows queued before the deletion, failed rows, rows in a redaction rebuild
-and rows from an earlier deletion are never rewritten, and replaced rows' blobs
-stay in the local blob store. A restore sends the rows as ordinary changes.
+is first uploaded. Successive edits replace a never-sent capture in place using a fresh request ID
+and the original base revision. Distinct edits to the Codex and Claude skill
+mirrors keep separate requests. When an earlier request must stay intact, the
+scan saves newer bytes as a local draft and leaves the native edit eligible for
+a later active scan. A restore sends the held requests as ordinary changes.
 Archived-only, revoked, hidden, detached and purged projects, and catalogs
 without `purgeAfter`, capture nothing.
 

@@ -2369,12 +2369,17 @@ async fn run_job(db: &mut rusqlite::Connection, job: &crate::sync_queue::Job) ->
     } else {
         result
     };
+    let capture_failed = result.is_err() && SyncQueue::is_capture_only(db, &job.project)?;
     let previous = db::get(db, "sync")?;
     let status = match &result {
         Ok(Outcome::Yielded | Outcome::Cancelled | Outcome::Skipped | Outcome::Captured) => {
             previous
         }
         Ok(_) => json!({"online":true,"lastSync":db::now(),"updatedAt":db::now()}),
+        Err(error) if capture_failed => {
+            record_result(db, &job.project, Err(error.clone()))?;
+            previous
+        }
         Err(error) => {
             json!({"online":false,"lastSync":previous["lastSync"],"error":error,"updatedAt":db::now()})
         }
@@ -2386,10 +2391,12 @@ async fn run_job(db: &mut rusqlite::Connection, job: &crate::sync_queue::Job) ->
     if !more || crate::projects::foreground_waiting()? {
         db::set(db, "syncProgress", &Value::Null)?;
     }
-    if !matches!(
-        result,
-        Ok(Outcome::Yielded | Outcome::Cancelled | Outcome::Skipped | Outcome::Captured)
-    ) {
+    if !capture_failed
+        && !matches!(
+            result,
+            Ok(Outcome::Yielded | Outcome::Cancelled | Outcome::Skipped | Outcome::Captured)
+        )
+    {
         let error = result.as_ref().err().map(String::as_str);
         let _ = crate::onboarding::reconcile_workspace_sync(db, error);
     }

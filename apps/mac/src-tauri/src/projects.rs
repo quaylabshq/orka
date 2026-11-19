@@ -132,9 +132,9 @@ pub fn require_capture(db: &Connection, id: &str, kind: &str) -> Result<()> {
 
 /// Local project lifecycle work shared by the command and its tests.
 pub(crate) trait ProjectLifecycle {
-    /// Work that has not reached the service yet; deleting with it would lose
-    /// the only copy. The same check guards source removal.
-    fn queued_changes(&self, project: &str) -> Result<bool>;
+    /// Work that must be sent before deleting, leaving or removing a source.
+    /// Purge can preserve never-sent captures from the current deletion as drafts.
+    fn queued_changes(&self, project: &str, purging: bool) -> Result<bool>;
     /// Records a server soft delete without touching the local copy, so a
     /// restore keeps its folders and queue.
     fn mark_deleted(&self, project: &str, receipt: &Value) -> Result<()>;
@@ -146,10 +146,24 @@ pub(crate) trait ProjectLifecycle {
 }
 
 impl ProjectLifecycle for Connection {
-    fn queued_changes(&self, project: &str) -> Result<bool> {
+    fn queued_changes(&self, project: &str, purging: bool) -> Result<bool> {
         self.query_row(
-            "SELECT EXISTS(SELECT 1 FROM outbox WHERE project=?1 UNION ALL SELECT 1 FROM meta WHERE key LIKE 'env:%:pending:%' AND json_extract(value,'$.header.manifest.projectId')=?1 AND json_extract(value,'$.sourceRemoval') IS NULL)",
-            [project],
+            "SELECT EXISTS(
+                SELECT 1 FROM outbox WHERE project=?1 AND NOT (
+                    ?2 AND path='/v2/sync/push' AND error IS NULL AND EXISTS (
+                        SELECT 1 FROM meta marker JOIN projects ON projects.id=outbox.project
+                        WHERE marker.key='heldCapture:'||outbox.id
+                        AND json_extract(marker.value,'$.projectId')=outbox.project
+                        AND json_extract(marker.value,'$.heldCapture')=1
+                        AND json_extract(marker.value,'$.deletedAt')=json_extract(projects.value,'$.deletedAt')
+                        AND NOT EXISTS (SELECT 1 FROM meta WHERE key='sessionOutboxRedaction:'||outbox.id)
+                    )
+                )
+                UNION ALL SELECT 1 FROM meta WHERE key LIKE 'env:%:pending:%'
+                AND json_extract(value,'$.header.manifest.projectId')=?1
+                AND json_extract(value,'$.sourceRemoval') IS NULL
+            )",
+            params![project, purging],
             |row| row.get(0),
         )
         .map_err(|e| e.to_string())
@@ -259,22 +273,73 @@ pub fn foreground_waiting() -> Result<bool> {
     }
 }
 
+fn is_active(db: &Connection, id: &str) -> Result<bool> {
+    db.query_row(
+        &format!("SELECT EXISTS(SELECT 1 FROM projects WHERE id=? AND {ACTIVE})"),
+        [id],
+        |row| row.get(0),
+    )
+    .map_err(|e| e.to_string())
+}
+
 pub fn active(db: &Connection, id: &str) -> Result<()> {
-    if db
-        .query_row(
-            &format!("SELECT count(*) FROM projects WHERE id=? AND {ACTIVE}"),
-            [id],
-            |r| r.get::<_, i64>(0),
-        )
-        .map_err(|e| e.to_string())?
-        == 0
-    {
+    if !is_active(db, id)? {
         return Err(
             "Project is removed, archived, or unavailable. Restore it in Settings → Projects first."
                 .into(),
         );
     }
     Ok(())
+}
+
+fn lifecycle_paused(project: &Value) -> bool {
+    !project["deletedAt"].is_null() || !project["archivedAt"].is_null()
+}
+
+/// Retry paused uploads for a restored, active project. Call within the
+/// transaction that saves its restored state so the wake survives a restart.
+fn wake_restored_project(db: &Connection, id: &str, priority: Priority) -> Result<()> {
+    if !is_active(db, id)? {
+        return Ok(());
+    }
+    db.execute(
+        "UPDATE outbox SET error=NULL WHERE project=? AND error LIKE '403:%'",
+        [id],
+    )
+    .map_err(|e| e.to_string())?;
+    SyncQueue::request(db, id, priority, "restore")
+}
+
+pub(crate) fn apply_restore_receipt(db: &Connection, id: &str, receipt: &Value) -> Result<()> {
+    let tx = rusqlite::Transaction::new_unchecked(db, rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    if let Some(mut project) = db::rows(&tx, "SELECT value FROM projects WHERE id=?", &[&id])?
+        .into_iter()
+        .next()
+    {
+        let current = project["lifecycleRevision"].as_u64().unwrap_or(0);
+        let restored = receipt["lifecycleRevision"].as_u64();
+        if project["purged"] == true || restored.is_some_and(|revision| revision < current) {
+            return Ok(());
+        }
+        // A newer receipt covers restores of deletions this Mac never observed.
+        let resumed =
+            lifecycle_paused(&project) || restored.is_some_and(|revision| revision > current);
+        project["archivedAt"] = receipt["archivedAt"].clone();
+        project["deletedAt"] = Value::Null;
+        project["purgeAfter"] = Value::Null;
+        project["hidden"] = json!(false);
+        project["revoked"] = json!(false);
+        project["detachedAt"] = Value::Null;
+        project["lifecycleRevision"] = receipt["lifecycleRevision"].clone();
+        db::upsert(&tx, "projects", id, id, &project)?;
+        if resumed {
+            wake_restored_project(&tx, id, Priority::User)?;
+            return tx.commit().map_err(|e| e.to_string());
+        }
+    }
+    SyncQueue::request(&tx, id, Priority::User, "project")?;
+    tx.commit().map_err(|e| e.to_string())
 }
 
 /// The exact text of an uncoded 403. Today's client still writes it for any
@@ -287,22 +352,21 @@ const LEGACY_DENIED: &str = "403: Project access denied";
 /// keys, so a downgrade neither replays the retry nor breaks on it.
 const LEGACY_DENIED_CLEANUP: &str = "legacyDeniedRetry";
 
-/// Retries uncoded 403 rows on active projects, once. The marker is written in
-/// the same transaction, so the sweep cannot run a second time. A row that was
-/// genuinely denied fails again and records the current message.
-fn retry_legacy_denials(db: &Connection) -> Result<Vec<String>> {
+/// Retries uncoded 403 rows on active projects, once. The marker and wake are
+/// written with the reset. A genuinely denied row fails again and records
+/// the current message.
+fn retry_legacy_denials(db: &Connection) -> Result<()> {
     if !db::get(db, LEGACY_DENIED_CLEANUP)?.is_null() {
-        return Ok(Vec::new());
+        return Ok(());
     }
     let active = format!("project IN (SELECT id FROM projects WHERE {ACTIVE})");
-    let mut retried = Vec::new();
     for id in db::rows(
         db,
         &format!("SELECT DISTINCT json_quote(project) FROM outbox WHERE error=? AND {active}"),
         &[&LEGACY_DENIED],
     )? {
         if let Some(id) = id.as_str() {
-            retried.push(id.to_string());
+            SyncQueue::request(db, id, Priority::Local, "retry")?;
         }
     }
     db.execute(
@@ -310,8 +374,7 @@ fn retry_legacy_denials(db: &Connection) -> Result<Vec<String>> {
         [LEGACY_DENIED],
     )
     .map_err(|e| e.to_string())?;
-    db::set(db, LEGACY_DENIED_CLEANUP, &json!(true))?;
-    Ok(retried)
+    db::set(db, LEGACY_DENIED_CLEANUP, &json!(true))
 }
 
 pub fn merge_catalog(db: &Connection, remote: &Value) -> Result<()> {
@@ -319,7 +382,6 @@ pub fn merge_catalog(db: &Connection, remote: &Value) -> Result<()> {
     let tx = rusqlite::Transaction::new_unchecked(db, rusqlite::TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
     let mut detached = Vec::new();
-    let mut woken = Vec::new();
     let mut revoked = false;
     for item in remote {
         let id = item["id"].as_str().ok_or("Missing project")?;
@@ -411,18 +473,8 @@ pub fn merge_catalog(db: &Connection, remote: &Value) -> Result<()> {
             project["sharing"] = json!(Sharing::default());
         }
         db::upsert(&tx, "projects", id, id, &project)?;
-        // A project that is active again sends what its 403 stopped. One that is
-        // still archived or deleted waits until it can send.
-        if (!old["deletedAt"].is_null() || !old["archivedAt"].is_null())
-            && project["deletedAt"].is_null()
-            && project["archivedAt"].is_null()
-        {
-            tx.execute(
-                "UPDATE outbox SET error=NULL WHERE project=? AND error LIKE '403:%'",
-                [id],
-            )
-            .map_err(|e| e.to_string())?;
-            woken.push(id.to_string());
+        if lifecycle_paused(&old) && !lifecycle_paused(&project) {
+            wake_restored_project(&tx, id, Priority::Local)?;
         }
     }
     for mut project in db::rows(&tx, "SELECT value FROM projects", &[])? {
@@ -436,7 +488,7 @@ pub fn merge_catalog(db: &Connection, remote: &Value) -> Result<()> {
             db::upsert(&tx, "projects", &id, "", &project)?;
         }
     }
-    let retried = retry_legacy_denials(&tx)?;
+    retry_legacy_denials(&tx)?;
     tx.commit().map_err(|e| e.to_string())?;
     if revoked {
         env::clear();
@@ -445,18 +497,6 @@ pub fn merge_catalog(db: &Connection, remote: &Value) -> Result<()> {
     // recovers a crash between the commit and the local draft capture.
     for id in detached {
         db.detach_project(&id)?;
-    }
-    // A restored project uploads its held changes now instead of waiting for
-    // its timer. Only an inactive to active transition queues, so merging the
-    // same catalog again adds nothing.
-    woken.sort();
-    woken.dedup();
-    for (ids, reason) in [(woken, "restore"), (retried, "retry")] {
-        for id in ids {
-            if active(db, &id).is_ok() {
-                SyncQueue::request(db, &id, Priority::Local, reason)?;
-            }
-        }
     }
     Ok(())
 }
@@ -548,7 +588,7 @@ pub async fn project_command(action: String, input: Value) -> Result<Value> {
             }
             let source_id = input["sourceId"].as_str().ok_or("Choose a source folder")?;
             uuid::Uuid::parse_str(source_id).map_err(|_| "Invalid source folder")?;
-            if db.queued_changes(id)? {
+            if db.queued_changes(id, false)? {
                 return Err("Sync queued changes and finish pending ENV publications before removing a source folder".into());
             }
             if sync::api_as(&owner, "GET", "/v2/projects/capabilities", None).await?
@@ -615,7 +655,7 @@ pub async fn project_command(action: String, input: Value) -> Result<Value> {
         }
         "leave" => {
             active(&db, id)?;
-            if db.queued_changes(id)? {
+            if db.queued_changes(id, false)? {
                 return Err("Sync queued changes and finish pending ENV publications before leaving this project".into());
             }
             let expected = input["expectedPolicyRevision"]
@@ -640,7 +680,9 @@ pub async fn project_command(action: String, input: Value) -> Result<Value> {
                     return Err("This service does not support shared project renaming. Update the server and try again.".into());
                 }
             }
-            if matches!(action.as_str(), "delete" | "purge") && db.queued_changes(id)? {
+            if matches!(action.as_str(), "delete" | "purge")
+                && db.queued_changes(id, action == "purge")?
+            {
                 return Err("Sync queued changes and finish pending ENV publications before deleting this project".into());
             }
             if matches!(action.as_str(), "delete" | "purge") {
@@ -654,6 +696,10 @@ pub async fn project_command(action: String, input: Value) -> Result<Value> {
                 sync::api_as(&owner, "POST", "/v2/projects/action", Some(&request)).await?;
             if action != "rename" {
                 env::clear();
+            }
+            if action == "restore" {
+                apply_restore_receipt(&db, id, &receipt)?;
+                return Ok(json!({"ok":true}));
             }
             if action == "delete" {
                 // The service keeps the project recoverable; the local copy
@@ -675,21 +721,10 @@ pub async fn project_command(action: String, input: Value) -> Result<Value> {
                 if action == "rename" {
                     project["name"] = receipt["name"].clone();
                 } else {
-                    project["archivedAt"] =
-                        receipt.get("archivedAt").cloned().unwrap_or_else(|| {
-                            if action == "archive" {
-                                json!(db::now())
-                            } else {
-                                Value::Null
-                            }
-                        });
-                    if action == "restore" {
-                        project["deletedAt"] = Value::Null;
-                        project["purgeAfter"] = Value::Null;
-                        project["hidden"] = json!(false);
-                        project["revoked"] = json!(false);
-                        project["detachedAt"] = Value::Null;
-                    }
+                    project["archivedAt"] = receipt
+                        .get("archivedAt")
+                        .cloned()
+                        .unwrap_or_else(|| json!(db::now()));
                 }
                 project["lifecycleRevision"] = receipt["lifecycleRevision"].clone();
                 db::upsert(&db, "projects", id, id, &project)?;
