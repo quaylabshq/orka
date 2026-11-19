@@ -1,9 +1,7 @@
 use crate::db::{self, Result};
 use fs2::FileExt;
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
-    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
     process::Command,
@@ -171,21 +169,22 @@ pub fn open_profile(name: String) -> Result<()> {
     }
 }
 
-// The deep-link plugin also forwards Opened URLs to the WebView. A valid
-// foreign callback must succeed here without queueing or falling back to local
-// sign-in: the native Opened handler already owns that delivery.
+// macOS routes valid sign-in callbacks from the native Opened event. The
+// plugin also forwards them to the webview, which only handles malformed
+// callbacks there. Other platforms still use the webview to route valid links.
 #[tauri::command]
 pub fn route_auth_callback(callback: String) -> Result<()> {
     let name = crate::auth::callback_profile(&callback)?;
-    if name == current() {
-        queue_callback_for(&name, &callback)?;
+    if cfg!(target_os = "macos") {
+        return Ok(());
     }
-    Ok(())
+    deliver_auth_callback(&name, &callback, current())
 }
 
-pub fn route_foreign_auth_callback(name: String, callback: &str) -> Result<()> {
-    if queue_callback_for(&name, callback)? {
-        open_profile(name)?;
+pub fn deliver_auth_callback(name: &str, callback: &str, receiving_profile: &str) -> Result<()> {
+    queue_callback_for(name, callback)?;
+    if name != receiving_profile {
+        open_profile(name.into())?;
     }
     Ok(())
 }
@@ -218,63 +217,36 @@ pub fn queue_callback(callback: &str) -> Result<String> {
     Ok(name)
 }
 
-#[derive(Default, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct CallbackInbox {
-    url: Option<String>,
-    expires_at: i64,
-    // Keep digests, not callback URLs, after delivery. The same lock protects
-    // the pending URL and receipts across all receiving profile processes.
-    #[serde(default)]
-    seen: BTreeMap<String, i64>,
-}
-
-impl CallbackInbox {
-    fn read(path: &Path) -> Result<Self> {
-        match fs::read(path) {
-            Ok(raw) => Ok(serde_json::from_slice(&raw).unwrap_or_default()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(e) => Err(e.to_string()),
-        }
-    }
-
-    fn write(&self, path: &Path) -> Result<()> {
-        db::atomic(path, &serde_json::to_vec(self).map_err(|e| e.to_string())?)
-    }
-}
-
-fn queue_callback_for(name: &str, callback: &str) -> Result<bool> {
+fn queue_callback_for(name: &str, callback: &str) -> Result<()> {
     let root = root(name)?;
     if !root.is_dir() {
         return Err("The window that requested this sign-in is unavailable".into());
     }
     let _lock = callback_lock(&root)?;
-    let path = root.join("auth-callback.json");
-    let mut inbox = CallbackInbox::read(&path)?;
-    let now = chrono::Utc::now().timestamp();
-    inbox.seen.retain(|_, expires| *expires >= now);
-    let digest = db::digest(callback.as_bytes());
-    if inbox.seen.contains_key(&digest) {
-        return Ok(false);
-    }
-    inbox.expires_at = now + 600;
-    inbox.seen.insert(digest, inbox.expires_at);
-    inbox.url = Some(callback.into());
-    inbox.write(&path)?;
-    Ok(true)
+    db::atomic(
+        &root.join("auth-callback.json"),
+        &serde_json::to_vec(
+            &json!({"url":callback,"expiresAt":chrono::Utc::now().timestamp()+600}),
+        )
+        .map_err(|e| e.to_string())?,
+    )
 }
 
 pub fn take_callback() -> Result<Option<String>> {
     let root = db::root()?;
     let _lock = callback_lock(&root)?;
     let path = root.join("auth-callback.json");
-    let mut inbox = CallbackInbox::read(&path)?;
-    let now = chrono::Utc::now().timestamp();
-    let callback = inbox.url.take();
-    if callback.is_some() {
-        inbox.write(&path)?;
-    }
-    Ok(callback.filter(|_| inbox.expires_at >= now))
+    let raw = match fs::read(&path) {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.to_string()),
+    };
+    fs::remove_file(path).map_err(|e| e.to_string())?;
+    let value: Value = serde_json::from_slice(&raw).map_err(|e| e.to_string())?;
+    Ok(value["url"]
+        .as_str()
+        .filter(|_| value["expiresAt"].as_i64().unwrap_or(0) >= chrono::Utc::now().timestamp())
+        .map(str::to_string))
 }
 
 /// Consumes a request from another process to bring this profile forward.
