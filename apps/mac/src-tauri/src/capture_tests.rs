@@ -177,6 +177,26 @@ impl Capture {
 }
 
 #[tokio::test]
+async fn capture_preparation_failure_leaves_service_status_alone() {
+    let f = Capture::new(restorable());
+    let status = json!({"online":true,"lastSync":"2026-11-01T00:00:00Z"});
+    db::set(&f.db, "sync", &status).unwrap();
+    // A broken cached resource makes repair fail before capture can scan.
+    db::upsert(&f.db, "resources", "broken-cache", &f.id, &json!({})).unwrap();
+
+    assert!(f.run_job().await.is_none());
+    assert_eq!(db::get(&f.db, "sync").unwrap(), status);
+    assert!(db::get(&f.db, "syncOutage").unwrap().is_null());
+    let error = db::rows(
+        &f.db,
+        "SELECT json_quote(error) FROM errors WHERE source=?",
+        &[&f.id],
+    )
+    .unwrap();
+    assert_eq!(error, [json!("Missing resource")]);
+}
+
+#[tokio::test]
 async fn a_restorable_deleted_project_captures_every_kind_and_sends_nothing() {
     let f = Capture::new(restorable());
     f.edit_everything();
@@ -839,4 +859,46 @@ async fn a_new_embedded_plan_proposal_replaces_the_held_plan() {
         assert_ne!(previous, Some(plans[0]["id"].clone()));
         previous = Some(plans[0]["id"].clone());
     }
+}
+
+#[tokio::test]
+async fn explicit_purge_preserves_local_captures_and_guards_other_pending_work() {
+    use crate::projects::ProjectLifecycle;
+
+    let f = Capture::new(restorable());
+    f.edit_memory("Recoverable held edit");
+    assert!(matches!(f.run_job().await, Some(Outcome::Captured)));
+    let held = f.outbox()[0]["id"].as_str().unwrap().to_string();
+    assert!(f.db.queued_changes(&f.id, false).unwrap());
+    assert!(!f.db.queued_changes(&f.id, true).unwrap());
+
+    db::set(
+        &f.db,
+        "env:test:pending:publication",
+        &json!({"header":{"manifest":{"projectId":f.id}}}),
+    )
+    .unwrap();
+    assert!(f.db.queued_changes(&f.id, true).unwrap());
+    f.db.execute(
+        "DELETE FROM meta WHERE key='env:test:pending:publication'",
+        [],
+    )
+    .unwrap();
+    f.db.execute(
+        "INSERT INTO outbox VALUES('older',?,'/v2/sync/push','{}',NULL)",
+        [&f.id],
+    )
+    .unwrap();
+    assert!(f.db.queued_changes(&f.id, true).unwrap());
+    f.db.execute("DELETE FROM outbox WHERE id='older'", [])
+        .unwrap();
+
+    f.db.purge_local(&f.id).unwrap();
+    assert!(f.outbox().is_empty());
+    assert!(db::get(&f.db, &indexer::held_capture_key(&held))
+        .unwrap()
+        .is_null());
+    let drafts = db::rows(&f.db, "SELECT value FROM drafts WHERE project=?", &[&f.id]).unwrap();
+    let hash = drafts[0]["resource"]["files"][0]["hash"].as_str().unwrap();
+    assert_eq!(db::blob_read(hash).unwrap(), b"Recoverable held edit");
 }
