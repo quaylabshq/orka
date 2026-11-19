@@ -44,6 +44,9 @@ export interface DiscoveredProject {
   readable?: boolean;
   alreadyConnected?: boolean;
   lastActiveAt?: number;
+  // Drafts saved before 0.3.16 have no relevance, so ranking falls back to recency.
+  relevance?: number;
+  worktrees?: number;
   pendingChanges?: number;
   projectId?: string;
   status?:

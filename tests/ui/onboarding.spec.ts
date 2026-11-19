@@ -91,6 +91,7 @@ async function fixture(
     destinationChanged?: boolean;
     legacyMatch?: boolean;
     pauseDiscovery?: boolean;
+    reverseRank?: boolean;
     clipboardFailure?: boolean;
     projectNames?: string[];
     reviewPending?: boolean;
@@ -137,6 +138,7 @@ async function fixture(
         (name, index) => ({
           name,
           lastActiveAt: names.length - index,
+          relevance: options.reverseRank ? index : names.length - index,
           path: `/Users/fixture/Developer/${name.toLowerCase()}`,
           displayPath: `~/Developer/${name.toLowerCase()}`,
           sources:
@@ -1424,6 +1426,18 @@ test("fetching uses the Figma progress overlay and can finish without a fake per
   await expect(
     page.getByText("0 of 7 selected", { exact: true }),
   ).toBeVisible();
+});
+
+test("finding projects ranks them by relevance, not only by recency", async ({
+  page,
+}) => {
+  await fixture(page, { step: "discover", reverseRank: true });
+  await page
+    .getByRole("button", { name: "Find my projects", exact: true })
+    .click();
+  await expect(
+    page.locator(".onboarding-flow__project-details strong").first(),
+  ).toHaveText("Aether");
 });
 
 test("ambiguous cloud matches require a project choice before sync", async ({
