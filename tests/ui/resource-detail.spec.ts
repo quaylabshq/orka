@@ -436,6 +436,9 @@ for (const [action, title] of [
       name: "Settings",
       exact: true,
     });
+    await settings
+      .getByRole("button", { name: "General", exact: true })
+      .click();
     const name = settings.getByRole("textbox", {
       name: "Project name",
       exact: true,

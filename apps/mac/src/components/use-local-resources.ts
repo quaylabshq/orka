@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useEffectEvent,
+  useMemo,
+  useState,
+} from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { Project, ProjectPage, ProjectResource } from "../types.js";
 
@@ -63,44 +69,40 @@ export function useLocalResources({
         : null,
     [projectId, user, serviceOrigin],
   );
-  const restore = useCallback(
-    (kind: LocalKind) => {
-      if (!args) return;
-      const entry = (catalogs[kind] ??= { updatedAt: 0 });
-      if (entry.restoring) return entry.restoring;
-      if (
-        entry.pending ||
-        (entry.restoredAt !== undefined &&
-          Date.now() - entry.restoredAt < refreshInterval)
-      )
-        return;
-      entry.restoring = invoke<Catalog | null>("local_resource_catalog", {
-        ...args,
-        kind,
-        refresh: false,
+  const restore = useEffectEvent((kind: LocalKind) => {
+    if (!args) return;
+    const entry = (catalogs[kind] ??= { updatedAt: 0 });
+    if (
+      entry.restoring ||
+      entry.pending ||
+      (entry.restoredAt !== undefined &&
+        Date.now() - entry.restoredAt < refreshInterval)
+    )
+      return;
+    entry.restoring = invoke<Catalog | null>("local_resource_catalog", {
+      ...args,
+      kind,
+      refresh: false,
+    })
+      .then((value) => {
+        entry.catalog = value ?? { resources: [], errors: [] };
+        entry.restoredAt = Date.now();
       })
-        .then((value) => {
-          entry.catalog = value ?? { resources: [], errors: [] };
-          entry.restoredAt = Date.now();
-        })
-        .catch(() => {
-          // Keep any previous rows. The open collection can still discover
-          // resources and surface errors even when its saved index cannot load.
-          entry.catalog ??= { resources: [], errors: [] };
-        })
-        .finally(() => {
-          entry.restoring = undefined;
-          setVersion((version) => version + 1);
-        });
-      return entry.restoring;
-    },
-    [args, catalogs, refreshInterval],
-  );
+      .catch(() => {
+        // Keep any previous rows. The open collection can still discover
+        // resources and surface errors even when its saved index cannot load.
+        entry.catalog ??= { resources: [], errors: [] };
+      })
+      .finally(() => {
+        entry.restoring = undefined;
+        setVersion((version) => version + 1);
+      });
+  });
   useEffect(() => {
-    // Home and the sidebar need all persisted counts. Only the open
-    // collection below performs filesystem discovery.
-    for (const kind of kinds) void restore(kind);
-  }, [restore]);
+    // Restore saved counts on project entry. Timing changes should only
+    // reschedule discovery and keep the open collection's confirmed rows.
+    for (const kind of kinds) restore(kind);
+  }, [args, catalogs]);
   const refresh = useCallback(() => {
     // Home mutations can affect any cached collection in this project.
     for (const entry of kind ? [catalogs[kind]] : Object.values(catalogs)) {
@@ -138,9 +140,7 @@ export function useLocalResources({
         (!entry.updatedAt || Date.now() - entry.updatedAt >= refreshInterval)
       ) {
         // A request belongs to its catalog, so navigation can reuse its result.
-        const restoring =
-          entry.restoring ?? (entry.catalog ? undefined : restore(kind));
-        entry.pending = Promise.resolve(restoring)
+        entry.pending = Promise.resolve(entry.restoring)
           .then(() =>
             invoke<Catalog | null>("local_resource_catalog", {
               ...args,
@@ -188,7 +188,7 @@ export function useLocalResources({
       window.clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [args, catalogs, kind, refreshInterval, restore, retry]);
+  }, [args, catalogs, kind, refreshInterval, retry]);
   const memories = catalogs.memory?.catalog?.resources;
   const sessions = catalogs.session?.catalog?.resources;
   const plans = catalogs.plan?.catalog?.resources;
