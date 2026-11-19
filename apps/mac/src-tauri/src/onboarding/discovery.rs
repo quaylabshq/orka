@@ -161,8 +161,14 @@ impl Budget {
         true
     }
     fn entries(&mut self, path: &Path) -> Vec<fs::DirEntry> {
+        const MAX_ENTRIES: usize = 2001;
         match fs::read_dir(path) {
-            Ok(entries) => entries.flatten().take(2001).collect(),
+            Ok(entries) => {
+                let mut entries = entries.flatten();
+                let listed = entries.by_ref().take(MAX_ENTRIES).collect();
+                self.truncated |= entries.next().is_some();
+                listed
+            }
             Err(e) => {
                 self.denied |= e.kind() == std::io::ErrorKind::PermissionDenied;
                 vec![]
@@ -258,15 +264,18 @@ impl MainCheckouts {
         if directory == common {
             return None;
         }
-        if common.file_name()? == ".git" && common.is_dir() {
-            return common.parent().map(Path::to_path_buf);
-        }
         // An external Git directory has no backlink to its primary checkout.
-        let mut matches = self.0.get(&common)?.iter();
-        match (matches.next(), matches.next()) {
-            (Some(only), None) => Some(only.clone()),
-            _ => None,
+        if let Some(matches) = self.0.get(&common) {
+            let mut matches = matches.iter();
+            return match (matches.next(), matches.next()) {
+                (Some(only), None) => Some(only.clone()),
+                _ => None,
+            };
         }
+        if common.file_name()? != ".git" || !common.is_dir() {
+            return None;
+        }
+        common.parent().map(Path::to_path_buf)
     }
 }
 /// Worktrees connect to their main checkout, so they are one project, not two.
@@ -459,7 +468,11 @@ fn codex_files(root: &Path, depth: usize, budget: &mut Budget, files: &mut Vec<P
     let mut entries = budget.entries(root);
     entries.sort_by_key(|e| std::cmp::Reverse(e.file_name()));
     for entry in entries {
-        if files.len() >= 1000 || !budget.tick() {
+        if files.len() >= 1000 {
+            budget.truncated = true;
+            break;
+        }
+        if !budget.tick() {
             break;
         }
         let Ok(kind) = entry.file_type() else {
@@ -1285,6 +1298,16 @@ mod tests {
         );
         assert_eq!(found[&project].sessions, 1);
     }
+    #[test]
+    fn codex_file_limit_reports_skipped_history() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(temp.path().join("rollout-next.jsonl"), "{}\n").unwrap();
+        let mut files = vec![PathBuf::new(); 1000];
+        let mut budget = Budget::new();
+        codex_files(temp.path(), 5, &mut budget, &mut files);
+        assert_eq!(files.len(), 1000);
+        assert!(budget.truncated);
+    }
     fn add_origin(project: &Path, repo: &str) {
         fs::create_dir_all(project.join(".git")).unwrap();
         fs::write(
@@ -1443,7 +1466,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let home = fs::canonicalize(temp.path()).unwrap();
         let main = home.join("Development/orka");
-        let metadata = home.join("metadata/orka.git");
+        let metadata = home.join("metadata/.git");
         let feature = home.join("feature");
         fs::create_dir_all(&main).unwrap();
         fs::create_dir_all(metadata.join("worktrees/feature")).unwrap();
@@ -1455,7 +1478,7 @@ mod tests {
         .unwrap();
         fs::write(
             feature.join(".git"),
-            "gitdir: ../metadata/orka.git/worktrees/feature\n",
+            "gitdir: ../metadata/.git/worktrees/feature\n",
         )
         .unwrap();
         fs::write(metadata.join("worktrees/feature/commondir"), "../..\n").unwrap();
