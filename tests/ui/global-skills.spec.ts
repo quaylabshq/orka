@@ -99,13 +99,20 @@ async function fixture(page: Page, mode = "normal") {
                         sources: [
                           {
                             id: "desktop",
-                            name: "desktop",
+                            name: "orka-platform",
                             path: "/test/desktop",
                           },
                           {
                             id: "backend",
-                            name: "backend",
+                            name: "orka-platform",
                             path: "/test/backend",
+                          },
+                          { id: "other", name: "Disconnected repository" },
+                          {
+                            id: "removed",
+                            name: "Removed repository",
+                            path: "/test/removed",
+                            removedAt: "2026-10-21T00:00:00Z",
                           },
                         ],
                       }
@@ -1228,6 +1235,7 @@ test("bulk import locks selection and dismissal until the one batch finishes", a
 test("changing repositories clears bulk selection and scopes installation to the chosen repository", async ({
   page,
 }) => {
+  await page.setViewportSize({ width: 900, height: 640 });
   await fixture(page, "repositories");
   await page
     .getByRole("button", { name: "Add global skills", exact: true })
@@ -1239,10 +1247,42 @@ test("changing repositories clears bulk selection and scopes installation to the
   await dialog
     .getByRole("checkbox", { name: "Select skill: Code review", exact: true })
     .check();
-  await dialog
-    .getByRole("combobox", { name: "Install into repository", exact: true })
-    .selectOption("backend");
+  const destination = dialog.getByRole("combobox", {
+    name: "Install into repository",
+    exact: true,
+  });
+  await expect(destination).toHaveText("orka-platform · deskto");
+  const refresh = dialog.getByRole("button", { name: "Scan again" });
+  const destinationBox = (await destination.boundingBox())!;
+  const refreshBox = (await refresh.boundingBox())!;
+  expect(destinationBox.height).toBe(refreshBox.height);
+  expect(destinationBox.y).toBe(refreshBox.y);
+
+  await destination.click();
+  const menu = page.getByRole("listbox", { name: "Repositories" });
+  await expect(menu.getByRole("option")).toHaveText([
+    "orka-platform · deskto",
+    "orka-platform · backen",
+  ]);
+  await page.keyboard.press("Escape");
+  await expect(menu).toBeHidden();
+  await expect(destination).toBeFocused();
+  await expect(dialog.getByText("1 selected", { exact: true })).toBeVisible();
+
+  await destination.press("ArrowDown");
+  await expect(menu.getByRole("option").first()).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  await expect(destination).toHaveText("orka-platform · backen");
+  await expect(destination).toBeFocused();
   await expect(dialog.getByText("0 selected", { exact: true })).toBeVisible();
+  expect(
+    await page.evaluate(() =>
+      (window as any).invokeCalls
+        .filter((call: any) => call.name === "scan_global_skills")
+        .map((call: any) => call.args.sourceId),
+    ),
+  ).toEqual(["desktop", "backend"]);
   for (const name of ["Code review", "Writing guide"])
     await dialog
       .getByRole("checkbox", { name: `Select skill: ${name}`, exact: true })

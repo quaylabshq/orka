@@ -136,16 +136,6 @@
 .source-scan-message {
   color: var(--text-secondary);
 }
-.repository-filter {
-  min-width: 140px;
-  max-width: 200px;
-  border: 0;
-  border-radius: var(--radius-control);
-  background: var(--surface-tertiary);
-  color: var(--text-secondary);
-  padding: 6px 8px;
-  font: inherit;
-}
 .resource-repository {
   @apply flex w-full min-w-0 items-center gap-1.5 text-body-xs;
   color: var(--text-tertiary);
@@ -968,6 +958,9 @@
   }
   .global-skills-toolbar .ui-field {
     @apply min-w-0 flex-1;
+  }
+  .global-skills-destination {
+    @apply max-w-[200px] justify-start;
   }
   .global-skills-sort {
     @apply w-36 shrink-0 justify-between;
@@ -2321,10 +2314,10 @@
   min-width: 0;
   max-width: 200px;
 }
-.workspace-repository-filter > svg {
+.repository-select-trigger > svg {
   flex-shrink: 0;
 }
-.workspace-repository-filter > span:not(:last-child) {
+.repository-select-trigger > span {
   min-width: 0;
 }
 .repository-filter-label {
