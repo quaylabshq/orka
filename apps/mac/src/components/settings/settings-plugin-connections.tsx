@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { PlugIcon } from "lucide-react";
+import { ExternalLinkIcon, PlugIcon } from "lucide-react";
 import type { Snapshot } from "../../types.js";
 import type { PluginAccount } from "../plugin-authorization.js";
 import { Button } from "../button.js";
+import { Icon } from "../icon.js";
 import { SettingsHeading, settingsScope } from "./settings-shared.js";
 
 interface ConnectionStatus {
@@ -190,7 +191,7 @@ export function SettingsPluginConnections({ state }: { state: Snapshot }) {
             ))
           )}
           <Button
-            className="connector-check-button"
+            className="connector-action-button"
             size="sm"
             disabled={checking}
             onClick={() => check.current()}
@@ -259,21 +260,24 @@ export function SettingsPluginConnections({ state }: { state: Snapshot }) {
         className="settings-group connector-setup"
         aria-labelledby="connector-setup-title"
       >
-        <h3 id="connector-setup-title">Connect or reconnect</h3>
-        <ol>
-          <li>
-            Install the desktop Orka plugin in your assistant and connect.
-          </li>
-          <li>
-            Approve the account and access shown in Orka once for each running
-            assistant.
-          </li>
-          <li>
-            After an account or service change, reconnect from your assistant
-            and approve a new session.
-          </li>
-        </ol>
+        <div>
+          <h3 id="connector-setup-title">Connect or reconnect</h3>
+          <ol>
+            <li>
+              Install the desktop Orka plugin in your assistant and connect.
+            </li>
+            <li>
+              Approve the account and access shown in Orka once for each running
+              assistant.
+            </li>
+            <li>
+              After an account or service change, reconnect from your assistant
+              and approve a new session.
+            </li>
+          </ol>
+        </div>
         <Button
+          className="connector-action-button"
           size="sm"
           onClick={() => {
             setSetupError("");
@@ -285,6 +289,7 @@ export function SettingsPluginConnections({ state }: { state: Snapshot }) {
           }}
         >
           Installation instructions
+          <Icon icon={ExternalLinkIcon} />
         </Button>
         {setupError && <p role="alert">{setupError}</p>}
       </section>

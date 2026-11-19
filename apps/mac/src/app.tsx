@@ -361,22 +361,37 @@ function WorkspaceApp({
     };
   }, []);
   const [syncOpen, setSyncOpen] = useState(false);
-  const [managementSection, setManagementSection] =
-    useState<Exclude<ManagementSection, "members">>("requests");
+  const managementScope = JSON.stringify([workspaceScope, project]);
+  const [management, setManagement] = useState<{
+    section: Exclude<ManagementSection, "members">;
+    history?: { scope: string; request: symbol };
+  }>({ section: "requests" });
+  useEffect(() => {
+    setManagement((current) =>
+      current.history && current.history.scope !== managementScope
+        ? { section: current.section }
+        : current,
+    );
+  }, [managementScope]);
   const [governance, setGovernance] = useState<{
     resource: string;
     mode?: "incoming" | "outgoing";
     env?: { title: string };
   } | null>(null);
   const openManagement = useCallback(
-    (section: ManagementSection = "members") => {
+    (section: ManagementSection = "members", historyScope?: string) => {
       if (section === "members") {
         if (settingsNavigation.current)
           settingsNavigation.current.requestSection("members");
         else setSettings("members");
         return;
       }
-      setManagementSection(section);
+      setManagement({
+        section,
+        history: historyScope
+          ? { scope: historyScope, request: Symbol() }
+          : undefined,
+      });
       setSettings(null);
       setTab("members");
       setResource("");
@@ -828,6 +843,7 @@ function WorkspaceApp({
             projectId={project}
             activeKind={settings ? null : tab}
             resources={catalogResources}
+            pendingCounts={localCatalog.pendingCounts}
             onNavigate={(kind) =>
               leaveSettings(() => {
                 setEnvSet("");
@@ -848,7 +864,7 @@ function WorkspaceApp({
             <SidebarQuickAccess
               settingsActive={Boolean(settings)}
               collapsed={sidebarCollapsed}
-              onSettings={() => openSettings("general")}
+              onSettings={() => openSettings("account")}
               onCreate={() => leaveSettings(() => setup.show("create"))}
               onJoin={() => leaveSettings(() => setup.show("join"))}
             />
@@ -897,6 +913,7 @@ function WorkspaceApp({
                   id,
                   label,
                   icon,
+                  restoreFocus: section !== "folder",
                   onSelect: () => openProjectSettings(target.id, section),
                 });
                 const actions: ItemMenuAction[] = [
@@ -1000,6 +1017,7 @@ function WorkspaceApp({
               setSidebarCollapsed((current) => !current);
             }}
             repositoryFilter={
+              !settings &&
               selectedProject &&
               !inactiveProject &&
               repositories.length > 1 &&
@@ -1045,6 +1063,11 @@ function WorkspaceApp({
                   )
                 }
                 onReview={() => leaveSettings(() => openManagement("requests"))}
+                onOpenRequestHistory={() =>
+                  leaveSettings(() =>
+                    openManagement("requests", managementScope),
+                  )
+                }
                 busy={busy}
                 actionError={error || refreshError}
                 onDismissError={error ? () => setError("") : undefined}
@@ -1176,7 +1199,12 @@ function WorkspaceApp({
                     key={project}
                     project={selectedProject}
                     state={state}
-                    section={managementSection}
+                    section={management.section}
+                    historyRequest={
+                      management.history?.scope === managementScope
+                        ? management.history.request
+                        : undefined
+                    }
                     onSection={openManagement}
                     onRefresh={refresh}
                     onReviewFile={(resource) => setGovernance({ resource })}
@@ -1200,6 +1228,7 @@ function WorkspaceApp({
                     project={selectedProject}
                     user={state.user}
                     resources={catalogResources}
+                    pendingCounts={localCatalog.pendingCounts}
                     onNavigate={(kind) => {
                       index.setRepository("all");
                       setEnvSet("");

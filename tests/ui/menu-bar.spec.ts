@@ -155,10 +155,26 @@ test("offline, stopped, signed out and setup states report actual availability",
     page.getByRole("button", { name: "Sync now", exact: true }),
   ).toHaveCount(0);
   await expect(page.locator(".menu-bar-counts")).toHaveCount(0);
+  const open = page.getByRole("button", { name: "Open Orka", exact: true });
+  const quit = page.getByRole("button", { name: "Quit Orka", exact: true });
+  await expect(open).toHaveCount(1);
+  await expect(open).toBeEnabled();
+  await expect(quit).toBeEnabled();
   await page.evaluate(() => {
     window.menuBarFixture.state.onboarding = true;
   });
   await expect(page.getByRole("status")).toContainText("finish setup");
+  await expect(open).toHaveCount(1);
+  await open.click();
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        window.menuBarFixture.calls
+          .filter((call) => call.name === "menu_bar_action")
+          .map((call) => call.args?.action),
+      ),
+    )
+    .toEqual(["open"]);
 });
 
 test("compact list stays within its window and supports keyboard and reduced motion", async ({

@@ -50,6 +50,27 @@ test("project option context menus target the clicked project without selecting 
   await expect(picker).toContainText("Orka");
 });
 
+test("Source folders opens at its section from Profile and from General", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 900, height: 640 });
+  const settings = await settingsFixture(page);
+  await settings.getByRole("button", { name: "Profile", exact: true }).click();
+  for (const project of ["Website", "Orka"]) {
+    const menu = await projectMenu(page, project);
+    await menu.getByRole("menuitem", { name: "Source folders…" }).click();
+    await expect(
+      settings.getByRole("textbox", { name: "Project name", exact: true }),
+    ).toHaveValue(project);
+    await expect(
+      settings.getByRole("group", { name: `Project settings for ${project}` }),
+    ).toContainText(`Project · ${project}`);
+    const target = settings.getByRole("heading", { name: "Source Folder" });
+    await expect(target).toBeFocused();
+    await expect(target).toBeInViewport();
+  }
+});
+
 test("source context and ellipsis menus share actions and bind native reveal to the chosen source", async ({
   page,
 }) => {

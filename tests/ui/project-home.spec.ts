@@ -1,9 +1,15 @@
 import { test, expect, type Page } from "@playwright/test";
 import { AxeBuilder } from "@axe-core/playwright";
 
-async function homeFixture(page: Page) {
+declare global {
+  interface Window {
+    finishProjectCatalog: () => void;
+  }
+}
+
+async function homeFixture(page: Page, persistedCatalogs = false) {
   await page.clock.install({ time: new Date("2026-10-20T12:00:00Z") });
-  await page.addInitScript(() => {
+  await page.addInitScript((persistedCatalogs) => {
     const resources = [
       {
         resourceId: "home-memory",
@@ -87,6 +93,9 @@ async function homeFixture(page: Page) {
       ],
     }));
     const calls: { name: string; args?: Record<string, unknown> }[] = [];
+    const slowCatalog = new Promise<void>((resolve) => {
+      window.finishProjectCatalog = resolve;
+    });
     Object.assign(window, {
       invokeCalls: calls,
       isTauri: true,
@@ -129,6 +138,16 @@ async function homeFixture(page: Page) {
                   path: null,
                   role: "owner",
                 },
+                ...(persistedCatalogs
+                  ? [
+                      {
+                        id: "two",
+                        name: "Second project",
+                        path: "/test/second-project",
+                        role: "owner",
+                      },
+                    ]
+                  : []),
               ],
               resources,
               localSkills: [
@@ -153,8 +172,30 @@ async function homeFixture(page: Page) {
               deviceId: "device",
               background: true,
             };
+          if (name === "local_resource_catalog" && persistedCatalogs) {
+            if (args?.projectId === "two") await slowCatalog;
+            const count =
+              args?.projectId === "two"
+                ? args?.kind === "session"
+                  ? 3
+                  : 0
+                : args?.kind === "memory"
+                  ? 0
+                  : 1;
+            return {
+              resources: Array.from({ length: count }, (_, index) => ({
+                ...resources[0],
+                projectId: args?.projectId,
+                resourceId: `private-${args?.projectId}-${args?.kind}-${index}`,
+                kind: args?.kind,
+                title: `Local ${args?.kind} ${index + 1}`,
+                local: true,
+              })),
+              errors: [],
+            };
+          }
           if (name === "session_display_title")
-            return "Polish project navigation";
+            return persistedCatalogs ? null : "Polish project navigation";
           if (name === "session_messages")
             return {
               messages: [
@@ -178,7 +219,7 @@ async function homeFixture(page: Page) {
         },
       },
     });
-  });
+  }, persistedCatalogs);
   await page.goto("/");
   await expect(
     page.getByRole("heading", { name: "Recent Updates", exact: true }),
@@ -189,6 +230,49 @@ const updates = (page: Page) =>
   page.getByRole("list", { name: "Recently updated resources" });
 const totals = (page: Page) =>
   page.getByRole("region", { name: "Project totals" });
+
+test("Home and sidebar restore project counts before any collection opens", async ({
+  page,
+}) => {
+  await homeFixture(page, true);
+  const sidebar = (project: string) =>
+    page.getByRole("navigation", { name: `${project} resources` });
+  const choose = async (name: string) => {
+    await page.getByRole("combobox", { name: "Select project" }).click();
+    await page.getByRole("option", { name, exact: true }).click();
+  };
+  await expect(totals(page).locator("strong")).toHaveText(["4", "2", "2", "2"]);
+  await expect(sidebar("OpenWhispr").locator("small")).toHaveText([
+    "4",
+    "2",
+    "2",
+    "2",
+  ]);
+
+  await choose("Second project");
+  await expect(totals(page).locator("strong")).toHaveText(["—", "0", "—", "—"]);
+  await expect(sidebar("Second project").locator("small")).toHaveText(["0"]);
+  await page.evaluate(() => window.finishProjectCatalog());
+  await expect(totals(page).locator("strong")).toHaveText(["0", "0", "3", "0"]);
+  await expect(sidebar("Second project").locator("small")).toHaveText([
+    "0",
+    "0",
+    "3",
+    "0",
+  ]);
+
+  await choose("OpenWhispr");
+  await expect(totals(page).locator("strong")).toHaveText(["4", "2", "2", "2"]);
+  expect(
+    await page.evaluate(() =>
+      (window as any).invokeCalls
+        .filter(
+          (call: { name: string }) => call.name === "local_resource_catalog",
+        )
+        .map((call: { args: { refresh: boolean } }) => call.args.refresh),
+    ),
+  ).toEqual(Array(6).fill(false));
+});
 
 test("Home totals include the entire project and local skills, excluding deleted items and other projects", async ({
   page,

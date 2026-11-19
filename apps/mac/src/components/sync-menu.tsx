@@ -44,6 +44,7 @@ export function SyncMenu({
   open: controlledOpen,
   onOpenChange,
   onReview,
+  onOpenRequestHistory,
   placement = "sidebar",
   actionError = "",
   onDismissError,
@@ -74,6 +75,7 @@ export function SyncMenu({
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
   onReview?: () => void;
+  onOpenRequestHistory?: () => void;
 }) {
   const reviewUpload = useQueuedUploadReview();
   const memberName = useMemberLabel(state.user);
@@ -99,6 +101,7 @@ export function SyncMenu({
   const [now, setNow] = useState(Date.now);
   const content = useRef<HTMLDivElement>(null);
   const focusedAction = useRef<string | null>(null);
+  const openingRequestHistory = useRef(false);
   useEffect(() => {
     if (!open) return;
     setNow(Date.now());
@@ -152,10 +155,9 @@ export function SyncMenu({
     Number(Boolean(independentActionError)) +
     Number(Boolean(setup && !setup.deferred && !setupRunning));
   const count = attentionCount + reviews.length;
-  const historyCount =
-    attention.historyRequests.length +
-    attention.historyDrafts.length +
-    attention.activity.length;
+  const requestHistoryCount =
+    attention.historyRequests.length + attention.historyDrafts.length;
+  const historyCount = requestHistoryCount + attention.activity.length;
   const waitingStatus = waiting.length
     ? waiting.every((entry) => entry.state === "waiting")
       ? "Waiting to retry"
@@ -417,6 +419,12 @@ export function SyncMenu({
           sideOffset={8}
           collisionPadding={12}
           aria-label="Sync status and notifications"
+          onCloseAutoFocus={(event) => {
+            if (openingRequestHistory.current) {
+              event.preventDefault();
+              openingRequestHistory.current = false;
+            }
+          }}
         >
           <div className="sync-menu-heading">
             <div className="sync-menu-heading-copy">
@@ -707,52 +715,69 @@ export function SyncMenu({
                       />
                       History ({historyCount})
                     </summary>
-                    {attention.historyRequests.map((request) => (
-                      <p key={request.id}>
-                        {request.title} · {request.status}
-                      </p>
-                    ))}
-                    {attention.historyDrafts.slice(0, 5).map((draft) => (
-                      <p key={draft.id}>
-                        {draft.resource.title} ·{" "}
-                        {draft.dismissalReason === "superseded"
-                          ? "superseded"
-                          : draft.status}
-                      </p>
-                    ))}
-                    {attention.historyDrafts.length > 5 && (
-                      <p>
-                        {attention.historyDrafts.length - 5} more saved changes
-                      </p>
-                    )}
-                    {attention.activity.map((activity) => (
-                      <div key={activity.id}>
-                        <p>
-                          {memberName(activity.author)} continued your session
-                          as a copy.
-                        </p>
-                        <small>{resourceTitle(activity.copyId)}</small>
+                    <div className="sync-history-content">
+                      <ul className="sync-history-list" role="list">
+                        {attention.historyRequests.map((request) => (
+                          <li key={request.id}>
+                            <p>{request.title}</p>
+                            <small className="sync-history-status">
+                              {request.status}
+                            </small>
+                          </li>
+                        ))}
+                        {attention.historyDrafts.slice(0, 5).map((draft) => (
+                          <li key={draft.id}>
+                            <p>{draft.resource.title}</p>
+                            <small className="sync-history-status">
+                              {draft.dismissalReason === "superseded"
+                                ? "superseded"
+                                : draft.status}
+                            </small>
+                          </li>
+                        ))}
+                        {attention.historyDrafts.length > 5 && (
+                          <li>
+                            <small>
+                              {attention.historyDrafts.length - 5} more saved
+                              changes
+                            </small>
+                          </li>
+                        )}
+                        {attention.activity.map((activity) => (
+                          <li key={activity.id}>
+                            <div>
+                              <p>{resourceTitle(activity.copyId)}</p>
+                              <small>
+                                {memberName(activity.author)} continued your
+                                session as a copy.
+                              </small>
+                            </div>
+                            <Button
+                              variant="tertiary"
+                              size="sm"
+                              onClick={() =>
+                                leave(() => onOpen(activity.copyId))
+                              }
+                            >
+                              View copy
+                            </Button>
+                          </li>
+                        ))}
+                      </ul>
+                      {onOpenRequestHistory && requestHistoryCount > 0 && (
                         <Button
-                          variant="tertiary"
+                          className="sync-history-action"
                           size="sm"
-                          onClick={() => leave(() => onOpen(activity.copyId))}
-                        >
-                          View copy
-                        </Button>
-                      </div>
-                    ))}
-                    {onReview &&
-                      attention.historyRequests.length +
-                        attention.historyDrafts.length >
-                        0 && (
-                        <Button
-                          size="sm"
-                          variant="tertiary"
-                          onClick={() => leave(onReview)}
+                          variant="secondary"
+                          onClick={() => {
+                            openingRequestHistory.current = true;
+                            leave(onOpenRequestHistory);
+                          }}
                         >
                           Open request history
                         </Button>
                       )}
+                    </div>
                   </details>
                 </section>
               )}

@@ -165,25 +165,26 @@
     align-items: flex-start;
     gap: 16px;
   }
-  .connector-check-button {
+  .connector-action-button {
     background: var(--surface-tertiary);
     box-shadow: inset 0 0 0 1px var(--border-default);
   }
-  .connector-check-button:hover:not(:disabled) {
+  .connector-action-button:hover:not(:disabled) {
     box-shadow:
       inset 0 0 0 1px var(--border-default),
       inset 0 0 0 100vmax var(--state-hover);
   }
-  .connector-check-button:active:not(:disabled) {
+  .connector-action-button:active:not(:disabled) {
     box-shadow:
       inset 0 0 0 1px var(--border-default),
       inset 0 0 0 100vmax var(--state-pressed);
   }
   .connector-setup {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 16px;
     padding: 20px;
-  }
-  .settings-panel .connector-setup h3 {
-    margin: 0 0 12px;
   }
   .connector-setup ol {
     display: grid;
@@ -194,9 +195,5 @@
     color: var(--text-secondary);
     font-size: var(--body-sm-font-size);
     line-height: var(--body-sm-line-height);
-  }
-  .connector-setup strong {
-    color: var(--text-primary);
-    font-weight: var(--font-weight-medium);
   }
 }

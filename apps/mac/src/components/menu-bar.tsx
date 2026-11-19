@@ -128,6 +128,7 @@ export function MenuBar() {
 
   const open = () => void act("menu_bar_action", { action: "open" });
   const signedIn = Boolean(state?.user) && !state?.onboarding;
+  const openInStatus = Boolean(state) && !signedIn;
   const progress = signedIn && state?.running ? state.progress : null;
   const syncing = Boolean(progress) || (signedIn && requested);
   const detail = !state
@@ -180,18 +181,17 @@ export function MenuBar() {
           variant="primary"
           className="menu-bar-sync"
           disabled={
-            !state ||
             busy ||
-            Boolean(readError) ||
-            (signedIn && (!state.running || syncing))
+            (!openInStatus &&
+              (!state?.running || Boolean(readError) || syncing))
           }
-          onClick={signedIn ? () => void act("sync_now") : open}
+          onClick={openInStatus ? open : () => void act("sync_now")}
         >
           <Icon
-            icon={signedIn ? RefreshCwIcon : ArrowUpRightIcon}
+            icon={openInStatus ? ArrowUpRightIcon : RefreshCwIcon}
             className={syncing ? "menu-bar-spinning" : ""}
           />
-          {signedIn ? (syncing ? "Syncing…" : "Sync now") : "Open Orka"}
+          {openInStatus ? "Open Orka" : syncing ? "Syncing…" : "Sync now"}
         </Button>
         <div className="menu-bar-progress">
           <div className="menu-bar-progress-label">
@@ -246,9 +246,11 @@ export function MenuBar() {
         </p>
       )}
       <footer className="menu-bar-footer">
-        <Button variant="tertiary" size="sm" onClick={open} disabled={busy}>
-          Open Orka <Icon icon={ArrowUpRightIcon} size="sm" />
-        </Button>
+        {!openInStatus && (
+          <Button variant="tertiary" size="sm" onClick={open} disabled={busy}>
+            Open Orka <Icon icon={ArrowUpRightIcon} size="sm" />
+          </Button>
+        )}
         <Button
           variant="tertiary"
           size="sm"

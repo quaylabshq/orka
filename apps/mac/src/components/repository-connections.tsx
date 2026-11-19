@@ -35,6 +35,7 @@ import {
   type RepositorySource,
 } from "./repository-picker.js";
 import { useRepositories, useRepositoryCommand } from "./use-repositories.js";
+import { LoadingRegion } from "./loading-region.js";
 import { activeSources } from "./project-sources.js";
 import { useToastNotice } from "./toasts.js";
 export { useRepositoryCommand } from "./use-repositories.js";
@@ -78,7 +79,18 @@ export function RepositoryConnections({
   onConnecting?: () => void;
 }) {
   const controller = useRepositories(project, state, refresh);
-  const { call, enabled, busy, access, jobs, run, error, status } = controller;
+  const {
+    call,
+    enabled,
+    capabilitiesPending,
+    status,
+    statusPending,
+    busy,
+    access,
+    jobs,
+    run,
+    error,
+  } = controller;
   const multipleSources =
     activeSources(project.sources).filter(
       (source) =>
@@ -132,16 +144,49 @@ export function RepositoryConnections({
     setNotice("");
     setDialog({ kind: "connect", source });
   };
+  if (capabilitiesPending)
+    return renderLocalFolders ? (
+      <LoadingRegion
+        id="repository-capabilities"
+        label="Checking available source connections…"
+        loading
+      >
+        <div className="settings-group settings-source-list">
+          {activeSources(project.sources).map((source) => (
+            <div className="settings-folder-row" key={source.id}>
+              <div className="settings-folder-identity">
+                <FolderIcon className="settings-folder-icon" />
+                <span>{source.name}</span>
+              </div>
+            </div>
+          ))}
+          {project.role === "owner" && (
+            <div className="settings-add-folder-row">
+              <Button className="settings-add-folder" variant="tertiary">
+                <PlusIcon size={16} aria-hidden="true" />
+                Add Folder
+              </Button>
+            </div>
+          )}
+        </div>
+      </LoadingRegion>
+    ) : null;
   if (!enabled) return <>{renderLocalFolders?.(false, openPicker)}</>;
   const disabled = busy || folderBusy;
   const sources = activeSources(project.sources).filter(
     (source) => source.repository,
   );
+  const reconnectSource = sources.find((source) =>
+    ["not_connected", "reconnect"].includes(access[source.id]?.state),
+  );
   const needsAccountConnection =
-    !status?.connected ||
-    Object.values(access).some((value) =>
-      ["not_connected", "reconnect"].includes(value.state),
-    );
+    status !== null && (!status.connected || Boolean(reconnectSource));
+  const statusUnavailable = !status && !statusPending;
+  const checkingConnection =
+    statusPending ||
+    (status?.connected &&
+      !reconnectSource &&
+      sources.some((source) => !access[source.id]));
   const dialogUi =
     dialog?.kind === "connect" ? (
       <RepositoryPicker
@@ -540,23 +585,52 @@ export function RepositoryConnections({
             </ItemContextMenu>
           );
         })}
-        {(needsAccountConnection || project.role === "owner") && (
+        {(checkingConnection ||
+          statusUnavailable ||
+          needsAccountConnection ||
+          project.role === "owner") && (
           <div className="settings-add-folder-row">
-            <Button
-              variant={needsAccountConnection ? "primary" : "tertiary"}
-              className={
-                needsAccountConnection ? undefined : "settings-add-folder"
-              }
-              disabled={disabled}
-              onClick={() =>
-                openPicker(needsAccountConnection ? sources[0] : undefined)
-              }
-            >
-              {!needsAccountConnection && (
-                <PlusIcon size={16} aria-hidden="true" />
-              )}
-              {needsAccountConnection ? "Connect GitHub" : "Connect repository"}
-            </Button>
+            {checkingConnection ? (
+              <LoadingRegion
+                id="repository-connection-action"
+                label="Checking GitHub connection…"
+                loading
+              >
+                <Button className="settings-add-folder" variant="tertiary">
+                  <PlusIcon size={16} aria-hidden="true" />
+                  Connect repository
+                </Button>
+              </LoadingRegion>
+            ) : statusUnavailable ? (
+              <Button
+                disabled={disabled}
+                onClick={() => void run(controller.reloadStatus)}
+              >
+                Retry GitHub status
+              </Button>
+            ) : (
+              <Button
+                variant={needsAccountConnection ? "primary" : "tertiary"}
+                className={
+                  needsAccountConnection ? undefined : "settings-add-folder"
+                }
+                disabled={disabled}
+                onClick={() =>
+                  openPicker(
+                    needsAccountConnection
+                      ? (reconnectSource ?? sources[0])
+                      : undefined,
+                  )
+                }
+              >
+                {!needsAccountConnection && (
+                  <PlusIcon size={16} aria-hidden="true" />
+                )}
+                {needsAccountConnection
+                  ? "Connect GitHub"
+                  : "Connect repository"}
+              </Button>
+            )}
           </div>
         )}
       </div>

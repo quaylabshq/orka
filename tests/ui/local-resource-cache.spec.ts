@@ -177,6 +177,32 @@ test("returning to a stale catalog refreshes in the background while retaining r
   await expect(rows(page)).toHaveText("one session user 2");
 });
 
+test("returning to Home after the sync interval rereads the persisted index without discovery", async ({
+  page,
+}) => {
+  await page.clock.install();
+  await fixture(page);
+  await select(page, "session");
+  await expect(rows(page)).toHaveText("one session user 1");
+  await select(page, "home");
+  await select(page, "Project two");
+  await page.clock.fastForward(61_000);
+  await page.evaluate(() => {
+    const key = JSON.stringify([
+      "one",
+      "session",
+      "user",
+      "https://first.example",
+    ]);
+    const saved = JSON.parse(sessionStorage.getItem(key)!);
+    saved.resources[0].title = "Updated saved session";
+    sessionStorage.setItem(key, JSON.stringify(saved));
+  });
+  await select(page, "Project one");
+  await expect(rows(page)).toHaveText("Updated saved session");
+  expect(await calls(page)).toHaveLength(1);
+});
+
 test("hidden windows defer periodic discovery until visible", async ({
   page,
 }) => {

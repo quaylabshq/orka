@@ -24,6 +24,7 @@ import {
 import { FluidHoverHighlight } from "./fluid-hover-highlight.js";
 import { ItemContextMenu, type ItemMenuAction } from "./item-menu.js";
 import { inactiveBadge } from "./project-inactive.js";
+import type { LocalKind } from "./use-local-resources.js";
 
 const sections = [
   { kind: "home", label: "Home", icon: HouseIcon },
@@ -118,6 +119,7 @@ export function ProjectPicker({
   const reduced = useReducedMotion();
   const listRef = React.useRef<HTMLDivElement>(null);
   const focusEdge = React.useRef<"first" | "last" | null>(null);
+  const actionTakesFocus = React.useRef(false);
   const typeahead = React.useRef({ text: "", time: 0 });
   const listId = React.useId();
   const hover = useFluidHover(listRef, {
@@ -173,6 +175,7 @@ export function ProjectPicker({
     (projectActions?.(project) ?? []).map((action) => ({
       ...action,
       onSelect: () => {
+        actionTakesFocus.current = open && action.restoreFocus === false;
         setOpen(false);
         action.onSelect();
       },
@@ -245,6 +248,14 @@ export function ProjectPicker({
               aria-label="Project menu"
               onKeyDownCapture={() => setKeyboard(true)}
               onPointerDownCapture={() => setKeyboard(false)}
+              onCloseAutoFocus={(event) => {
+                if (
+                  actionTakesFocus.current &&
+                  document.activeElement !== document.body
+                )
+                  event.preventDefault();
+                actionTakesFocus.current = false;
+              }}
               onOpenAutoFocus={(event) => {
                 event.preventDefault();
                 const items = options();
@@ -351,6 +362,7 @@ export function ProjectNavigation({
   projectId,
   activeKind,
   resources,
+  pendingCounts,
   onNavigate,
   collapsed,
 }: {
@@ -358,6 +370,7 @@ export function ProjectNavigation({
   projectId: string;
   activeKind: ProjectPage | null;
   resources: Resource[];
+  pendingCounts: readonly LocalKind[];
   onNavigate: (kind: ProjectPage) => void;
   collapsed: boolean;
 }) {
@@ -409,7 +422,9 @@ export function ProjectNavigation({
           item={item}
           index={index}
           count={
-            item.kind === "home" || item.kind === "env"
+            item.kind === "home" ||
+            item.kind === "env" ||
+            pendingCounts.some((kind) => kind === item.kind)
               ? undefined
               : (counts[item.kind] ?? 0)
           }

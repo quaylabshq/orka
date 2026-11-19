@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { Project, ProjectPage, ProjectResource } from "../types.js";
 
-type LocalKind = "memory" | "session" | "plan";
+const kinds = ["memory", "session", "plan"] as const;
+export type LocalKind = (typeof kinds)[number];
 type Catalog = {
   resources: ProjectResource[];
   errors: string[];
@@ -11,10 +12,11 @@ type Catalog = {
 type CatalogEntry = {
   catalog?: Catalog;
   updatedAt: number;
+  restoredAt?: number;
+  restoring?: Promise<void>;
   pending?: Promise<void>;
 };
 type Catalogs = Partial<Record<LocalKind, CatalogEntry>>;
-const kinds: LocalKind[] = ["memory", "session", "plan"];
 
 /** Restore the private index before refreshing it independently of workspace sync. */
 export function useLocalResources({
@@ -54,6 +56,51 @@ export function useLocalResources({
   const kind = kinds.find((kind) => kind === page);
   const [, setVersion] = useState(0);
   const [retry, setRetry] = useState(0);
+  const args = useMemo(
+    () =>
+      projectId && user && serviceOrigin
+        ? { projectId, accountId: user, serviceOrigin }
+        : null,
+    [projectId, user, serviceOrigin],
+  );
+  const restore = useCallback(
+    (kind: LocalKind) => {
+      if (!args) return;
+      const entry = (catalogs[kind] ??= { updatedAt: 0 });
+      if (entry.restoring) return entry.restoring;
+      if (
+        entry.pending ||
+        (entry.restoredAt !== undefined &&
+          Date.now() - entry.restoredAt < refreshInterval)
+      )
+        return;
+      entry.restoring = invoke<Catalog | null>("local_resource_catalog", {
+        ...args,
+        kind,
+        refresh: false,
+      })
+        .then((value) => {
+          entry.catalog = value ?? { resources: [], errors: [] };
+          entry.restoredAt = Date.now();
+        })
+        .catch(() => {
+          // Keep any previous rows. The open collection can still discover
+          // resources and surface errors even when its saved index cannot load.
+          entry.catalog ??= { resources: [], errors: [] };
+        })
+        .finally(() => {
+          entry.restoring = undefined;
+          setVersion((version) => version + 1);
+        });
+      return entry.restoring;
+    },
+    [args, catalogs, refreshInterval],
+  );
+  useEffect(() => {
+    // Home and the sidebar need all persisted counts. Only the open
+    // collection below performs filesystem discovery.
+    for (const kind of kinds) void restore(kind);
+  }, [restore]);
   const refresh = useCallback(() => {
     // Home mutations can affect any cached collection in this project.
     for (const entry of kind ? [catalogs[kind]] : Object.values(catalogs)) {
@@ -62,7 +109,7 @@ export function useLocalResources({
     setRetry((value) => value + 1);
   }, [catalogs, kind]);
   useEffect(() => {
-    if (!kind || !projectId || !user || !serviceOrigin) return;
+    if (!kind || !args) return;
     let canceled = false;
     let timer: number | undefined;
     let running = false;
@@ -91,26 +138,16 @@ export function useLocalResources({
         (!entry.updatedAt || Date.now() - entry.updatedAt >= refreshInterval)
       ) {
         // A request belongs to its catalog, so navigation can reuse its result.
-        const args = {
-          projectId,
-          kind,
-          accountId: user,
-          serviceOrigin,
-        };
-        entry.pending = (async () => {
-          if (!entry.catalog) {
-            const cached = await invoke<Catalog | null>(
-              "local_resource_catalog",
-              { ...args, refresh: false },
-            );
-            entry.catalog = cached ?? { resources: [], errors: [] };
-            setVersion((value) => value + 1);
-          }
-          return invoke<Catalog | null>("local_resource_catalog", {
-            ...args,
-            refresh: true,
-          });
-        })()
+        const restoring =
+          entry.restoring ?? (entry.catalog ? undefined : restore(kind));
+        entry.pending = Promise.resolve(restoring)
+          .then(() =>
+            invoke<Catalog | null>("local_resource_catalog", {
+              ...args,
+              kind,
+              refresh: true,
+            }),
+          )
           .then((result) => {
             entry.catalog = {
               resources: result?.resources ?? [],
@@ -119,6 +156,7 @@ export function useLocalResources({
             };
             // A busy daemon has not checked freshness. Retry soon, keeping the
             // persisted rows visible without turning contention into an error.
+            entry.restoredAt = Date.now();
             entry.updatedAt = result?.refreshPending ? 0 : Date.now();
           })
           .catch((error) => {
@@ -130,12 +168,12 @@ export function useLocalResources({
           })
           .finally(() => {
             entry.pending = undefined;
+            setVersion((value) => value + 1);
           });
       }
       if (entry.pending) {
         setVersion((value) => value + 1);
         await entry.pending;
-        if (!canceled) setVersion((value) => value + 1);
       }
       running = false;
       if (!canceled) schedule();
@@ -150,7 +188,7 @@ export function useLocalResources({
       window.clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [catalogs, projectId, kind, user, serviceOrigin, refreshInterval, retry]);
+  }, [args, catalogs, kind, refreshInterval, restore, retry]);
   const memories = catalogs.memory?.catalog?.resources;
   const sessions = catalogs.session?.catalog?.resources;
   const plans = catalogs.plan?.catalog?.resources;
@@ -160,13 +198,12 @@ export function useLocalResources({
   );
   return {
     resources,
+    pendingCounts: args ? kinds.filter((kind) => !catalogs[kind]?.catalog) : [],
     errors: kind ? (catalogs[kind]?.catalog?.errors ?? []) : [],
     result: kind ? catalogs[kind]?.catalog : undefined,
     loading: Boolean(
       kind &&
-      projectId &&
-      user &&
-      serviceOrigin &&
+      args &&
       (catalogs[kind]?.pending ||
         catalogs[kind]?.catalog?.refreshPending ||
         !catalogs[kind]?.catalog),

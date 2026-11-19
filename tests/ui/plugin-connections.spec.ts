@@ -290,10 +290,21 @@ test("connector installation instructions open the maintained guide and recover 
     .getByRole("button", { name: "Connectors", exact: true })
     .click();
   const panel = page.locator('.settings-panel[data-section="connections"]');
-  const instructions = panel.getByRole("button", {
+  const setup = panel.getByRole("region", { name: "Connect or reconnect" });
+  const instructions = setup.getByRole("button", {
     name: "Installation instructions",
     exact: true,
   });
+  await expect(instructions).toHaveCSS("box-shadow", /inset/);
+  await expect
+    .poll(() =>
+      setup.evaluate((card) => {
+        const steps = card.querySelector("ol")!.getBoundingClientRect();
+        const button = card.querySelector("button")!.getBoundingClientRect();
+        return button.top - steps.bottom;
+      }),
+    )
+    .toBeGreaterThanOrEqual(12);
   const url =
     "https://github.com/quaylabshq/orka/blob/main/plugins/orka/README.md#connect";
   await instructions.click();

@@ -12,6 +12,7 @@ interface Call {
   input: Record<string, unknown>;
   context: unknown;
 }
+type ConnectionCheck = "capabilities" | "status" | "access-status";
 declare global {
   interface Window {
     repositoryCalls: Call[];
@@ -21,6 +22,8 @@ declare global {
       complete: () => void;
       install: () => void;
       revokeClone: () => void;
+      finishCheck: (stage: ConnectionCheck) => void;
+      holdCheck: (stage: ConnectionCheck) => void;
     };
   }
 }
@@ -55,6 +58,8 @@ async function fixture(
     localMatch?: boolean;
     matchingFailsOnce?: boolean;
     manyRepositories?: number;
+    deferConnectionChecks?: boolean;
+    reconnectSource?: string;
   } = {},
 ) {
   await page.addInitScript((options) => {
@@ -157,6 +162,19 @@ async function fixture(
       failure = options.failed ?? false,
       connected = options.github ?? true,
       onboardingActive = options.onboarding ?? false;
+    const pendingChecks = new Map<string, Promise<void>>();
+    const finishChecks = new Map<string, () => void>();
+    const holdCheck = (stage: ConnectionCheck) => {
+      pendingChecks.set(
+        stage,
+        new Promise<void>((resolve) => finishChecks.set(stage, resolve)),
+      );
+    };
+    if (options.deferConnectionChecks) {
+      holdCheck("capabilities");
+      holdCheck("status");
+      holdCheck("access-status");
+    }
     const requests = [
       {
         id: "request",
@@ -179,6 +197,8 @@ async function fixture(
     Object.assign(window, {
       repositoryCalls: [],
       repositoryControl: {
+        holdCheck,
+        finishCheck: (stage: ConnectionCheck) => finishChecks.get(stage)?.(),
         revokeClone: () => {
           jobs[0].state = "failed";
           jobs[0].message = "GitHub access revoked";
@@ -253,6 +273,8 @@ async function fixture(
               input,
               context: args.context,
             });
+            const pendingCheck = pendingChecks.get(action);
+            if (pendingCheck) await pendingCheck;
             if (action === "capabilities")
               return { enabled: options.enabled ?? true };
             if (action === "status") {
@@ -272,7 +294,11 @@ async function fixture(
             if (action === "access-status") {
               if (failure) throw new Error("Service unavailable");
               return {
-                state: connected ? access : "not_connected",
+                state: !connected
+                  ? "not_connected"
+                  : input.sourceId === options.reconnectSource
+                    ? "reconnect"
+                    : access,
                 checkedAt: "2026-11-09T08:00:00Z",
               };
             }
@@ -479,6 +505,56 @@ async function choose(page: Page, control: Locator, value: string) {
   };
   await page.getByRole("option", { name: labels[value], exact: true }).click();
 }
+
+test("General shows the confirmed repository action without a transient folder or GitHub action", async ({
+  page,
+}) => {
+  await fixture(page, { deferConnectionChecks: true });
+  const section = page.getByRole("region", { name: "Source folders" });
+  const finish = (stage: ConnectionCheck) =>
+    page.evaluate(
+      (stage) => window.repositoryControl.finishCheck(stage),
+      stage,
+    );
+  const connectGitHub = section.getByRole("button", {
+    name: "Connect GitHub",
+    exact: true,
+  });
+  const connectRepository = section.getByRole("button", {
+    name: "Connect repository",
+    exact: true,
+  });
+  await expect(section.getByRole("status")).toHaveText(
+    "Checking available source connections…",
+  );
+  await expect(
+    section.getByRole("button", { name: "Add Folder", exact: true }),
+  ).toHaveCount(0);
+  await finish("capabilities");
+  await expect(
+    section.getByText("Checking GitHub connection…", { exact: true }),
+  ).toBeAttached();
+  await expect(connectGitHub).toHaveCount(0);
+  await finish("status");
+  await expect(connectRepository).toHaveCount(0);
+  await finish("access-status");
+  await expect(connectRepository).toBeEnabled();
+  await expect(connectGitHub).toHaveCount(0);
+
+  const navigation = page.getByRole("navigation", {
+    name: "Settings sections",
+  });
+  await navigation
+    .getByRole("button", { name: "Profile", exact: true })
+    .click();
+  await page.evaluate(() => window.repositoryControl.holdCheck("status"));
+  await navigation
+    .getByRole("button", { name: "General", exact: true })
+    .click();
+  await expect(connectRepository).toBeEnabled();
+  await expect(connectGitHub).toHaveCount(0);
+  await finish("status");
+});
 
 for (const width of [1160, 900])
   test(`automatic access and one connect action at ${width}`, async ({
@@ -991,11 +1067,14 @@ test("a temporary GitHub status failure retries without asking for consent again
   page,
 }) => {
   await fixture(page, { statusFailsOnce: true });
+  await expect(
+    panel(page).getByRole("button", { name: "Connect GitHub", exact: true }),
+  ).toHaveCount(0);
   await panel(page)
-    .getByRole("button", { name: "Connect GitHub", exact: true })
+    .getByRole("button", { name: "Retry GitHub status", exact: true })
     .click();
-  await picker(page)
-    .getByRole("button", { name: "Retry", exact: true })
+  await panel(page)
+    .getByRole("button", { name: "Connect", exact: true })
     .click();
   await expect(
     picker(page).getByRole("button", {
@@ -1006,6 +1085,18 @@ test("a temporary GitHub status failure retries without asking for consent again
   expect((await calls(page)).some((call) => call.action === "begin")).toBe(
     false,
   );
+});
+
+test("the project reconnect action opens GitHub authorization for the affected source", async ({
+  page,
+}) => {
+  await fixture(page, { multiple: true, reconnectSource: "source-two" });
+  await panel(page)
+    .getByRole("button", { name: "Connect GitHub", exact: true })
+    .click();
+  await expect(
+    picker(page).getByRole("button", { name: "Connect GitHub", exact: true }),
+  ).toBeVisible();
 });
 
 test("missing repositories refresh automatically after GitHub approval", async ({

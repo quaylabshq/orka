@@ -50,11 +50,15 @@ test("modal counts unique project resources and preserves completed activity in 
   ).toBeVisible();
   await expect(modal).not.toContainText("Docs access changed");
   await expect(
-    modal.getByText("Project setup notes · approved"),
+    modal.getByText("Project setup notes", { exact: true }),
   ).not.toBeVisible();
   await modal.locator("summary").filter({ hasText: "History (" }).click();
-  await expect(modal).toContainText("Project setup notes · approved");
-  await expect(modal).toContainText("Earlier writing guide · superseded");
+  await expect(
+    modal.getByRole("listitem").filter({ hasText: "Project setup notes" }),
+  ).toContainText("approved");
+  await expect(
+    modal.getByRole("listitem").filter({ hasText: "Earlier writing guide" }),
+  ).toContainText("superseded");
   await expect(modal.getByRole("button", { name: "View copy" })).toBeVisible();
   await expect(status).toHaveAttribute(
     "aria-label",
@@ -82,14 +86,24 @@ test("modal counts unique project resources and preserves completed activity in 
 test("saved history previews keep the original bytes and expose no publication controls", async ({
   page,
 }) => {
+  await page.setViewportSize({ width: 900, height: 640 });
   await page.locator(".workspace-header .sync-status").click();
   const modal = page.getByRole("dialog", {
     name: "Sync status and notifications",
   });
-  await modal.locator("summary").filter({ hasText: "History (" }).click();
-  await modal.getByRole("button", { name: "Open request history" }).click();
+  await modal
+    .locator("summary")
+    .filter({ hasText: "History (" })
+    .press("Enter");
+  const openHistory = modal.getByRole("button", {
+    name: "Open request history",
+  });
+  await expect(openHistory).toHaveCSS("border-top-width", "1px");
+  await openHistory.press("Enter");
   const management = page.getByRole("region", { name: "Manage", exact: true });
-  await management.getByText("History (2)", { exact: true }).click();
+  const history = management.getByRole("region", { name: "Request history" });
+  await expect(history.locator("details")).toHaveAttribute("open", "");
+  await expect(history.locator("summary")).toBeFocused();
   await management
     .getByRole("button", { name: "View saved change", exact: true })
     .click();

@@ -54,8 +54,7 @@ for (const width of [1160, 900]) {
           await expect(resultCount).toHaveText(
             `${count} ${count === 1 ? singular : noun}`,
           );
-          if (width === 900) await expect(resultCount).toBeHidden();
-          else await expect(resultCount).toBeVisible();
+          await expect(resultCount).toBeVisible();
         }
         const right = await toolbar.evaluate((element) => ({
           toolbar: element.getBoundingClientRect().right,
@@ -64,6 +63,11 @@ for (const width of [1160, 900]) {
             .getBoundingClientRect().right,
         }));
         expect(Math.abs(right.toolbar - right.sort)).toBeLessThanOrEqual(1);
+        expect(
+          await toolbar.evaluate(
+            (element) => element.scrollWidth - element.clientWidth,
+          ),
+        ).toBeLessThanOrEqual(1);
         const refreshRight = await page
           .getByRole("button", { name: "Refresh local items", exact: true })
           .evaluate((button) => button.getBoundingClientRect().right);

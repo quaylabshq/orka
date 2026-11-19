@@ -77,6 +77,7 @@ export function MembersPage({
   project,
   state,
   section,
+  historyRequest,
   onSection,
   onRefresh,
   onReviewFile,
@@ -84,6 +85,7 @@ export function MembersPage({
   project: Project;
   state: Snapshot;
   section: ManagementSection;
+  historyRequest?: symbol;
   onSection: (section: ManagementSection) => void;
   onRefresh: () => Promise<void>;
   onReviewFile: (id: string) => void;
@@ -463,6 +465,7 @@ export function MembersPage({
                   project={project}
                   state={state}
                   catalog={catalog}
+                  historyRequest={historyRequest}
                   call={call}
                   run={run}
                   busy={busy}

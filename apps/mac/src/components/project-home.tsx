@@ -18,6 +18,7 @@ import {
 } from "./use-session-titles.js";
 import { skillSummaryKey, useSkillSummaries } from "./use-skill-summaries.js";
 import { useMemberLabel } from "./member-names.js";
+import type { LocalKind } from "./use-local-resources.js";
 import "./project-home.css";
 
 const collections = [
@@ -58,6 +59,7 @@ export function ProjectHome({
   titleCache,
   project,
   resources,
+  pendingCounts,
   user,
   onNavigate,
   onOpen,
@@ -66,6 +68,7 @@ export function ProjectHome({
   titleCache: SessionTitleCache;
   project: Project;
   resources: Resource[];
+  pendingCounts: readonly LocalKind[];
   user?: string | null;
   onNavigate: (kind: Resource["kind"]) => void;
   onOpen: (resource: Resource) => void;
@@ -108,7 +111,9 @@ export function ProjectHome({
     <div className="project-home-overview">
       <section className="home-overview-totals" aria-label="Project totals">
         {collections.map(({ kind, label, icon: CollectionIcon }) => {
-          const count = items.filter((item) => item.kind === kind).length;
+          const count = pendingCounts.some((pending) => pending === kind)
+            ? null
+            : items.filter((item) => item.kind === kind).length;
           return (
             <button
               type="button"
@@ -125,7 +130,9 @@ export function ProjectHome({
                 />
                 {label}
               </span>
-              <strong>{count}</strong>
+              <strong aria-hidden={count === null ? true : undefined}>
+                {count ?? "—"}
+              </strong>
             </button>
           );
         })}
