@@ -1220,7 +1220,8 @@ fn materialize_install(
             )?;
             guard_unbound_destinations(&b, resource, &root, std::slice::from_ref(&path))?;
             let accepted_file = files.first().ok_or("Missing plan file")?;
-            if !crate::plans::file(&path).is_ok_and(|(local_file, _)| &local_file == accepted_file) {
+            if !crate::plans::file(&path).is_ok_and(|(local_file, _)| &local_file == accepted_file)
+            {
                 fs::create_dir_all(&base).map_err(|e| e.to_string())?;
                 packages::write_file(&base, &path, accepted_file)?;
             }
@@ -2463,7 +2464,9 @@ fn reconcile_shared_plan_uploads(db: &mut rusqlite::Connection, project: &str) -
         }
         // Compare every submitted protocol field and account for any optional
         // fields present only in the accepted resource.
-        if input.iter().all(|(key, value)| current.get(key) == Some(value))
+        if input
+            .iter()
+            .all(|(key, value)| current.get(key) == Some(value))
             && ["sourceId", "memory", "contextSources"]
                 .iter()
                 .all(|key| current[*key].is_null() || input.contains_key(*key))
@@ -3009,23 +3012,57 @@ mod queue_tests {
         accepted["access"] = json!({"mode":"publish"});
         db::upsert(&db, "resources", "plan", "a", &accepted).unwrap();
         let put = |id: &str, project: &str, base: u64, resource: Value, error: Option<&str>| {
-            let request = json!({"id":id,"projectId":project,"baseRevision":base,"resource":resource});
+            let request =
+                json!({"id":id,"projectId":project,"baseRevision":base,"resource":resource});
             db.execute(
                 "INSERT INTO outbox VALUES(?,?,'/v2/sync/push',?,?)",
                 params![id, project, request.to_string(), error],
             )
             .unwrap();
         };
-        put("identical", "a", 0, shared_fields.clone(), Some(PLAN_REVISION_CONFLICT));
-        put("another-project", "b", 0, shared_fields.clone(), Some(PLAN_REVISION_CONFLICT));
+        put(
+            "identical",
+            "a",
+            0,
+            shared_fields.clone(),
+            Some(PLAN_REVISION_CONFLICT),
+        );
+        put(
+            "another-project",
+            "b",
+            0,
+            shared_fields.clone(),
+            Some(PLAN_REVISION_CONFLICT),
+        );
         put("newer-request", "a", 1, shared_fields.clone(), None);
-        put("different-error", "a", 0, shared_fields.clone(), Some("403: Forbidden"));
+        put(
+            "different-error",
+            "a",
+            0,
+            shared_fields.clone(),
+            Some("403: Forbidden"),
+        );
         let mut different_copy = shared_fields.clone();
         different_copy["files"][0]["hash"] = json!("local-only");
-        put("different-content", "a", 0, different_copy, Some(PLAN_REVISION_CONFLICT));
+        put(
+            "different-content",
+            "a",
+            0,
+            different_copy,
+            Some(PLAN_REVISION_CONFLICT),
+        );
         let mut different_context = shared_fields;
-        different_context.as_object_mut().unwrap().remove("contextSources");
-        put("different-context", "a", 0, different_context, Some(PLAN_REVISION_CONFLICT));
+        different_context
+            .as_object_mut()
+            .unwrap()
+            .remove("contextSources");
+        put(
+            "different-context",
+            "a",
+            0,
+            different_context,
+            Some(PLAN_REVISION_CONFLICT),
+        );
 
         reconcile_shared_plan_uploads(&mut db, "a").unwrap();
         reconcile_shared_plan_uploads(&mut db, "a").unwrap();
@@ -3039,7 +3076,10 @@ mod queue_tests {
                 json!("different-context"),
             ]
         );
-        assert_eq!(db::rows(&db, "SELECT value FROM resources WHERE id='plan'", &[]).unwrap(), [accepted]);
+        assert_eq!(
+            db::rows(&db, "SELECT value FROM resources WHERE id='plan'", &[]).unwrap(),
+            [accepted]
+        );
         assert!(stale_plan_upload(&db, "a", "plan").unwrap());
     }
 
@@ -3058,7 +3098,12 @@ mod queue_tests {
         assert!(project_has_retryable_errors(&db, "b").unwrap());
         record_result(&db, "a:pull", Err("Could not download an update".into())).unwrap();
         assert!(project_has_retryable_errors(&db, "a").unwrap());
-        assert_eq!(db::rows(&db, "SELECT json_quote(error) FROM errors", &[]).unwrap().len(), 5);
+        assert_eq!(
+            db::rows(&db, "SELECT json_quote(error) FROM errors", &[])
+                .unwrap()
+                .len(),
+            5
+        );
     }
 
     #[test]
@@ -3095,7 +3140,10 @@ mod queue_tests {
         )
         .unwrap();
 
-        assert_eq!(materialize(&db, &project, &accepted).unwrap_err(), PLAN_REVISION_CONFLICT);
+        assert_eq!(
+            materialize(&db, &project, &accepted).unwrap_err(),
+            PLAN_REVISION_CONFLICT
+        );
         reconcile_shared_plan_uploads(&mut db, "a").unwrap();
         materialize(&db, &project, &accepted).unwrap();
 
