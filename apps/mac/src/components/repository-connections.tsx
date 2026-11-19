@@ -1,4 +1,15 @@
-import { FolderIcon, PlusIcon, RefreshCwIcon, XIcon } from "lucide-react";
+import {
+  CopyIcon,
+  ExternalLinkIcon,
+  FolderIcon,
+  FolderSearchIcon,
+  Link2OffIcon,
+  PlusIcon,
+  RefreshCwIcon,
+  TrashIcon,
+  UnplugIcon,
+  XIcon,
+} from "lucide-react";
 import {
   CircleCheckFilledIcon,
   DotFilledIcon,
@@ -275,6 +286,7 @@ export function RepositoryConnections({
             actions.push({
               id: "cancel",
               label: "Cancel clone",
+              icon: XIcon,
               onSelect: () =>
                 void run(async () => {
                   await call("cancel-clone", { id: job.id });
@@ -292,6 +304,7 @@ export function RepositoryConnections({
                 {
                   id: "reveal",
                   label: "Show in Finder",
+                  icon: FolderIcon,
                   disabled,
                   onSelect: () =>
                     void run(async () => {
@@ -304,6 +317,7 @@ export function RepositoryConnections({
                 {
                   id: "copy-path",
                   label: "Copy folder path",
+                  icon: CopyIcon,
                   disabled,
                   onSelect: () =>
                     void run(async () => {
@@ -322,6 +336,7 @@ export function RepositoryConnections({
               actions.push({
                 id: "locate",
                 label: "Use existing folder",
+                icon: FolderSearchIcon,
                 disabled,
                 onSelect: () =>
                   void run(async () => {
@@ -336,6 +351,7 @@ export function RepositoryConnections({
             actions.push({
               id: "github",
               label: "Open repository on GitHub",
+              icon: ExternalLinkIcon,
               disabled,
               onSelect: () =>
                 void run(async () => {
@@ -348,6 +364,7 @@ export function RepositoryConnections({
               actions.push({
                 id: "refresh",
                 label: "Refresh access",
+                icon: RefreshCwIcon,
                 disabled,
                 onSelect: () => void run(() => controller.recheck(source.id)),
               });
@@ -355,6 +372,7 @@ export function RepositoryConnections({
               actions.push({
                 id: "disconnect",
                 label: "Disconnect folder on this Mac",
+                icon: UnplugIcon,
                 separator: true,
                 disabled: disabled || queued > 0,
                 reason:
@@ -367,6 +385,7 @@ export function RepositoryConnections({
               actions.push({
                 id: "unlink",
                 label: "Remove GitHub link",
+                icon: Link2OffIcon,
                 disabled,
                 danger: true,
                 separator: true,
@@ -386,6 +405,7 @@ export function RepositoryConnections({
               actions.push({
                 id: "remove",
                 label: "Remove source folder",
+                icon: TrashIcon,
                 danger: true,
                 disabled: disabled || queued > 0,
                 reason:
