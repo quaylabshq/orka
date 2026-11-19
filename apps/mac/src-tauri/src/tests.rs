@@ -3182,4 +3182,58 @@ fn deleted_skill_capture_coalesces_each_mirror_independently() {
         .iter()
         .any(|(text, id)| text == "Updated Codex variant"
             && !before.iter().any(|(_, old)| id == old)));
+
+    // Align with the other path, then make a shared edit to both paths.
+    fs::write(&second_file, "Updated Codex variant").unwrap();
+    indexer::scan(&f.db, &deleted).unwrap();
+    let aligned = pending();
+    assert_eq!(aligned.len(), 1);
+    assert_eq!(aligned[0].0, "Updated Codex variant");
+
+    fs::write(&first_file, "Codex only").unwrap();
+    fs::write(&second_file, "Claude only").unwrap();
+    indexer::scan(&f.db, &deleted).unwrap();
+    assert_eq!(pending().len(), 2);
+    for file in [&first_file, &second_file] {
+        fs::write(file, "Agreed new variant").unwrap();
+    }
+    indexer::scan(&f.db, &deleted).unwrap();
+    let agreed = pending();
+    assert_eq!(agreed.len(), 1);
+    assert_eq!(agreed[0].0, "Agreed new variant");
+}
+
+#[test]
+fn uninstalled_skill_keeps_its_frozen_request_through_restore() {
+    let f = Fixture::new();
+    let first = f.root.join(".agents/skills/release");
+    let second = f.root.join(".claude/skills/release");
+    fs::create_dir_all(&first).unwrap();
+    fs::write(first.join("SKILL.md"), "Submitted version").unwrap();
+    indexer::scan(&f.db, &f.project).unwrap();
+    let submitted = f.outbox();
+    assert_eq!(submitted.len(), 1);
+
+    let mut deleted = f.project.clone();
+    deleted["deletedAt"] = json!("2026-11-18T00:00:00Z");
+    deleted["archivedAt"] = deleted["deletedAt"].clone();
+    deleted["purgeAfter"] = json!("2026-12-18T00:00:00Z");
+    db::upsert(
+        &f.db,
+        "projects",
+        deleted["id"].as_str().unwrap(),
+        "",
+        &deleted,
+    )
+    .unwrap();
+    deleted["captureOnly"] = json!(true);
+    fs::create_dir_all(&second).unwrap();
+    fs::write(second.join("SKILL.md"), "Divergent variant").unwrap();
+    indexer::scan(&f.db, &deleted).unwrap();
+    assert_eq!(f.outbox(), submitted);
+
+    let id = f.project["id"].as_str().unwrap();
+    db::upsert(&f.db, "projects", id, "", &f.project).unwrap();
+    indexer::scan(&f.db, &f.project).unwrap();
+    assert_eq!(f.outbox(), submitted);
 }

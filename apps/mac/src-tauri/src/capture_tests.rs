@@ -949,4 +949,14 @@ async fn explicit_purge_preserves_local_captures_and_guards_other_pending_work()
     let drafts = db::rows(&f.db, "SELECT value FROM drafts WHERE project=?", &[&f.id]).unwrap();
     let hash = drafts[0]["resource"]["files"][0]["hash"].as_str().unwrap();
     assert_eq!(db::blob_read(hash).unwrap(), b"Recoverable held edit");
+    let snapshot = crate::commands::snapshot().unwrap();
+    assert_eq!(snapshot["inactive"][0]["id"], f.id);
+    assert_eq!(snapshot["inactive"][0]["purged"], true);
+    assert_eq!(snapshot["inactive"][0]["purgeAfter"], Value::Null);
+    assert!(snapshot["projects"].as_array().unwrap().is_empty());
+    let path = f.home.path().join("purged-project.zip");
+    bundles::export_project(&f.db, &f.id, &path).unwrap();
+    let mut zip = zip::ZipArchive::new(fs::File::open(path).unwrap()).unwrap();
+    let id = drafts[0]["id"].as_str().unwrap();
+    assert!(zip.by_name(&format!("drafts/{id}/blobs/{hash}")).is_ok());
 }
