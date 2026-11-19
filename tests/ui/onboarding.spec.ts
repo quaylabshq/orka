@@ -95,6 +95,7 @@ async function fixture(
     staleRows?: string[];
     goneFolderPicks?: string[];
     missingFolderPaths?: string[];
+    excludedHistoryPaths?: string[];
     blockedFolderPicks?: string[];
     worktreePaths?: Record<string, string[]>;
     staleSelection?: string[];
@@ -515,6 +516,9 @@ async function fixture(
                 const missing = [
                   ...(options.goneFolderPicks ?? []),
                   ...(options.missingFolderPaths ?? []),
+                  ...(options.excludedHistoryPaths ?? []).filter((path) =>
+                    input.historyPaths?.includes(path),
+                  ),
                 ];
                 return Object.fromEntries(
                   input.paths.map((path: string) => [
@@ -1866,6 +1870,30 @@ test("an incomplete history rescan keeps confirmed folders and removes missing o
   ).toBeVisible();
   await expect(page.getByText(existing, { exact: true })).toBeVisible();
   await expect(page.getByText(deleted, { exact: true })).toHaveCount(0);
+});
+
+test("an incomplete rescan excludes saved loose chats and retains manual picks", async ({
+  page,
+}) => {
+  const looseChat = "/Users/fixture/Documents/Codex/loose-chat";
+  const pickedChat = "/Users/fixture/Documents/Codex/manual-pick";
+  await fixture(page, {
+    step: "partial-access",
+    projectNames: ["Orka"],
+    staleRows: [looseChat],
+    savedPicks: [pickedChat],
+    restoredUnreadable: [0],
+    excludedHistoryPaths: [looseChat, pickedChat],
+    historyIncomplete: true,
+  });
+  await expect(
+    page.getByRole("heading", { name: "Add Project" }),
+  ).toBeVisible();
+  await expect(page.getByText(looseChat, { exact: true })).toHaveCount(0);
+  await expect(page.getByText(pickedChat, { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("2 of 2 selected", { exact: true }),
+  ).toBeVisible();
 });
 
 test("an acknowledged access issue stays on the restored selection step", async ({

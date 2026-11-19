@@ -1011,6 +1011,13 @@ pub async fn onboarding_command(
             "discover" => discovery::discover(input["path"].as_str()),
             "check-discovered-folders" => {
                 let paths = input["paths"].as_array().ok_or("Choose a project folder")?;
+                let history_paths: Vec<&str> = input["historyPaths"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .collect();
+                let excluded = discovery::excluded_history_folders(&history_paths)?;
                 Ok(Value::Object(
                     paths
                         .iter()
@@ -1019,7 +1026,11 @@ pub async fn onboarding_command(
                         .map(|path| {
                             (
                                 path.to_string(),
-                                json!(check_discovered_folder(Path::new(path))),
+                                if excluded.contains(path) {
+                                    Value::Null
+                                } else {
+                                    json!(check_discovered_folder(Path::new(path)))
+                                },
                             )
                         })
                         .collect(),
