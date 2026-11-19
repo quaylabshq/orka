@@ -16,6 +16,7 @@ mod governance;
 mod history;
 mod indexer;
 mod local_resources;
+mod main_window;
 mod memory_context;
 mod menu_bar;
 mod native;
@@ -364,6 +365,12 @@ fn main() {
         .build(context)
         .expect("Unable to start Orka")
         .run(|app, event| {
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Opened { urls } = &event {
+                if main_window::has_deep_link(urls) {
+                    let _ = main_window::reveal(app);
+                }
+            }
             #[cfg(target_os = "macos")]
             if matches!(event, tauri::RunEvent::Reopen { .. }) {
                 let _ = menu_bar::open_main(app);
