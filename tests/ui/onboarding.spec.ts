@@ -93,6 +93,7 @@ async function fixture(
     pauseDiscovery?: boolean;
     reverseRank?: boolean;
     staleRows?: string[];
+    unknownFolderPaths?: string[];
     goneFolderPicks?: string[];
     missingFolderPaths?: string[];
     excludedHistoryPaths?: string[];
@@ -253,7 +254,12 @@ async function fixture(
                   ...pickRow(path),
                   folderPick: true,
                 })),
-                ...(options.legacyPicks ?? []).map(pickRow),
+                ...(options.legacyPicks ?? []).map((path) => ({
+                  ...pickRow(path),
+                  sources: [],
+                  lastActiveAt: 0,
+                  sessions: 0,
+                })),
                 ...(options.staleRows ?? []).map((path) => ({
                   name: path.split("/").pop() ?? path,
                   path,
@@ -525,7 +531,8 @@ async function fixture(
                     path,
                     missing.includes(path)
                       ? null
-                      : !(options.blockedFolderPicks ?? []).includes(path),
+                      : !options.unknownFolderPaths?.includes(path) &&
+                        !options.blockedFolderPicks?.includes(path),
                   ]),
                 );
               }
@@ -1549,6 +1556,7 @@ test("a restored list drops projects whose folder no longer exists", async ({
   await fixture(page, {
     step: "select",
     staleRows: ["/Users/fixture/.t3/worktrees/orka/removed"],
+    missingFolderPaths: ["/Users/fixture/.t3/worktrees/orka/removed"],
     goneFolderPicks: ["/Users/fixture/Developer/gone"],
   });
   await expect(
@@ -1567,7 +1575,6 @@ test("a selected worktree moves its selection to its main repository", async ({
     step: "select",
     projectNames: ["Orka", "Nimbus"],
     unselected: [0],
-    staleRows: ["/Users/fixture/.t3/worktrees/orka/removed"],
     staleSelection: ["/Users/fixture/.t3/worktrees/orka/feature"],
     worktreePaths: { Orka: ["/Users/fixture/.t3/worktrees/orka/feature"] },
   });
@@ -1579,6 +1586,61 @@ test("a selected worktree moves its selection to its main repository", async ({
       .locator(".onboarding-flow__project", { hasText: "~/Developer/orka" })
       .getByRole("checkbox"),
   ).toBeChecked();
+});
+
+test("a restored T3 pick stays visible without selecting a same-named repo", async ({
+  page,
+}) => {
+  const path = "/Users/fixture/.t3/worktrees/orka/feature";
+  await fixture(page, {
+    step: "select",
+    projectNames: ["Orka"],
+    unselected: [0],
+    staleRows: [path],
+    unknownFolderPaths: [path],
+  });
+  for (const reload of [false, true]) {
+    if (reload) await page.reload();
+    await expect(
+      page.getByRole("heading", { name: "Some folders need access" }),
+    ).toBeVisible();
+    await expect(page.getByText(path, { exact: true })).toBeVisible();
+  }
+  await page
+    .getByRole("button", { name: "Review projects", exact: true })
+    .click();
+  await expect(
+    page
+      .locator(".onboarding-flow__project", { hasText: "~/Developer/orka" })
+      .getByRole("checkbox"),
+  ).not.toBeChecked();
+});
+
+test("a restored readable T3 worktree keeps its own selection", async ({
+  page,
+}) => {
+  const path = "/Users/fixture/.t3/worktrees/orka/feature";
+  const stale = "/Users/fixture/Developer/stale";
+  await fixture(page, {
+    step: "select",
+    projectNames: ["Orka"],
+    unselected: [0],
+    staleRows: [path, stale],
+  });
+  await expect(page.getByText(stale, { exact: true })).toHaveCount(0);
+  await expect(
+    page.getByText("1 of 2 selected", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page
+      .locator(".onboarding-flow__project", { hasText: path })
+      .getByRole("checkbox"),
+  ).toBeChecked();
+  await expect(
+    page
+      .locator(".onboarding-flow__project", { hasText: "~/Developer/orka" })
+      .getByRole("checkbox"),
+  ).not.toBeChecked();
 });
 
 test("adding a folder works when coding history is unreadable", async ({
@@ -1666,6 +1728,71 @@ test("a restored list from an older version keeps its picked folders", async ({
   ).toBeVisible();
   await expect(page.getByText("/Users/fixture/Elsewhere/legacy")).toBeVisible();
 });
+
+for (const multiFolder of [false, true]) {
+  test(`v0.3.15 ${multiFolder ? "multi-folder picks" : "parent folder picks"} keep their repo selections after a complete rescan`, async ({
+    page,
+  }) => {
+    const folder = "/Users/fixture/Elsewhere/workspace";
+    const child = `${folder}/atlas`;
+    const second = multiFolder
+      ? "/Users/fixture/OtherWorkspace/beacon"
+      : `${folder}/beacon`;
+    const stale = `${folder}-old/removed`;
+    await fixture(page, {
+      step: "select",
+      projectNames: ["Orka"],
+      unselected: [0],
+      folder,
+      legacyPicks: multiFolder ? [child, second] : [child],
+      // A legacy Add more could leave earlier history rows in the same draft.
+      staleRows: multiFolder ? [stale] : [second, stale],
+    });
+    await expect(page.getByText(stale, { exact: true })).toHaveCount(0);
+    await expect(
+      page.getByText("2 of 3 selected", { exact: true }),
+    ).toBeVisible();
+    for (const path of [child, second])
+      await expect(
+        page
+          .locator(".onboarding-flow__project", { hasText: path })
+          .getByRole("checkbox"),
+      ).toBeChecked();
+    await expect
+      .poll(async () =>
+        (await calls(page))
+          .filter((call) => call.args.action === "checkpoint")
+          .at(-1)
+          ?.args.input.projects.filter(
+            (row: { folderPick?: boolean }) => row.folderPick,
+          )
+          .map((row: { path: string }) => row.path)
+          .sort(),
+      )
+      .toEqual([child, second].sort());
+  });
+}
+
+for (const marked of [false, true]) {
+  test(`a restored ${marked ? "marked" : "legacy"} pick does not keep stale history`, async ({
+    page,
+  }) => {
+    const picked = "/Users/fixture/Elsewhere/picked";
+    const stale = "/Users/fixture/Developer/stale";
+    await fixture(page, {
+      step: "select",
+      projectNames: ["Orka"],
+      folder: picked,
+      staleRows: [stale],
+      ...(marked ? { savedPicks: [picked] } : { legacyPicks: [picked] }),
+    });
+    await expect(
+      page.getByText("2 of 2 selected", { exact: true }),
+    ).toBeVisible();
+    await expect(page.getByText(picked, { exact: true })).toBeVisible();
+    await expect(page.getByText(stale, { exact: true })).toHaveCount(0);
+  });
+}
 
 test("a restored list that empties moves to the empty step", async ({
   page,
@@ -1870,6 +1997,29 @@ test("an incomplete history rescan keeps confirmed folders and removes missing o
   ).toBeVisible();
   await expect(page.getByText(existing, { exact: true })).toBeVisible();
   await expect(page.getByText(deleted, { exact: true })).toHaveCount(0);
+});
+
+test("an incomplete rescan keeps a readable saved worktree instead of folding its selection", async ({
+  page,
+}) => {
+  const path = "/Users/fixture/.t3/worktrees/orka/feature";
+  await fixture(page, {
+    step: "partial-access",
+    projectNames: ["Orka"],
+    unselected: [0],
+    restoredUnreadable: [0],
+    staleRows: [path],
+    worktreePaths: { Orka: [path] },
+    historyIncomplete: true,
+  });
+  await expect(
+    page.getByText("1 of 2 selected", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page
+      .locator(".onboarding-flow__project", { hasText: path })
+      .getByRole("checkbox"),
+  ).toBeChecked();
 });
 
 test("an incomplete rescan excludes saved loose chats and retains manual picks", async ({

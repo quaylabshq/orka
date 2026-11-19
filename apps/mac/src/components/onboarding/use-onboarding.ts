@@ -34,13 +34,17 @@ interface DiscoveryResult {
 }
 
 function pickedRows(draft: OnboardingDraft) {
-  // Older drafts have no markers, but record whether a folder was picked.
-  if (
-    draft.folder &&
-    !draft.projects.some((row) => row.folderPick !== undefined)
-  )
-    return draft.projects;
-  return draft.projects.filter((row) => row.folderPick);
+  const { folder } = draft;
+  const prefix = folder.endsWith("/") ? folder : `${folder}/`;
+  // Legacy drafts saved only the first picker path. Other picks have no history sources.
+  return draft.projects.filter(
+    (row) =>
+      row.folderPick ??
+      (!!folder &&
+        (row.path === folder ||
+          row.path.startsWith(prefix) ||
+          row.sources.length === 0)),
+  );
 }
 
 function discoveryStep(projects: DiscoveredProject[]): OnboardingStep {
@@ -76,17 +80,17 @@ function reconcile(
   projects: DiscoveredProject[],
   extra: string[] = [],
 ) {
-  const rows = ranked(projects);
-  const listed = new Set(rows.map((row) => row.path));
+  const listed = new Set(projects.map((row) => row.path));
   const keep = new Set(extra);
   for (const path of before.selected) {
     if (listed.has(path)) {
       keep.add(path);
       continue;
     }
-    const matches = rows.filter((row) => row.worktreePaths?.includes(path));
+    const matches = projects.filter((row) => row.worktreePaths?.includes(path));
     if (matches.length === 1) keep.add(matches[0].path);
   }
+  const rows = ranked(projects);
   return {
     projects: rows,
     selected: rows
@@ -260,10 +264,15 @@ export function useOnboarding(
       picks: DiscoveredProject[] = [],
     ) => {
       const pickedPaths = new Set(pickedRows(before).map((row) => row.path));
-      const foldedPaths = new Set(
-        history.projects.flatMap((row) => row.worktreePaths ?? []),
-      );
       const incomplete = history.incomplete || history.truncated;
+      const foldCounts = new Map<string, number>();
+      if (!incomplete) {
+        for (const row of history.projects) {
+          for (const path of row.worktreePaths ?? []) {
+            foldCounts.set(path, (foldCounts.get(path) ?? 0) + 1);
+          }
+        }
+      }
       const rows = new Map(history.projects.map((row) => [row.path, row]));
       for (const pick of picks) {
         const latest = rows.get(pick.path);
@@ -275,12 +284,20 @@ export function useOnboarding(
         });
       }
       const recheck: DiscoveredProject[] = [];
+      const selected = new Set(before.selected);
       for (const saved of before.projects) {
         const isPick = pickedPaths.has(saved.path);
         const latest = rows.get(saved.path);
         if (latest) {
           if (isPick) rows.set(saved.path, { ...latest, folderPick: true });
-        } else if (isPick || (incomplete && !foldedPaths.has(saved.path))) {
+          continue;
+        }
+        // History credit alone does not prove where a saved T3 selection belongs.
+        const uncreditedT3 =
+          foldCounts.get(saved.path) !== 1 &&
+          /\/\.t3\/worktrees\/[^/]+\/[^/]+$/.test(saved.path) &&
+          (saved.readable === false || selected.has(saved.path));
+        if (isPick || incomplete || uncreditedT3) {
           recheck.push(isPick ? { ...saved, folderPick: true } : saved);
         }
       }
@@ -358,13 +375,14 @@ export function useOnboarding(
         : append && pickedRows(before).length < before.projects.length
           ? await historyWithFallback()
           : { projects: [] };
-      const discovered = append
-        ? await mergeDiscovery(before, history, picks)
-        : [
-            ...new Map(
-              [...history.projects, ...picks].map((row) => [row.path, row]),
-            ).values(),
-          ];
+      const discovered =
+        append || !paths
+          ? await mergeDiscovery(before, history, picks)
+          : [
+              ...new Map(
+                [...history.projects, ...picks].map((row) => [row.path, row]),
+              ).values(),
+            ];
       const chosen = new Set(
         results.flatMap((result) =>
           result.projects.length === 1 ? [result.projects[0].path] : [],

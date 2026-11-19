@@ -161,20 +161,38 @@ impl Budget {
         }
         true
     }
-    fn entries(&mut self, path: &Path) -> Vec<fs::DirEntry> {
+    fn entries(
+        &mut self,
+        path: &Path,
+        eligible: impl Fn(&fs::DirEntry) -> bool,
+    ) -> Vec<fs::DirEntry> {
         const MAX_ENTRIES: usize = 2001;
+        let mut listed = Vec::new();
         match fs::read_dir(path) {
             Ok(entries) => {
-                let mut entries = entries.flatten();
-                let listed = entries.by_ref().take(MAX_ENTRIES).collect();
-                self.truncated |= entries.next().is_some();
-                listed
+                for entry in entries {
+                    // After the deadline we can no longer tell what's in the directory.
+                    if self.start.elapsed() >= Duration::from_secs(5) {
+                        self.truncated = true;
+                        break;
+                    }
+                    let Ok(entry) = entry else {
+                        self.truncated = true;
+                        continue;
+                    };
+                    if !eligible(&entry) {
+                        continue;
+                    }
+                    if listed.len() == MAX_ENTRIES {
+                        self.truncated = true;
+                        break;
+                    }
+                    listed.push(entry);
+                }
             }
-            Err(e) => {
-                self.denied |= e.kind() == std::io::ErrorKind::PermissionDenied;
-                vec![]
-            }
+            Err(e) => self.denied |= e.kind() == std::io::ErrorKind::PermissionDenied,
         }
+        listed
     }
 }
 fn modified(path: &Path) -> u64 {
@@ -435,27 +453,19 @@ fn claude(
     budget: &mut Budget,
 ) -> Result<Vec<Record>> {
     let mut records = Vec::new();
-    for folder in budget.entries(&root.join("projects")) {
+    for folder in budget.entries(&root.join("projects"), |entry| {
+        entry.file_type().is_ok_and(|kind| kind.is_dir())
+    }) {
         if !budget.tick() {
             break;
         }
-        if !folder
-            .file_type()
-            .is_ok_and(|k| k.is_dir() && !k.is_symlink())
-        {
-            continue;
-        }
-        let mut files: Vec<_> = budget
-            .entries(&folder.path())
-            .into_iter()
-            .filter(|f| {
-                let path = f.path();
-                path.extension().is_some_and(|e| e == "jsonl")
-                    && f.file_type().is_ok_and(|k| k.is_file())
-                    // Sync imports use their own native IDs and carry historical timestamps.
-                    && !path.file_stem().and_then(|name| name.to_str()).is_some_and(|id| imported.contains(id))
-            })
-            .collect();
+        let mut files = budget.entries(&folder.path(), |file| {
+            let path = file.path();
+            path.extension().is_some_and(|e| e == "jsonl")
+                && file.file_type().is_ok_and(|kind| kind.is_file())
+                // Sync imports use their own native IDs and carry historical timestamps.
+                && !path.file_stem().and_then(|name| name.to_str()).is_some_and(|id| imported.contains(id))
+        });
         files.sort_by_key(|f| std::cmp::Reverse(modified(&f.path())));
         let count = files.len();
         let days = active_days(files.iter().map(|f| modified(&f.path())));
@@ -477,12 +487,14 @@ fn claude(
         }
     }
     let config = home.join(".claude.json");
+    let metadata = fs::symlink_metadata(&config);
+    if metadata.as_ref().is_ok_and(|m| !m.is_file())
+        || metadata.is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+    {
+        return Ok(records);
+    }
     if budget.next() {
-        let file = if fs::symlink_metadata(&config).is_ok_and(|m| m.file_type().is_symlink()) {
-            return Ok(records);
-        } else {
-            fs::File::open(config)
-        };
+        let file = fs::File::open(config);
         if file
             .as_ref()
             .is_err_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied)
@@ -516,7 +528,14 @@ fn codex_files(root: &Path, depth: usize, budget: &mut Budget, files: &mut Vec<P
     if depth == 0 {
         return;
     }
-    let mut entries = budget.entries(root);
+    let mut entries = budget.entries(root, |entry| {
+        entry.file_type().is_ok_and(|kind| {
+            (kind.is_dir() && depth > 1)
+                || (kind.is_file()
+                    && entry.file_name().to_string_lossy().starts_with("rollout-")
+                    && crate::history::is_session(&entry.path()))
+        })
+    });
     entries.sort_by_key(|e| std::cmp::Reverse(e.file_name()));
     for entry in entries {
         if files.len() >= 1000 {
@@ -526,17 +545,9 @@ fn codex_files(root: &Path, depth: usize, budget: &mut Budget, files: &mut Vec<P
         if !budget.tick() {
             break;
         }
-        let Ok(kind) = entry.file_type() else {
-            continue;
-        };
-        if kind.is_symlink() {
-            continue;
-        }
-        if kind.is_dir() {
+        if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
             codex_files(&entry.path(), depth - 1, budget, files);
-        } else if entry.file_name().to_string_lossy().starts_with("rollout-")
-            && crate::history::is_session(&entry.path())
-        {
+        } else {
             files.push(entry.path());
         }
     }
@@ -557,14 +568,14 @@ fn folder(
     {
         add(found, root, home, None, 0, 0);
     }
-    for entry in budget.entries(root) {
-        if found.len() >= 200 || !budget.next() {
-            break;
-        }
+    if depth == 1 {
+        return;
+    }
+    for entry in budget.entries(root, |entry| {
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if name.starts_with('.')
-            || [
+        !name.starts_with('.')
+            && ![
                 "node_modules",
                 "target",
                 "vendor",
@@ -573,15 +584,13 @@ fn folder(
                 "Library",
             ]
             .contains(&name.as_ref())
-        {
-            continue;
+            && entry.file_type().is_ok_and(|kind| kind.is_dir())
+    }) {
+        if found.len() >= 200 {
+            budget.truncated = true;
+            break;
         }
-        if entry
-            .file_type()
-            .is_ok_and(|k| k.is_dir() && !k.is_symlink())
-        {
-            folder(&entry.path(), depth - 1, found, home, budget, false);
-        }
+        folder(&entry.path(), depth - 1, found, home, budget, false);
     }
 }
 fn history(
@@ -595,7 +604,7 @@ fn history(
     let mut files = vec![];
     codex_files(&codex_root.join("sessions"), 5, budget, &mut files);
     files.sort_by_key(|p| std::cmp::Reverse(modified(p)));
-    for file in files.into_iter().take(1000) {
+    for file in files {
         if !budget.next() {
             break;
         }
@@ -1404,14 +1413,94 @@ mod tests {
         assert_eq!(found[&project].sessions, 1);
     }
     #[test]
-    fn codex_file_limit_reports_skipped_history() {
+    fn codex_file_limit_ignores_entries_that_cannot_contain_history() {
         let temp = tempfile::tempdir().unwrap();
-        fs::write(temp.path().join("rollout-next.jsonl"), "{}\n").unwrap();
-        let mut files = vec![PathBuf::new(); 1000];
+        for index in 0..2002 {
+            fs::write(temp.path().join(format!("noise-{index}.txt")), "").unwrap();
+        }
+        fs::write(temp.path().join("rollout-last.jsonl"), "{}\n").unwrap();
+        let mut files = vec![PathBuf::new(); 999];
         let mut budget = Budget::new();
         codex_files(temp.path(), 5, &mut budget, &mut files);
         assert_eq!(files.len(), 1000);
+        assert!(!budget.truncated);
+    }
+    #[test]
+    fn codex_file_limit_stops_before_descending_into_remaining_folders() {
+        let temp = tempfile::tempdir().unwrap();
+        let last = temp.path().join("rollout-last.jsonl");
+        fs::write(&last, "{}\n").unwrap();
+        // The remaining folder sorts after the final rollout. Its contents
+        // aren't inspected, so the caller must treat the scan as truncated.
+        fs::create_dir(temp.path().join("2025")).unwrap();
+        let mut files = vec![PathBuf::new(); 999];
+        let mut budget = Budget::new();
+        codex_files(temp.path(), 5, &mut budget, &mut files);
+        assert_eq!(files.len(), 1000);
+        assert_eq!(files.last(), Some(&last));
+        assert_eq!(budget.walked, 1);
         assert!(budget.truncated);
+    }
+    #[test]
+    fn claude_project_folder_cap_reports_truncation_and_leaves_transcripts_intact() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path();
+        let root = home.join(".claude");
+        let folder = root.join("projects/orka");
+        fs::create_dir_all(&folder).unwrap();
+        let transcript = format!("{}\n", json!({"cwd": home.join("orka")}));
+        let files: Vec<_> = (0..2002)
+            .map(|index| folder.join(format!("{index}.jsonl")))
+            .collect();
+        for file in &files {
+            fs::write(file, &transcript).unwrap();
+        }
+        let mut budget = Budget::new();
+        let records = claude(home, &root, &BTreeSet::new(), &mut budget).unwrap();
+        assert!(budget.truncated);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].sessions, 2001);
+        for file in files {
+            assert_eq!(fs::read_to_string(file).unwrap(), transcript);
+        }
+    }
+    #[test]
+    fn folder_project_cap_reports_truncation_without_removing_repositories() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = fs::canonicalize(temp.path()).unwrap();
+        let root = home.join("workspace");
+        let repositories: Vec<_> = (0..201)
+            .map(|index| root.join(format!("project-{index}")).join(".git"))
+            .collect();
+        for git in &repositories {
+            fs::create_dir_all(git).unwrap();
+        }
+        let mut found = BTreeMap::new();
+        let mut budget = Budget::new();
+        folder(&root, 4, &mut found, &home, &mut budget, true);
+        assert!(budget.truncated);
+        assert_eq!(found.len(), 200);
+        assert!(repositories.iter().all(|git| git.is_dir()));
+    }
+    #[test]
+    fn folder_visit_cap_reports_truncation_and_preserves_skipped_data() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = fs::canonicalize(temp.path()).unwrap();
+        let root = home.join("workspace");
+        let skipped = root.join("nested");
+        fs::create_dir_all(skipped.join(".git")).unwrap();
+        fs::create_dir(root.join(".git")).unwrap();
+        let saved = skipped.join("saved.txt");
+        fs::write(&saved, "keep me").unwrap();
+        let mut found = BTreeMap::new();
+        let mut budget = Budget {
+            files: 1999,
+            ..Budget::new()
+        };
+        folder(&root, 4, &mut found, &home, &mut budget, true);
+        assert!(budget.truncated);
+        assert_eq!(found.into_keys().collect::<Vec<_>>(), [root]);
+        assert_eq!(fs::read_to_string(saved).unwrap(), "keep me");
     }
     fn add_origin(project: &Path, repo: &str) {
         fs::create_dir_all(project.join(".git")).unwrap();

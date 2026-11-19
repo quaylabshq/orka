@@ -957,22 +957,25 @@ fn setup_status() -> Result<Value> {
         json!({"hooks":status,"background":{"enabled":db::get(&db,"background")?==true,"running":db::daemon_running()?},"hidden":db::get(&db,"setupHidden")?,"completedAt":db::get(&db,"setupCompletedAt")?}),
     )
 }
-/// Returns no status only when the path is confirmed missing or no longer a folder.
+/// Returns None for a confirmed deletion, or Some(false) when access is unavailable.
 fn check_discovered_folder(path: &Path) -> Option<bool> {
     match fs::metadata(path) {
         Ok(metadata) if metadata.is_dir() => Some(fs::read_dir(path).is_ok()),
-        Ok(_) => None,
-        Err(error) if error.kind() == ErrorKind::NotFound => {
-            // Paths on a disconnected macOS volume can look like deleted folders.
-            let volumes = Path::new("/Volumes");
-            let mount = path.strip_prefix(volumes).ok()?.iter().next()?;
-            if fs::metadata(volumes.join(mount)).is_err() {
-                Some(false)
-            } else {
-                None
-            }
+        Err(error)
+            if error.kind() == ErrorKind::NotFound
+                // A dangling symlink may point into an offline mount.
+                && fs::symlink_metadata(path).is_err_and(|error| error.kind() == ErrorKind::NotFound)
+                && path.parent().is_some_and(|parent| {
+                    // A missing volume root can mean the volume was disconnected.
+                    parent != Path::new("/Volumes")
+                        && fs::read_dir(parent)
+                            .and_then(|mut entries| entries.next().transpose())
+                            .is_ok()
+                }) =>
+        {
+            None
         }
-        Err(_) => Some(false),
+        _ => Some(false),
     }
 }
 
@@ -1179,8 +1182,17 @@ mod tests {
         fs::remove_dir(&picked).unwrap();
         assert_eq!(check_discovered_folder(&picked), None);
 
+        let missing_parent = directory.path().join("network-home/project");
+        assert_eq!(check_discovered_folder(&missing_parent), Some(false));
+        #[cfg(unix)]
+        {
+            let link = directory.path().join("link");
+            std::os::unix::fs::symlink(missing_parent, &link).unwrap();
+            assert_eq!(check_discovered_folder(&link), Some(false));
+        }
+
         fs::write(&picked, b"file").unwrap();
-        assert_eq!(check_discovered_folder(&picked), None);
+        assert_eq!(check_discovered_folder(&picked), Some(false));
         let offline = PathBuf::from("/Volumes")
             .join(format!("orka-test-{}", uuid::Uuid::new_v4()))
             .join("picked");
