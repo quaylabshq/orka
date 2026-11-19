@@ -9,8 +9,6 @@
 }
 
 .sign-in.onboarding-entry {
-  --onboarding-copper: #c4865a;
-  --onboarding-link: #60a5fa;
   position: relative;
   isolation: isolate;
   padding: calc(100vh * 105 / 900) 24px 32px;
@@ -45,8 +43,9 @@
   background:
     linear-gradient(var(--surface-secondary), var(--surface-secondary))
       padding-box,
-    linear-gradient(180deg, #60a5fa1a 0%, #25252500 43.6965%) border-box,
-    var(--surface-stroke);
+    linear-gradient(180deg, var(--blue-surface) 0%, transparent 43.6965%)
+      border-box,
+    var(--border-default);
   box-shadow: var(--shadow-modal);
 }
 .sign-in.onboarding-entry--recovery {
@@ -86,8 +85,8 @@
   gap: 12px;
 }
 .onboarding-auth-recovery__actions .ui-button--primary {
-  background: #f2eeeb;
-  color: #080808;
+  background: var(--action-solid);
+  color: var(--text-on-solid);
   box-shadow: none;
 }
 
@@ -136,14 +135,14 @@
   border: 0;
   border-radius: 2px;
   background: transparent;
-  color: var(--onboarding-link);
+  color: var(--blue-text);
   font: inherit;
   cursor: pointer;
 }
 
 .onboarding-entry__sign-in:focus-visible,
 .onboarding-entry__legal a:focus-visible {
-  outline: 1px solid var(--focus-ring);
+  outline: 1px solid var(--border-focus);
   outline-offset: 3px;
 }
 
@@ -182,7 +181,7 @@
 
 .onboarding-entry__field .ui-field__control {
   height: 44px;
-  border: 1px solid var(--surface-stroke);
+  border: 1px solid var(--border-default);
   /* WebKit can retain a disabled transition's colors after native navigation. */
   transition: none;
 }
@@ -196,24 +195,26 @@
 }
 
 .onboarding-entry__submit.ui-button {
-  --button-disabled-bg: var(--interaction-hover);
-  --button-disabled-text: var(--text-primary);
   border-radius: 10px;
   color: var(--text-primary);
-  background: var(--onboarding-copper)
-    url("/onboarding/email-button-texture.png") center / cover;
+  background: var(--brand-copper) url("/onboarding/email-button-texture.png")
+    center / cover;
   box-shadow: none;
 }
 
 .onboarding-entry__submit.ui-button:hover:not(:disabled) {
-  background: var(--onboarding-copper)
-    url("/onboarding/email-button-texture.png") center / cover;
+  background: var(--brand-copper) url("/onboarding/email-button-texture.png")
+    center / cover;
   box-shadow: none;
+}
+
+.onboarding-entry__submit.ui-button:hover:not(:disabled):not(:active) {
   filter: brightness(1.06);
 }
 
 .onboarding-entry__submit.ui-button:disabled {
-  background: var(--interaction-hover);
+  color: var(--text-primary);
+  background: var(--state-hover);
 }
 
 .onboarding-entry__divider {
@@ -284,8 +285,8 @@
   gap: 8px;
   padding: 6px 8px;
   border-radius: 12px;
-  background: rgba(248, 113, 113, 0.12);
-  color: #f87171;
+  background: var(--red-surface);
+  color: var(--red-text);
   font-size: var(--body-sm-font-size);
   line-height: var(--body-sm-line-height);
   letter-spacing: var(--body-sm-letter-spacing);
@@ -299,13 +300,13 @@
 .onboarding-entry__flat-button.ui-button {
   border-radius: 10px;
   color: var(--text-primary);
-  background: var(--interaction-hover);
+  background: var(--state-hover);
   box-shadow: none;
 }
 
 .onboarding-entry__flat-button.ui-button:disabled {
   color: var(--text-primary);
-  background: var(--interaction-hover);
+  background: var(--state-hover);
 }
 
 .onboarding-entry__pending-content {

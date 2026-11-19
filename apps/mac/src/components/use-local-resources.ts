@@ -151,10 +151,15 @@ export function useLocalResources({
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [catalogs, projectId, kind, user, serviceOrigin, refreshInterval, retry]);
+  const memories = catalogs.memory?.catalog?.resources;
+  const sessions = catalogs.session?.catalog?.resources;
+  const plans = catalogs.plan?.catalog?.resources;
+  const resources = useMemo(
+    () => [...(memories ?? []), ...(sessions ?? []), ...(plans ?? [])],
+    [memories, sessions, plans],
+  );
   return {
-    resources: Object.values(catalogs).flatMap(
-      (entry) => entry.catalog?.resources ?? [],
-    ),
+    resources,
     errors: kind ? (catalogs[kind]?.catalog?.errors ?? []) : [],
     result: kind ? catalogs[kind]?.catalog : undefined,
     loading: Boolean(

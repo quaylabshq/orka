@@ -1,6 +1,6 @@
 # Orka design system implementation
 
-The native frontend now uses Pitch color tokens, the approved Inter Variable scale, and shared Button, Icon, and IconButton components. Existing command handlers and native workflow payloads are retained.
+The native frontend now uses the 24 color tokens in `design-system.css` (mirrored from the Orka Library `Colors` collection), the approved Inter Variable scale, and shared Button, Icon, and IconButton components. Existing command handlers and native workflow payloads are retained.
 
 ## Sources
 
@@ -25,7 +25,7 @@ The native frontend now uses Pitch color tokens, the approved Inter Variable sca
 </Button>
 ```
 
-Variants are `primary`, `secondary`, and `tertiary`; sizes are `lg`, `md`, and `sm`. Defaults are secondary/md. The default HTML type is `button`; use `type="submit"` explicitly in forms. Native disabled, focus, keyboard, ref, and click behavior is preserved. Secondary text and icon buttons keep their dark fill with no outer or inset shadows in any state. Tertiary text actions remain text only.
+Variants are `primary`, `secondary`, and `tertiary`; sizes are `lg`, `md`, and `sm`. Defaults are secondary/md. The default HTML type is `button`; use `type="submit"` explicitly in forms. Native disabled, focus, keyboard, ref, and click behavior is preserved. Primary buttons darken on press, including with reduced motion. Secondary buttons retain their fill under hover and pressed overlays. Tertiary buttons are transparent at rest.
 
 Text and icon buttons keep their resting size on hover. Background, color, and permitted shadow changes provide feedback without moving or resizing their labels and icons. Pointer press retains a 97% scale: press takes 100ms and release takes 160ms, using `cubic-bezier(0.23, 1, 0.32, 1)`. Disabled controls, keyboard focus, and reduced-motion interactions stay stationary. This follows the Emil design engineering guidance to reduce frequent hover motion and reserve scale for deliberate press feedback.
 

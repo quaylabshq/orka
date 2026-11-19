@@ -26,7 +26,7 @@
   }
   .plugin-authorization-content:focus-visible,
   .connector-feedback:focus-visible {
-    outline: 2px solid var(--focus-ring);
+    outline: 2px solid var(--border-focus);
     outline-offset: -2px;
   }
   .plugin-authorization .plugin-authorization-content p {
@@ -52,8 +52,8 @@
     overflow-wrap: anywhere;
     margin: 0;
     padding: 12px 24px;
-    border-bottom: 1px solid var(--surface-stroke);
-    color: var(--text-danger);
+    border-bottom: 1px solid var(--border-default);
+    color: var(--red-text);
     font-size: var(--body-xs-font-size);
     line-height: var(--body-xs-line-height);
   }
@@ -122,7 +122,7 @@
   }
   .connector-consent-account {
     padding: 20px 0;
-    border-block: 1px solid var(--surface-stroke);
+    border-block: 1px solid var(--border-default);
   }
   .connector-identity {
     display: flex;
@@ -157,7 +157,7 @@
     padding: 20px;
   }
   .connector-card-section + .connector-card-section {
-    border-top: 1px solid var(--surface-stroke);
+    border-top: 1px solid var(--border-default);
   }
   .connector-card-actions {
     display: flex;
@@ -167,13 +167,17 @@
   }
   .connector-check-button {
     background: var(--surface-tertiary);
-    box-shadow: inset 0 0 0 1px var(--surface-stroke);
+    box-shadow: inset 0 0 0 1px var(--border-default);
   }
   .connector-check-button:hover:not(:disabled) {
-    background: var(--interaction-hover);
+    box-shadow:
+      inset 0 0 0 1px var(--border-default),
+      inset 0 0 0 100vmax var(--state-hover);
   }
   .connector-check-button:active:not(:disabled) {
-    background: var(--interaction-selected);
+    box-shadow:
+      inset 0 0 0 1px var(--border-default),
+      inset 0 0 0 100vmax var(--state-pressed);
   }
   .connector-setup {
     padding: 20px;

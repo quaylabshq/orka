@@ -34,7 +34,7 @@
   }
   .orka-toast,
   .toast-queued {
-    border: 1px solid var(--surface-stroke);
+    border: 1px solid var(--border-default);
     border-radius: var(--radius-overlay);
     background: var(--surface-tertiary);
     box-shadow: var(--shadow-workspace);
@@ -73,7 +73,7 @@
   .toast-timer {
     position: absolute;
     inset: 0;
-    background: var(--interaction-selected);
+    background: var(--state-pressed);
     transform-origin: left center;
     pointer-events: none;
   }

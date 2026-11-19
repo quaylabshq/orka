@@ -529,11 +529,13 @@ export function ResourceItemMenu({
   resource,
   file,
   extraActions,
+  onOpenChange,
   children,
 }: {
   resource: ProjectResource;
   file?: string;
   extraActions?: ItemMenuAction[];
+  onOpenChange?: (open: boolean) => void;
   children: (actions: ItemMenuAction[]) => React.ReactElement;
 }) {
   const context = useContext(ResourceMenuContext);
@@ -545,7 +547,11 @@ export function ResourceItemMenu({
       extraActions={extraActions}
     >
       {(actions) => (
-        <ItemContextMenu actions={actions} label={`${resource.kind} actions`}>
+        <ItemContextMenu
+          actions={actions}
+          label={`${resource.kind} actions`}
+          onOpenChange={onOpenChange}
+        >
           {children(actions)}
         </ItemContextMenu>
       )}
