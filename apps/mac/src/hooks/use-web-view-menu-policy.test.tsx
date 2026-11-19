@@ -1,5 +1,6 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
+import { BookOpenIcon } from "lucide-react";
 import { ItemContextMenu } from "../components/item-menu.js";
 import { Switch } from "../components/switch.js";
 import { useWebViewMenuPolicy } from "./use-web-view-menu-policy.js";
@@ -88,7 +89,7 @@ test("item menus still open on rows and yield to text fields inside them", () =>
   render(
     <Policy>
       <ItemContextMenu
-        actions={[{ id: "open", label: "Open", onSelect }]}
+        actions={[{ id: "open", label: "Open", icon: BookOpenIcon, onSelect }]}
         label="Row actions"
       >
         <div>

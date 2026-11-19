@@ -1,4 +1,10 @@
-import { ChevronDownIcon, XIcon } from "lucide-react";
+import {
+  ChevronDownIcon,
+  ShieldUserIcon,
+  UnplugIcon,
+  UserPlusIcon,
+  XIcon,
+} from "lucide-react";
 import { GithubMarkIcon } from "./icons.js";
 import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -7,6 +13,7 @@ import type { Project } from "../types.js";
 import type { RepositoryController } from "./use-repositories.js";
 import { Overlay } from "./overlay.js";
 import { Button } from "./button.js";
+import { Icon } from "./icon.js";
 import { IconButton } from "./icon-button.js";
 import { TextField } from "./text-field.js";
 import { connectProject } from "./use-project-setup.js";
@@ -380,18 +387,21 @@ export function RepositoryPicker({
               }
             >
               <Button size="sm" onClick={() => void run(manageAccess)}>
+                <Icon icon={ShieldUserIcon} variant="secondary" />
                 Manage GitHub access
               </Button>
               <Button
                 size="sm"
                 onClick={() => void run(controller.connectGitHub)}
               >
+                <Icon icon={UserPlusIcon} variant="secondary" />
                 Connect another GitHub account
               </Button>
               <Button
                 size="sm"
                 onClick={() => void run(controller.disconnectGitHub)}
               >
+                <Icon icon={UnplugIcon} variant="secondary" />
                 Disconnect GitHub
               </Button>
             </ActionPopover>

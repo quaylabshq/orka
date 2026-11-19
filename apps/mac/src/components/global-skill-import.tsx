@@ -1,4 +1,11 @@
-import { CheckIcon, PlusIcon, RefreshCwIcon, XIcon } from "lucide-react";
+import {
+  ArrowDownAZIcon,
+  ChartNoAxesColumnIncreasingIcon,
+  CheckIcon,
+  PlusIcon,
+  RefreshCwIcon,
+  XIcon,
+} from "lucide-react";
 import React, {
   useCallback,
   useEffect,
@@ -394,8 +401,12 @@ function GlobalSkillsDialog({
           value={sort}
           onChange={setSort}
           options={[
-            { value: "usage", label: "Most used" },
-            { value: "name", label: "Name" },
+            {
+              value: "usage",
+              label: "Most used",
+              icon: ChartNoAxesColumnIncreasingIcon,
+            },
+            { value: "name", label: "Name", icon: ArrowDownAZIcon },
           ]}
         />
       </div>

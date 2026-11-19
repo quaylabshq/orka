@@ -408,6 +408,9 @@ for (const viewport of [
       exact: true,
     });
     await expect(menu).toBeVisible();
+    await expect(
+      menu.locator('[role="menuitemradio"] > .ui-icon:first-child > svg'),
+    ).toHaveCount(2);
     await expect(page.locator(".index-sort-menu")).toHaveCSS("opacity", "1");
     await expect(
       menu.getByRole("menuitemradio", { name: "Most used", exact: true }),
