@@ -1,5 +1,3 @@
-use tauri::Manager;
-
 /// Orka's URL scheme. Sign-in callbacks and join links share it.
 const SCHEME: &str = "orka";
 
@@ -8,23 +6,9 @@ pub fn has_deep_link(urls: &[tauri::Url]) -> bool {
     urls.iter().any(|url| url.scheme() == SCHEME)
 }
 
-/// Brings the main window forward: unminimized, visible, focused, and on
-/// macOS the app itself activated so the window's Space comes to the front.
-pub fn reveal(app: &tauri::AppHandle) -> tauri::Result<()> {
-    #[cfg(target_os = "macos")]
-    app.show()?;
-    if let Some(window) = app.get_webview_window("main") {
-        window.unminimize()?;
-        window.show()?;
-        window.set_focus()?;
-        #[cfg(target_os = "macos")]
-        activate();
-    }
-    Ok(())
-}
-
+/// Activates Orka so macOS switches to the Space holding its window.
 #[cfg(target_os = "macos")]
-fn activate() {
+pub fn activate() {
     use objc2_app_kit::NSApplication;
     let Some(mtm) = objc2::MainThreadMarker::new() else {
         return;

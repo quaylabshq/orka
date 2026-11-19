@@ -368,7 +368,7 @@ fn main() {
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Opened { urls } = &event {
                 if main_window::has_deep_link(urls) {
-                    let _ = main_window::reveal(app);
+                    let _ = menu_bar::open_main(app);
                 }
             }
             #[cfg(target_os = "macos")]
