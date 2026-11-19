@@ -1,10 +1,18 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import {
+  ArchiveIcon,
+  FolderIcon,
+  LogOutIcon,
+  RotateCcwIcon,
+  Trash2Icon,
+} from "lucide-react";
 import type { Project } from "../../types.js";
 import { ActivityIndicator } from "../activity-indicator.js";
 import { Button } from "../button.js";
 import { Overlay } from "../overlay.js";
 import { TextField } from "../text-field.js";
+import { Icon } from "../icon.js";
 
 const errorText = (error: unknown) => String(error).replace(/^Error:\s*/, "");
 
@@ -50,7 +58,12 @@ export function SettingsDanger({
   const [dialogError, setDialogError] = useState("");
   const [sectionError, setSectionError] = useState("");
   const [notice, setNotice] = useState("");
-  const [working, setWorking] = useState(false);
+  const [operation, setOperation] = useState<
+    "confirm" | { projectId: string } | null
+  >(null);
+  const working = operation !== null;
+  const lifecycleProjectId =
+    typeof operation === "object" ? operation?.projectId : null;
   const disabled = busy || working;
   const [capabilities, setCapabilities] = useState<ProjectCapabilities | null>(
     null,
@@ -114,7 +127,7 @@ export function SettingsDanger({
   const lifecycle = async (target: Project, action: "archive" | "restore") => {
     setSectionError("");
     setNotice("");
-    setWorking(true);
+    setOperation({ projectId: target.id });
     try {
       await run(() =>
         invoke("project_command", {
@@ -131,7 +144,7 @@ export function SettingsDanger({
     } catch (error) {
       setSectionError(errorText(error));
     } finally {
-      setWorking(false);
+      setOperation(null);
     }
   };
 
@@ -142,7 +155,7 @@ export function SettingsDanger({
       return;
     const target = dialog;
     setDialogError("");
-    setWorking(true);
+    setOperation("confirm");
     try {
       await run(() =>
         invoke("project_command", {
@@ -179,7 +192,7 @@ export function SettingsDanger({
           : message,
       );
     } finally {
-      setWorking(false);
+      setOperation(null);
     }
   };
 
@@ -209,94 +222,114 @@ export function SettingsDanger({
                 : "Changes here affect your account’s access to this project."}
             </p>
           </div>
-          {project.role === "owner" ? (
-            <>
-              <div className="settings-row">
-                <div>
-                  <h3>
+          <div className="settings-group settings-lifecycle-actions">
+            {project.role === "owner" ? (
+              <>
+                <div className="settings-row">
+                  <div>
+                    <h3>
+                      {project.archivedAt
+                        ? "Restore project"
+                        : "Archive project"}
+                    </h3>
+                    <p>
+                      {project.archivedAt
+                        ? "Return this project to the workspace and resume its sync."
+                        : "Hide this project from the workspace and pause its sync."}
+                    </p>
+                  </div>
+                  <Button
+                    size="sm"
+                    aria-busy={lifecycleProjectId === project.id}
+                    disabled={disabled}
+                    onClick={() =>
+                      void lifecycle(
+                        project,
+                        project.archivedAt ? "restore" : "archive",
+                      )
+                    }
+                  >
+                    {lifecycleProjectId === project.id ? (
+                      <ActivityIndicator />
+                    ) : (
+                      <Icon
+                        icon={project.archivedAt ? RotateCcwIcon : ArchiveIcon}
+                      />
+                    )}
                     {project.archivedAt ? "Restore project" : "Archive project"}
-                  </h3>
-                  <p>
-                    {project.archivedAt
-                      ? "Return this project to the workspace and resume its sync."
-                      : "Hide this project from the workspace and pause its sync."}
-                  </p>
+                  </Button>
                 </div>
-                <Button
-                  size="sm"
-                  disabled={disabled}
-                  onClick={() =>
-                    void lifecycle(
-                      project,
-                      project.archivedAt ? "restore" : "archive",
-                    )
-                  }
-                >
-                  {project.archivedAt ? "Restore project" : "Archive project"}
-                </Button>
-              </div>
+                <div className="settings-row">
+                  <div>
+                    <h3>Delete project</h3>
+                    <p>
+                      Remove it for all members.{" "}
+                      {capabilities === null
+                        ? "Checking deletion support…"
+                        : supportsDelete
+                          ? restorePromise
+                          : "Update this service to use recoverable project deletion."}
+                    </p>
+                  </div>
+                  <Button
+                    size="sm"
+                    className="project-lifecycle-danger"
+                    disabled={disabled || !supportsDelete}
+                    onClick={() => open("delete", project)}
+                  >
+                    <Icon icon={Trash2Icon} />
+                    Delete project
+                  </Button>
+                </div>
+              </>
+            ) : (
               <div className="settings-row">
                 <div>
-                  <h3>Delete project</h3>
+                  <h3>Leave project</h3>
                   <p>
-                    Remove it for all members.{" "}
-                    {capabilities === null
-                      ? "Checking deletion support…"
-                      : supportsDelete
-                        ? restorePromise
-                        : "Update this service to use recoverable project deletion."}
+                    Leave this project on all your devices. The project and its
+                    other members stay as they are.
                   </p>
                 </div>
                 <Button
                   size="sm"
-                  className="management-danger"
-                  disabled={disabled || !supportsDelete}
-                  onClick={() => open("delete", project)}
+                  className="project-lifecycle-danger"
+                  disabled={disabled}
+                  onClick={() => open("leave", project)}
                 >
-                  Delete project
+                  <Icon icon={LogOutIcon} />
+                  Leave project
                 </Button>
               </div>
-            </>
-          ) : (
-            <div className="settings-row">
-              <div>
-                <h3>Leave project</h3>
-                <p>
-                  Leave this project on all your devices. The project and its
-                  other members stay as they are.
-                </p>
-              </div>
-              <Button
-                size="sm"
-                className="management-danger"
-                disabled={disabled}
-                onClick={() => open("leave", project)}
-              >
-                Leave project
-              </Button>
-            </div>
-          )}
+            )}
+          </div>
         </section>
       )}
       {archivedProjects.length > 0 && (
         <section className="settings-danger" aria-label="Archived projects">
           <div className="settings-danger-heading">
             <h3>Archived projects</h3>
-            <p>Projects you own with sync paused for all members.</p>
           </div>
           <ul className="settings-group settings-deleted-list">
             {archivedProjects.map((item) => (
               <li className="settings-deleted-row" key={item.id}>
+                <Icon icon={ArchiveIcon} variant="tertiary" />
                 <div className="settings-project-summary">
                   <strong title={item.name}>{item.name}</strong>
-                  <p>Archived</p>
+                  <p>Sync paused</p>
                 </div>
                 <div className="settings-inline-actions">
                   <Button
                     size="sm"
                     disabled={disabled}
                     onClick={() => void lifecycle(item, "restore")}
+                    aria-busy={lifecycleProjectId === item.id}
                   >
+                    {lifecycleProjectId === item.id ? (
+                      <ActivityIndicator />
+                    ) : (
+                      <Icon icon={RotateCcwIcon} />
+                    )}
                     Restore
                   </Button>
                 </div>
@@ -309,11 +342,11 @@ export function SettingsDanger({
         <section className="settings-danger" aria-label="Recently deleted">
           <div className="settings-danger-heading">
             <h3>Recently deleted</h3>
-            <p>Projects you own that can still be restored.</p>
           </div>
           <ul className="settings-group settings-deleted-list">
             {deletedProjects.map((item) => (
               <li className="settings-deleted-row" key={item.id}>
+                <Icon icon={Trash2Icon} variant="tertiary" />
                 <div className="settings-project-summary">
                   <strong title={item.name}>{item.name}</strong>
                   <p>
@@ -325,14 +358,20 @@ export function SettingsDanger({
                 <div className="settings-inline-actions">
                   <Button
                     size="sm"
+                    aria-busy={lifecycleProjectId === item.id}
                     disabled={disabled}
                     onClick={() => void lifecycle(item, "restore")}
                   >
+                    {lifecycleProjectId === item.id ? (
+                      <ActivityIndicator />
+                    ) : (
+                      <Icon icon={RotateCcwIcon} />
+                    )}
                     Restore
                   </Button>
                   <Button
                     size="sm"
-                    className="management-danger"
+                    className="project-lifecycle-danger"
                     disabled={disabled || !supportsDelete}
                     onClick={() => open("purge", item)}
                   >
@@ -345,7 +384,7 @@ export function SettingsDanger({
         </section>
       )}
       {capabilityError && (
-        <p role="alert">
+        <p className="project-lifecycle-feedback" role="alert">
           {capabilityError}{" "}
           <Button
             size="sm"
@@ -356,34 +395,48 @@ export function SettingsDanger({
           </Button>
         </p>
       )}
-      {sectionError && <p role="alert">{sectionError}</p>}
-      {notice && <p role="status">{notice}</p>}
+      {sectionError && (
+        <p className="project-lifecycle-feedback" role="alert">
+          {sectionError}
+        </p>
+      )}
+      {notice && (
+        <p className="project-lifecycle-feedback" role="status">
+          {notice}
+        </p>
+      )}
       {dialog && (
         <Overlay
           open
           title={title}
-          className="settings-confirm"
+          className="settings-confirm project-lifecycle-confirm"
           onClose={() => {
             if (!working) setDialog(null);
           }}
         >
           <h2>{title}</h2>
+          <div className="project-lifecycle-target">
+            <Icon icon={FolderIcon} variant="tertiary" />
+            <span>{dialog.project.name}</span>
+          </div>
           {dialog.kind === "leave" ? (
             <p>
-              Leave “{dialog.project.name}”? Your account will lose access to
-              its shared content on all your devices. The project and its other
-              members stay as they are.
+              Your account will lose access to its shared content on all your
+              devices. The project and its other members stay as they are.
             </p>
           ) : dialog.kind === "delete" ? (
-            <p>
-              {count === null
-                ? "All members of this project will lose access."
-                : `The ${count} ${count === 1 ? "member" : "members"} of this project will lose access.`}{" "}
-              {restorePromise}
-            </p>
+            <>
+              <p>
+                {count === null
+                  ? "All members of this project will lose access."
+                  : `The ${count} ${count === 1 ? "member" : "members"} of this project will lose access.`}
+              </p>
+              <p className="project-lifecycle-policy">{restorePromise}</p>
+            </>
           ) : (
             <p>
-              Delete “{dialog.project.name}” permanently? This can’t be undone.
+              This permanently deletes the project and its shared content for
+              every member. This can’t be undone.
             </p>
           )}
           {dialog.kind !== "leave" && (
@@ -392,21 +445,26 @@ export function SettingsDanger({
               autoFocus
               value={typed}
               disabled={working}
-              hint={`Type ${dialog.project.name} to confirm.`}
+              hint="Enter the project name exactly to confirm."
               onChange={(event) => {
                 setTyped(event.target.value);
                 setDialogError("");
               }}
             />
           )}
-          {dialogError && <p role="alert">{dialogError}</p>}
+          {dialogError && (
+            <p className="project-lifecycle-feedback" role="alert">
+              {dialogError}
+            </p>
+          )}
           <div className="settings-confirm-actions">
             <Button disabled={working} onClick={() => setDialog(null)}>
-              Stay
+              {dialog.kind === "leave" ? "Stay" : "Cancel"}
             </Button>
             <Button
               variant="secondary"
-              className="management-danger"
+              className="project-lifecycle-danger"
+              aria-busy={working}
               disabled={!matches}
               onClick={() => void submit()}
             >

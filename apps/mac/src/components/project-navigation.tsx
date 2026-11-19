@@ -84,7 +84,13 @@ function ProjectOption({
             {badge}
           </small>
         )}
-        {selected && <CheckIcon size={16} aria-hidden="true" />}
+        {selected && (
+          <CheckIcon
+            className="project-menu-selected"
+            size={16}
+            aria-hidden="true"
+          />
+        )}
       </button>
     </ItemContextMenu>
   );

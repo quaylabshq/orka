@@ -45,10 +45,10 @@ test("an inactive project explains the pause and offers export and removal", asy
     page.getByRole("heading", { name: "Deleted notes", exact: true }),
   ).toBeVisible();
   const banner = page.locator(".inactive-project-banner");
-  await expect(banner).toContainText("sync is paused");
-  await expect(banner).toContainText(
-    "Deleted by owner, restorable until Jan 31, 2026",
-  );
+  await expect(
+    banner.getByRole("heading", { name: "Sync paused" }),
+  ).toBeVisible();
+  await expect(banner).toContainText("It can be restored until Jan 31, 2026.");
   await page.screenshot({
     animations: "disabled",
     path: "/tmp/orka-briefs/member-view-2.png",
@@ -70,7 +70,10 @@ test("an inactive project explains the pause and offers export and removal", asy
     .getByRole("button", { name: "Remove from this Mac", exact: true })
     .click();
   const confirm = page.getByRole("dialog");
-  await expect(confirm).toContainText("Remove this project?");
+  await expect(confirm.locator("h2:not(.sr-only)")).toBeVisible();
+  await expect(confirm.locator("h2:not(.sr-only)")).toHaveText(
+    "Remove from this Mac?",
+  );
   await expect(confirm).toContainText("local drafts");
   await page.getByRole("button", { name: "Remove", exact: true }).click();
   await expect
@@ -123,4 +126,40 @@ test("cancelling local removal returns focus at the minimum viewport", async ({
   await page.keyboard.press("Escape");
   await expect(dialog).toHaveCount(0);
   await expect(remove).toBeFocused();
+  await page
+    .getByRole("button", { name: "Collapse sidebar", exact: true })
+    .click();
+  await expect(remove).toBeInViewport();
+  await expect(
+    banner.getByRole("button", { name: "Export", exact: true }),
+  ).toBeInViewport();
+});
+
+test("a selected inactive project keeps its checkmark aligned with its name", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 900, height: 640 });
+  await memberViewFixture(page);
+  let projects = await openPicker(page);
+  await projects
+    .getByRole("option")
+    .filter({ hasText: "Deleted notes" })
+    .click();
+  projects = await openPicker(page);
+  const selected = projects.getByRole("option", { selected: true });
+  await expect(selected).toContainText("Deleted notes");
+  const centers = await selected.evaluate((element) => {
+    const icons = element.querySelectorAll(":scope > svg");
+    const center = (item: Element) => {
+      const box = item.getBoundingClientRect();
+      return box.y + box.height / 2;
+    };
+    return {
+      folder: center(icons[0]),
+      check: center(icons[icons.length - 1]),
+      name: center(element.querySelector(":scope > span")!),
+    };
+  });
+  expect(Math.abs(centers.check - centers.folder)).toBeLessThanOrEqual(1);
+  expect(Math.abs(centers.check - centers.name)).toBeLessThanOrEqual(1);
 });

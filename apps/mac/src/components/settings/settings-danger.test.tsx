@@ -229,6 +229,42 @@ test("recently deleted projects restore from the owner list", async () => {
   );
 });
 
+test("restore progress belongs to its project and a failure keeps recovery available", async () => {
+  let rejectRestore: (error: Error) => void = () => {};
+  const restoring = new Promise((_, reject) => {
+    rejectRestore = reject;
+  });
+  renderDanger({
+    deletedProjects: [
+      deleted,
+      { ...deleted, id: "another", name: "Another project" },
+    ],
+    command: async (_, args) => {
+      if ((args as { action: string }).action === "restore") return restoring;
+      return { softDelete: 1, projectRestoreWindowDays: 7 };
+    },
+  });
+  const buttons = within(
+    screen.getByRole("region", { name: "Recently deleted" }),
+  ).getAllByRole("button", { name: "Restore" });
+  fireEvent.click(buttons[0]);
+  await waitFor(() =>
+    expect(buttons[0].getAttribute("aria-busy")).toBe("true"),
+  );
+  expect(buttons[1].getAttribute("aria-busy")).toBe("false");
+  for (const button of buttons)
+    expect((button as HTMLButtonElement).disabled).toBe(true);
+  rejectRestore(new Error("Offline. Try restoring again when connected."));
+  expect(await screen.findByRole("alert")).toHaveProperty(
+    "textContent",
+    "Offline. Try restoring again when connected.",
+  );
+  await waitFor(() =>
+    expect((buttons[0] as HTMLButtonElement).disabled).toBe(false),
+  );
+  expect(buttons[0].getAttribute("aria-busy")).toBe("false");
+});
+
 test("an older service cannot offer recoverable deletion", async () => {
   renderDanger({ project, softDelete: 0 });
   await screen.findByText(/Update this service/);

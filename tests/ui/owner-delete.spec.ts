@@ -105,7 +105,7 @@ test("a refused delete keeps its message in the open dialog", async ({
     "Sync queued changes and finish pending ENV publications before deleting this project",
   );
   await expect(dialog).toBeVisible();
-  await dialog.getByRole("button", { name: "Stay", exact: true }).click();
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(dialog).toHaveCount(0);
 });
 
@@ -239,7 +239,9 @@ test("permanent deletion wraps the maximum-length name and returns focus to Proj
   const geometry = await dialog.evaluate((element) => ({
     width: element.clientWidth,
     scrollWidth: element.scrollWidth,
-    paragraphs: Array.from(element.querySelectorAll("p")).map((paragraph) => ({
+    paragraphs: Array.from(
+      element.querySelectorAll("p, .project-lifecycle-target"),
+    ).map((paragraph) => ({
       width: paragraph.clientWidth,
       scrollWidth: paragraph.scrollWidth,
     })),

@@ -85,7 +85,7 @@ test("export writes the project to the path the user picks", async () => {
   mocks.save.mockResolvedValue("/tmp/orka.zip");
   mocks.invoke.mockResolvedValue(null);
   renderBanner(deleted);
-  expect(screen.getByText(inactiveBadge(deleted)!)).toBeTruthy();
+  expect(screen.getByRole("heading", { name: "Sync paused" })).toBeTruthy();
   expect(screen.getByText(inactiveMessage(deleted))).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Export" }));
   await waitFor(() =>
@@ -106,7 +106,7 @@ test("removing from this Mac explains export and retained local drafts", async (
   const run = renderBanner(archived);
   fireEvent.click(screen.getByRole("button", { name: "Remove from this Mac" }));
   expect(
-    screen.getByRole("heading", { name: "Remove this project?" }),
+    screen.getByRole("dialog", { name: "Remove from this Mac?" }),
   ).toBeTruthy();
   expect(screen.getByText(removalWarning())).toBeTruthy();
   expect(removalWarning()).toContain("Export first");

@@ -47,17 +47,17 @@ export function inactiveBadge(project: Project): string | null {
 export function inactiveMessage(project: Project): string {
   switch (inactiveReason(project)) {
     case "archived":
-      return "This project is archived by its owner, so sync is paused.";
+      return "This project is archived by its owner. Sync will resume when it’s restored.";
     case "deleted": {
       const deadline = restoreDeadline(project);
       return deadline
-        ? `This project is deleted by its owner, so sync is paused. It can be restored until ${deadline}.`
-        : "This project is deleted by its owner, so sync is paused.";
+        ? `This project is deleted by its owner. It can be restored until ${deadline}.`
+        : "This project is deleted by its owner.";
     }
     case "purged":
-      return "This project was deleted and its shared data purged, so sync is paused.";
+      return "This project was permanently deleted. Its shared content is no longer available.";
     case "removed":
-      return "Access to this project was removed, so sync is paused.";
+      return "Access to this project was removed.";
     default:
       return "";
   }

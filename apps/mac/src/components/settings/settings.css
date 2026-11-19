@@ -431,29 +431,32 @@
     @apply space-y-3 rounded-lg border border-line p-4;
   }
   .settings-danger {
-    @apply flex flex-col border border-line p-4;
-    border-radius: var(--radius-list);
+    @apply flex min-w-0 flex-col gap-3;
+  }
+  .settings-danger-heading h3 {
+    @apply m-0;
   }
   .settings-danger-heading p {
     @apply mt-1;
   }
-  .settings-danger .settings-row {
-    @apply px-0;
+  .settings-lifecycle-actions .settings-row {
+    @apply gap-4 px-4;
   }
-  .settings-danger-heading + .settings-row {
-    border-top: 1px solid var(--surface-stroke);
+  .settings-lifecycle-actions,
+  .settings-deleted-list {
+    --button-secondary-bg: var(--surface-tertiary);
   }
   .settings-deleted-list {
-    @apply mt-3 overflow-hidden;
+    @apply overflow-hidden;
   }
   .settings-deleted-row {
-    @apply flex min-w-0 items-center justify-between gap-4 px-4 py-3;
+    @apply flex min-w-0 items-center justify-between gap-3 px-4 py-4;
   }
   .settings-project-summary {
     @apply min-w-0 flex-1;
   }
   .settings-deleted-row > .settings-inline-actions {
-    @apply shrink-0;
+    @apply shrink-0 gap-2;
   }
   .settings-deleted-row + .settings-deleted-row {
     @apply border-t border-line;
@@ -480,6 +483,39 @@
   }
   .settings-confirm-actions {
     @apply flex flex-wrap justify-end gap-2;
+  }
+  .modal.project-lifecycle-confirm {
+    @apply flex flex-col gap-5 border-0 p-6;
+    border-radius: var(--radius-overlay);
+    background: var(--surface-secondary);
+  }
+  .modal.project-lifecycle-confirm p {
+    @apply m-0 text-body-sm text-secondary;
+  }
+  .modal.project-lifecycle-confirm h2 {
+    @apply m-0;
+  }
+  .modal.project-lifecycle-confirm .ui-field__support p {
+    @apply text-body-xs text-muted;
+  }
+  .project-lifecycle-target {
+    @apply flex min-w-0 items-start gap-2 rounded-lg bg-raised p-3 text-label-sm;
+  }
+  .project-lifecycle-target > span:last-child {
+    @apply min-w-0;
+    overflow-wrap: anywhere;
+  }
+  .modal.project-lifecycle-confirm .project-lifecycle-policy {
+    @apply border-l border-strong pl-3 text-muted;
+  }
+  .project-lifecycle-confirm .settings-confirm-actions {
+    @apply mt-1 border-t border-line pt-5;
+  }
+  .project-lifecycle-danger {
+    --button-secondary-text: var(--text-danger);
+  }
+  .project-lifecycle-feedback {
+    @apply rounded-lg border border-line bg-raised p-3;
   }
   .settings-check {
     @apply flex items-start gap-3 text-body-sm;
