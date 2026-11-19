@@ -928,6 +928,49 @@ fn deleting_a_project_with_queued_changes_is_refused() {
 }
 
 #[test]
+fn leaving_a_project_with_queued_changes_is_refused() {
+    let f = Fixture::new();
+    let id = f.project["id"].as_str().unwrap();
+    f.db.execute(
+        "INSERT INTO outbox VALUES('queued',?,'/test','{}',NULL)",
+        [id],
+    )
+    .unwrap();
+    let error = tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(crate::projects::project_command(
+            "leave".into(),
+            json!({"projectId":id,"expectedPolicyRevision":1}),
+        ))
+        .unwrap_err();
+    assert!(error.contains("before leaving this project"), "{error}");
+    assert_eq!(f.outbox().len(), 1);
+}
+
+#[test]
+fn leaving_a_project_detaches_it_and_keeps_local_work() {
+    let f = Fixture::new();
+    let id = f.project["id"].as_str().unwrap();
+    let file = f.root.join("CLAUDE.md");
+    fs::write(&file, "Keep my local work\n").unwrap();
+    indexer::scan(&f.db, &f.project).unwrap();
+    assert!(!f.outbox().is_empty());
+    f.db.leave(id).unwrap();
+    let saved = db::rows(&f.db, "SELECT value FROM projects WHERE id=?", &[&id])
+        .unwrap()
+        .remove(0);
+    assert_eq!(saved["revoked"], true);
+    assert!(saved["detachedAt"].is_string());
+    assert!(saved["hidden"].is_null());
+    assert_eq!(saved["path"], f.project["path"]);
+    assert!(f.outbox().is_empty());
+    assert!(!db::rows(&f.db, "SELECT value FROM drafts", &[])
+        .unwrap()
+        .is_empty());
+    assert_eq!(fs::read_to_string(file).unwrap(), "Keep my local work\n");
+}
+
+#[test]
 fn deleting_a_project_keeps_its_local_copy_for_a_restore() {
     let f = Fixture::new();
     let id = f.project["id"].as_str().unwrap();

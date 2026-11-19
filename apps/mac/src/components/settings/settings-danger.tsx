@@ -22,7 +22,7 @@ type ProjectCapabilities = {
   projectRestoreWindowDays?: number;
 };
 
-type Dialog = { kind: "delete" | "purge"; project: Project };
+type Dialog = { kind: "delete" | "purge" | "leave"; project: Project };
 
 export function SettingsDanger({
   project,
@@ -41,11 +41,12 @@ export function SettingsDanger({
   members: number | null;
   busy: boolean;
   run: (action: () => Promise<unknown>) => Promise<unknown>;
-  onComplete?: () => void;
+  onComplete?: (message?: string) => void;
 }) {
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [typed, setTyped] = useState("");
   const [memberCount, setMemberCount] = useState<number | null>(null);
+  const [policyRevision, setPolicyRevision] = useState(0);
   const [dialogError, setDialogError] = useState("");
   const [sectionError, setSectionError] = useState("");
   const [notice, setNotice] = useState("");
@@ -56,7 +57,10 @@ export function SettingsDanger({
   );
   const [capabilityError, setCapabilityError] = useState("");
   const [capabilityAttempt, setCapabilityAttempt] = useState(0);
+  const needsDeletionCapabilities =
+    project?.role === "owner" || deletedProjects.length > 0;
   useEffect(() => {
+    if (!needsDeletionCapabilities) return;
     let active = true;
     setCapabilities(null);
     setCapabilityError("");
@@ -75,7 +79,7 @@ export function SettingsDanger({
     return () => {
       active = false;
     };
-  }, [serviceUrl, capabilityAttempt]);
+  }, [serviceUrl, capabilityAttempt, needsDeletionCapabilities]);
   const supportsDelete = capabilities?.softDelete === 1;
   const days = capabilities?.projectRestoreWindowDays;
   const restoreWindow =
@@ -91,16 +95,19 @@ export function SettingsDanger({
     setTyped("");
     setDialogError("");
     setMemberCount(kind === "delete" ? (members ?? null) : null);
-    if (kind !== "delete") return;
-    void invoke<{ members?: unknown[] }>("governance_command", {
-      action: "catalog",
-      input: { projectId: target.id },
-    })
+    setPolicyRevision(target.policyRevision ?? 0);
+    if (kind === "purge") return;
+    void invoke<{ members?: unknown[]; policyRevision?: number }>(
+      "governance_command",
+      { action: "catalog", input: { projectId: target.id } },
+    )
       .then((catalog) => {
-        if (Array.isArray(catalog.members))
+        if (kind === "delete" && Array.isArray(catalog.members))
           setMemberCount(catalog.members.length);
+        if (kind === "leave" && typeof catalog.policyRevision === "number")
+          setPolicyRevision(catalog.policyRevision);
       })
-      // The account-wide consequence stays accurate when a count is unavailable.
+      // Membership counts are optional; never fabricate a team size.
       .catch(() => {});
   };
 
@@ -129,12 +136,9 @@ export function SettingsDanger({
   };
 
   const submit = async () => {
-    if (
-      !dialog ||
-      typed.trim() !== dialog.project.name ||
-      disabled ||
-      !supportsDelete
-    )
+    if (!dialog || disabled) return;
+    const leaving = dialog.kind === "leave";
+    if (!leaving && (typed.trim() !== dialog.project.name || !supportsDelete))
       return;
     const target = dialog;
     setDialogError("");
@@ -142,20 +146,38 @@ export function SettingsDanger({
     try {
       await run(() =>
         invoke("project_command", {
-          action: target.kind === "delete" ? "delete" : "purge",
-          input: {
-            projectId: target.project.id,
-            requestId: crypto.randomUUID(),
-            expectedRevision: target.project.lifecycleRevision ?? 0,
-            confirmation: typed.trim(),
-          },
+          action: leaving
+            ? "leave"
+            : target.kind === "delete"
+              ? "delete"
+              : "purge",
+          input: leaving
+            ? {
+                projectId: target.project.id,
+                expectedPolicyRevision: policyRevision,
+              }
+            : {
+                projectId: target.project.id,
+                requestId: crypto.randomUUID(),
+                expectedRevision: target.project.lifecycleRevision ?? 0,
+                confirmation: typed.trim(),
+              },
         }),
       );
       setDialog(null);
       setTyped("");
-      onComplete?.();
+      onComplete?.(
+        leaving
+          ? "You left the project. Your account no longer has access on any device."
+          : undefined,
+      );
     } catch (error) {
-      setDialogError(errorText(error));
+      const message = errorText(error);
+      setDialogError(
+        leaving && message.includes("Transfer ownership before leaving")
+          ? `${message} Transfer ownership to another member from Members first.`
+          : message,
+      );
     } finally {
       setWorking(false);
     }
@@ -163,15 +185,17 @@ export function SettingsDanger({
 
   const matches = Boolean(
     dialog &&
-    typed.trim() === dialog.project.name &&
     !disabled &&
-    supportsDelete,
+    (dialog.kind === "leave" ||
+      (typed.trim() === dialog.project.name && supportsDelete)),
   );
   const count = memberCount !== null && memberCount > 0 ? memberCount : null;
   const title =
-    dialog?.kind === "purge"
-      ? "Delete project permanently?"
-      : "Delete project?";
+    dialog?.kind === "leave"
+      ? "Leave project?"
+      : dialog?.kind === "purge"
+        ? "Delete project permanently?"
+        : "Delete project?";
 
   return (
     <>
@@ -179,53 +203,79 @@ export function SettingsDanger({
         <section className="settings-danger" aria-label="Danger zone">
           <div className="settings-danger-heading">
             <h3>Danger zone</h3>
-            <p>Changes here affect every member of this project.</p>
+            <p>
+              {project.role === "owner"
+                ? "Changes here affect every member of this project."
+                : "Changes here affect your account’s access to this project."}
+            </p>
           </div>
-          <div className="settings-row">
-            <div>
-              <h3>
-                {project.archivedAt ? "Restore project" : "Archive project"}
-              </h3>
-              <p>
-                {project.archivedAt
-                  ? "Return this project to the workspace and resume its sync."
-                  : "Hide this project from the workspace and pause its sync."}
-              </p>
+          {project.role === "owner" ? (
+            <>
+              <div className="settings-row">
+                <div>
+                  <h3>
+                    {project.archivedAt ? "Restore project" : "Archive project"}
+                  </h3>
+                  <p>
+                    {project.archivedAt
+                      ? "Return this project to the workspace and resume its sync."
+                      : "Hide this project from the workspace and pause its sync."}
+                  </p>
+                </div>
+                <Button
+                  size="sm"
+                  disabled={disabled}
+                  onClick={() =>
+                    void lifecycle(
+                      project,
+                      project.archivedAt ? "restore" : "archive",
+                    )
+                  }
+                >
+                  {project.archivedAt ? "Restore project" : "Archive project"}
+                </Button>
+              </div>
+              <div className="settings-row">
+                <div>
+                  <h3>Delete project</h3>
+                  <p>
+                    Remove it for all members.{" "}
+                    {capabilities === null
+                      ? "Checking deletion support…"
+                      : supportsDelete
+                        ? restorePromise
+                        : "Update this service to use recoverable project deletion."}
+                  </p>
+                </div>
+                <Button
+                  size="sm"
+                  className="management-danger"
+                  disabled={disabled || !supportsDelete}
+                  onClick={() => open("delete", project)}
+                >
+                  Delete project
+                </Button>
+              </div>
+            </>
+          ) : (
+            <div className="settings-row">
+              <div>
+                <h3>Leave project</h3>
+                <p>
+                  Leave this project on all your devices. The project and its
+                  other members stay as they are.
+                </p>
+              </div>
+              <Button
+                size="sm"
+                className="management-danger"
+                disabled={disabled}
+                onClick={() => open("leave", project)}
+              >
+                Leave project
+              </Button>
             </div>
-            <Button
-              size="sm"
-              disabled={disabled}
-              onClick={() =>
-                void lifecycle(
-                  project,
-                  project.archivedAt ? "restore" : "archive",
-                )
-              }
-            >
-              {project.archivedAt ? "Restore project" : "Archive project"}
-            </Button>
-          </div>
-          <div className="settings-row">
-            <div>
-              <h3>Delete project</h3>
-              <p>
-                Remove it for all members.{" "}
-                {capabilities === null
-                  ? "Checking deletion support…"
-                  : supportsDelete
-                    ? restorePromise
-                    : "Update this service to use recoverable project deletion."}
-              </p>
-            </div>
-            <Button
-              size="sm"
-              className="management-danger"
-              disabled={disabled || !supportsDelete}
-              onClick={() => open("delete", project)}
-            >
-              Delete project
-            </Button>
-          </div>
+          )}
         </section>
       )}
       {archivedProjects.length > 0 && (
@@ -318,7 +368,13 @@ export function SettingsDanger({
           }}
         >
           <h2>{title}</h2>
-          {dialog.kind === "delete" ? (
+          {dialog.kind === "leave" ? (
+            <p>
+              Leave “{dialog.project.name}”? Your account will lose access to
+              its shared content on all your devices. The project and its other
+              members stay as they are.
+            </p>
+          ) : dialog.kind === "delete" ? (
             <p>
               {count === null
                 ? "All members of this project will lose access."
@@ -330,17 +386,19 @@ export function SettingsDanger({
               Delete “{dialog.project.name}” permanently? This can’t be undone.
             </p>
           )}
-          <TextField
-            label="Project name"
-            autoFocus
-            value={typed}
-            disabled={working}
-            hint={`Type ${dialog.project.name} to confirm.`}
-            onChange={(event) => {
-              setTyped(event.target.value);
-              setDialogError("");
-            }}
-          />
+          {dialog.kind !== "leave" && (
+            <TextField
+              label="Project name"
+              autoFocus
+              value={typed}
+              disabled={working}
+              hint={`Type ${dialog.project.name} to confirm.`}
+              onChange={(event) => {
+                setTyped(event.target.value);
+                setDialogError("");
+              }}
+            />
+          )}
           {dialogError && <p role="alert">{dialogError}</p>}
           <div className="settings-confirm-actions">
             <Button disabled={working} onClick={() => setDialog(null)}>
@@ -353,7 +411,11 @@ export function SettingsDanger({
               onClick={() => void submit()}
             >
               {working && <ActivityIndicator />}
-              {dialog.kind === "delete" ? "Delete project" : "Delete now"}
+              {dialog.kind === "leave"
+                ? "Leave project"
+                : dialog.kind === "delete"
+                  ? "Delete project"
+                  : "Delete now"}
             </Button>
           </div>
         </Overlay>

@@ -875,18 +875,19 @@ export const SettingsModal = forwardRef<
             {error && <p role="alert">{error}</p>}
             {notice && <p role="status">{notice}</p>}
           </fieldset>
-          {section === "general" &&
-            project?.role === "owner" &&
-            !projectUnavailable && (
-              <SettingsDanger
-                project={project}
-                serviceUrl={state.config?.apiUrl}
-                members={projectMembers}
-                busy={busy}
-                run={workspaceRun}
-                onComplete={() => request({ section: "projects", projectId })}
-              />
-            )}
+          {section === "general" && project && !projectUnavailable && (
+            <SettingsDanger
+              project={project}
+              serviceUrl={state.config?.apiUrl}
+              members={projectMembers}
+              busy={busy}
+              run={workspaceRun}
+              onComplete={(message) => {
+                request({ section: "projects", projectId });
+                if (message) setNotice(message);
+              }}
+            />
+          )}
           {section === "projects" && (
             <>
               <SettingsHeading
