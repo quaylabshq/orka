@@ -12,6 +12,7 @@ const compare = (a, b) => {
   return left[0] - right[0] || left[1] - right[1] || left[2] - right[2];
 };
 const key = createPrivateKey(process.env.ORKA_UPDATE_SIGNING_KEY ?? "");
+const now = Math.floor(Date.now() / 1000);
 assert.equal(key.asymmetricKeyType, "ed25519");
 const publicKey = createPublicKey(key);
 assert.equal(
@@ -58,7 +59,7 @@ if (input.trim()) {
 const policy = {
   schema: 1,
   sequence: prior.sequence + 1,
-  expires: Math.floor(Date.now() / 1000) + 2 * 86400,
+  expires: now + 2 * 86400,
   release: prior.release,
   withdrawn: prior.withdrawn,
   minimumVersion: process.env.ORKA_MINIMUM_VERSION || prior.minimumVersion,
@@ -70,9 +71,12 @@ assert(
 if (operation === "stage" || operation === "promote") {
   const candidate = JSON.parse(readFileSync(releaseFile, "utf8"));
   assert(version.test(candidate.version));
-  for (const old of [...prior.withdrawn, prior.release?.version].filter(
-    Boolean,
-  )) {
+  const alreadyPublished =
+    operation === "promote" && prior.release?.version === candidate.version;
+  for (const old of [
+    ...prior.withdrawn,
+    alreadyPublished ? null : prior.release?.version,
+  ].filter(Boolean)) {
     assert(
       compare(candidate.version, old) > 0,
       "Publish each release under a new, higher version",
@@ -122,6 +126,20 @@ if (operation === "stage" || operation === "promote") {
     approved.release,
     "The verified archive must match the Dashboard's public approval",
   );
+  if (alreadyPublished) {
+    assert.deepEqual(
+      prior.release,
+      approved.release,
+      "The Dashboard's public approval must match the already published release",
+    );
+    if (
+      policy.minimumVersion === prior.minimumVersion &&
+      prior.expires > now + 86400
+    ) {
+      writeFileSync(outputFile, input);
+      process.exit(0);
+    }
+  }
   policy.release = approved.release;
 } else if (operation === "withdraw") {
   const withdrawn = process.env.ORKA_WITHDRAW_VERSION ?? "";

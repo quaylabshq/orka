@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { generateKeyPairSync, verify } from "node:crypto";
+import { generateKeyPairSync, sign, verify } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -88,6 +88,25 @@ void test("desktop publisher promotes, renews and permanently withdraws signed r
     const published = publish("promote");
     assert.equal(published.release.version, "0.4.0");
     assert.equal(published.release.notes, "Fixture");
+    const publishedEnvelope = readFileSync(previous, "utf8");
+    assert.equal(publish("promote").sequence, 1);
+    assert.equal(readFileSync(output, "utf8"), publishedEnvelope);
+    assert.notEqual(execute("stage").status, 0);
+
+    const publicApproval = readFileSync(approval, "utf8");
+    const changedApproval = JSON.parse(publicApproval);
+    const changedPayload = JSON.parse(
+      Buffer.from(changedApproval.manifest.payload, "base64").toString(),
+    );
+    changedPayload.release.notes = "Changed after publication";
+    const changedBytes = Buffer.from(JSON.stringify(changedPayload));
+    changedApproval.manifest = {
+      payload: changedBytes.toString("base64"),
+      signature: sign(null, changedBytes, privateKey).toString("base64"),
+    };
+    writeFileSync(approval, JSON.stringify(changedApproval));
+    assert.notEqual(execute("promote").status, 0);
+    writeFileSync(approval, publicApproval);
     assert.equal(publish("renew").sequence, 2);
     const withdrawn = publish("withdraw", "0.4.0");
     assert.deepEqual(withdrawn.withdrawn, ["0.4.0"]);

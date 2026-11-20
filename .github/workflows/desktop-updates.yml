@@ -1,6 +1,8 @@
 name: Publish macOS update policy
-run-name: macOS update · ${{ inputs.operation }} ${{ inputs.version }}
+run-name: macOS update · ${{ inputs.operation }} ${{ inputs.version }}${{ inputs.publication_attempt && format(' · {0}', inputs.publication_attempt) || '' }}
 on:
+  release:
+    types: [published]
   schedule:
     - cron: "23 4 * * *"
   workflow_dispatch:
@@ -18,16 +20,44 @@ on:
       minimum_version:
         description: Optional permanent minimum version permitted for installation and restore
         type: string
-permissions:
-  contents: write
-concurrency:
-  group: desktop-update-policy
-  cancel-in-progress: false
+      publication_attempt:
+        description: Optional managed publication attempt identifier
+        type: string
+permissions: {}
 jobs:
+  dispatch-stage:
+    if: github.event_name == 'release' && github.repository == 'quaylabshq/orka'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Queue the protected staging job for a desktop release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag=$(jq -r '
+            .release
+            | select(.draft == false and any(.assets[]?; .name == "Orka-update.zip"))
+            | .tag_name
+            | select(test("^v(0|[1-9][0-9]{0,8})[.](0|[1-9][0-9]{0,8})[.](0|[1-9][0-9]{0,8})$"))
+          ' "$GITHUB_EVENT_PATH")
+          if [[ -z "$tag" ]]; then
+            echo 'This release has no versioned macOS update archive.'
+            exit 0
+          fi
+          gh workflow run desktop-updates.yml --repo "$GITHUB_REPOSITORY" --ref main \
+            -f operation=stage -f "version=${tag#v}"
   publish:
-    if: github.ref == 'refs/heads/main'
+    if: github.event_name != 'release' && github.ref == 'refs/heads/main'
     runs-on: macos-15
     environment: macos-update-publishing
+    permissions:
+      contents: write
+      id-token: write
+    concurrency:
+      group: desktop-update-policy
+      queue: max
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -39,14 +69,16 @@ jobs:
         if: inputs.operation == 'stage' || inputs.operation == 'promote'
         env:
           GH_TOKEN: ${{ github.token }}
+          ORKA_OPERATION: ${{ inputs.operation }}
           ORKA_VERSION: ${{ inputs.version }}
           ORKA_RELEASE_NOTES: ${{ inputs.notes }}
           APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
           [[ "$ORKA_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ && "$APPLE_TEAM_ID" =~ ^[A-Z0-9]{10}$ ]]
-          gh release view "v$ORKA_VERSION" --json isDraft --jq '.isDraft' | grep -qx false
           mkdir "$RUNNER_TEMP/desktop-release"
+          gh release view "v$ORKA_VERSION" --json isDraft,body > "$RUNNER_TEMP/desktop-release/github-release.json"
+          jq -e '.isDraft == false' "$RUNNER_TEMP/desktop-release/github-release.json" > /dev/null
           gh release download "v$ORKA_VERSION" --pattern 'Orka-update.zip' --dir "$RUNNER_TEMP/desktop-release"
           cd "$RUNNER_TEMP/desktop-release"
           ditto -x -k Orka-update.zip extracted
@@ -71,8 +103,14 @@ jobs:
           import { readFileSync, writeFileSync } from 'node:fs';
           const archive = readFileSync('Orka-update.zip');
           const version = process.env.ORKA_VERSION;
+          const releaseBody = JSON.parse(readFileSync('github-release.json', 'utf8')).body ?? '';
+          const notes = process.env.ORKA_OPERATION === 'stage'
+            ? process.env.ORKA_RELEASE_NOTES || new TextDecoder().decode(
+                Buffer.from(releaseBody.trim()).subarray(0, 4000), { stream: true }
+              ).trimEnd()
+            : '';
           writeFileSync('release.json', JSON.stringify({
-            version, notes: process.env.ORKA_RELEASE_NOTES,
+            version, notes,
             url: `https://github.com/${process.env.GITHUB_REPOSITORY}/releases/download/v${version}/Orka-update.zip`,
             sha256: createHash('sha256').update(archive).digest('hex'), size: archive.length,
             architectures: ['arm64', 'x86_64'], minimumMacOS: process.env.ORKA_MIN_MACOS + (process.env.ORKA_MIN_MACOS.split('.').length === 2 ? '.0' : ''),
@@ -124,6 +162,10 @@ jobs:
           fi
           node scripts/desktop-update-policy.mjs "$ORKA_OPERATION" "$work/policy.json" "$work/next.json" \
             "$RUNNER_TEMP/desktop-release/release.json" "$work/approval.json"
+          if cmp -s "$work/policy.json" "$work/next.json"; then
+            echo 'The approved release is already in the signed feed.'
+            exit 0
+          fi
           if [[ "$branch_exists" == false ]]; then
             gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/heads/$branch" -f sha="$GITHUB_SHA" --silent
           fi
@@ -136,3 +178,29 @@ jobs:
           name: Orka-update-manifest
           path: ${{ runner.temp }}/desktop-release/Orka-update-manifest.json
           if-no-files-found: error
+          overwrite: true
+      - name: Submit signed draft to Releases
+        if: inputs.operation == 'stage' && github.repository == 'quaylabshq/orka'
+        run: |
+          set -euo pipefail
+          if ! token=$(curl --fail --silent --show-error --max-time 15 \
+            --header "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=orka-desktop-release-stage" \
+            | jq -er '.value | strings | select(length > 0)'); then
+            echo '::error::GitHub Actions could not issue a staging token. The signed manifest is available in this run.'
+            exit 1
+          fi
+          printf '::add-mask::%s\n' "$token"
+          if ! status=$(curl --silent --show-error --max-time 15 --retry 2 --retry-max-time 45 \
+            --output /dev/null --write-out '%{http_code}' \
+            --header "Authorization: Bearer $token" \
+            --header 'Content-Type: application/json' \
+            --data-binary "@$RUNNER_TEMP/desktop-release/Orka-update-manifest.json" \
+            'https://api.tryorka.ai/v2/desktop-updates/automation/stage'); then
+            echo '::error::The managed release API could not be reached. The signed manifest is available in this run. Re-run staging when the API is reachable.'
+            exit 1
+          fi
+          if [[ "$status" != 2[0-9][0-9] ]]; then
+            echo "::error::The managed release API rejected the draft (HTTP $status). The signed manifest is available in this run. Resolve the API error before re-running staging."
+            exit 1
+          fi
