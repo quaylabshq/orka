@@ -130,7 +130,8 @@ async function fixture(page: Page, mode = "normal") {
                   : []),
               ],
               resources:
-                mode === "populated" || mode.startsWith("project-")
+                ["populated", "ownership"].includes(mode) ||
+                mode.startsWith("project-")
                   ? skills
                       .map((skill) => ({
                         resourceId: skill.id,
@@ -141,7 +142,10 @@ async function fixture(page: Page, mode = "normal") {
                         logicalPath: skill.name,
                         revision: 1,
                         deleted: false,
-                        owner: "user",
+                        owner:
+                          mode === "ownership" && skill.id === "claude"
+                            ? "teammate"
+                            : "user",
                         updatedBy: "user",
                         updatedAt: "2026-10-21T00:00:00Z",
                         files: [
@@ -349,7 +353,7 @@ for (const viewport of [
   { width: 1160, height: 800 },
   { width: 900, height: 640 },
 ]) {
-  test(`toolbar skill import and accessible picker at ${viewport.width}`, async ({
+  test(`floating skill import and accessible picker at ${viewport.width}`, async ({
     page,
   }) => {
     await page.setViewportSize(viewport);
@@ -361,7 +365,7 @@ for (const viewport of [
     await expect(trigger).toBeVisible();
     await expect(trigger).toHaveText("Add Global Skills");
     const before = await trigger.boundingBox();
-    expect(before!.height).toBe(32);
+    expect(before!.height).toBe(40);
     expect(before!.width).toBeGreaterThan(before!.height * 2);
     await trigger.click();
     const dialog = page.getByRole("dialog", { name: "Add global skills" });
@@ -530,12 +534,12 @@ for (const viewport of [
       page.getByText(/Code review added. Sharing queued/),
     ).toBeVisible();
     await page.getByRole("button", { name: "Done", exact: true }).click();
-    const card = page.locator(".skill-card");
-    await expect(card).toHaveCount(1);
-    await expect(card).toContainText("Code review");
-    await expect(card).toContainText("Sharing queued");
-    await expect(card.locator(".skill-origin-badge")).toHaveText("Global");
-    await expect(card).toContainText("Detected in 8 chats");
+    const row = page.locator(".resource-table-skill");
+    await expect(row).toHaveCount(1);
+    await expect(row).toContainText("Code review");
+    await expect(row).toContainText("Sharing queued");
+    await expect(row.locator(".skill-origin-badge")).toHaveText("Global");
+    await expect(row).toContainText("Detected in 8 chats");
     await expect(page.getByRole("button", { name: /^Skills/ })).toContainText(
       "1",
     );
@@ -546,7 +550,7 @@ for (const viewport of [
     await page.screenshot({
       path: `artifacts/local-skills-${viewport.width}.png`,
     });
-    await card.click();
+    await row.click();
     await expect(
       page.getByRole("heading", { name: "Code review", exact: true }),
     ).toBeVisible();
@@ -576,9 +580,9 @@ for (const viewport of [
     await page
       .getByRole("button", { name: "Back to Skills", exact: true })
       .click();
-    await expect(card).toHaveCount(1);
-    await expect(card).not.toContainText("Sharing queued");
-    await expect(card.locator(".skill-origin-badge")).toHaveText("Global");
+    await expect(row).toHaveCount(1);
+    await expect(row).not.toContainText("Sharing queued");
+    await expect(row.locator(".skill-origin-badge")).toHaveText("Global");
     expect(
       await page.evaluate(() =>
         (window as any).invokeCalls.filter(
@@ -591,14 +595,22 @@ for (const viewport of [
   });
 }
 
-test("local-only skills stay visible and a shared revision replaces the local card", async ({
+test("local-only skills stay in Mine when a published revision replaces the local row", async ({
   page,
 }) => {
   await fixture(page, "local");
-  const cards = page.locator(".skill-card");
-  await expect(cards).toHaveCount(1);
-  await expect(cards).toContainText("On this Mac");
-  await cards.click();
+  const ownership = page.getByRole("group", { name: "Filter by ownership" });
+  await ownership
+    .getByRole("button", { name: "Shared with me", exact: true })
+    .click();
+  await expect(
+    page.getByText("No skills shared with you yet", { exact: true }),
+  ).toBeVisible();
+  await ownership.getByRole("button", { name: "Mine", exact: true }).click();
+  const rows = page.locator(".resource-table-skill");
+  await expect(rows).toHaveCount(1);
+  await expect(rows).toContainText("On this Mac");
+  await rows.click();
   await expect(
     page.getByText("This skill is on this Mac and hasn’t been shared."),
   ).toBeVisible();
@@ -609,21 +621,24 @@ test("local-only skills stay visible and a shared revision replaces the local ca
     .getByRole("button", { name: "Back to Skills", exact: true })
     .click();
   await page.evaluate(() => (window as any).publishSkill());
-  await expect(cards).toHaveCount(1);
-  await expect(cards).not.toContainText("On this Mac");
-  await expect(cards.locator(".skill-origin-badge")).toHaveText("Global");
+  await expect(rows).toHaveCount(1);
+  await expect(rows).not.toContainText("On this Mac");
+  await expect(rows.locator(".skill-origin-badge")).toHaveText("Global");
+  await expect(
+    ownership.getByRole("button", { name: "Mine", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
 });
 
 test("a new local import remains visible over an older shared deletion", async ({
   page,
 }) => {
   await fixture(page, "local-deleted");
-  const card = page.locator(".skill-card");
-  await expect(card).toHaveCount(1);
-  await expect(card).toContainText("Code review");
-  await expect(card).toContainText("On this Mac");
-  await expect(card.locator(".skill-origin-badge")).toHaveText("Global");
-  await card.click();
+  const row = page.locator(".resource-table-skill");
+  await expect(row).toHaveCount(1);
+  await expect(row).toContainText("Code review");
+  await expect(row).toContainText("On this Mac");
+  await expect(row.locator(".skill-origin-badge")).toHaveText("Global");
+  await row.click();
   await expect(
     page.getByRole("article", { name: "Rendered Markdown" }),
   ).toContainText("Review");
@@ -720,7 +735,7 @@ test("skill imports explain the sync wait and finish the original request once",
   ).toHaveLength(1);
 });
 
-test("the Skills toolbar stays above the cards when the collection scrolls", async ({
+test("the floating action stays pinned while the Skills collection scrolls", async ({
   page,
 }) => {
   await fixture(page, "populated");
@@ -728,16 +743,8 @@ test("the Skills toolbar stays above the cards when the collection scrolls", asy
     name: "Add global skills",
     exact: true,
   });
-  await expect(page.locator(".skill-card")).toHaveCount(24);
-  const toolbar = page.locator(".resource-index-toolbar");
-  await expect(toolbar).toContainText("Add Global Skills");
-  const search = toolbar.getByRole("searchbox", { name: "Search skills" });
-  const card = await page.locator(".skill-card").first().boundingBox();
+  await expect(page.locator(".resource-table-skill")).toHaveCount(24);
   const before = await trigger.boundingBox();
-  const searchBefore = await search.boundingBox();
-  const searchCenter = searchBefore!.y + searchBefore!.height / 2;
-  expect(before!.y + before!.height / 2).toBe(searchCenter);
-  expect(before!.y + before!.height).toBeLessThan(card!.y);
   const list = page.locator(".resource-index-body");
   await list.evaluate((element) => {
     element.scrollTop = element.scrollHeight;
@@ -746,10 +753,6 @@ test("the Skills toolbar stays above the cards when the collection scrolls", asy
     0,
   );
   expect(await trigger.boundingBox()).toEqual(before);
-  expect(await search.boundingBox()).toEqual(searchBefore);
-  await search.fill("Extra skill");
-  await expect(page.locator(".skill-card")).toHaveCount(20);
-  expect(await list.evaluate((element) => element.scrollTop)).toBe(0);
   await trigger.click();
   await expect(
     page.getByRole("heading", { name: "Code review" }),
@@ -844,9 +847,9 @@ test("first approval keeps one status pill and the local editor action", async (
   page,
 }) => {
   await fixture(page, "approval");
-  const card = page.locator(".skill-card");
-  await expect(card).toContainText("Awaiting approval");
-  await card.click();
+  const row = page.locator(".resource-table-skill");
+  await expect(row).toContainText("Awaiting approval");
+  await row.click();
   const detail = page.getByRole("region", { name: "Skill details" });
   const info = detail.getByRole("region", { name: "Skill info", exact: true });
   await expect(detail.locator(".detail-status")).toHaveText([
@@ -888,10 +891,10 @@ test("first approval keeps one status pill and the local editor action", async (
 for (const mode of ["paused", "blocked"]) {
   test(`import sharing ${mode} has clear status`, async ({ page }) => {
     await fixture(page, mode);
-    await expect(page.locator(".skill-card")).toContainText(
+    await expect(page.locator(".resource-table-skill")).toContainText(
       mode === "paused" ? "Sharing paused" : "Sharing blocked",
     );
-    await page.locator(".skill-card").click();
+    await page.locator(".resource-table-skill").click();
     await expect(
       page.getByText(
         mode === "paused"
@@ -985,21 +988,21 @@ for (const viewport of [
   }) => {
     await page.setViewportSize(viewport);
     await fixture(page, "populated");
-    const cards = page.locator(".skill-card");
-    const names = cards.locator("strong");
+    const rows = page.locator(".resource-table-skill");
+    const names = rows.locator(".resource-table-open");
     await expect(names.first()).toHaveText("Writing guide");
-    await expect(cards.first()).toContainText("Detected in 12 chats");
-    await expect(cards.nth(1)).toContainText("Detected in 8 chats");
+    await expect(rows.first()).toContainText("Detected in 12 chats");
+    await expect(rows.nth(1)).toContainText("Detected in 8 chats");
     await expect(
       page.getByRole("button", { name: "Sort by Most used", exact: true }),
     ).toBeVisible();
     await page.getByRole("searchbox", { name: "Search skills" }).fill("review");
     await expect(names).toHaveText(["Code review"]);
-    await cards.first().click();
+    await names.first().press("Enter");
     await page
       .getByRole("button", { name: "Back to Skills", exact: true })
       .click();
-    await expect(cards.first()).toBeFocused();
+    await expect(names.first()).toBeFocused();
     await expect(
       page.getByRole("searchbox", { name: "Search skills" }),
     ).toHaveValue("review");
@@ -1022,7 +1025,7 @@ for (const viewport of [
     const sources = page.getByRole("group", { name: "Filter by source" });
     await sources.getByRole("button", { name: "Codex", exact: true }).click();
     await expect(names.first()).toHaveText("Code review");
-    await expect(cards.first()).toContainText("Detected in 8 chats");
+    await expect(rows.first()).toContainText("Detected in 8 chats");
     await sources.getByRole("button", { name: "All", exact: true }).click();
     await expect(names.first()).toHaveText("Writing guide");
     expect(
@@ -1045,6 +1048,49 @@ for (const viewport of [
   });
 }
 
+test("Skills ownership tabs filter by owner and compose with search", async ({
+  page,
+}) => {
+  await fixture(page, "ownership");
+  const skills = page.getByRole("region", { name: "skills", exact: true });
+  const tabs = skills.getByRole("group", { name: "Filter by ownership" });
+  const all = tabs.getByRole("button", { name: "All", exact: true });
+  const mine = tabs.getByRole("button", { name: "Mine", exact: true });
+  const shared = tabs.getByRole("button", {
+    name: "Shared with me",
+    exact: true,
+  });
+  const list = skills.getByRole("table");
+  await expect(all).toHaveAttribute("aria-pressed", "true");
+  await expect(list.locator("tbody tr")).toHaveCount(24);
+  await shared.press("Enter");
+  await expect(shared).toHaveAttribute("aria-pressed", "true");
+  await expect(list.locator(".resource-table-open")).toHaveText([
+    "Writing guide",
+  ]);
+  await mine.click();
+  await expect(
+    list.getByRole("button", { name: "Code review", exact: true }),
+  ).toBeVisible();
+  await expect(
+    list.getByRole("button", { name: "Writing guide", exact: true }),
+  ).toHaveCount(0);
+  await skills
+    .getByRole("searchbox", { name: "Search skills" })
+    .fill("Writing guide");
+  await expect(
+    skills.getByText("No skills match", { exact: true }),
+  ).toBeVisible();
+  await skills
+    .getByRole("button", { name: "Clear filters", exact: true })
+    .click();
+  await expect(mine).toHaveAttribute("aria-pressed", "true");
+  await all.click();
+  await expect(
+    list.getByRole("button", { name: "Writing guide", exact: true }),
+  ).toBeVisible();
+});
+
 test("main Skills remain browsable during usage loading, failures, and partial history", async ({
   page,
 }) => {
@@ -1054,17 +1100,19 @@ test("main Skills remain browsable during usage loading, failures, and partial h
   ).toHaveText("Loading skill usage…");
   await expect(page.locator(".skill-usage-count")).toHaveCount(0);
   await page.getByRole("searchbox", { name: "Search skills" }).fill("review");
-  await expect(page.locator(".skill-card strong")).toHaveText(["Code review"]);
+  await expect(
+    page.locator(".resource-table-skill .resource-table-open"),
+  ).toHaveText(["Code review"]);
   await page.evaluate(() => (window as any).resolveProjectUsage());
   await expect(page.getByText("Detected in 8 chats")).toBeVisible();
   await fixture(page, "project-error");
   await expect(
     page.getByText("Skill usage unavailable. History unreadable"),
   ).toBeVisible();
-  await expect(page.locator(".skill-card")).toHaveCount(24);
+  await expect(page.locator(".resource-table-skill")).toHaveCount(24);
   await expect(page.locator(".skill-usage-count")).toHaveCount(0);
   await page.getByRole("button", { name: "Retry usage", exact: true }).click();
-  await expect(page.locator(".skill-card").first()).toContainText(
+  await expect(page.locator(".resource-table-skill").first()).toContainText(
     "Detected in 12 chats",
   );
   await page
@@ -1078,7 +1126,7 @@ test("main Skills remain browsable during usage loading, failures, and partial h
     "Usage covers available local history; some records could not be read.";
   const historyNotice = page.getByText(historyMessage);
   await expect(historyNotice).toHaveCount(0);
-  await expect(page.locator(".skill-card").first()).toContainText(
+  await expect(page.locator(".resource-table-skill").first()).toContainText(
     "Detected in 12 chats",
   );
   await page.getByRole("button", { name: "Sync stopped", exact: true }).click();

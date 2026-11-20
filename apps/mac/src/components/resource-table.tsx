@@ -18,6 +18,9 @@ import { ResourceIdentity } from "./resource-identity.js";
 import { useQueryClient } from "@tanstack/react-query";
 import { useWorkspaceScope } from "./workspace-cache.js";
 import { SessionMessagesQuery } from "./use-session-messages.js";
+import { skillSummaryKey, type SkillSummaries } from "./use-skill-summaries.js";
+import { SkillUsageCount } from "./skill-usage.js";
+import { skillSharing } from "./skill-sharing.js";
 
 const rootsPerPage = 40;
 
@@ -67,6 +70,10 @@ function pathSuffix(resource: Resource) {
 
 export interface ResourceTableProps {
   resources: Resource[];
+  skillMetadata?: {
+    summaries: SkillSummaries;
+    usageCounts?: Record<string, number>;
+  };
   /** Singular column name for the visually hidden header, e.g. "Memory". */
   label: string;
   user: string | null;
@@ -82,9 +89,10 @@ export interface ResourceTableProps {
   onOpen: (id: string) => void;
 }
 
-/** Scannable index shared by memories and sessions. Each row opens the reading view. */
+/** Scannable collection list. Each row opens the reading view. */
 export function ResourceTable({
   resources,
+  skillMetadata,
   label,
   user,
   displayTitle,
@@ -223,6 +231,13 @@ export function ResourceTable({
       ?.querySelector<HTMLButtonElement>("tbody button:not(:disabled)")
       ?.focus({ preventScroll: true });
   }, [page]);
+  const descriptionsLoading =
+    skillMetadata &&
+    rows.some(
+      (row) =>
+        "resource" in row &&
+        skillMetadata.summaries[skillSummaryKey(row.resource)] === undefined,
+    );
   const now = new Date();
   const content = (
     <table
@@ -280,6 +295,7 @@ export function ResourceTable({
               </tr>
             );
           const { resource, depth } = row;
+          const skill = resource.kind === "skill";
           const title = displayTitle(resource);
           const updated = new Date(resource.updatedAt);
           const updatedTooltip = Number.isNaN(updated.getTime())
@@ -305,7 +321,13 @@ export function ResourceTable({
             >
               {(actions) => (
                 <tr
-                  className={depth > 0 ? "session-fork-row" : undefined}
+                  className={
+                    skill
+                      ? "resource-table-skill"
+                      : depth > 0
+                        ? "session-fork-row"
+                        : undefined
+                  }
                   onPointerEnter={() =>
                     void SessionMessagesQuery.prefetch(client, scope, resource)
                   }
@@ -380,7 +402,18 @@ export function ResourceTable({
                               {pathSuffix(resource)}
                             </small>
                           )}
-                        {(resource.local ||
+                        {skill && skillMetadata && (
+                          <SkillRowDetails
+                            resource={resource}
+                            summary={
+                              skillMetadata.summaries[skillSummaryKey(resource)]
+                            }
+                            usage={
+                              skillMetadata.usageCounts?.[resource.resourceId]
+                            }
+                          />
+                        )}
+                        {((!skill && resource.local) ||
                           (resource.fork && resource.revision === 0) ||
                           resource.localChanges) && (
                           <small className="resource-table-suffix">
@@ -448,6 +481,11 @@ export function ResourceTable({
   );
   return (
     <>
+      {descriptionsLoading && (
+        <span className="sr-only" role="status">
+          Loading skill descriptions…
+        </span>
+      )}
       {content}
       {pageCount > 1 && (
         <nav
@@ -477,6 +515,34 @@ export function ResourceTable({
           />
         </nav>
       )}
+    </>
+  );
+}
+
+function SkillRowDetails({
+  resource,
+  summary,
+  usage,
+}: {
+  resource: Resource;
+  summary: SkillSummaries[string] | undefined;
+  usage: number | undefined;
+}) {
+  return (
+    <>
+      {summary === undefined ? (
+        <span
+          className="skill-row-description-skeleton loading-fade"
+          aria-hidden="true"
+        />
+      ) : summary?.description ? (
+        <p className="skill-row-description">{summary.description}</p>
+      ) : null}
+      <div className="skill-row-meta">
+        {resource.global && <span className="skill-origin-badge">Global</span>}
+        {resource.local && <span>{skillSharing(resource).label}</span>}
+        <SkillUsageCount count={usage} />
+      </div>
     </>
   );
 }

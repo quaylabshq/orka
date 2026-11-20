@@ -1,11 +1,5 @@
 import { LockIcon, RefreshCwIcon, TriangleAlertIcon } from "lucide-react";
-import React, {
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { ProjectResource as Resource } from "../types.js";
 import { SegmentedControl } from "./segmented-control.js";
 import { IconButton } from "./icon-button.js";
@@ -25,7 +19,6 @@ import { ResourceTable } from "./resource-table.js";
 import { LoadingRegion } from "./loading-region.js";
 import { CollectionSkeleton } from "./collection-skeleton.js";
 import type { SkillSummaries } from "./use-skill-summaries.js";
-import { SkillGrid } from "./skill-grid.js";
 import { useMemberLabel } from "./member-names.js";
 import {
   ProjectSkillUsageStatus,
@@ -57,7 +50,7 @@ export interface ResourceIndexProps {
   /** A notice above the toolbar, such as unavailable session titles. */
   status?: React.ReactNode;
   accessRequest?: React.ReactNode;
-  toolbarAction?: React.ReactNode;
+  floatingAction?: React.ReactNode;
   /**
    * The resource whose reading view was just closed. Its row or card takes
    * focus, or the search field when the current filters hide it.
@@ -67,7 +60,7 @@ export interface ResourceIndexProps {
   onOpen: (id: string) => void;
 }
 
-/** The shared toolbar over a T1 table (memories, sessions) or the K1 skill cards. */
+/** The shared list and filters for each project resource collection. */
 export function ResourceIndex({
   skillSummaries,
   skillUsage,
@@ -87,7 +80,7 @@ export function ResourceIndex({
   onRefreshLocal,
   status,
   accessRequest,
-  toolbarAction,
+  floatingAction,
   focusResource,
   onFocusHandled,
   onOpen,
@@ -122,12 +115,8 @@ export function ResourceIndex({
         title: `Local ${collectionNoun(kind)} refreshed`,
       });
   }, [discovering, discoveryResult, refreshRequest, kind, notify]);
-  const ownership = kind === "skill" ? "all" : (filters.ownership ?? "all");
+  const ownership = filters.ownership ?? "all";
   const root = useRef<HTMLElement>(null);
-  const body = useRef<HTMLDivElement>(null);
-  useLayoutEffect(() => {
-    if (kind === "skill") body.current?.scrollTo({ top: 0 });
-  }, [filters, kind]);
   const visible = useMemo(
     () =>
       applyIndexFilters(resources, filters, {
@@ -146,6 +135,15 @@ export function ResourceIndex({
     filters.query.trim() ||
     filters.source !== "all" ||
     (filters.repository && filters.repository !== "all"),
+  );
+  const inlineAction = Boolean(
+    floatingAction &&
+    !resources.length &&
+    !filtered &&
+    !discovering &&
+    !discoveryErrors.length &&
+    !noAccess &&
+    connected,
   );
   const clearFilters = () => {
     onFilters({
@@ -169,23 +167,9 @@ export function ResourceIndex({
     target?.focus();
     onFocusHandled?.();
   }, [focusResource, onFocusHandled]);
-  const showFilters = resources.length > 0 || filtered;
-  const toolbar = (showFilters || toolbarAction) && (
-    <IndexToolbar
-      kind={kind}
-      count={visible.length}
-      sources={sources}
-      filters={filters}
-      onChange={onFilters}
-      onRefreshUsage={skillUsage?.retry}
-      usageLoading={skillUsage?.loading}
-      showFilters={showFilters}
-      action={toolbarAction}
-    />
-  );
   return (
     <section
-      className="resource-index"
+      className={`resource-index${floatingAction ? (inlineAction ? " resource-index--inline-action" : " resource-index--floating-action") : ""}`}
       aria-label={collectionNoun(kind)}
       ref={root}
       tabIndex={-1}
@@ -194,38 +178,35 @@ export function ResourceIndex({
       {kind === "skill" && skillUsage && (
         <ProjectSkillUsageStatus {...skillUsage} />
       )}
-      {toolbarAction && <div className="resource-index-toolbar">{toolbar}</div>}
-      <div className="resource-index-body" ref={body}>
+      <div className="resource-index-body">
         {accessRequest}
-        {kind !== "skill" && (
-          <div className="resource-ownership-toolbar">
-            <SegmentedControl
-              className="resource-ownership-tabs"
-              label="Filter by ownership"
-              value={ownership}
-              options={[
-                {
-                  value: "all",
-                  label: "All",
-                },
-                { value: "mine", label: "Mine" },
-                { value: "shared", label: "Shared with me" },
-              ]}
-              onChange={(ownership) => onFilters({ ...filters, ownership })}
+        <div className="resource-ownership-toolbar">
+          <SegmentedControl
+            className="resource-ownership-tabs"
+            label="Filter by ownership"
+            value={ownership}
+            options={[
+              {
+                value: "all",
+                label: "All",
+              },
+              { value: "mine", label: "Mine" },
+              { value: "shared", label: "Shared with me" },
+            ]}
+            onChange={(ownership) => onFilters({ ...filters, ownership })}
+          />
+          {kind !== "skill" && onRefreshLocal && (
+            <IconButton
+              icon={RefreshCwIcon}
+              size="sm"
+              variant="tertiary"
+              aria-label="Refresh local items"
+              title={`Refresh local ${collectionNoun(kind)}`}
+              disabled={refreshing}
+              onClick={refreshLocal}
             />
-            {onRefreshLocal && (
-              <IconButton
-                icon={RefreshCwIcon}
-                size="sm"
-                variant="tertiary"
-                aria-label="Refresh local items"
-                title={`Refresh local ${collectionNoun(kind)}`}
-                disabled={refreshing}
-                onClick={refreshLocal}
-              />
-            )}
-          </div>
-        )}
+          )}
+        </div>
         {discovering && resources.length > 0 && (
           <span className="sr-only" role="status">
             Refreshing {collectionNoun(kind)}…
@@ -271,7 +252,17 @@ export function ResourceIndex({
             )}
           </div>
         )}
-        {!toolbarAction && toolbar}
+        {(resources.length > 0 || filtered) && (
+          <IndexToolbar
+            kind={kind}
+            count={visible.length}
+            sources={sources}
+            filters={filters}
+            onChange={onFilters}
+            onRefreshUsage={skillUsage?.retry}
+            usageLoading={skillUsage?.loading}
+          />
+        )}
         {discovering && !resources.length ? (
           <LoadingRegion
             id={`collection:${kind}`}
@@ -303,24 +294,24 @@ export function ResourceIndex({
               restricted={noAccess && ownership !== "mine"}
             />
           )
-        ) : kind === "skill" ? (
-          <SkillGrid
-            skills={visible}
-            summaries={skillSummaries}
-            usageCounts={skillUsage?.usage?.counts}
-            displayTitle={displayTitle}
-            conflicted={conflicted}
-            onOpen={onOpen}
-          />
         ) : (
           <ResourceTable
             resources={visible}
+            skillMetadata={
+              kind === "skill"
+                ? {
+                    summaries: skillSummaries,
+                    usageCounts: skillUsage?.usage?.counts,
+                  }
+                : undefined
+            }
             label={
-              kind === "session"
-                ? "Session"
-                : kind === "plan"
-                  ? "Plan"
-                  : "Memory"
+              {
+                session: "Session",
+                plan: "Plan",
+                memory: "Memory",
+                skill: "Skill",
+              }[kind]
             }
             user={user}
             displayTitle={displayTitle}
@@ -332,6 +323,9 @@ export function ResourceIndex({
             filtered={filtered || ownership !== "all"}
             onOpen={onOpen}
           />
+        )}
+        {floatingAction && (
+          <div className="resource-index-action">{floatingAction}</div>
         )}
       </div>
     </section>

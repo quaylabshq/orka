@@ -430,7 +430,7 @@ export async function skillFixture(
   await page.goto("/");
   await page.getByRole("button", { name: /^Skills/ }).click();
   if (options.open === false) return;
-  await page.locator(".skill-card").first().click();
+  await page.locator(".resource-table-skill").first().click();
   await expect(
     page.getByRole("region", { name: "Skill details" }),
   ).toBeVisible();

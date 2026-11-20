@@ -77,11 +77,8 @@ export function applyIndexFilters(
 ): Resource[] {
   const query = filters.query.trim().toLocaleLowerCase();
   const matches = resources.filter((resource) => {
-    if (resource.kind !== "skill") {
-      if (filters.ownership === "mine" && resource.owner !== user) return false;
-      if (filters.ownership === "shared" && resource.owner === user)
-        return false;
-    }
+    if (filters.ownership === "mine" && resource.owner !== user) return false;
+    if (filters.ownership === "shared" && resource.owner === user) return false;
     if (
       filters.repository &&
       filters.repository !== "all" &&
@@ -144,8 +141,6 @@ export interface IndexToolbarProps {
   onChange: (filters: IndexFilters) => void;
   onRefreshUsage?: () => void;
   usageLoading?: boolean;
-  showFilters?: boolean;
-  action?: React.ReactNode;
 }
 
 /** The shared 32px toolbar above every index: search, source filter, count, sort. */
@@ -157,8 +152,6 @@ export function IndexToolbar({
   onChange,
   onRefreshUsage,
   usageLoading,
-  showFilters = true,
-  action,
 }: IndexToolbarProps) {
   const plural = collectionNoun(kind);
   const present = sourceOrder.filter(
@@ -166,22 +159,20 @@ export function IndexToolbar({
   );
   const filtered = Boolean(
     filters.query.trim() ||
-    (kind !== "skill" && filters.ownership && filters.ownership !== "all") ||
+    (filters.ownership && filters.ownership !== "all") ||
     filters.source !== "all" ||
     (filters.repository && filters.repository !== "all"),
   );
   return (
     <div className="index-toolbar" role="group" aria-label={`${plural} tools`}>
-      {showFilters && (
-        <SearchField
-          size="sm"
-          value={filters.query}
-          onValueChange={(query) => onChange({ ...filters, query })}
-          placeholder={`Search ${plural}…`}
-          aria-label={`Search ${plural}`}
-        />
-      )}
-      {showFilters && (present.length > 1 || filters.source !== "all") && (
+      <SearchField
+        size="sm"
+        value={filters.query}
+        onValueChange={(query) => onChange({ ...filters, query })}
+        placeholder={`Search ${plural}…`}
+        aria-label={`Search ${plural}`}
+      />
+      {(present.length > 1 || filters.source !== "all") && (
         <SegmentedControl<SourceFilter>
           label="Filter by source"
           value={filters.source}
@@ -201,16 +192,14 @@ export function IndexToolbar({
             {count} {indexNoun(kind, count)}
           </span>
         )}
-        {showFilters && (
-          <SortMenu
-            options={(Object.keys(sortOptions) as IndexSort[])
-              .filter((sort) => sort !== "usage" || kind === "skill")
-              .map((sort) => ({ value: sort, ...sortOptions[sort] }))}
-            value={filters.sort}
-            onChange={(sort) => onChange({ ...filters, sort })}
-          />
-        )}
-        {showFilters && kind === "skill" && onRefreshUsage && (
+        <SortMenu
+          options={(Object.keys(sortOptions) as IndexSort[])
+            .filter((sort) => sort !== "usage" || kind === "skill")
+            .map((sort) => ({ value: sort, ...sortOptions[sort] }))}
+          value={filters.sort}
+          onChange={(sort) => onChange({ ...filters, sort })}
+        />
+        {kind === "skill" && onRefreshUsage && (
           <IconButton
             icon={RefreshCwIcon}
             size="sm"
@@ -221,7 +210,6 @@ export function IndexToolbar({
             onClick={onRefreshUsage}
           />
         )}
-        {action}
       </div>
     </div>
   );

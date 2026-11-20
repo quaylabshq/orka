@@ -65,52 +65,55 @@ for (const width of [1160, 900]) {
     ).toContainText("Review the actual project context.");
   });
 
-  test(`Skills fade pending descriptions without hiding known cards or controls at ${width}px`, async ({
+  test(`Skills fade pending descriptions without hiding known rows or controls at ${width}px`, async ({
     page,
   }, info) => {
     await page.setViewportSize({ width, height: width === 900 ? 640 : 800 });
     await metadataLoadingFixture(page);
     await page.getByRole("button", { name: /^Skills/ }).click();
-    const grid = page.locator(".skill-grid");
-    await expect(grid.locator(".skill-card-description-skeleton")).toHaveCount(
+    const skills = page.getByRole("region", { name: "skills", exact: true });
+    const skillRow = (id: string) =>
+      skills.getByRole("row").filter({
+        has: page.locator(`[data-resource-id="${id}"]`),
+      });
+    await expect(skills.locator(".skill-row-description-skeleton")).toHaveCount(
       3,
     );
-    await expect(grid.getByRole("status")).toHaveText(
-      "Loading skill descriptions…",
-    );
-    await expect(grid.locator(".skill-card strong")).toHaveText([
-      "Review skill 1",
-      "Review skill 2",
-      "Review skill 3",
-    ]);
+    const announcement = skills.getByRole("status").filter({
+      hasText: "Loading skill descriptions…",
+    });
+    await expect(announcement).toHaveText("Loading skill descriptions…");
+    await expect(
+      skills.locator(".resource-table-skill .resource-table-open"),
+    ).toHaveText(["Review skill 1", "Review skill 2", "Review skill 3"]);
     await expect(
       page.getByRole("searchbox", { name: "Search skills" }),
     ).toBeEnabled();
     await expect(
       page.getByRole("button", { name: "Add global skills", exact: true }),
     ).toBeEnabled();
-    await expect(grid.locator("time")).toHaveCount(3);
-    await expectFadingPlaceholder(grid.locator(".loading-fade").first());
+    await expect(skills.locator("time")).toHaveCount(3);
+    await expectFadingPlaceholder(skills.locator(".loading-fade").first());
     await page.screenshot({
       path: info.outputPath(`skills-loading-${width}.png`),
     });
-    await grid.locator('[data-resource-id="skill-2"]').click();
+    await skills.locator('[data-resource-id="skill-2"]').click();
     await expect(
       page.getByRole("button", { name: "Back to Skills", exact: true }),
     ).toBeEnabled();
     await page
       .getByRole("button", { name: "Back to Skills", exact: true })
       .click();
-    await expect(grid.locator(".skill-card-description-skeleton")).toHaveCount(
+    await expect(skills.locator(".skill-row-description-skeleton")).toHaveCount(
       3,
     );
     await page.evaluate(() =>
       (window as unknown as MetadataWindow).metadata.finishes["skill-1"](),
     );
-    await expect(grid.locator(".skill-card-description-skeleton")).toHaveCount(
+    await expect(skills.locator(".skill-row-description-skeleton")).toHaveCount(
       2,
     );
-    await expect(grid.locator('[data-resource-id="skill-1"]')).toContainText(
+    await expect(skillRow("skill-1")).toContainText(
       "Review spacing, typography, and interaction states.",
     );
     await page.evaluate(() => {
@@ -119,21 +122,21 @@ for (const width of [1160, 900]) {
       state.finishes["skill-2"]();
       state.finishes["skill-3"]();
     });
-    await expect(grid.locator(".skill-card-description-skeleton")).toHaveCount(
+    await expect(skills.locator(".skill-row-description-skeleton")).toHaveCount(
       0,
     );
-    await expect(grid.getByRole("status")).toHaveCount(0);
+    await expect(announcement).toHaveCount(0);
     await expect(
-      grid.locator('[data-resource-id="skill-2"] .skill-card-description'),
+      skillRow("skill-2").locator(".skill-row-description"),
     ).toHaveCount(0);
     await expect(
-      grid.locator('[data-resource-id="skill-3"] .skill-card-description'),
+      skillRow("skill-3").locator(".skill-row-description"),
     ).toHaveCount(0);
     expect(
       (await new AxeBuilder({ page }).include(".resource-index").analyze())
         .violations,
     ).toEqual([]);
-    await grid.locator('[data-resource-id="skill-3"]').click();
+    await skills.locator('[data-resource-id="skill-3"]').click();
     await expect(
       page.getByRole("button", { name: "Back to Skills", exact: true }),
     ).toBeEnabled();

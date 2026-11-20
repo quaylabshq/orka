@@ -48,7 +48,7 @@ void test("the default collection includes private, own shared, and teammate con
   );
 });
 
-for (const kind of ["memory", "session", "plan"] as const) {
+for (const kind of ["memory", "session", "plan", "skill"] as const) {
   void test(`${kind} ownership views follow the owner despite edits and downloaded copies`, () => {
     const catalog = [
       resource("mine", { kind, updatedBy: "teammate" }),

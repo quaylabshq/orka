@@ -252,15 +252,17 @@ for (const viewport of [
       if (kind === "env") {
         await expect(page.locator(".env-list-item")).toHaveCount(2);
       } else if (kind === "skill") {
-        const card = page.locator('[data-resource-id="skill-desktop"]');
-        await expect(card.locator(".resource-repository")).toHaveAttribute(
+        const row = page.getByRole("row").filter({
+          has: page.locator('[data-resource-id="skill-desktop"]'),
+        });
+        await expect(row.locator(".resource-repository")).toHaveAttribute(
           "title",
           longName,
         );
-        await expect(card.locator(".skill-card-meta")).not.toContainText(
+        await expect(row.locator(".skill-row-meta")).not.toContainText(
           longName,
         );
-        await expect(card.locator(".skill-origin-badge")).toHaveText("Global");
+        await expect(row.locator(".skill-origin-badge")).toHaveText("Global");
       } else {
         await expect(
           page.getByRole("columnheader", { name: "Repository", exact: true }),
@@ -409,7 +411,7 @@ test("one repository selection follows tabs, supports the keyboard, and resets o
   await expect(filter).toHaveText("backend");
   for (const [tab, selector] of [
     ["Memories", "tbody tr"],
-    ["Skills", ".skill-card"],
+    ["Skills", ".resource-table-skill"],
     ["Sessions", "tbody tr"],
     ["Plans", "tbody tr"],
     ...(ENV_ENABLED ? [["ENVs", ".env-list-item"]] : []),

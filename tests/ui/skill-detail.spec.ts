@@ -15,29 +15,30 @@ import {
 } from "./fixtures/skill-detail.js";
 
 for (const width of [1160, 900]) {
-  test(`skill cards keep two-line descriptions and align their footer at ${width}px`, async ({
+  test(`skill rows keep two-line descriptions and aligned metadata at ${width}px`, async ({
     page,
   }) => {
     await page.setViewportSize({ width, height: 800 });
     await skillFixture(page, { open: false });
-    const card = page.locator(".skill-card");
-    await expect(card.locator(".skill-card-description")).toContainText(
+    const row = page.locator(".resource-table-skill");
+    await expect(row.locator(".skill-row-description")).toContainText(
       "Act on an issue-investigate report",
     );
-    await expect(card).toContainText("Shared");
-    await expect(card).not.toContainText("4 files");
-    await expect(card.locator("small")).toHaveCount(0);
-    const metrics = await card.evaluate((element) => {
-      const description = element.querySelector(".skill-card-description")!;
-      const date = element.querySelector("time")!;
-      const title = element.querySelector("strong")!;
-      const menu = element.parentElement!.querySelector(".resource-item-more")!;
-      const style = getComputedStyle(element);
+    await expect(
+      row.getByRole("img", { name: /Shared · Updated by/ }),
+    ).toBeVisible();
+    await expect(row).not.toContainText("4 files");
+    await expect(row.locator("small")).toHaveCount(0);
+    const metrics = await row.evaluate((element) => {
+      const description = element.querySelector(".skill-row-description")!;
+      const titleCell = element.querySelector(".resource-table-title")!;
+      const date = element.querySelector(".resource-table-updated")!;
+      const menu = element.querySelector(".resource-table-actions")!;
+      const style = getComputedStyle(titleCell);
       return {
         contentRight:
-          element.getBoundingClientRect().right -
-          parseFloat(style.paddingRight) -
-          parseFloat(style.borderRightWidth),
+          titleCell.getBoundingClientRect().right -
+          parseFloat(style.paddingRight),
         descriptionRight: description.getBoundingClientRect().right,
         descriptionHeight: description.getBoundingClientRect().height,
         descriptionLineHeight: parseFloat(
@@ -46,7 +47,7 @@ for (const width of [1160, 900]) {
         descriptionOverflows:
           description.scrollHeight > description.clientHeight,
         dateRight: date.getBoundingClientRect().right,
-        titleRight: title.getBoundingClientRect().right,
+        titleRight: titleCell.getBoundingClientRect().right,
         menuLeft: menu.getBoundingClientRect().left,
       };
     });
@@ -56,8 +57,8 @@ for (const width of [1160, 900]) {
     );
     expect(metrics.descriptionOverflows).toBe(true);
     expect(metrics.descriptionRight).toBeCloseTo(metrics.contentRight, 0);
-    expect(metrics.dateRight).toBeCloseTo(metrics.contentRight, 0);
-    expect(metrics.titleRight).toBeLessThanOrEqual(metrics.menuLeft);
+    expect(metrics.dateRight).toBeCloseTo(metrics.menuLeft, 0);
+    expect(metrics.titleRight).toBeLessThan(metrics.menuLeft);
     const toolbar = page.getByRole("group", { name: "skills tools" });
     for (const query of ["", "issue"]) {
       await toolbar
@@ -70,21 +71,16 @@ for (const width of [1160, 900]) {
         const refresh = element
           .querySelector('[aria-label="Refresh skill usage"]')!
           .getBoundingClientRect();
-        const add = element
-          .querySelector('[aria-label="Add global skills"]')!
-          .getBoundingClientRect();
         return {
           right: element.getBoundingClientRect().right,
-          addRight: add.right,
-          sortGap: refresh.left - sort.right,
-          addGap: add.left - refresh.right,
+          refreshRight: refresh.right,
+          gap: refresh.left - sort.right,
         };
       });
       expect(
-        Math.abs(alignment.right - alignment.addRight),
+        Math.abs(alignment.right - alignment.refreshRight),
       ).toBeLessThanOrEqual(1);
-      expect(alignment.sortGap).toBeCloseTo(12, 0);
-      expect(alignment.addGap).toBeCloseTo(12, 0);
+      expect(alignment.gap).toBeCloseTo(12, 0);
     }
     const menu = page.getByRole("button", {
       name: "Actions for issue-investigate-followup",
@@ -202,7 +198,7 @@ test("the wide reader shows frontmatter, facts, files, and header navigation", a
   await page
     .getByRole("button", { name: "Back to Skills", exact: true })
     .click();
-  await expect(page.locator(".skill-card")).toBeVisible();
+  await expect(page.locator(".resource-table-skill")).toBeVisible();
 });
 
 test("file selection reads each type and scopes the editor action", async ({
@@ -700,13 +696,13 @@ test("loading content keeps known metadata and disables content-dependent action
   page,
 }) => {
   await skillFixture(page, { open: false });
-  await expect(page.locator(".skill-card-description")).toContainText(
+  await expect(page.locator(".skill-row-description")).toContainText(
     "Act on an issue-investigate report",
   );
   await page.evaluate(() => {
     (window as any).slowInspect = "SKILL.md";
   });
-  await page.locator(".skill-card").first().click();
+  await page.locator(".resource-table-skill").first().click();
   const view = detail(page);
   await expect(view.locator(".skill-content-skeleton")).toBeVisible();
   await expect(view.locator(".skill-description")).toContainText(
@@ -742,13 +738,13 @@ test("failed inspection preserves a summary already read in the collection", asy
   page,
 }) => {
   await skillFixture(page, { open: false });
-  const summary = page.locator(".skill-card-description");
+  const summary = page.locator(".skill-row-description");
   await expect(summary).toContainText("Act on an issue-investigate report");
   const description = await summary.textContent();
   await page.evaluate(() => {
     (window as any).failInspect = "SKILL.md";
   });
-  await page.locator(".skill-card").first().click();
+  await page.locator(".resource-table-skill").first().click();
   await expect(detail(page).locator(".reader-state-title")).toHaveText(
     "Couldn’t load SKILL.md",
   );

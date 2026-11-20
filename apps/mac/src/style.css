@@ -911,65 +911,24 @@
   .session-preview-status {
     @apply flex items-center justify-between gap-2 px-7 py-2 text-xs text-muted;
   }
-  /* Skills: a three-column card grid, then the shared full-width reading view. */
-  .skill-grid {
-    @apply grid grid-cols-3 gap-4;
-  }
-  .skill-card {
-    @apply flex min-w-0 flex-col items-start gap-2 rounded-xl border border-line bg-surface-secondary p-4 text-left;
-    transition: box-shadow 120ms ease;
-  }
-  .skill-card:hover {
-    box-shadow: inset 0 0 0 100vmax var(--state-hover);
-  }
-  .skill-card:focus-visible {
-    outline-offset: -2px;
-  }
-  .skill-card strong {
-    @apply line-clamp-2 min-w-0 flex-1 text-label-sm;
-    overflow-wrap: anywhere;
-  }
-  .skill-card-title {
-    @apply flex w-full min-w-0 items-start gap-2 pr-[30px];
-  }
-  .skill-origin-badge {
-    @apply inline-flex shrink-0 items-center rounded border border-line bg-surface-tertiary px-1.5 py-0.5 text-body-2xs text-secondary;
-  }
-  .skill-card-description {
-    @apply m-0 line-clamp-2 w-full text-body-sm text-secondary;
-    overflow-wrap: anywhere;
-  }
-  .skill-card .resource-conflict {
-    @apply flex items-center gap-1.5 text-xs text-foreground;
-  }
-  .skill-card-footer {
-    @apply mt-auto flex w-full flex-col gap-3;
-  }
-  .skill-card-meta {
-    @apply flex w-full flex-wrap items-center gap-x-3 gap-y-2 text-body-xs text-muted;
-  }
-  .skill-card-meta time {
-    @apply ml-auto shrink-0 tabular-nums;
-  }
-  /* Every index: the shared toolbar over a table or the skill cards, then the reading view. */
+  /* Every index uses the shared toolbar and table before the reading view. */
   .resource-index {
     @apply relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden;
   }
-  .resource-index-toolbar,
   .resource-index-body {
-    @apply px-7 pt-5;
+    @apply min-h-0 flex-1 overflow-y-auto px-7 pb-7 pt-5;
   }
-  .resource-index-toolbar {
-    @apply shrink-0;
+  .resource-index--floating-action .resource-index-body {
+    @apply pb-20;
   }
-  .resource-index-toolbar .index-toolbar {
-    @apply mb-0;
+  .resource-index--floating-action .resource-index-action {
+    @apply absolute bottom-5 right-7 z-[5];
   }
-  .resource-index-body {
-    @apply min-h-0 flex-1 overflow-y-auto pb-7;
+  .resource-index--inline-action .empty-state {
+    padding-bottom: 16px;
   }
-  .resource-index-toolbar + .resource-index-body {
-    @apply pt-4;
+  .resource-index--inline-action .resource-index-action {
+    @apply flex justify-center;
   }
   .modal.global-skills-modal {
     @apply flex w-[720px] flex-col overflow-hidden p-6;
@@ -1248,6 +1207,25 @@
   }
   .resource-table-suffix {
     @apply mt-0.5 block w-full truncate text-body-2xs text-muted;
+  }
+  .resource-table-skill .resource-table-title {
+    @apply py-2;
+  }
+  .skill-row-description {
+    @apply m-0 mt-0.5 line-clamp-2 text-body-xs text-secondary;
+    overflow-wrap: anywhere;
+  }
+  .skill-row-description-skeleton {
+    @apply mt-1.5 block h-2 w-4/5 rounded-sm bg-line;
+  }
+  .skill-row-meta {
+    @apply mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-body-xs text-muted;
+  }
+  .skill-row-meta:empty {
+    display: none;
+  }
+  .skill-origin-badge {
+    @apply inline-flex shrink-0 items-center rounded border border-line bg-surface-tertiary px-1.5 py-0.5 text-body-2xs text-secondary;
   }
   .resource-table-updated {
     @apply text-left text-muted;
@@ -1761,14 +1739,10 @@
     @apply w-48;
   }
   .resource-detail,
-  .resource-index-toolbar,
   .resource-index-body,
   .session-preview-status,
   .banner {
     @apply px-5;
-  }
-  .skill-grid {
-    @apply grid-cols-2;
   }
   .folder-connection {
     @apply mx-5 flex-wrap;

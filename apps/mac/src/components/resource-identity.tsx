@@ -14,15 +14,17 @@ export function ResourceIdentity({
 }) {
   const memberName = useMemberLabel(user);
   const stacked = resource.kind !== "memory";
-  const author = memberName(stacked ? resource.owner : resource.updatedBy);
-  const photo = useMemberPhoto(resource.owner);
+  const showUpdater = resource.kind === "memory" || resource.kind === "skill";
+  const authorId = showUpdater ? resource.updatedBy : resource.owner;
+  const author = memberName(authorId);
+  const photo = useMemberPhoto(authorId);
   const tool =
     resource.source === "codex"
       ? "Codex"
       : resource.source === "claude"
         ? "Claude"
         : "Shared";
-  const label = `${tool} · ${stacked ? author : `Updated by ${author}`}`;
+  const label = `${tool} · ${showUpdater ? `Updated by ${author}` : author}`;
   const [showLabel, setShowLabel] = useState(false);
   useEffect(() => {
     if (!showLabel) return;

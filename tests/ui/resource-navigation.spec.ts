@@ -369,27 +369,24 @@ test("skills switch files from the rail or the compact selector", async ({
 }) => {
   await resourceFixture(page);
   await page.getByRole("button", { name: /^Skills/ }).click();
-  const grid = page.locator(".skill-grid");
-  const columns = () =>
-    grid.evaluate(
-      (element) =>
-        getComputedStyle(element).gridTemplateColumns.split(" ").length,
-    );
-  await expect(grid.locator(".skill-card")).toHaveCount(2);
-  await expect(grid).toContainText("How we write.");
-  await expect(grid).not.toContainText("1 file");
-  await expect(grid).not.toContainText("2 files");
-  await expect.poll(columns).toBe(3);
+  const list = page
+    .getByRole("region", { name: "skills", exact: true })
+    .getByRole("table");
+  const rows = list.locator(".resource-table-skill");
+  await expect(rows).toHaveCount(2);
+  await expect(list).toContainText("How we write.");
+  await expect(list).not.toContainText("1 file");
+  await expect(list).not.toContainText("2 files");
   await expect(page.locator(".inspector")).toHaveCount(0);
   await page
-    .locator(".skill-card")
+    .locator(".resource-table-skill")
     .filter({ hasText: "Review checklist" })
     .click();
   const view = page.locator(".resource-detail--skill");
   await expect(view.locator("h2").first()).toHaveText("Review checklist");
   await expect(view.locator(".skill-description")).toHaveText("How we write.");
   await expect(view).toContainText("Some content");
-  await expect(page.locator(".skill-grid")).toHaveCount(0);
+  await expect(list).toHaveCount(0);
   await expect(view).toHaveAttribute("data-layout", "wide");
   // The Files card switches the inspected file; the title card stays put.
   const rail = view.getByRole("complementary", { name: "Skill information" });
@@ -407,8 +404,10 @@ test("skills switch files from the rail or the compact selector", async ({
   await expect(page.getByRole("button", { name: "Files, 2" })).toBeVisible();
   await expect(heading(page)).toHaveText("Skills");
   await backButton(page, "Skills").click();
-  await expect(grid.locator(".skill-card")).toHaveCount(2);
-  await expect.poll(columns).toBe(2);
+  await expect(rows).toHaveCount(2);
+  await expect(
+    list.getByRole("columnheader", { name: "Skill", exact: true }),
+  ).toBeAttached();
 });
 
 test("a failed file read clears old content and retries only on request", async ({
@@ -419,7 +418,7 @@ test("a failed file read clears old content and retries only on request", async 
   await resourceFixture(page);
   await page.getByRole("button", { name: /^Skills/ }).click();
   await page
-    .locator(".skill-card")
+    .locator(".resource-table-skill")
     .filter({ hasText: "Review checklist" })
     .click();
   const view = page.locator(".resource-detail--skill");
@@ -480,7 +479,7 @@ for (const outcome of ["success", "failure"] as const)
     await resourceFixture(page);
     await page.getByRole("button", { name: /^Skills/ }).click();
     await page
-      .locator(".skill-card")
+      .locator(".resource-table-skill")
       .filter({ hasText: "Review checklist" })
       .click();
     const view = page.locator(".resource-detail--skill");
@@ -580,7 +579,7 @@ test("index toolbar searches, filters by source, sorts, and clears", async ({
   await page.getByRole("button", { name: "Clear search", exact: true }).click();
   await expect(search).toBeFocused();
   await expect(count("2 memories")).toHaveCount(0);
-  // The skill grid and session table share the toolbar.
+  // Skills and Sessions share the collection toolbar.
   await page.getByRole("button", { name: /^Skills/ }).click();
   await expect(
     page.getByRole("searchbox", { name: "Search skills" }),
@@ -595,7 +594,7 @@ test("skill title sorting follows frontmatter names instead of folder titles", a
 }) => {
   await resourceFixture(page, true);
   await page.getByRole("button", { name: /^Skills/ }).click();
-  const titles = page.locator(".skill-card strong");
+  const titles = page.locator(".resource-table-skill .resource-table-open");
   await expect(titles).toContainText(["Alpha writing", "Zebra review"]);
   await page
     .getByRole("button", { name: "Sort by Most used", exact: true })
