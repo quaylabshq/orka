@@ -225,6 +225,101 @@ test("queued writes block disconnect while reconnect remains usable", async ({
   ).toBe(false);
 });
 
+test("only a folder's own unsent changes block disconnecting it", async ({
+  page,
+}, info) => {
+  const settings = await settingsFixture(page, {
+    queued: true,
+    sourceRows: [
+      {
+        id: "api",
+        name: "api",
+        path: "/Projects/api",
+        folderState: "connected",
+        queuedChanges: 2,
+      },
+      {
+        id: "web",
+        name: "web",
+        path: "/Projects/web",
+        folderState: "connected",
+        queuedChanges: 0,
+      },
+    ],
+  });
+  const disconnect = () =>
+    page.getByRole("menuitem", {
+      name: "Disconnect folder on this Mac",
+      exact: true,
+    });
+  await button(settings, "Options for api").click();
+  await expect(disconnect()).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await button(settings, "Options for web").click();
+  await expect(disconnect()).toBeEnabled();
+
+  await expect(
+    settings.getByText(
+      "Folders with unsent changes can be disconnected once they sync.",
+    ),
+  ).toBeVisible();
+  await disconnect().click();
+  const confirmation = page.getByRole("dialog", { name: "Disconnect folder?" });
+  await expect(confirmation).toBeVisible();
+  await page.screenshot({
+    path: info.outputPath("disconnect-clean-folder.png"),
+    animations: "disabled",
+  });
+  const confirm = button(confirmation, "Disconnect folder");
+  await expect(confirm).toBeEnabled();
+  await confirm.click();
+  await expect(confirmation).toBeHidden();
+  expect(
+    (await settingsCalls(page)).filter(
+      (call) => call.command === "disconnect_project_source",
+    ),
+  ).toEqual([
+    {
+      command: "disconnect_project_source",
+      args: { id: "one", sourceId: "web" },
+    },
+  ]);
+});
+
+test("a new folder shows its first-sync wait and a non-Git hint", async ({
+  page,
+}) => {
+  const settings = await settingsFixture(page, {
+    sourceRows: [
+      {
+        id: "notes",
+        name: "notes",
+        path: "/Users/alex/Downloads/notes",
+        folderState: "connected",
+        gitRepository: false,
+        syncStartsAt: new Date(Date.now() + 150_000).toISOString(),
+      },
+      {
+        id: "api",
+        name: "api",
+        path: "/Projects/api",
+        folderState: "connected",
+        gitRepository: true,
+      },
+    ],
+  });
+  await expect(settings.getByText("Not a Git repository")).toHaveCount(1);
+  const start = button(settings, "Start syncing notes now");
+  await expect(start).toHaveText("Starts in 3 min · Sync now");
+  await start.click();
+  expect(
+    (await settingsCalls(page)).some(
+      (call) => call.command === "start_source_sync",
+    ),
+  ).toBe(true);
+  await expect(button(settings, "Start syncing api now")).toHaveCount(0);
+});
+
 test("folder recovery states expose paths in name tooltips and reconnect the selected source", async ({
   page,
 }, info) => {

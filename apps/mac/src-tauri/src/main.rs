@@ -326,6 +326,7 @@ fn main() {
                 sources::connect_project_sources,
                 repositories::repository_command,
                 sources::disconnect_project_source,
+                sources::start_source_sync,
                 sources::scan_project_folders,
                 commands::disconnect_project,
                 commands::inspect_resource,

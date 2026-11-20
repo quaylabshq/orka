@@ -242,6 +242,29 @@ impl SyncQueue {
         Self::enqueue(db, project, priority, reason, Self::now())
     }
 
+    /// Queues one project to start no earlier than `at` (milliseconds). An
+    /// earlier request for the same project still runs first.
+    pub(crate) fn request_at(
+        db: &Connection,
+        project: &str,
+        priority: Priority,
+        reason: &str,
+        at: i64,
+    ) -> Result<()> {
+        let now = Self::now();
+        Self::merge(
+            db,
+            &Job {
+                project: project.into(),
+                priority: priority as i64,
+                reason: reason.into(),
+                requested_at: now,
+                not_before: at.max(now),
+                attempts: 0,
+            },
+        )
+    }
+
     /// A changed `syncRequest` still means "sync everything for local changes".
     pub(crate) fn accept_request(db: &Connection, now: i64) -> Result<bool> {
         let request = db::get(db, "syncRequest")?;
@@ -399,8 +422,9 @@ impl SyncQueue {
 
     /// One entry per queued project for the app's queue panel, in the order the
     /// worker picks jobs. The account-wide `*` row is internal, so it is left
-    /// out. `notBefore` is set only while a failed job waits to retry; a queued
-    /// job has no time the user acts on.
+    /// out. `notBefore` is set while a failed job waits to retry or a newly
+    /// connected folder waits for its first sync; a queued job has no time the
+    /// user acts on.
     pub(crate) fn states(db: &Connection, now: i64) -> Result<Value> {
         let mut query = db
             // A deleted project's capture job is local bookkeeping, not a sync
@@ -434,16 +458,20 @@ impl SyncQueue {
             .map(
                 |(project, reason, attempts, not_before, running, cancel_requested)| {
                     let waiting = !running && attempts > 0 && not_before > now;
+                    // A newly connected folder's first sync is held back on purpose.
+                    let scheduled = !running && attempts == 0 && not_before > now;
                     let state = if running {
                         "running"
                     } else if waiting {
                         "waiting"
+                    } else if scheduled {
+                        "scheduled"
                     } else {
                         "queued"
                     };
                     let mut entry = json!({
                         "projectId":project, "state":state, "reason":reason, "attempts":attempts,
-                        "notBefore": if waiting { iso(not_before) } else { None },
+                        "notBefore": if waiting || scheduled { iso(not_before) } else { None },
                     });
                     if cancel_requested {
                         entry["cancelRequested"] = json!(true);
@@ -660,6 +688,29 @@ mod tests {
 
     fn interval() -> Interval {
         Interval::from_config(&json!({"syncMinutes": 15}))
+    }
+
+    #[test]
+    fn a_scheduled_first_sync_waits_until_its_time_unless_requested_sooner() {
+        let (_root, db) = queue_db(&["a"]);
+        let now = SyncQueue::now();
+        SyncQueue::request_at(&db, "a", Priority::User, "new folder", now + 3 * MINUTE).unwrap();
+        assert!(SyncQueue::claim(&db, now).unwrap().is_none());
+        assert_eq!(
+            SyncQueue::states(&db, now).unwrap()[0]["state"],
+            "scheduled"
+        );
+        assert!(SyncQueue::claim(&db, now + 3 * MINUTE).unwrap().is_some());
+
+        // A sooner request for the project still runs at its own time.
+        let (_root, db) = queue_db(&["a"]);
+        SyncQueue::request_at(&db, "a", Priority::User, "new folder", now + 3 * MINUTE).unwrap();
+        SyncQueue::enqueue(&db, "a", Priority::Local, "local", now).unwrap();
+        assert_eq!(rows(&db)[0].not_before, now);
+        // A time in the past never schedules into the past.
+        let (_root, db) = queue_db(&["a"]);
+        SyncQueue::request_at(&db, "a", Priority::User, "new folder", 0).unwrap();
+        assert!(rows(&db)[0].not_before >= now);
     }
 
     fn save_restorable(db: &Connection, id: &str) {

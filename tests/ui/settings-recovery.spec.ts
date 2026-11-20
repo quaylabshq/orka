@@ -18,6 +18,7 @@ for (const section of ["General", "Profile"])
       name: section === "General" ? "Project name" : "Display name",
       exact: true,
     });
+    const reviews = page.getByRole("region", { name: "Reviews", exact: true });
     const openRequests = async () => {
       await page
         .getByRole("button", {
@@ -30,9 +31,8 @@ for (const section of ["General", "Profile"])
         .click();
     };
     const returnToSection = async () => {
-      await page
-        .getByRole("button", { name: "Back to Members", exact: true })
-        .click();
+      // Reviews is a tab of its own, so Settings is reopened from the sidebar.
+      await page.getByRole("button", { name: "Settings", exact: true }).click();
       await button(settings, section).click();
     };
     const dialog = page.getByRole("dialog", {
@@ -46,14 +46,13 @@ for (const section of ["General", "Profile"])
     await expect(name).toHaveValue("Saved from header navigation");
     await openRequests();
     await button(dialog, "Save").click();
-    await expect(
-      page.getByRole("heading", { name: "Pending reviews", exact: true }),
-    ).toBeVisible();
+    await expect(reviews).toBeVisible();
     await returnToSection();
     await expect(name).toHaveValue("Saved from header navigation");
     await name.fill("Discarded from header navigation");
     await openRequests();
     await button(dialog, "Discard").click();
+    await expect(reviews).toBeVisible();
     await returnToSection();
     await expect(name).toHaveValue("Saved from header navigation");
     expect(

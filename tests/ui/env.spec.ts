@@ -449,6 +449,13 @@ test("unconfirmed publication has scoped retry and discard actions", async ({
   await expect(
     page.getByText("Unconfirmed publication:", { exact: false }),
   ).toBeVisible();
+  const notice = page.locator(".env-status").filter({
+    hasText: "Unconfirmed publication:",
+  });
+  await expect(notice).toHaveCSS("background-color", "rgb(18, 18, 18)");
+  await expect(
+    notice.getByRole("button", { name: "Retry publication", exact: true }),
+  ).toHaveCSS("background-color", "rgb(28, 28, 28)");
   await page
     .getByRole("button", { name: "Discard retry", exact: true })
     .click();
@@ -762,12 +769,13 @@ test("governed ENV readers see pending trust separately from publishing access",
   await expect(
     page.getByText(/Local dotenv overrides remain writable/),
   ).toBeVisible();
-  await expect(
-    page.getByRole("button", {
-      name: "Request publishing access",
-      exact: true,
-    }),
-  ).toBeVisible();
+  const summary = page.locator(".env-summary");
+  const request = summary.getByRole("button", {
+    name: "Request publishing access",
+    exact: true,
+  });
+  await expect(summary).toHaveCSS("background-color", "rgb(18, 18, 18)");
+  await expect(request).toHaveCSS("background-color", "rgb(28, 28, 28)");
   await expect(
     page.getByRole("button", { name: "Enter approval response", exact: true }),
   ).toBeVisible();

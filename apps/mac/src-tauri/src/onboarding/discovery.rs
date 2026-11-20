@@ -1058,11 +1058,47 @@ pub fn normalize_remote(raw: &str) -> Option<String> {
     }
     Some(format!("{host}/{path}"))
 }
+pub(crate) fn key_for_remote(url: &str) -> Option<String> {
+    normalize_remote(url).map(|value| db::digest(format!("orka-remote-v1:{value}").as_bytes()))
+}
+
 pub fn remote_key(path: &str) -> Result<Option<String>> {
     let root = fs::canonicalize(path).map_err(|_| "Project folder is unavailable")?;
+    let (origin, other) = remote_urls(&root)?;
+    Ok(origin
+        .last()
+        .or(other.first())
+        .and_then(|url| key_for_remote(url)))
+}
+
+/// Origin first, then other remotes in config order. Never use remote names as
+/// evidence of identity: a GitHub link or shared pin can match any of them.
+pub(crate) fn remote_keys(path: &Path) -> Result<Vec<String>> {
+    let home = dirs::home_dir().map(|home| resolved(&home));
+    source_remote_keys(path, home.as_deref())
+}
+
+fn source_remote_keys(path: &Path, home: Option<&Path>) -> Result<Vec<String>> {
+    let path = fs::canonicalize(path).map_err(|_| "Project folder is unavailable")?;
+    let Some(root) = path
+        .ancestors()
+        .take_while(|root| !home.is_some_and(|home| home.starts_with(root)))
+        .find(|root| root.join(".git").exists())
+    else {
+        return Ok(Vec::new());
+    };
+    let (origin, other) = remote_urls(root)?;
+    Ok(origin
+        .into_iter()
+        .chain(other)
+        .filter_map(|url| key_for_remote(&url))
+        .collect())
+}
+
+fn remote_urls(root: &Path) -> Result<(Vec<String>, Vec<String>)> {
     let git = root.join(".git");
     let directory = if git.is_file() {
-        git_dirs(&root)
+        git_dirs(root)
             .map(|(directory, _)| directory)
             .ok_or("Invalid Git directory")?
     } else {
@@ -1073,37 +1109,37 @@ pub fn remote_key(path: &str) -> Result<Option<String>> {
     } else if let Ok(common) = fs::read_to_string(directory.join("commondir")) {
         directory.join(common.trim()).join("config")
     } else {
-        return Ok(None);
+        return Ok(Default::default());
     };
     let file = fs::File::open(config).map_err(|e| e.to_string())?;
-    let mut remote = None;
-    let mut origin = None;
+    let mut other = Vec::new();
+    let mut origin = Vec::new();
     let mut current = String::new();
-    for line in BufReader::new(file.take(1_000_000))
-        .lines()
-        .map_while(std::result::Result::ok)
-    {
+    for line in BufReader::new(file.take(1_000_000)).lines() {
+        let line = match line {
+            Ok(line) => line,
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+                return Ok(Default::default());
+            }
+            Err(error) => return Err(error.to_string()),
+        };
         let line = line.trim();
         if line.starts_with('[') {
             current = line.to_string();
         } else if current.starts_with("[remote ") {
             if let Some((key, value)) = line.split_once('=') {
                 if key.trim() == "url" {
-                    let value = value.trim().trim_matches('"').to_string();
-                    if remote.is_none() {
-                        remote = Some(value.clone());
-                    }
-                    if current == "[remote \"origin\"]" {
-                        origin = Some(value);
-                    }
+                    let urls = if current == "[remote \"origin\"]" {
+                        &mut origin
+                    } else {
+                        &mut other
+                    };
+                    urls.push(value.trim().trim_matches('"').to_owned());
                 }
             }
         }
     }
-    Ok(origin
-        .or(remote)
-        .and_then(|v| normalize_remote(&v))
-        .map(|v| db::digest(format!("orka-remote-v1:{v}").as_bytes())))
+    Ok((origin, other))
 }
 #[cfg(test)]
 mod tests {
@@ -1195,6 +1231,66 @@ mod tests {
             Some(db::digest(b"orka-remote-v1:github.com/owner/repo"))
         );
     }
+    #[test]
+    fn source_lookup_ignores_home_and_its_ancestors() {
+        let temp = tempfile::tempdir().unwrap();
+        let parent = resolved(temp.path());
+        let home = parent.join("home");
+        let plain = home.join("plain");
+        fs::create_dir_all(&plain).unwrap();
+        for root in [&parent, &home] {
+            fs::create_dir(root.join(".git")).unwrap();
+            fs::write(
+                root.join(".git/config"),
+                "[remote \"origin\"]\nurl = git@github.com:team/dotfiles.git\n",
+            )
+            .unwrap();
+        }
+        assert!(source_remote_keys(&plain, Some(&home)).unwrap().is_empty());
+        assert!(source_remote_keys(&home, Some(&home)).unwrap().is_empty());
+        fs::remove_dir_all(home.join(".git")).unwrap();
+        assert!(source_remote_keys(&plain, Some(&home)).unwrap().is_empty());
+    }
+
+    #[test]
+    fn sources_but_not_onboarding_inherit_a_monorepo_remote() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = resolved(temp.path());
+        let repo = home.join("monorepo");
+        let package = repo.join("packages/frontend");
+        fs::create_dir_all(&package).unwrap();
+        fs::create_dir(repo.join(".git")).unwrap();
+        fs::write(
+            repo.join(".git/config"),
+            "[remote \"origin\"]\nurl = git@github.com:team/monorepo.git\n",
+        )
+        .unwrap();
+        let key = db::digest(b"orka-remote-v1:github.com/team/monorepo");
+        assert_eq!(
+            remote_key(repo.to_str().unwrap()).unwrap(),
+            Some(key.clone())
+        );
+        assert_eq!(remote_key(package.to_str().unwrap()).unwrap(), None);
+        assert_eq!(
+            source_remote_keys(&package, Some(&home)).unwrap(),
+            vec![key]
+        );
+    }
+
+    #[test]
+    fn non_utf8_git_config_has_no_remote() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::create_dir(root.join(".git")).unwrap();
+        fs::write(
+            root.join(".git/config"),
+            b"[remote \"origin\"]\nurl = git@github.com:team/repo.git\n# \xff\n",
+        )
+        .unwrap();
+        assert_eq!(remote_key(root.to_str().unwrap()).unwrap(), None);
+        assert!(remote_keys(root).unwrap().is_empty());
+    }
+
     fn history_record(cwd: &Path, last: u64, sessions: usize) -> Record {
         Record {
             cwd: cwd.to_path_buf(),

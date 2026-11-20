@@ -513,3 +513,260 @@ fn permission_reset_never_reads_or_removes_files_in_a_replaced_checkout() {
         .unwrap()
         .is_empty());
 }
+
+#[test]
+fn only_a_folders_own_or_unattributed_uploads_block_disconnecting_it() {
+    let f = Fixture::new();
+    let project = multi_source(&f);
+    let id = project["id"].as_str().unwrap();
+    let desktop = project["sources"][0]["id"].as_str().unwrap();
+    let backend = project["sources"][1]["id"].as_str().unwrap();
+    db::upsert(&f.db, "projects", id, id, &project).unwrap();
+    let queue = |value: Value| {
+        f.db.execute(
+            "INSERT INTO outbox VALUES(?,?,?,?,NULL)",
+            rusqlite::params![
+                Uuid::new_v4().to_string(),
+                id,
+                "/v2/sync/push",
+                value.to_string()
+            ],
+        )
+        .unwrap();
+    };
+    assert_eq!(sources::queued_for_source(&f.db, id, desktop).unwrap(), 0);
+    // A change to the other folder never blocks this one.
+    queue(json!({"resource":{"sourceId":backend}}));
+    assert_eq!(sources::queued_for_source(&f.db, id, desktop).unwrap(), 0);
+    assert_eq!(sources::queued_for_source(&f.db, id, backend).unwrap(), 1);
+    // Ownership through the indexed resource counts.
+    let resource = Uuid::new_v4().to_string();
+    f.db.execute(
+        "INSERT INTO resources VALUES(?,?,?)",
+        rusqlite::params![resource, id, json!({"sourceId":desktop}).to_string()],
+    )
+    .unwrap();
+    queue(json!({"resourceId":resource}));
+    assert_eq!(sources::queued_for_source(&f.db, id, desktop).unwrap(), 1);
+    // A change whose folder is unknown blocks every folder rather than being stranded.
+    queue(json!({"kind":"memory"}));
+    assert_eq!(sources::queued_for_source(&f.db, id, desktop).unwrap(), 2);
+    assert_eq!(sources::queued_for_source(&f.db, id, backend).unwrap(), 2);
+}
+
+#[test]
+fn a_newly_connected_folder_waits_before_sync_scans_or_writes_into_it() {
+    use crate::sync_queue::{Priority, SyncQueue};
+    let f = Fixture::new();
+    let project = multi_source(&f);
+    let id = project["id"].as_str().unwrap();
+    let desktop = project["sources"][0]["id"].as_str().unwrap();
+    let backend = project["sources"][1]["id"].as_str().unwrap();
+    db::upsert(&f.db, "projects", id, id, &project).unwrap();
+    let index = |source: usize| {
+        let root = Path::new(project["sources"][source]["path"].as_str().unwrap());
+        let index = root.join(".orka/memory/index.md");
+        fs::create_dir_all(index.parent().unwrap()).unwrap();
+        fs::write(&index, "Previous memory index").unwrap();
+        index
+    };
+    let waiting_index = index(0);
+    let ready_index = index(1);
+    let now = chrono::Utc::now().timestamp_millis();
+    let at = now + sources::NEW_FOLDER_DELAY_MS;
+    db::set(
+        &f.db,
+        &format!("source-sync-after:{id}:{desktop}"),
+        &json!(at),
+    )
+    .unwrap();
+
+    // Sync sees only the folder that is not waiting.
+    let (view, earliest) = sources::without_waiting(&f.db, &project).unwrap();
+    assert_eq!(earliest, Some(at));
+    assert!(view["sources"][0]["path"].is_null());
+    assert_eq!(view["sources"][0]["firstSyncWaiting"], true);
+    assert!(view["sources"][1]["firstSyncWaiting"].is_null());
+    assert_eq!(view["sources"][1]["path"], project["sources"][1]["path"]);
+    assert_eq!(
+        sources::views(&view)
+            .iter()
+            .filter(|v| v["path"].is_string())
+            .count(),
+        1
+    );
+    assert_eq!(sources::sync_after(&f.db, id, backend).unwrap(), None);
+    // Permission refresh reloads its own project and must also honor the delay.
+    crate::governance::reset(&f.db, id, &json!([])).unwrap();
+    assert!(waiting_index.exists());
+    assert!(!ready_index.exists());
+
+    // The queue shows the held-back job as scheduled, not as a retry.
+    SyncQueue::request_at(&f.db, id, Priority::User, "new folder", at).unwrap();
+    let states = SyncQueue::states(&f.db, now).unwrap();
+    assert_eq!(states[0]["state"], "scheduled");
+    assert!(states[0]["notBefore"].is_string());
+
+    // An in-flight pass still holds writes and uploads after Sync now.
+    sources::clear_sync_after(&f.db, id, desktop).unwrap();
+    assert!(sources::paused_upload_sources(&view).contains(desktop));
+    let (view, earliest) = sources::without_waiting(&f.db, &project).unwrap();
+    assert_eq!(earliest, None);
+    assert_eq!(view["sources"][0]["path"], project["sources"][0]["path"]);
+    crate::governance::reset(&f.db, id, &json!([])).unwrap();
+    assert!(!waiting_index.exists());
+
+    // An elapsed wait no longer holds the folder back.
+    db::set(
+        &f.db,
+        &format!("source-sync-after:{id}:{desktop}"),
+        &json!(now - 1),
+    )
+    .unwrap();
+    assert_eq!(sources::without_waiting(&f.db, &project).unwrap().1, None);
+}
+
+#[test]
+fn a_pinned_source_accepts_any_checkout_of_its_repository_and_nothing_else() {
+    let temp = tempfile::tempdir().unwrap();
+    let git = |dir: &std::path::Path, args: &[&str]| {
+        let output = std::process::Command::new("/usr/bin/git")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .args([
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.test",
+            ])
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    let main = temp.path().join("api");
+    fs::create_dir(&main).unwrap();
+    git(&main, &["init", "-q"]);
+    git(
+        &main,
+        &["remote", "add", "origin", "git@github.com:team/api.git"],
+    );
+    git(&main, &["commit", "-q", "--allow-empty", "-m", "fixture"]);
+    use crate::onboarding::discovery::remote_keys;
+    let pin = remote_keys(&main).unwrap().remove(0);
+    // A linked worktree shares the repository's remote.
+    let worktree = temp.path().join("api-feature");
+    git(
+        &main,
+        &["worktree", "add", "-q", worktree.to_str().unwrap()],
+    );
+    assert_eq!(remote_keys(&worktree).unwrap(), vec![pin.clone()]);
+    // HTTPS and a different case name the same GitHub repository.
+    let https = temp.path().join("https");
+    fs::create_dir(&https).unwrap();
+    git(&https, &["init", "-q"]);
+    git(
+        &https,
+        &["remote", "add", "origin", "https://github.com/Team/API.git"],
+    );
+    assert_eq!(remote_keys(&https).unwrap(), vec![pin.clone()]);
+    // Another repository, a repository without a remote and a plain folder differ.
+    let other = temp.path().join("other");
+    fs::create_dir(&other).unwrap();
+    git(&other, &["init", "-q"]);
+    git(
+        &other,
+        &["remote", "add", "origin", "git@github.com:someone/api.git"],
+    );
+    assert_ne!(remote_keys(&other).unwrap(), vec![pin.clone()]);
+    let bare = temp.path().join("no-remote");
+    fs::create_dir(&bare).unwrap();
+    git(&bare, &["init", "-q"]);
+    assert!(remote_keys(&bare).unwrap().is_empty());
+    let plain = temp.path().join("plain");
+    fs::create_dir(&plain).unwrap();
+    assert!(remote_keys(&plain).unwrap().is_empty());
+
+    // A connected folder whose remote now names another repository pauses.
+    let view = |root: &std::path::Path| json!({"path":root,"folderIdentity":indexer::folder_identity(root).unwrap(),"sourceRemoteKey":pin});
+    assert!(sources::validate(&view(&main)).is_ok());
+    assert!(sources::validate(&view(&worktree)).is_ok());
+    assert!(sources::validate(&view(&other)).is_err());
+    // A checkout that proved its identity can temporarily lose its remote.
+    assert!(sources::validate(&view(&bare)).is_err());
+    let mut verified = view(&bare);
+    verified["verifiedRemoteKey"] = json!(pin);
+    assert!(sources::validate(&verified).is_ok());
+    // A legacy project's remote hint is not a source pin.
+    let mut legacy = view(&other);
+    legacy["sourceRemoteKey"] = Value::Null;
+    legacy["remoteKey"] = json!(pin);
+    assert!(sources::validate(&legacy).is_ok());
+    assert_eq!(sources::folder_state(&view(&other)), "repository-conflict");
+    let mut linked = view(&other);
+    linked["repository"] = json!({"cloneUrl":"https://github.com/team/api.git"});
+    assert!(sources::validate(&linked).is_err());
+    git(
+        &other,
+        &["remote", "add", "upstream", "git@github.com:team/api.git"],
+    );
+    // An extra matching remote passes the mistake guard even on the wrong checkout.
+    assert!(sources::validate(&linked).is_ok());
+    let subfolder = other.join("packages/frontend");
+    fs::create_dir_all(&subfolder).unwrap();
+    assert!(sources::validate(&view(&subfolder)).is_ok());
+    let mut renamed = view(&subfolder);
+    renamed["repository"] = json!({"cloneUrl":"https://github.com/team/new-name.git", "previousCloneUrls":["https://github.com/team/api.git"]});
+    assert!(sources::validate(&renamed).is_ok());
+    renamed["sourceRemoteKey"] = json!(remote_keys(&other).unwrap()[0]);
+    assert!(sources::validate(&renamed).is_err());
+}
+
+#[test]
+fn pin_backfill_only_sends_writes_for_supported_unpinned_sources() {
+    let mut f = Fixture::new();
+    let git = f.root.join(".git");
+    fs::create_dir_all(&git).unwrap();
+    fs::write(
+        git.join("config"),
+        "[remote \"origin\"]\nurl = git@github.com:team/api.git\n",
+    )
+    .unwrap();
+    let key = db::digest(b"orka-remote-v1:github.com/team/api");
+    let id = f.project["id"].as_str().unwrap().to_owned();
+    f.project["sources"] = json!([{"id":"source","path":f.root}]);
+    db::upsert(&f.db, "projects", &id, &id, &f.project).unwrap();
+
+    let supported = json!({"sourceRemoteKey":1});
+    tauri::async_runtime::block_on(async {
+        sources::backfill_remote_pins(&mut f.db, &json!({}), |_| async {
+            panic!("unsupported service received a pin write")
+        })
+        .await
+        .unwrap();
+
+        let mut sent = Vec::new();
+        sources::backfill_remote_pins(&mut f.db, &supported, |body| {
+            sent.push(body);
+            std::future::ready(Ok(json!({"sourceId":"source", "remoteKey":key})))
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            sent,
+            vec![
+                json!({"action":"set-source-remote","projectId":id,"sourceId":"source","remoteKey":key})
+            ]
+        );
+
+        sources::backfill_remote_pins(&mut f.db, &supported, |_| async {
+            panic!("fully pinned project sent another pin write")
+        })
+        .await
+        .unwrap();
+    });
+}

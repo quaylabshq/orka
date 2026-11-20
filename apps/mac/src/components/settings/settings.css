@@ -152,7 +152,7 @@
     @apply truncate;
   }
   .repository-access-setup {
-    @apply flex flex-col items-start gap-3 rounded-lg border border-line bg-raised p-4;
+    @apply flex flex-col items-start gap-3 rounded-xl border border-line bg-panel p-4;
   }
   .repository-source-choice {
     @apply mt-3 flex min-w-0 flex-wrap items-center gap-3 text-body-xs;
@@ -417,6 +417,10 @@
   .settings-folder-name {
     @apply min-w-0 truncate;
   }
+  .settings-folder-hint {
+    @apply shrink-0 text-xs;
+    color: var(--text-secondary);
+  }
   .settings-folder-icon {
     --icon-container: 16px;
     --icon-size: 16px;
@@ -512,7 +516,7 @@
     color: var(--red-text);
   }
   .project-lifecycle-feedback {
-    @apply rounded-lg border border-line bg-raised p-3;
+    @apply rounded-xl border border-line bg-panel p-3;
   }
   .settings-lifecycle-feedback {
     @apply basis-full;

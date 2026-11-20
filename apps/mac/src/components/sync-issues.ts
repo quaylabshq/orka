@@ -4,3 +4,7 @@ export function syncIssueRecovery(error: string): string | undefined {
   if (/session exceeds 128 mb/i.test(error))
     return "This session stays on this Mac. Start a new session for future work that you want to sync.";
 }
+
+export function isTerminalUploadError(error: string | null): boolean {
+  return /^4\d\d:/.test(error ?? "") && !/^(401|408|429):/.test(error ?? "");
+}

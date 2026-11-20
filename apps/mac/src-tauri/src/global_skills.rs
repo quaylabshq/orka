@@ -229,7 +229,7 @@ fn install(db: &Connection, project: &Value, skill: &GlobalSkill) -> Result<Valu
             "local"
         }
     } else {
-        indexer::scan(db, project)?;
+        indexer::scan(db, &crate::sources::without_waiting(db, project)?.0)?;
         SyncQueue::request(
             db,
             project["id"].as_str().ok_or("Missing project")?,

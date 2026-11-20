@@ -113,7 +113,13 @@ pub fn run() {
                     input["input"].clone(),
                     input.get("context").cloned(),
                 )),
-                "disconnect-source" => crate::sources::disconnect_project_source(
+                "disconnect-source" => runtime
+                    .block_on(crate::sources::disconnect_project_source(
+                        super::field(&input, "projectId")?.into(),
+                        super::field(&input, "sourceId")?.into(),
+                    ))
+                    .map(|_| json!({})),
+                "start-source-sync" => crate::sources::start_source_sync(
                     super::field(&input, "projectId")?.into(),
                     super::field(&input, "sourceId")?.into(),
                 )

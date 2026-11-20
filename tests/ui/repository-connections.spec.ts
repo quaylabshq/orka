@@ -51,6 +51,7 @@ async function fixture(
     failed?: boolean;
     statusFailsOnce?: boolean;
     multiple?: boolean;
+    queued?: boolean;
     reconnect?: boolean;
     delayedAuthStatus?: boolean;
     pollFailsOnce?: boolean;
@@ -60,6 +61,7 @@ async function fixture(
     manyRepositories?: number;
     deferConnectionChecks?: boolean;
     reconnectSource?: string;
+    firstSync?: boolean;
   } = {},
 ) {
   await page.addInitScript((options) => {
@@ -82,14 +84,20 @@ async function fixture(
       name: string;
       repository?: typeof repository;
       repositoryRevision?: number;
+      queuedChanges?: number;
       path: string | null;
       folderState: "connected" | "reconnect" | "locate";
+      syncStartsAt?: string;
     };
     const source: Source = {
       id: "source",
       name: "private-repo",
       repository: options.unbound ? undefined : repository,
       repositoryRevision: options.unbound ? 0 : 1,
+      syncStartsAt: options.firstSync
+        ? new Date(Date.now() + 150_000).toISOString()
+        : undefined,
+      queuedChanges: options.queued ? 1 : undefined,
       path:
         options.connected || options.reconnect
           ? "/Projects/private-repo"
@@ -121,6 +129,7 @@ async function fixture(
                   ...source,
                   id: "source-two",
                   name: "service",
+                  queuedChanges: options.queued ? 0 : undefined,
                   repository: {
                     ...repository,
                     id: "9696",
@@ -242,7 +251,9 @@ async function fixture(
               bindings: [],
               conflicts: [],
               activity: [],
-              outbox: [],
+              outbox: options.queued
+                ? [{ id: "queued", project: "project", error: "Offline" }]
+                : [],
               errors: [],
               sync: { online: true },
               daemon: { running: true },
@@ -265,6 +276,19 @@ async function fixture(
             });
           if (command === "sync_progress")
             return { user: "user", progress: null };
+          if (command === "start_source_sync") {
+            window.repositoryCalls.push({
+              action: command,
+              input: args,
+              context: null,
+            });
+            const project = projects.find((project) => project.id === args.id);
+            const source = project?.sources.find(
+              (source) => source.id === args.sourceId,
+            );
+            if (source) delete source.syncStartsAt;
+            return;
+          }
           if (command === "repository_command") {
             const action = args.action as string,
               input = (args.input ?? {}) as Record<string, unknown>;
@@ -449,6 +473,16 @@ async function fixture(
           if (command === "connect_project_sources") {
             source.path = "/chosen/workspace";
             source.folderState = "connected";
+            return {};
+          }
+          if (command === "disconnect_project_source") {
+            const item = projects
+              .find((project) => project.id === args.id)
+              ?.sources.find((source) => source.id === args.sourceId);
+            if (item) {
+              item.path = null;
+              item.folderState = "locate";
+            }
             return {};
           }
           if (command === "project_skill_usage") return { counts: {} };
@@ -772,6 +806,60 @@ test("connected checkouts have no clone form or connect button", async ({
   );
 });
 
+for (const [width, height] of [
+  [1160, 800],
+  [900, 640],
+]) {
+  test(`a GitHub checkout can start its scheduled first sync at ${width}px`, async ({
+    page,
+  }, info) => {
+    await page.setViewportSize({ width, height });
+    await fixture(page, { connected: true, firstSync: true });
+    const start = panel(page).getByRole("button", {
+      name: "Start syncing private-repo now",
+    });
+    await expect(start).toHaveText("Starts in 3 min · Sync now");
+    await expect(start).toBeInViewport();
+    await capture(page, info, `first-sync-checkout-${width}`);
+    await start.focus();
+    await start.press("Enter");
+    await expect(start).toHaveCount(0);
+    expect(
+      (await calls(page)).find((call) => call.action === "start_source_sync")
+        ?.input,
+    ).toEqual({ id: "project", sourceId: "source" });
+  });
+}
+
+test("disconnecting a linked checkout ignores another source's queued changes", async ({
+  page,
+}) => {
+  await fixture(page, { connected: true, multiple: true, queued: true });
+  const disconnect = page.getByRole("menuitem", {
+    name: "Disconnect folder on this Mac",
+    exact: true,
+  });
+  await panel(page)
+    .getByRole("button", { name: "Options for private-repo" })
+    .click();
+  await expect(disconnect).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await panel(page)
+    .getByRole("button", { name: "Options for service" })
+    .click();
+  await disconnect.click();
+  await page
+    .getByRole("dialog", { name: "Disconnect folder?" })
+    .getByRole("button", { name: "Disconnect folder", exact: true })
+    .click();
+  await expect(panel(page).getByText("Not connected on this Mac")).toHaveCount(
+    1,
+  );
+  await expect(
+    panel(page).getByText("Connected on this Mac", { exact: true }),
+  ).toHaveCount(1);
+});
+
 test("missing access has one request action and contextual app help", async ({
   page,
 }, info) => {
@@ -989,6 +1077,16 @@ test("account controls and unlinking are tucked into explicit menus", async ({
     "Disconnect GitHub",
   ]);
   await expect(accountMenu.locator("button > .ui-icon > svg")).toHaveCount(3);
+  await accountMenu
+    .getByRole("button", { name: "Manage GitHub access" })
+    .click();
+  const setup = picker(page).locator(".repository-access-setup");
+  await expect(setup).toHaveCSS("background-color", "rgb(18, 18, 18)");
+  await expect(setup).toHaveCSS("border-top-left-radius", "12px");
+  const confirm = setup.getByRole("button", { name: "I’ve configured access" });
+  await expect(confirm).toHaveCSS("background-color", "rgb(28, 28, 28)");
+  await confirm.click();
+  await expect(setup).toHaveCount(0);
 });
 
 test("a saved checkout needing reconnection is reused without cloning", async ({

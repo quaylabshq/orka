@@ -78,7 +78,7 @@ pub(super) async fn status(context: &Context, input: Value) -> Result<Value> {
     {
         return Err("The service returned an invalid access status".into());
     }
-    let _lock = projects::lock()?;
+    let _lock = projects::wait_for_lock_async(projects::FOREGROUND_LOCK_WAIT).await?;
     context.check()?;
     let latest = source(context, project, id)?;
     if latest["repository"] != current["repository"]

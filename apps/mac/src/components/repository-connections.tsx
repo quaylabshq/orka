@@ -20,6 +20,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { RepositoryAccessRequest } from "@portable/protocol";
 import type { Project, Snapshot } from "../types.js";
 import { Button } from "./button.js";
+import { SourceSyncButton } from "./source-sync-button.js";
 import { PermissionSelect } from "./permission-select.js";
 import { IconButton } from "./icon-button.js";
 import { TextField } from "./text-field.js";
@@ -52,6 +53,7 @@ export function RepositoryConnections({
   onLocalFolder,
   onDisconnectSource,
   onRemoveSource,
+  onResetSourceRemote,
   folderBusy = false,
   queued = 0,
   initiallyOpen = false,
@@ -70,6 +72,7 @@ export function RepositoryConnections({
   onLocalFolder?: () => Promise<unknown>;
   onDisconnectSource?: (sourceId: string) => void;
   onRemoveSource?: (sourceId: string) => void;
+  onResetSourceRemote?: (sourceId: string) => void;
   folderBusy?: boolean;
   queued?: number;
   initiallyOpen?: boolean;
@@ -281,8 +284,9 @@ export function RepositoryConnections({
             value && ["not_connected", "reconnect"].includes(value.state);
           const denied = value?.state === "access_unavailable";
           const failed = value?.state === "unavailable";
+          const conflict = source.folderState === "repository-conflict";
           const connected = Boolean(
-            source.path && source.folderState !== "reconnect",
+            source.path && source.folderState !== "reconnect" && !conflict,
           );
           const label = !value
             ? "Checking GitHub access"
@@ -349,7 +353,7 @@ export function RepositoryConnections({
                     }),
                 },
               );
-            } else
+            } else if (!conflict)
               actions.push({
                 id: "locate",
                 label: "Use existing folder",
@@ -391,10 +395,10 @@ export function RepositoryConnections({
                 label: "Disconnect folder on this Mac",
                 icon: UnplugIcon,
                 separator: true,
-                disabled: disabled || queued > 0,
+                disabled: disabled || (source.queuedChanges ?? queued) > 0,
                 reason:
-                  queued > 0
-                    ? "Sync queued changes before disconnecting"
+                  (source.queuedChanges ?? queued) > 0
+                    ? "Let this folder's changes sync before disconnecting"
                     : undefined,
                 onSelect: () => onDisconnectSource(source.id),
               });
@@ -417,6 +421,18 @@ export function RepositoryConnections({
                     });
                     await refresh();
                   }),
+              });
+            if (
+              project.role === "owner" &&
+              source.remoteKey &&
+              onResetSourceRemote
+            )
+              actions.push({
+                id: "reset-repository",
+                label: "Reset Git repository",
+                icon: RefreshCwIcon,
+                disabled,
+                onSelect: () => onResetSourceRemote(source.id),
               });
             if (project.role === "owner" && onRemoveSource)
               actions.push({
@@ -446,11 +462,13 @@ export function RepositoryConnections({
                     <span className="repository-card-meta">
                       {active
                         ? job.message
-                        : connected
-                          ? "Connected on this Mac"
-                          : source.folderState === "reconnect"
-                            ? "Folder needs reconnecting"
-                            : "Not connected on this Mac"}
+                        : conflict
+                          ? "Sync paused · Git repository mismatch"
+                          : connected
+                            ? "Connected on this Mac"
+                            : source.folderState === "reconnect"
+                              ? "Folder needs reconnecting"
+                              : "Not connected on this Mac"}
                     </span>
                   </div>
                   <span
@@ -465,6 +483,22 @@ export function RepositoryConnections({
                     <StatusIcon size={16} />
                   </span>
                   <div className="repository-card-actions">
+                    {!active && connected && source.syncStartsAt && (
+                      <SourceSyncButton
+                        name={source.name}
+                        startsAt={source.syncStartsAt}
+                        disabled={disabled}
+                        onStart={() =>
+                          void run(async () => {
+                            await invoke("start_source_sync", {
+                              id: project.id,
+                              sourceId: source.id,
+                            });
+                            await refresh();
+                          })
+                        }
+                      />
+                    )}
                     {active ? (
                       job.state !== "connecting" && (
                         <IconButton
@@ -519,7 +553,8 @@ export function RepositoryConnections({
                         }
                       />
                     ) : (
-                      !connected && (
+                      !connected &&
+                      !conflict && (
                         <Button
                           size="sm"
                           variant="primary"

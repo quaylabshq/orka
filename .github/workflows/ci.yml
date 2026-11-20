@@ -104,3 +104,4 @@ jobs:
       - run: npm run test:plugin-native
       - run: npm run test:profiles
       - run: npm run test:repository-access
+      - run: npm run test:source-pin
