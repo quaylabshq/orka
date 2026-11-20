@@ -227,7 +227,7 @@ test("queued writes block disconnect while reconnect remains usable", async ({
 
 test("only a folder's own unsent changes block disconnecting it", async ({
   page,
-}) => {
+}, info) => {
   const settings = await settingsFixture(page, {
     queued: true,
     sourceRows: [
@@ -257,12 +257,33 @@ test("only a folder's own unsent changes block disconnecting it", async ({
   await page.keyboard.press("Escape");
   await button(settings, "Options for web").click();
   await expect(disconnect()).toBeEnabled();
-  await page.keyboard.press("Escape");
+
   await expect(
     settings.getByText(
       "Folders with unsent changes can be disconnected once they sync.",
     ),
   ).toBeVisible();
+  await disconnect().click();
+  const confirmation = page.getByRole("dialog", { name: "Disconnect folder?" });
+  await expect(confirmation).toBeVisible();
+  await page.screenshot({
+    path: info.outputPath("disconnect-clean-folder.png"),
+    animations: "disabled",
+  });
+  const confirm = button(confirmation, "Disconnect folder");
+  await expect(confirm).toBeEnabled();
+  await confirm.click();
+  await expect(confirmation).toBeHidden();
+  expect(
+    (await settingsCalls(page)).filter(
+      (call) => call.command === "disconnect_project_source",
+    ),
+  ).toEqual([
+    {
+      command: "disconnect_project_source",
+      args: { id: "one", sourceId: "web" },
+    },
+  ]);
 });
 
 test("folder recovery states expose paths in name tooltips and reconnect the selected source", async ({

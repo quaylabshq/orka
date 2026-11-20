@@ -522,15 +522,6 @@ fn only_a_folders_own_or_unattributed_uploads_block_disconnecting_it() {
     let desktop = project["sources"][0]["id"].as_str().unwrap();
     let backend = project["sources"][1]["id"].as_str().unwrap();
     db::upsert(&f.db, "projects", id, id, &project).unwrap();
-    let index = |source: usize| {
-        let root = Path::new(project["sources"][source]["path"].as_str().unwrap());
-        let index = root.join(".orka/memory/index.md");
-        fs::create_dir_all(index.parent().unwrap()).unwrap();
-        fs::write(&index, "Previous memory index").unwrap();
-        index
-    };
-    let waiting_index = index(0);
-    let ready_index = index(1);
     let queue = |value: Value| {
         f.db.execute(
             "INSERT INTO outbox VALUES(?,?,?,?,NULL)",
@@ -572,6 +563,15 @@ fn a_newly_connected_folder_waits_before_sync_scans_or_writes_into_it() {
     let desktop = project["sources"][0]["id"].as_str().unwrap();
     let backend = project["sources"][1]["id"].as_str().unwrap();
     db::upsert(&f.db, "projects", id, id, &project).unwrap();
+    let index = |source: usize| {
+        let root = Path::new(project["sources"][source]["path"].as_str().unwrap());
+        let index = root.join(".orka/memory/index.md");
+        fs::create_dir_all(index.parent().unwrap()).unwrap();
+        fs::write(&index, "Previous memory index").unwrap();
+        index
+    };
+    let waiting_index = index(0);
+    let ready_index = index(1);
     let now = chrono::Utc::now().timestamp_millis();
     let at = now + sources::NEW_FOLDER_DELAY_MS;
     db::set(

@@ -51,6 +51,7 @@ async function fixture(
     failed?: boolean;
     statusFailsOnce?: boolean;
     multiple?: boolean;
+    queued?: boolean;
     reconnect?: boolean;
     delayedAuthStatus?: boolean;
     pollFailsOnce?: boolean;
@@ -83,6 +84,7 @@ async function fixture(
       name: string;
       repository?: typeof repository;
       repositoryRevision?: number;
+      queuedChanges?: number;
       path: string | null;
       folderState: "connected" | "reconnect" | "locate";
       syncStartsAt?: string;
@@ -95,6 +97,7 @@ async function fixture(
       syncStartsAt: options.firstSync
         ? new Date(Date.now() + 150_000).toISOString()
         : undefined,
+      queuedChanges: options.queued ? 1 : undefined,
       path:
         options.connected || options.reconnect
           ? "/Projects/private-repo"
@@ -126,6 +129,7 @@ async function fixture(
                   ...source,
                   id: "source-two",
                   name: "service",
+                  queuedChanges: options.queued ? 0 : undefined,
                   repository: {
                     ...repository,
                     id: "9696",
@@ -247,7 +251,9 @@ async function fixture(
               bindings: [],
               conflicts: [],
               activity: [],
-              outbox: [],
+              outbox: options.queued
+                ? [{ id: "queued", project: "project", error: "Offline" }]
+                : [],
               errors: [],
               sync: { online: true },
               daemon: { running: true },
@@ -467,6 +473,16 @@ async function fixture(
           if (command === "connect_project_sources") {
             source.path = "/chosen/workspace";
             source.folderState = "connected";
+            return {};
+          }
+          if (command === "disconnect_project_source") {
+            const item = projects
+              .find((project) => project.id === args.id)
+              ?.sources.find((source) => source.id === args.sourceId);
+            if (item) {
+              item.path = null;
+              item.folderState = "locate";
+            }
             return {};
           }
           if (command === "project_skill_usage") return { counts: {} };
@@ -814,6 +830,35 @@ for (const [width, height] of [
     ).toEqual({ id: "project", sourceId: "source" });
   });
 }
+
+test("disconnecting a linked checkout ignores another source's queued changes", async ({
+  page,
+}) => {
+  await fixture(page, { connected: true, multiple: true, queued: true });
+  const disconnect = page.getByRole("menuitem", {
+    name: "Disconnect folder on this Mac",
+    exact: true,
+  });
+  await panel(page)
+    .getByRole("button", { name: "Options for private-repo" })
+    .click();
+  await expect(disconnect).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await panel(page)
+    .getByRole("button", { name: "Options for service" })
+    .click();
+  await disconnect.click();
+  await page
+    .getByRole("dialog", { name: "Disconnect folder?" })
+    .getByRole("button", { name: "Disconnect folder", exact: true })
+    .click();
+  await expect(panel(page).getByText("Not connected on this Mac")).toHaveCount(
+    1,
+  );
+  await expect(
+    panel(page).getByText("Connected on this Mac", { exact: true }),
+  ).toHaveCount(1);
+});
 
 test("missing access has one request action and contextual app help", async ({
   page,
