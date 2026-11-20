@@ -119,6 +119,11 @@ pub fn run() {
                         super::field(&input, "sourceId")?.into(),
                     ))
                     .map(|_| json!({})),
+                "start-source-sync" => crate::sources::start_source_sync(
+                    super::field(&input, "projectId")?.into(),
+                    super::field(&input, "sourceId")?.into(),
+                )
+                .map(|_| json!({})),
                 "switch-service" => {
                     crate::commands::switch_service(input["config"].clone()).map(|_| json!({}))
                 }

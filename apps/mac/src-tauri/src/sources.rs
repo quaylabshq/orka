@@ -85,6 +85,64 @@ pub fn scope(project: &Value, resource: &mut Value) {
     }
 }
 
+/// How long a folder newly connected on this Mac waits before its first sync,
+/// so a folder chosen by mistake can be disconnected before a long scan starts.
+pub const NEW_FOLDER_DELAY_MS: i64 = 3 * 60 * 1000;
+
+fn sync_after_key(project: &str, source: &str) -> String {
+    format!("source-sync-after:{project}:{source}")
+}
+
+/// When a newly connected folder's first sync may start, if that is still ahead.
+pub fn sync_after(db: &rusqlite::Connection, project: &str, source: &str) -> Result<Option<i64>> {
+    let key = sync_after_key(project, source);
+    Ok(db::get(db, &key)?
+        .as_i64()
+        .filter(|at| *at > chrono::Utc::now().timestamp_millis()))
+}
+
+/// Starts a waiting folder's first sync now.
+pub(crate) fn clear_sync_after(
+    db: &rusqlite::Connection,
+    project: &str,
+    source: &str,
+) -> Result<()> {
+    db::set(db, &sync_after_key(project, source), &Value::Null)
+}
+
+/// The project as sync should see it: folders still waiting for their first
+/// sync are treated as not yet connected on this Mac, so nothing scans them or
+/// writes into them. Also returns when the earliest of them may start.
+pub(crate) fn without_waiting(
+    db: &rusqlite::Connection,
+    project: &Value,
+) -> Result<(Value, Option<i64>)> {
+    let mut view = project.clone();
+    let mut earliest: Option<i64> = None;
+    let id = project["id"].as_str().unwrap_or_default();
+    if let Some(sources) = view["sources"].as_array_mut() {
+        for source in sources {
+            let Some(source_id) = source["id"].as_str() else {
+                continue;
+            };
+            if source["path"].is_string() {
+                if let Some(at) = sync_after(db, id, source_id)? {
+                    source["path"] = Value::Null;
+                    earliest = Some(earliest.map_or(at, |e| e.min(at)));
+                }
+            }
+        }
+    }
+    Ok((view, earliest))
+}
+
+#[tauri::command]
+pub fn start_source_sync(id: String, source_id: String) -> Result<()> {
+    let db = db::open()?;
+    clear_sync_after(&db, &id, &source_id)?;
+    SyncQueue::request(&db, &id, Priority::User, "folder")
+}
+
 pub fn validate(project: &Value) -> Result<()> {
     if !project["removedAt"].is_null() {
         return Err("This source folder was removed from the project".into());
@@ -345,6 +403,7 @@ pub(crate) async fn connect_sources(
         }
     }
     let mut additions = Vec::new();
+    let mut newly_connected = Vec::new();
     for root in roots {
         let name = root
             .file_name()
@@ -392,6 +451,11 @@ pub(crate) async fn connect_sources(
             .is_some_and(|old| Path::new(old) != root)
         {
             return Err("Disconnect this repository before changing its folder".into());
+        }
+        if sources[index]["path"].is_null() {
+            if let Some(source) = sources[index]["id"].as_str() {
+                newly_connected.push(source.to_owned());
+            }
         }
         sources[index]["path"] = json!(root);
         sources[index]["folderIdentity"] = json!(indexer::folder_identity(&root)?);
@@ -442,7 +506,15 @@ pub(crate) async fn connect_sources(
         .remove("folderIdentity");
     db::upsert(&db, "projects", &id, &id, &project)?;
     db::set(&db, &pending_key, &Value::Null)?;
-    SyncQueue::request(&db, &id, Priority::User, "project")
+    if newly_connected.is_empty() {
+        return SyncQueue::request(&db, &id, Priority::User, "project");
+    }
+    // A folder connected on this Mac waits a few minutes before its first sync.
+    let at = chrono::Utc::now().timestamp_millis() + NEW_FOLDER_DELAY_MS;
+    for source in &newly_connected {
+        db::set(&db, &sync_after_key(&id, source), &json!(at))?;
+    }
+    SyncQueue::request_at(&db, &id, Priority::User, "new folder", at)
 }
 
 /// Queued uploads that may belong to `source`. A change whose source cannot be
@@ -480,6 +552,7 @@ pub async fn disconnect_project_source(id: String, source_id: String) -> Result<
     source["path"] = Value::Null;
     source["folderIdentity"] = Value::Null;
     db::upsert(&db, "projects", &id, &id, &project)?;
+    clear_sync_after(&db, &id, &source_id)?;
     db.execute(
         "DELETE FROM bindings WHERE project=? AND json_extract(value,'$.base.sourceId')=?",
         [id, source_id],

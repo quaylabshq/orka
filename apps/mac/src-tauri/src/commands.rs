@@ -85,9 +85,16 @@ pub fn snapshot() -> Result<Value> {
             for source in sources {
                 source["folderState"] = json!(crate::sources::folder_state(source));
                 // Disconnecting a folder only waits for its own unsent changes.
-                if let Some(id) = source["id"].as_str() {
+                if let Some(id) = source["id"].as_str().map(str::to_owned) {
                     source["queuedChanges"] =
-                        json!(crate::sources::queued_for_source(&db, &project_id, id)?);
+                        json!(crate::sources::queued_for_source(&db, &project_id, &id)?);
+                    if source["path"].is_string() {
+                        if let Some(at) = crate::sources::sync_after(&db, &project_id, &id)? {
+                            source["syncStartsAt"] =
+                                json!(chrono::DateTime::from_timestamp_millis(at)
+                                    .map(|at| at.to_rfc3339()));
+                        }
+                    }
                 }
             }
         } else {

@@ -2467,7 +2467,15 @@ async fn sync_job(db: &mut rusqlite::Connection, job: &crate::sync_queue::Job) -
     let mut pass = SyncPass::new(db, &owner, None);
     let flow = match (project.first(), held.first()) {
         _ if job.project == WORKSPACE => pass.sync_workspace_global().await?,
-        (Some(p), _) => pass.sync_project(p).await?,
+        (Some(p), _) => {
+            // Folders still waiting for their first sync stay out of this pass;
+            // queue the project again for when the earliest of them may start.
+            let (view, waiting) = crate::sources::without_waiting(pass.db, p)?;
+            if let Some(at) = waiting {
+                SyncQueue::request_at(pass.db, &job.project, Priority::Local, "new folder", at)?;
+            }
+            pass.sync_project(&view).await?
+        }
         // Deleted but restorable: capture locally and send nothing.
         (None, Some(p)) => {
             let flow = pass.capture_project(p)?;

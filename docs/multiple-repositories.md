@@ -25,6 +25,10 @@ queued changes for a source when it is removed, Orka keeps those snapshots in
 Queued changes for other sources continue normally. Owners register shared sources;
 members connect their checkout using Locate folder. Paths can differ between Macs.
 Two source folders cannot cover the same or overlapping local directories.
+A folder newly connected on this Mac waits three minutes before its first sync,
+so a folder chosen by mistake can be disconnected before anything scans it.
+Settings shows when it starts and offers **Sync now**; reconnecting a folder
+that was already connected is not delayed.
 
 Services with GitHub enabled can also [link and clone repositories](github-repositories.md)
 without an existing local checkout. GitHub repository access and app installation

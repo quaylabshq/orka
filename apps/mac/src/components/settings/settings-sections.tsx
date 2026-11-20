@@ -24,6 +24,7 @@ import { IconButton } from "../icon-button.js";
 import { TextField } from "../text-field.js";
 import { connectProject } from "../use-project-setup.js";
 import { activeSources } from "../project-sources.js";
+import { firstSyncLabel } from "../sync-queue.js";
 import { useSettingsQuery } from "./use-settings-query.js";
 import { useToastNotice } from "../toasts.js";
 
@@ -295,6 +296,28 @@ export function SettingsFolder({
                         </span>
                       </div>
                       <div className="settings-folder-actions">
+                        {source.id &&
+                          source.path &&
+                          source.syncStartsAt &&
+                          folderState === "connected" && (
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              disabled={busy}
+                              title={`New folder. ${firstSyncLabel(new Date(source.syncStartsAt).getTime())}, so you can disconnect it if it was added by mistake.`}
+                              aria-label={`Start syncing ${source.name} now`}
+                              onClick={() =>
+                                void run(() =>
+                                  invoke("start_source_sync", {
+                                    id: project.id,
+                                    sourceId: source.id,
+                                  }),
+                                )
+                              }
+                            >
+                              {`${firstSyncLabel(new Date(source.syncStartsAt).getTime())} · Sync now`}
+                            </Button>
+                          )}
                         {folderState !== "connected" && (
                           <Button
                             variant={

@@ -49,6 +49,8 @@ export interface Project {
     folderState?: "connected" | "reconnect" | "locate";
     /** Unsent changes that block disconnecting this folder on this Mac. */
     queuedChanges?: number;
+    /** When a folder newly connected on this Mac starts its first sync. */
+    syncStartsAt?: string | null;
     repository?: RepositoryBinding | null;
     repositoryRevision?: number;
   }[];
@@ -95,7 +97,8 @@ export interface SyncProgress {
 /** One queued project from `sync_queue_state`; the workspace `*` row is not sent. */
 export interface SyncQueueEntry {
   projectId: string;
-  state: "queued" | "running" | "waiting";
+  /** `scheduled`: a newly connected folder waits before its first sync. */
+  state: "queued" | "running" | "waiting" | "scheduled";
   reason: string;
   attempts: number;
   notBefore: string | null;

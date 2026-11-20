@@ -9,6 +9,7 @@ export function queueStateLabel(
   if (entry.state === "running") return "Syncing";
   if (entry.state === "queued") return "Queued";
   const at = entry.notBefore ? new Date(entry.notBefore).getTime() : NaN;
+  if (entry.state === "scheduled") return firstSyncLabel(at, now);
   if (!Number.isFinite(at)) return "Waiting to retry";
   const minutes = Math.ceil((at - now) / 60_000);
   if (minutes <= 0) return "Waiting to retry shortly";
@@ -17,6 +18,13 @@ export function queueStateLabel(
   return hours < 24
     ? `Waiting to retry in ${hours} hr`
     : `Waiting to retry in ${Math.ceil(hours / 24)} ${Math.ceil(hours / 24) === 1 ? "day" : "days"}`;
+}
+
+/** A newly connected folder waits a few minutes before its first sync. */
+export function firstSyncLabel(at: number, now = Date.now()): string {
+  const minutes = Math.ceil((at - now) / 60_000);
+  if (!Number.isFinite(minutes) || minutes <= 0) return "Starting shortly";
+  return `Starts in ${minutes} min`;
 }
 
 /** A requested cancel remains pending until the native worker settles it. */
