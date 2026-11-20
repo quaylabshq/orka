@@ -53,6 +53,115 @@ fn set_project(f: &Fixture, project: &Value) {
     .unwrap();
 }
 
+#[tokio::test]
+async fn watcher_installs_hooks_for_first_worktree_and_coalesces_a_burst() {
+    use std::time::Duration;
+    // macOS excludes its per-user temporary directory from FSEvents.
+    let f = Fixture::with_home(tempfile::tempdir_in(dirs::home_dir().unwrap()).unwrap());
+    init(&f.root);
+    let home = crate::worktrees::home().unwrap();
+    let (_poll, mut passes) = worktree_integration::test_poll(Duration::from_secs(60), false);
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(3), passes.recv())
+            .await
+            .unwrap(),
+        Some((true, (1, 1)))
+    );
+    assert!(!f.root.join(".git/worktrees").exists());
+
+    let trees: Vec<_> = (0..4).map(|i| home.join(format!("watched-{i}"))).collect();
+    for tree in &trees {
+        worktree(&f.root, tree);
+    }
+    let count = tokio::time::timeout(Duration::from_secs(1), async {
+        for count in 1..=2 {
+            assert_eq!(passes.recv().await, Some((false, (1, 1))));
+            if trees
+                .iter()
+                .all(|tree| tree.join(".claude/settings.local.json").is_file())
+            {
+                return count;
+            }
+        }
+        panic!("hooks were not delivered within two event passes");
+    })
+    .await
+    .expect("hooks should arrive well before the fallback poll");
+    let extra = tokio::time::timeout(Duration::from_millis(450), passes.recv()).await;
+    if extra.is_ok() {
+        assert_eq!(count, 1);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(450), passes.recv())
+                .await
+                .is_err()
+        );
+    }
+    for tree in trees {
+        assert!(git(&tree, &["status", "--porcelain"]).is_empty());
+    }
+}
+
+#[tokio::test]
+async fn watcher_is_removed_when_the_source_disconnects() {
+    use std::time::Duration;
+    let f = Fixture::new();
+    init(&f.root);
+    let home = crate::worktrees::home().unwrap();
+    let (_poll, mut passes) = worktree_integration::test_poll(Duration::from_millis(500), false);
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(3), passes.recv())
+            .await
+            .unwrap(),
+        Some((true, (1, 1)))
+    );
+    let mut disconnected = f.project.clone();
+    disconnected["revoked"] = json!(true);
+    set_project(&f, &disconnected);
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(3), passes.recv())
+            .await
+            .unwrap(),
+        Some((true, (0, 0)))
+    );
+
+    let tree = home.join("disconnected");
+    worktree(&f.root, &tree);
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(3), passes.recv())
+            .await
+            .unwrap(),
+        Some((true, (0, 0)))
+    );
+    assert!(!tree.join(".claude/settings.local.json").exists());
+}
+
+#[tokio::test]
+async fn watcher_startup_failure_keeps_polling() {
+    use std::time::Duration;
+    let f = Fixture::new();
+    init(&f.root);
+    let home = crate::worktrees::home().unwrap();
+    let (_poll, mut passes) = worktree_integration::test_poll(Duration::from_millis(500), true);
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(3), passes.recv())
+            .await
+            .unwrap(),
+        Some((true, (1, 0)))
+    );
+    let tree = home.join("fallback");
+    worktree(&f.root, &tree);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            assert_eq!(passes.recv().await, Some((true, (1, 0))));
+            if tree.join(".claude/settings.local.json").is_file() {
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+}
+
 #[test]
 fn worktree_routes_to_the_most_specific_equivalent_source() {
     let f = Fixture::new();

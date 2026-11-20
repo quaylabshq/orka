@@ -1256,8 +1256,11 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
+        Self::with_home(tempfile::tempdir().unwrap())
+    }
+
+    fn with_home(home: tempfile::TempDir) -> Self {
         let lock = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-        let home = tempfile::tempdir().unwrap();
         std::env::set_var("ORKA_TEST_HOME", home.path());
         std::env::set_var("CODEX_HOME", home.path().join(".codex"));
         std::env::set_var("CLAUDE_CONFIG_DIR", home.path().join(".claude"));

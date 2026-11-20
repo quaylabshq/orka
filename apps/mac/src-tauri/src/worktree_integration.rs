@@ -16,6 +16,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod watch;
+
 const LEDGER: &str = "worktreeIntegration";
 const MAX_FILE: u64 = 1_000_000;
 
@@ -23,48 +25,50 @@ pub(crate) struct Poll(tokio::task::JoinHandle<()>);
 
 impl Poll {
     pub(crate) fn start() -> Self {
-        Self(tokio::spawn(async {
-            let mut state = Backoff::default();
-            loop {
-                let worker = tokio::task::spawn_blocking(move || {
-                    let result = (|| -> Result<()> {
-                        use fs2::FileExt;
-                        let lock = fs::OpenOptions::new()
-                            .create(true)
-                            .truncate(false)
-                            .write(true)
-                            .open(db::root()?.join("worktree-poll.lock"))
-                            .map_err(|e| e.to_string())?;
-                        // A previous daemon's blocking pass can outlive foreground handoff.
-                        if lock.try_lock_exclusive().is_err() {
-                            return Ok(());
-                        }
-                        let db = db::open()?;
-                        if db::get(&db, "user")?
-                            .as_str()
-                            .is_some_and(|s| !s.is_empty())
-                        {
-                            let result = reconcile_with(
-                                &db,
-                                &crate::updates::executable().map_err(|e| e.to_string())?,
-                                &mut state,
-                            );
-                            crate::sync::record_result(&db, LEDGER, result)?;
-                        }
-                        Ok(())
-                    })();
-                    if let Err(error) = result {
-                        eprintln!("Worktree integration: {error}");
+        Self(tokio::spawn(watch::run(
+            Backoff::default(),
+            watch::Watches::default(),
+            Duration::from_secs(5),
+            |backoff, watches, repos| {
+                let result = (|| -> Result<()> {
+                    use fs2::FileExt;
+                    let lock = fs::OpenOptions::new()
+                        .create(true)
+                        .truncate(false)
+                        .write(true)
+                        .open(db::root()?.join("worktree-poll.lock"))
+                        .map_err(|e| e.to_string())?;
+                    // A previous daemon's blocking pass can outlive foreground handoff.
+                    if lock.try_lock_exclusive().is_err() {
+                        return Ok(());
                     }
-                    state
-                });
-                let Ok(next) = worker.await else {
-                    return;
-                };
-                state = next;
-                tokio::time::sleep(Duration::from_secs(5)).await;
-            }
-        }))
+                    let db = db::open()?;
+                    if !db::get(&db, "user")?
+                        .as_str()
+                        .is_some_and(|s| !s.is_empty())
+                    {
+                        watches.refresh(std::iter::empty());
+                        return Ok(());
+                    }
+                    let result = reconcile_with(
+                        &db,
+                        &crate::updates::executable().map_err(|e| e.to_string())?,
+                        backoff,
+                        Some(watches),
+                        repos,
+                    );
+                    // Only a full pass can replace the aggregate diagnostic.
+                    if repos.is_none() {
+                        crate::sync::record_result(&db, LEDGER, result)
+                    } else {
+                        result
+                    }
+                })();
+                if let Err(error) = result {
+                    eprintln!("Worktree integration: {error}");
+                }
+            },
+        )))
     }
 }
 
@@ -78,6 +82,16 @@ impl Drop for Poll {
 struct Backoff(BTreeMap<PathBuf, (Instant, Duration)>);
 
 impl Backoff {
+    fn registration_changed(&mut self, repos: &BTreeSet<PathBuf>) {
+        self.0.retain(|path, _| {
+            !repos.contains(path)
+                && !path.parent().is_some_and(|parent| {
+                    parent.ends_with("worktrees")
+                        && parent.parent().is_some_and(|common| repos.contains(common))
+                })
+        });
+    }
+
     fn ready(&self, path: &Path) -> bool {
         self.0
             .get(path)
@@ -160,10 +174,20 @@ fn common_for(admin: &Path) -> Result<&Path> {
         .ok_or_else(|| "Missing common Git directory".into())
 }
 
-fn ledger(db: &Connection) -> Result<Vec<Installed>> {
+fn ledger(db: &Connection, repos: Option<&BTreeSet<PathBuf>>) -> Result<Vec<Installed>> {
     db::rows(db, "SELECT value FROM worktree_artifacts ORDER BY id", &[])?
         .into_iter()
-        .map(|value| serde_json::from_value(value).map_err(|e| e.to_string()))
+        .filter_map(|value| {
+            let entry: Installed = match serde_json::from_value(value) {
+                Ok(entry) => entry,
+                Err(error) => return Some(Err(error.to_string())),
+            };
+            match entry.common() {
+                Ok(common) if repos.is_none_or(|repos| repos.contains(common)) => Some(Ok(entry)),
+                Ok(_) => None,
+                Err(error) => Some(Err(error)),
+            }
+        })
         .collect()
 }
 
@@ -381,8 +405,8 @@ impl Pass {
         self.failures.push(format!("{}: {message}", path.display()));
     }
 
-    fn finish(mut self, db: &Connection) -> Result<()> {
-        let entries = ledger(db)?;
+    fn finish(mut self, db: &Connection, repos: Option<&BTreeSet<PathBuf>>) -> Result<()> {
+        let entries = ledger(db, repos)?;
         let mut kept = BTreeSet::new();
         for entry in entries.iter().filter(|entry| !entry.retired) {
             kept.insert((entry.common()?, entry.relative.as_path()));
@@ -624,8 +648,18 @@ fn reconcile_entry(
     retire(db, entry)
 }
 
-fn reconcile_with(db: &Connection, executable: &Path, backoff: &mut Backoff) -> Result<()> {
+fn reconcile_with(
+    db: &Connection,
+    executable: &Path,
+    backoff: &mut Backoff,
+    watches: Option<&mut watch::Watches>,
+    repos: Option<&BTreeSet<PathBuf>>,
+) -> Result<()> {
     migrate_ledger(db)?;
+    if let Some(repos) = repos {
+        // A registration seen mid-creation may have been incomplete last pass.
+        backoff.registration_changed(repos);
+    }
     let home = worktrees::home()?;
     let mut pass = Pass::default();
     let mut sources = Vec::new();
@@ -651,11 +685,17 @@ fn reconcile_with(db: &Connection, executable: &Path, backoff: &mut Backoff) -> 
         }
     }
     let resolver = worktrees::Resolver::new(&sources, &home);
+    if let Some(watches) = watches {
+        watches.refresh(resolver.primary_sources().map(|(_, _, _, common)| common));
+    }
     let mut inventories = BTreeMap::new();
     let mut topology = Topology::default();
     let mut scanned = BTreeSet::new();
     let mut candidates = Vec::new();
     for (source, root, main, common) in resolver.primary_sources() {
+        if repos.is_some_and(|repos| !repos.contains(common)) {
+            continue;
+        }
         if scanned.insert(common) {
             if let Err(error) = topology.common(common, backoff) {
                 pass.diagnostic(common, error);
@@ -687,7 +727,7 @@ fn reconcile_with(db: &Connection, executable: &Path, backoff: &mut Backoff) -> 
         }
         candidates.push((source, root, main, common));
     }
-    let entries = ledger(db)?;
+    let entries = ledger(db, repos)?;
     for entry in entries.iter().filter(|entry| !entry.retired) {
         if !topology.unavailable.contains(entry.common()?)
             && !unavailable_roots.contains(&entry.source_root)
@@ -849,10 +889,40 @@ fn reconcile_with(db: &Connection, executable: &Path, backoff: &mut Backoff) -> 
             pass.diagnostic(&path, error);
         }
     }
-    pass.finish(db)
+    pass.finish(db, repos)
+}
+
+#[cfg(test)]
+type PassReceiver = tokio::sync::mpsc::UnboundedReceiver<(bool, (usize, usize))>;
+
+#[cfg(test)]
+pub(crate) fn test_poll(interval: Duration, fail_watch: bool) -> (Poll, PassReceiver) {
+    let (send, recv) = tokio::sync::mpsc::unbounded_channel();
+    let watches = if fail_watch {
+        watch::Watches::failing()
+    } else {
+        watch::Watches::default()
+    };
+    let task = tokio::spawn(watch::run(
+        Backoff::default(),
+        watches,
+        interval,
+        move |backoff, watches, repos| {
+            reconcile_with(
+                &db::open().unwrap(),
+                Path::new("/fixture/orka"),
+                backoff,
+                Some(watches),
+                repos,
+            )
+            .unwrap();
+            let _ = send.send((repos.is_none(), watches.counts()));
+        },
+    ));
+    (Poll(task), recv)
 }
 
 #[cfg(test)]
 pub(crate) fn reconcile(db: &Connection, executable: &Path) -> Result<()> {
-    reconcile_with(db, executable, &mut Backoff::default())
+    reconcile_with(db, executable, &mut Backoff::default(), None, None)
 }
