@@ -26,6 +26,7 @@ import { connectProject } from "../use-project-setup.js";
 import { activeSources } from "../project-sources.js";
 import { useSettingsQuery } from "./use-settings-query.js";
 import { useToastNotice } from "../toasts.js";
+import { CodexTrustNotices } from "./codex-trust-notices.js";
 
 export function SettingsGeneral({
   project,
@@ -365,6 +366,12 @@ export function SettingsFolder({
             )}
           </div>
         )}
+      />
+      <CodexTrustNotices
+        project={project}
+        user={user}
+        service={service}
+        busy={busy}
       />
       {queued > 0 && (
         <div className="settings-notice settings-folder-notice">

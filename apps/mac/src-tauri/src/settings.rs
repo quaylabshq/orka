@@ -1,16 +1,36 @@
 use crate::{
+    codex_trust,
     db::{self, Result},
     sync,
 };
 use serde_json::Value;
 
 #[tauri::command]
-pub async fn settings_command(action: String, context: Value) -> Result<Value> {
+pub async fn settings_command(
+    action: String,
+    context: Value,
+    input: Option<Value>,
+) -> Result<Value> {
     let db = db::open()?;
     let owner = db::get(&db, "user")?;
     let service = db::get(&db, "config")?["apiUrl"].clone();
     if context["user"] != owner || context["service"] != service {
         return Err("Account or service changed. Reopen Settings.".into());
+    }
+    if matches!(action.as_str(), "codex-trust" | "trust-codex") {
+        drop(db);
+        let input = input.unwrap_or_default();
+        return tauri::async_runtime::spawn_blocking(move || {
+            let db = db::open()?;
+            let project = input["projectId"].as_str().ok_or("Missing project")?;
+            if action == "codex-trust" {
+                return codex_trust::project_status(&db, project);
+            }
+            let source = input["sourceId"].as_str().ok_or("Missing source folder")?;
+            codex_trust::trust(&db, project, source)
+        })
+        .await
+        .map_err(|e| e.to_string())?;
     }
     let path = match action.as_str() {
         "capabilities" => "/v2/projects/capabilities",

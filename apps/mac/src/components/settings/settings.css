@@ -431,6 +431,9 @@
   .settings-notice {
     @apply space-y-3 rounded-lg border border-line p-4;
   }
+  .settings-codex-trust-detail {
+    @apply m-0 text-body-xs text-muted;
+  }
   .settings-danger {
     @apply flex min-w-0 flex-col gap-3;
   }

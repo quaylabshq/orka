@@ -626,6 +626,10 @@ impl Hooks {
         let literal = executable.strip_prefix("'/")?.strip_suffix('\'')?;
         (!literal.replace("'\\''", "").contains('\'')).then_some((executable, profile))
     }
+    /// The exact command this Orka build writes for `tool`.
+    pub fn current_command(executable: &Path, tool: &str) -> String {
+        Self::command(executable, tool)
+    }
     /// Whether a hook command string is one Orka wrote for `tool`, under any
     /// profile or executable.
     pub fn owns(command: &Value, tool: &str) -> bool {

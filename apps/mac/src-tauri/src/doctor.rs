@@ -194,7 +194,8 @@ impl Doctor {
     /// Ok when Codex runs Orka's hooks in `root`; otherwise the finding and
     /// next step that replace the activity check.
     fn codex(trust: &Report, root: &Path) -> Result<(), ((Verdict, String), &'static str)> {
-        const APPROVE: &str = "Run codex in this folder, trust the folder when asked, then open /hooks and approve Orka's hooks. Rerun doctor.";
+        const APPROVE: &str =
+            "Open Orka Settings > Source folders and choose Trust in Codex, then rerun doctor.";
         let trust =
             match trust {
                 Report::Folders(folders) => folders

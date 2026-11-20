@@ -88,6 +88,12 @@ export async function settingsFixture(
     policyFailure?: "drop" | "offline" | "conflict";
     legacy?: boolean;
     long?: boolean;
+    codexTrust?: {
+      state?: "ready" | "unsupported" | "unavailable";
+      folders: { sourceId: string | null; path: string; state: string }[];
+      trustResult?: string;
+      trustError?: string;
+    };
   } = {},
 ) {
   await page.addInitScript((options) => {
@@ -447,6 +453,23 @@ export async function settingsFixture(
             return { auth: { password: true, github: true, magicLink: true } };
           }
           if (command === "settings_command") {
+            if (args.action === "codex-trust")
+              return options.codexTrust
+                ? {
+                    state: options.codexTrust.state ?? "ready",
+                    folders: structuredClone(options.codexTrust.folders),
+                  }
+                : { state: "unavailable", folders: [] };
+            if (args.action === "trust-codex") {
+              await wait(controls.delay);
+              const trust = options.codexTrust!;
+              if (trust.trustError) throw new Error(trust.trustError);
+              const state = trust.trustResult ?? "trusted";
+              for (const folder of trust.folders)
+                if ((folder.sourceId ?? "") === args.input.sourceId)
+                  folder.state = state;
+              return { state };
+            }
             if (args.action === "capabilities")
               return options.olderService
                 ? {}

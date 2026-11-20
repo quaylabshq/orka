@@ -202,6 +202,139 @@ test("source picker cancellation and disconnect confirmation preserve unrelated 
   await expect(button(settings, "Save changes")).toBeEnabled();
 });
 
+test("folders Codex skips explain why and trust in Codex only on request", async ({
+  page,
+}, info) => {
+  const settings = await settingsFixture(page, {
+    sourceRows: [
+      {
+        id: "app",
+        name: "app",
+        path: "/Projects/app",
+        folderState: "connected",
+      },
+      {
+        id: "api",
+        name: "api",
+        path: "/Projects/api",
+        folderState: "connected",
+      },
+      {
+        id: "docs",
+        name: "docs",
+        path: "/Projects/docs",
+        folderState: "connected",
+      },
+      { id: "ok", name: "ok", path: "/Projects/ok", folderState: "connected" },
+    ],
+    codexTrust: {
+      folders: [
+        { sourceId: "app", path: "/Projects/app", state: "folder-not-trusted" },
+        { sourceId: "api", path: "/Projects/api", state: "hooks-changed" },
+        { sourceId: "docs", path: "/Projects/docs", state: "folder-untrusted" },
+        { sourceId: "ok", path: "/Projects/ok", state: "trusted" },
+      ],
+    },
+  });
+  await expect(
+    settings.getByText(/Codex isn’t loading Orka in app/),
+  ).toBeVisible();
+  await expect(
+    settings.getByText(/Orka changed since Codex last approved it in api/),
+  ).toBeVisible();
+  await expect(
+    settings.getByText(/docs is marked untrusted in Codex/),
+  ).toBeVisible();
+  await expect(settings.getByText(/in ok/)).toHaveCount(0);
+  // An explicit untrusted choice is the user's; there's no button for it.
+  await expect(button(settings, "Trust docs in Codex")).toHaveCount(0);
+  expect(
+    (await settingsCalls(page)).some(
+      (call) => call.args?.action === "trust-codex",
+    ),
+  ).toBe(false);
+  for (const width of [1160, 900]) {
+    await page.setViewportSize({ width, height: width === 900 ? 640 : 800 });
+    await settings
+      .getByText(/Codex isn’t loading Orka in app/)
+      .scrollIntoViewIfNeeded();
+    await page
+      .locator(".settings-codex-trust")
+      .screenshot({ path: info.outputPath(`codex-trust-${width}.png`) });
+  }
+  await button(settings, "Trust app in Codex").click();
+  await expect(
+    page.getByText("Codex will load Orka in app from its next session"),
+  ).toBeVisible();
+  await expect(
+    settings.getByText(/Codex isn’t loading Orka in app/),
+  ).toHaveCount(0);
+  await expect(button(settings, "Trust api in Codex")).toBeEnabled();
+  const trusts = (await settingsCalls(page)).filter(
+    (call) => call.args?.action === "trust-codex",
+  );
+  expect(trusts.map((call) => call.args.input.sourceId)).toEqual(["app"]);
+});
+
+test("a failed trust in Codex keeps the notice and shows the reason", async ({
+  page,
+}) => {
+  const settings = await settingsFixture(page, {
+    sourceRows: [
+      {
+        id: "app",
+        name: "app",
+        path: "/Projects/app",
+        folderState: "connected",
+      },
+    ],
+    codexTrust: {
+      folders: [
+        { sourceId: "app", path: "/Projects/app", state: "hooks-not-approved" },
+      ],
+      trustError: "Codex settings changed while Orka was saving. Try again.",
+    },
+  });
+  await button(settings, "Trust app in Codex").click();
+  await expect(settings.getByRole("alert")).toContainText(
+    "Codex settings changed while Orka was saving",
+  );
+  await expect(button(settings, "Trust app in Codex")).toBeEnabled();
+});
+
+test("a Codex-wide hooks setting is explained once with no trust button", async ({
+  page,
+}) => {
+  const settings = await settingsFixture(page, {
+    sourceRows: [
+      {
+        id: "app",
+        name: "app",
+        path: "/Projects/app",
+        folderState: "connected",
+      },
+      {
+        id: "api",
+        name: "api",
+        path: "/Projects/api",
+        folderState: "connected",
+      },
+    ],
+    codexTrust: {
+      folders: [
+        { sourceId: "app", path: "/Projects/app", state: "hooks-disabled" },
+        { sourceId: "api", path: "/Projects/api", state: "hooks-disabled" },
+      ],
+    },
+  });
+  await expect(settings.getByText(/Hooks are turned off in Codex/)).toHaveCount(
+    1,
+  );
+  await expect(settings.getByRole("button", { name: /in Codex$/ })).toHaveCount(
+    0,
+  );
+});
+
 test("queued writes block disconnect while reconnect remains usable", async ({
   page,
 }) => {
