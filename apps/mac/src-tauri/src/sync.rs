@@ -1946,7 +1946,7 @@ impl<'a> SyncPass<'a> {
         let mut outbox = ProjectOutbox::open(db, project)?;
         let mut queued = Vec::new();
         for row in outbox.queued(db)? {
-            if upload_waits_for_source(db, project, &row["value"])? {
+            if upload_waits_for_source(db, p, &row["value"])? {
                 continue;
             }
             let allowed = if row["path"] == crate::selective_sharing::QUEUE_PATH {
@@ -2515,14 +2515,22 @@ fn sync_ready_view(db: &rusqlite::Connection, project: &Value) -> Result<(Value,
 
 fn upload_waits_for_source(
     db: &rusqlite::Connection,
-    project: &str,
+    project: &Value,
     input: &Value,
 ) -> Result<bool> {
-    let source = input["resource"]["sourceId"]
+    let waiting = |source: &str| {
+        project["sources"].as_array().is_some_and(|sources| {
+            sources
+                .iter()
+                .any(|entry| entry["id"] == source && entry["firstSyncWaiting"] == true)
+        })
+    };
+    if let Some(source) = input["resource"]["sourceId"]
         .as_str()
-        .or_else(|| input["sourceId"].as_str());
-    if let Some(source) = source {
-        return Ok(crate::sources::sync_after(db, project, source)?.is_some());
+        .or_else(|| input["sourceId"].as_str())
+        .or_else(|| input["sourceSnapshot"]["sourceId"].as_str())
+    {
+        return Ok(waiting(source));
     }
     let Some(resource) = input["resourceId"].as_str() else {
         return Ok(false);
@@ -2530,16 +2538,13 @@ fn upload_waits_for_source(
     let source: Option<String> = db
         .query_row(
             "SELECT json_extract(value,'$.sourceId') FROM resources WHERE project=? AND id=?",
-            [project, resource],
+            [project["id"].as_str(), Some(resource)],
             |row| row.get(0),
         )
         .optional()
         .map_err(|error| error.to_string())?
         .flatten();
-    match source {
-        Some(source) => Ok(crate::sources::sync_after(db, project, &source)?.is_some()),
-        None => Ok(false),
-    }
+    Ok(source.as_deref().is_some_and(waiting))
 }
 
 fn project_has_retryable_errors(db: &rusqlite::Connection, project: &str) -> Result<bool> {

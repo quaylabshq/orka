@@ -128,6 +128,9 @@ pub(crate) fn without_waiting(
             if source["path"].is_string() && source["removedAt"].is_null() {
                 if let Some(at) = sync_after(db, id, source_id)? {
                     source["path"] = Value::Null;
+                    // The rest of this pass must agree with the masked view,
+                    // even if the deadline expires or Sync now clears it.
+                    source["firstSyncWaiting"] = json!(true);
                     earliest = Some(earliest.map_or(at, |e| e.min(at)));
                 }
             }
