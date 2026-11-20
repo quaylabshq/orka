@@ -467,9 +467,9 @@ test("a pending local scan does not report an empty collection", async ({
       ),
     )
     .toBe("function");
-  await expect(page.getByText("No sessions yet.", { exact: true })).toHaveCount(
-    0,
-  );
+  await expect(
+    page.getByRole("heading", { name: "No sessions yet", exact: true }),
+  ).toHaveCount(0);
   await page.evaluate(() =>
     (window as unknown as LibraryWindow).library.finishCatalog?.(),
   );
@@ -658,6 +658,35 @@ for (const { kind, label } of kinds) {
     });
   }
 }
+
+test("empty discovery failures explain the error and offer a retry", async ({
+  page,
+}) => {
+  await resourceLibraryFixture(page, { emptyShared: true, emptyLocal: true });
+  await page.evaluate(() => {
+    (window as unknown as LibraryWindow).library.catalogErrors = [
+      "Could not read the project folder.",
+    ];
+  });
+  await page.getByRole("button", { name: /^Plans/ }).click();
+  const plans = page.getByRole("region", { name: "plans", exact: true });
+  const empty = plans.getByRole("heading", { name: "No plans yet" });
+  await expect(plans.getByRole("alert")).toContainText(
+    "Couldn’t check local plans",
+  );
+  await expect(plans.getByRole("alert")).toContainText(
+    "Could not read the project folder.",
+  );
+  await expect(plans.getByText("Previously discovered items")).toHaveCount(0);
+  await expect(empty).toHaveCount(0);
+
+  await page.evaluate(() => {
+    (window as unknown as LibraryWindow).library.catalogErrors = [];
+  });
+  await plans.getByRole("button", { name: "Try again", exact: true }).click();
+  await expect(empty).toBeVisible();
+  await expect(plans.getByRole("alert")).toHaveCount(0);
+});
 
 test("partial discovery errors wrap inside the banner with the sidebar collapsed", async ({
   page,

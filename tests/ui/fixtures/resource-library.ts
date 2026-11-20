@@ -29,6 +29,7 @@ export async function resourceLibraryFixture(
     restricted?: boolean;
     withoutRepositories?: boolean;
     teammateAvatar?: string;
+    teammateSessionTitle?: string;
     cachedLocal?: boolean;
     extraRows?: number;
     boundaryFork?: boolean;
@@ -87,10 +88,14 @@ export async function resourceLibraryFixture(
           resource(kind, "own", `My shared ${kind}`, "user", {
             updatedBy: "mira",
           }),
-          resource(kind, "teammate", `Mira's ${kind}`, "mira", {
-            updatedBy: "user",
-            source: "claude",
-          }),
+          resource(
+            kind,
+            "teammate",
+            (kind === "session" && options.teammateSessionTitle) ||
+              `Mira's ${kind}`,
+            "mira",
+            { updatedBy: "user", source: "claude" },
+          ),
           ...Array.from({ length: options.extraRows ?? 0 }, (_, index) =>
             resource(
               kind,

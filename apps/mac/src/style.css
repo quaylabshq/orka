@@ -788,8 +788,7 @@
   }
   .session-launcher {
     @apply inline-flex shrink-0 items-center;
-    border-radius: var(--radius-control);
-    background: var(--surface-tertiary);
+    gap: 1px;
   }
   .session-launcher .session-launcher-open {
     border-top-right-radius: 0;
@@ -804,6 +803,8 @@
   .session-launcher-popover {
     min-width: 240px;
     max-width: 340px;
+    max-height: var(--radix-popover-content-available-height);
+    overflow-y: auto;
   }
   .session-launcher-popover [role="menu"] {
     @apply flex flex-col gap-1;
@@ -930,14 +931,17 @@
   .resource-index-body {
     @apply min-h-0 flex-1 overflow-y-auto px-7 pb-7 pt-5;
   }
-  .resource-index-body > .empty {
-    @apply py-16;
-  }
   .resource-index--floating-action .resource-index-body {
     @apply pb-20;
   }
-  .global-skills-trigger {
+  .resource-index--floating-action .resource-index-action {
     @apply absolute bottom-5 right-7 z-[5];
+  }
+  .resource-index--inline-action .empty-state {
+    padding-bottom: 16px;
+  }
+  .resource-index--inline-action .resource-index-action {
+    @apply flex justify-center;
   }
   .modal.global-skills-modal {
     @apply flex w-[720px] flex-col overflow-hidden p-6;
@@ -1114,12 +1118,6 @@
   }
   .index-sort-option .index-sort-option-label {
     @apply min-w-0 flex-1 text-left;
-  }
-  .index-empty-filtered {
-    @apply flex flex-col items-center gap-2 py-16 text-center text-body-sm text-secondary;
-  }
-  .index-empty-filtered p {
-    @apply m-0;
   }
   .resource-table {
     --resource-meta-width: 128px;
@@ -1534,6 +1532,19 @@
   .modal .actions {
     @apply justify-end;
   }
+  .session-launch-heading {
+    @apply mb-2 flex items-center justify-between gap-3;
+  }
+  .modal.session-launch-dialog .session-launch-heading h2 {
+    @apply m-0 text-heading-xs;
+  }
+  .modal.session-launch-dialog .session-launch-title {
+    @apply mb-6 line-clamp-2 text-body-sm;
+    overflow-wrap: anywhere;
+  }
+  .modal.session-launch-dialog .session-launch-alert {
+    color: var(--red-text);
+  }
   .modal.create-project-modal {
     @apply w-[520px] overflow-hidden border-0 p-6;
     border-radius: var(--radius-overlay);
@@ -1656,9 +1667,6 @@
   .create-project-submit {
     min-inline-size: 10rem;
   }
-  .setup-symbol {
-    @apply mb-5 flex h-11 w-11 items-center justify-center rounded-xl border border-line bg-raised text-foreground;
-  }
   .setup-error {
     @apply mt-5 flex items-start gap-2.5 rounded-md border border-strong bg-raised p-3 text-body-xs;
     overflow-wrap: anywhere;
@@ -1667,16 +1675,7 @@
     @apply mt-0.5;
   }
   .project-empty {
-    @apply flex min-h-0 flex-1 flex-col items-center justify-center overflow-y-auto px-8 py-8 text-center;
-  }
-  .project-empty h2 {
-    @apply mb-2 text-heading-sm;
-  }
-  .project-empty > p {
-    @apply max-w-sm text-sm text-secondary;
-  }
-  .project-empty .actions {
-    @apply mt-6 justify-center;
+    @apply flex min-h-0 flex-1 flex-col overflow-y-auto px-8 py-8;
   }
   .folder-connection {
     @apply mx-7 my-4 flex shrink-0 items-start gap-3 rounded-lg border border-strong bg-panel p-4;
