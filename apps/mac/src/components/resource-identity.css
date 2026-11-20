@@ -36,8 +36,11 @@
 }
 
 .resource-identity-avatar {
-  margin-left: -4px;
   overflow: hidden;
+}
+
+.resource-identity-tool + .resource-identity-avatar {
+  margin-left: -4px;
 }
 
 .resource-identity-avatar > img {

@@ -610,6 +610,8 @@ test("local-only skills stay in Mine when a published revision replaces the loca
   const rows = page.locator(".resource-table-skill");
   await expect(rows).toHaveCount(1);
   await expect(rows).toContainText("On this Mac");
+  await expect(rows.getByRole("img", { name: /^Updated by/ })).toBeVisible();
+  await expect(rows.getByRole("img", { name: /^Shared/ })).toHaveCount(0);
   await rows.click();
   await expect(
     page.getByText("This skill is on this Mac and hasn’t been shared."),
@@ -623,6 +625,9 @@ test("local-only skills stay in Mine when a published revision replaces the loca
   await page.evaluate(() => (window as any).publishSkill());
   await expect(rows).toHaveCount(1);
   await expect(rows).not.toContainText("On this Mac");
+  await expect(
+    rows.getByRole("img", { name: /^Shared · Updated by/ }),
+  ).toBeVisible();
   await expect(rows.locator(".skill-origin-badge")).toHaveText("Global");
   await expect(
     ownership.getByRole("button", { name: "Mine", exact: true }),

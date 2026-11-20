@@ -15,6 +15,7 @@ export function ResourceIdentity({
   const memberName = useMemberLabel(user);
   const stacked = resource.kind !== "memory";
   const showUpdater = resource.kind === "memory" || resource.kind === "skill";
+  const showSource = resource.kind !== "skill" || !resource.local;
   const authorId = showUpdater ? resource.updatedBy : resource.owner;
   const author = memberName(authorId);
   const photo = useMemberPhoto(authorId);
@@ -24,7 +25,8 @@ export function ResourceIdentity({
       : resource.source === "claude"
         ? "Claude"
         : "Shared";
-  const label = `${tool} · ${showUpdater ? `Updated by ${author}` : author}`;
+  const authorLabel = showUpdater ? `Updated by ${author}` : author;
+  const label = showSource ? `${tool} · ${authorLabel}` : authorLabel;
   const [showLabel, setShowLabel] = useState(false);
   useEffect(() => {
     if (!showLabel) return;
@@ -50,9 +52,11 @@ export function ResourceIdentity({
         if (!event.currentTarget.matches(":hover")) setShowLabel(false);
       }}
     >
-      <span className="resource-identity-tool" aria-hidden="true">
-        <SourceLabel source={resource.source} />
-      </span>
+      {showSource && (
+        <span className="resource-identity-tool" aria-hidden="true">
+          <SourceLabel source={resource.source} />
+        </span>
+      )}
       {stacked && (
         <span className="resource-identity-avatar" aria-hidden="true">
           <UserIcon size={20} />
