@@ -9,6 +9,7 @@ import {
 import { TextField } from "./text-field.js";
 import { IconButton } from "./icon-button.js";
 import { Button } from "./button.js";
+import { EmptyState } from "./empty-state.js";
 import { Icon } from "./icon.js";
 import React, { useLayoutEffect, useRef } from "react";
 import { Overlay } from "./overlay.js";
@@ -295,21 +296,25 @@ export function ProjectEmptyState({
   onJoin: () => void;
 }) {
   return (
-    <section className="project-empty" aria-labelledby="project-empty-title">
-      <div className="setup-symbol">
-        <FolderIcon size={25} aria-hidden="true" />
-      </div>
-      <h2 id="project-empty-title">Start with a project</h2>
-      <div className="actions">
-        <Button onClick={onCreate} variant="primary" size="lg">
-          <Icon icon={PlusIcon} />
-          Add project
-        </Button>
-        <Button onClick={onJoin} variant="secondary" size="lg">
-          <Icon icon={LogInIcon} />
-          Join project
-        </Button>
-      </div>
+    <section className="project-empty" aria-label="Project setup">
+      <EmptyState
+        illustration="project"
+        size="workspace"
+        title="Start with a project"
+        description="Create a project or use an invite to join your team."
+        actions={
+          <>
+            <Button onClick={onCreate} variant="primary" size="lg">
+              <Icon icon={PlusIcon} />
+              Add project
+            </Button>
+            <Button onClick={onJoin} variant="secondary" size="lg">
+              <Icon icon={LogInIcon} />
+              Join project
+            </Button>
+          </>
+        }
+      />
     </section>
   );
 }

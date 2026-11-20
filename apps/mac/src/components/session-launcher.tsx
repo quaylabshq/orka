@@ -44,7 +44,7 @@ function AppIcon({
   return (
     <span className="ui-icon" aria-hidden="true">
       <img
-        className="resume-source-icon"
+        className={`resume-source-icon${!localIcon && tool === "codex" ? " resume-source-icon--codex" : ""}`}
         src={localIcon ?? `${import.meta.env.BASE_URL}source-icons/${tool}.svg`}
         alt=""
         draggable={false}

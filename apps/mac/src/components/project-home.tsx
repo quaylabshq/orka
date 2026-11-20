@@ -18,6 +18,7 @@ import {
 } from "./use-session-titles.js";
 import { skillSummaryKey, useSkillSummaries } from "./use-skill-summaries.js";
 import { useMemberLabel } from "./member-names.js";
+import { EmptyState } from "./empty-state.js";
 import type { LocalKind } from "./use-local-resources.js";
 import "./project-home.css";
 
@@ -233,7 +234,13 @@ export function ProjectHome({
           </ul>
         ) : (
           <div className="home-updates-empty">
-            <h3>No updates yet</h3>
+            <EmptyState
+              illustration="updates"
+              size="compact"
+              heading="h3"
+              title="No updates yet"
+              description="Updated sessions, memories, plans, and skills for this project appear here."
+            />
           </div>
         )}
       </section>
