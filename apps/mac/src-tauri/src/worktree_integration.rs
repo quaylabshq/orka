@@ -124,6 +124,8 @@ struct Installed {
 struct Pending {
     fingerprint: String,
     scratch: PathBuf,
+    #[serde(default)]
+    restoring: bool,
 }
 
 impl Installed {
@@ -461,6 +463,7 @@ fn install(
     entry.pending = Some(Pending {
         fingerprint: hash.clone(),
         scratch: scratch.clone(),
+        restoring: false,
     });
     entry.save(db)?;
     excludes.protect(&entry.checkout, &entry.relative, false)?;
@@ -528,6 +531,11 @@ fn recover_pending(
     let mut excludes = Excludes::open(entry.common()?)?;
     excludes.release(&pending.scratch)?;
     if let Some(file) = file.filter(|file| file.hash == pending.fingerprint) {
+        if pending.restoring {
+            entry.pending = None;
+            entry.retired = true;
+            return entry.save(db);
+        }
         if registered {
             excludes.protect(&entry.checkout, &entry.relative, false)?;
         }
@@ -550,6 +558,9 @@ fn reconcile_entry(
     checked_parent(&entry.checkout, &path)?;
     let file = read_file(&path).map_err(|e| e.to_string())?;
     recover_pending(db, &mut entry, file.as_ref(), registered)?;
+    if entry.retired {
+        return Ok(());
+    }
     let owned = file.as_ref().is_some_and(|file| {
         file.hash == entry.fingerprint
             && ((registered && !file.hash.starts_with("link:"))
@@ -574,13 +585,29 @@ fn reconcile_entry(
                     "Cannot safely restore foreign hooks without a registered checkout".into(),
                 );
             }
-            let common = entry.common()?.to_path_buf();
-            let mut excludes = Excludes::open(&common)?;
+            let mut excludes = Excludes::open(entry.common()?)?;
+            let scratch = entry
+                .relative
+                .with_file_name(format!(".orka-{}.pending", uuid::Uuid::new_v4()));
+            entry.pending = Some(Pending {
+                fingerprint: db::digest(restore),
+                scratch: scratch.clone(),
+                restoring: true,
+            });
+            entry.save(db)?;
             excludes.protect(&entry.checkout, &entry.relative, false)?;
-            let scratch = git_artifacts::scratch(&entry.relative);
             excludes.protect(&entry.checkout, &scratch, false)?;
+            if read_file(&path)
+                .map_err(|e| e.to_string())?
+                .as_ref()
+                .map(File::identity)
+                != file.as_ref().map(File::identity)
+            {
+                return Err("Hook changed while checking Git protection".into());
+            }
             git_artifacts::publish(&path, &entry.checkout.join(&scratch), restore, 0o600, true)?;
             excludes.release(&scratch)?;
+            entry.pending = None;
         } else {
             fs::remove_file(&path).map_err(|e| e.to_string())?;
         }

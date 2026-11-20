@@ -494,6 +494,45 @@ fn pending_ownership_recovers_after_publication() {
 }
 
 #[test]
+fn interrupted_hook_restore_cleans_scratch_and_keeps_foreign_hooks() {
+    let f = Fixture::new();
+    init(&f.root);
+    let home = crate::worktrees::home().unwrap();
+    let hook = Path::new(".codex/hooks.json");
+    let orka = b"installed hook";
+    let foreign = b"foreign hook";
+    let mut entries = Vec::new();
+    for (name, published) in [("before-restore", false), ("after-restore", true)] {
+        let tree = home.join(name);
+        worktree(&f.root, &tree);
+        let (admin, common) = crate::onboarding::discovery::registered_worktree(&tree).unwrap();
+        let scratch = Path::new(".codex").join(format!(".{name}.pending"));
+        let mut excludes = crate::git_artifacts::Excludes::open(&common).unwrap();
+        excludes.protect(&tree, hook, false).unwrap();
+        excludes.protect(&tree, &scratch, false).unwrap();
+        write(
+            &tree.join(hook),
+            if published { &foreign[..] } else { &orka[..] },
+        );
+        write(&tree.join(&scratch), foreign);
+        entries.push(json!({"checkout":tree,"admin":admin,"relative":hook,"device":0,"inode":0,"fingerprint":db::digest(orka),"restore":foreign,"pending":{"fingerprint":db::digest(foreign),"scratch":scratch,"restoring":true}}));
+    }
+    db::set(&f.db, "worktreeIntegration", &json!(entries)).unwrap();
+    let mut disconnected = f.project.clone();
+    disconnected["path"] = Value::Null;
+    set_project(&f, &disconnected);
+    worktree_integration::reconcile(&f.db, Path::new("/fixture/orka")).unwrap();
+    for name in ["before-restore", "after-restore"] {
+        let tree = home.join(name);
+        assert_eq!(fs::read(tree.join(hook)).unwrap(), foreign);
+        assert!(!tree.join(format!(".codex/.{name}.pending")).exists());
+    }
+    assert!(db::rows(&f.db, "SELECT value FROM worktree_artifacts", &[])
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
 fn unavailable_checkout_keeps_ownership_without_blocking_another_repo() {
     let f = Fixture::new();
     init(&f.root);
