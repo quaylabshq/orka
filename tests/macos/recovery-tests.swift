@@ -13,6 +13,7 @@ struct RecoveryTests {
         try await statusTests(scratch)
         try await rolloutTests(scratch)
         try lockTests(scratch)
+        try updaterBuildTests(scratch)
         try launchTests(scratch)
         if CommandLine.arguments.count == 3, CommandLine.arguments[1] == "--plugin-app" {
             try await pluginMaintenanceTests(URL(fileURLWithPath: CommandLine.arguments[2]), scratch: scratch)
@@ -63,6 +64,30 @@ struct RecoveryTests {
             try rejects { _ = try FileLock(path, operation: LOCK_SH | LOCK_NB) }
         }
         print("runtime and installer mutual exclusion passed")
+    }
+
+    static func updaterBuildTests(_ scratch: URL) throws {
+        let files = FileManager.default
+        let app = scratch.appendingPathComponent("updater-build/Orka.app")
+        let installation = try Installation(app: app, info: [:], supportDirectory: scratch)
+        let cached = installation.updaterExecutable
+        let bundled = installation.embeddedUpdater.appendingPathComponent("Contents/MacOS/orka-updater")
+        for executable in [cached, bundled] {
+            try files.createDirectory(at: executable.deletingLastPathComponent(), withIntermediateDirectories: true)
+        }
+        let currentBuild = Data("current updater".utf8)
+        try Data("previous updater".utf8).write(to: cached)
+        try currentBuild.write(to: bundled)
+        try require(!installation.hasCurrentUpdaterBuild("0.3.15", embeddedVersion: "0.3.15"),
+                    "a different updater at the same version must be replaced")
+        try require(installation.hasCurrentUpdaterBuild("0.3.16", embeddedVersion: "0.3.15"),
+                    "restoring an older app preserves a newer trusted updater")
+        try currentBuild.write(to: cached)
+        try require(installation.hasCurrentUpdaterBuild("0.3.15", embeddedVersion: "0.3.15"),
+                    "matching version and executable can reuse the cached updater")
+        try require(!installation.hasCurrentUpdaterBuild("0.3.14", embeddedVersion: "0.3.15"),
+                    "an older updater must still be replaced")
+        print("same-version updater replacement and recovery compatibility passed")
     }
 
     static func launchTests(_ scratch: URL) throws {

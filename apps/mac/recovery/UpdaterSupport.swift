@@ -2,10 +2,12 @@ import AppKit
 import Foundation
 import Security
 
+private let updaterExecutablePath = "Contents/MacOS/orka-updater"
+
 extension Installation {
     var embeddedUpdater: URL { app.appendingPathComponent("Contents/Helpers/Orka Updater.app") }
     var updater: URL { state.appendingPathComponent("Orka Updater.app") }
-    var updaterExecutable: URL { updater.appendingPathComponent("Contents/MacOS/orka-updater") }
+    var updaterExecutable: URL { updater.appendingPathComponent(updaterExecutablePath) }
     var desktopExecutable: URL { app.appendingPathComponent("Contents/MacOS/\(desktopName)") }
 
     func provisionUpdater() throws {
@@ -35,10 +37,22 @@ extension Installation {
               let embeddedInfo = NSDictionary(contentsOf: embeddedUpdater.appendingPathComponent("Contents/Info.plist")),
               let version = info["CFBundleVersion"] as? String,
               let embeddedVersion = embeddedInfo["CFBundleVersion"] as? String else { return false }
-        // Reuse the independent helper only while it has the current updater fixes and trust configuration.
         return info["OrkaUpdateFeed"] as? String == feed?.url.absoluteString
             && info["OrkaUpdatePublicKey"] as? String == feed?.key.base64EncodedString()
-            && compareVersion(version, embeddedVersion) != .orderedAscending
+            && hasCurrentUpdaterBuild(version, embeddedVersion: embeddedVersion)
+    }
+
+    func hasCurrentUpdaterBuild(_ version: String, embeddedVersion: String) -> Bool {
+        switch compareVersion(version, embeddedVersion) {
+        case .orderedAscending:
+            return false
+        case .orderedDescending:
+            return true
+        case .orderedSame:
+            // An unreleased build can change the updater protocol without changing its bundle version.
+            return files.contentsEqual(atPath: updaterExecutable.path,
+                                       andPath: embeddedUpdater.appendingPathComponent(updaterExecutablePath).path)
+        }
     }
 
     func updaterProcess(_ mode: String, arguments: [String] = []) throws -> Process {
