@@ -7,7 +7,7 @@ import {
   requestKind,
   requestStatus,
   requestTitle,
-  versionChange,
+  baseVersion,
 } from "./review-presentation.js";
 
 const now = new Date("2026-11-20T10:30:00Z");
@@ -100,10 +100,9 @@ describe("localStatus", () => {
 });
 
 describe("review details", () => {
-  it("says what approving does to the shared version", () => {
-    expect(versionChange({ baseRevision: 0 }, false)).toBe("New");
-    expect(versionChange({ baseRevision: 2 }, false)).toBe("2 to 3");
-    expect(versionChange({ baseRevision: 3 }, true)).toBe("3 to removed");
+  it("shows the reviewed base without predicting a project revision", () => {
+    expect(baseVersion({ baseRevision: 0 })).toBe("New");
+    expect(baseVersion({ baseRevision: 2 })).toBe("Based on revision 2");
   });
   it("names the audience without listing a whole project", () => {
     const members = [{ id: "a" }, { id: "b" }, { id: "c" }];

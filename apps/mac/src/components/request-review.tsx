@@ -17,7 +17,7 @@ import {
 } from "lucide-react";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import type { ReviewRequest, Resource } from "@portable/protocol";
-import type { Snapshot } from "../types.js";
+import type { Project, Snapshot } from "../types.js";
 import { ActivityIndicator } from "./activity-indicator.js";
 import { Button } from "./button.js";
 import {
@@ -34,16 +34,17 @@ import { FileDiffCard, SourceCard, fileKind } from "./file-diff.js";
 import { Icon } from "./icon.js";
 import { LoadingRegion } from "./loading-region.js";
 import type { GovernanceCatalog, ProjectCall } from "./project-permissions.js";
-import type { Decision } from "./review-decisions.js";
+import { repositoryLabel } from "./project-sources.js";
+import type { Decision, DecisionFailure } from "./review-decisions.js";
 import { ResourceContent } from "./resource-content.js";
 import {
   audienceLabel,
+  baseVersion,
   relativeSent,
   removalStatus,
   requestStatus,
   requestTitle,
   unsentStatus,
-  versionChange,
 } from "./review-presentation.js";
 import { personName, StatusPill } from "./review-status.js";
 import { SegmentedControl } from "./segmented-control.js";
@@ -73,29 +74,26 @@ export function RequestReview({
   request: listed,
   state,
   catalog,
-  repository,
+  sources,
+  listedSourceId,
   title: listedTitle,
   call,
   sending,
-  unsent,
+  failure,
   onDecide,
 }: {
   /** The request as the list knows it; the page fills in the rest. */
   request: ReviewRequest;
   state: Snapshot;
   catalog: GovernanceCatalog;
-  repository?: string;
+  sources: Project["sources"];
+  listedSourceId?: string | null;
   title: string;
   call: ProjectCall;
   /** A decision already on its way, started before this page was reopened. */
   sending?: Decision;
-  /** The last decision on this request did not reach the service. */
-  unsent: boolean;
-  /** Resolves with the request as the service left it; rejects when unsent. */
-  onDecide: (
-    detail: ReviewRequest,
-    decision: Decision,
-  ) => Promise<ReviewRequest>;
+  failure?: DecisionFailure;
+  onDecide: (detail: ReviewRequest, decision: Decision) => Promise<void>;
 }) {
   const layout = useDetailLayout();
   const [detail, setDetail] = useState<RequestDetail | null>(null);
@@ -123,8 +121,14 @@ export function RequestReview({
   // The list is reloaded after every decision, so once it shows an outcome
   // that outcome wins over what this page read earlier.
   const request =
-    listed.status !== "pending" ? listed : (detail?.request ?? listed);
+    listed.status !== "pending" || !listed.canReview
+      ? listed
+      : (detail?.request ?? listed);
   const resource = detail?.content?.resource;
+  const repository = repositoryLabel(
+    sources ?? [],
+    resource?.sourceId ?? listedSourceId ?? undefined,
+  );
   const removed = Boolean(resource?.deleted);
   const changes = useMemo(
     () =>
@@ -140,6 +144,8 @@ export function RequestReview({
   const name = (id: string) => personName(id, state.user, catalog.members);
   const pending = request.status === "pending";
   const canDecide = pending && Boolean(request.canReview) && !failed;
+  const unsent = pending && failure && !failure.serviceRejected;
+  const decisionError = failure?.serviceRejected && failure.message;
   const status = unsent
     ? unsentStatus
     : pending
@@ -147,7 +153,7 @@ export function RequestReview({
         ? null
         : requestStatus("pending")
       : requestStatus(request.status);
-  const version = versionChange(request, removed);
+  const version = baseVersion(request);
   const seenBy = audienceLabel(detail?.audience, catalog.members, name);
   const audienceNames = detail?.audience?.map(name).join(", ");
   /** Values end in an ellipsis in the panel; the full text stays one hover away. */
@@ -230,12 +236,6 @@ export function RequestReview({
     if (deciding || !detail) return;
     setDeciding(decision);
     void onDecide(detail.request, decision)
-      .then((result) => {
-        // A stale result stays on this page with its new status.
-        setDetail((current) =>
-          current ? { ...current, request: result } : current,
-        );
-      })
       .catch(() => {})
       .finally(() => setDeciding(null));
   };
@@ -316,8 +316,22 @@ export function RequestReview({
       }
       facts={facts}
       note={
-        seenBy ? (
-          <p className="detail-info-note">Source restrictions still apply.</p>
+        decisionError || seenBy ? (
+          <>
+            {decisionError && (
+              <p
+                className="detail-info-note detail-info-note--error"
+                role="alert"
+              >
+                {decisionError}
+              </p>
+            )}
+            {seenBy && (
+              <p className="detail-info-note">
+                Source restrictions still apply.
+              </p>
+            )}
+          </>
         ) : undefined
       }
       primaryActions={actions}

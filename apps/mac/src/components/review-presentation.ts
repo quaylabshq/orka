@@ -130,14 +130,11 @@ export const removalStatus: ReviewRowStatus = {
   tone: "danger",
 };
 
-/** "2 to 3", "New", or "2 to removed": what approving does to the shared version. */
-export function versionChange(
-  request: Pick<ReviewRequest, "baseRevision">,
-  removed: boolean,
-) {
+/** Future revisions are assigned from the project counter at publication. */
+export function baseVersion(request: Pick<ReviewRequest, "baseRevision">) {
   const base = request.baseRevision;
   if (!base) return "New";
-  return `${base} to ${removed ? "removed" : base + 1}`;
+  return `Based on revision ${base}`;
 }
 
 /** Who sees the item once approved, without listing a whole project. */

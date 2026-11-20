@@ -55,10 +55,10 @@ import { Person, personName, StatusPill } from "./review-status.js";
 import { SegmentedControl } from "./segmented-control.js";
 import { ReaderState } from "./skill-state.js";
 import { projectAttention } from "./sync-attention.js";
-import { useToastNotice } from "./toasts.js";
+import { useToastNotice, useToasts } from "./toasts.js";
 import "./reviews-page.css";
 
-type ReviewsView = "open" | "history";
+export type ReviewsView = "open" | "history";
 const rememberedViews = new Map<string, ReviewsView>();
 
 const kindIcons: Record<ReviewKind | "change", IconGlyph> = {
@@ -274,21 +274,23 @@ export interface ReviewSelection {
 
 export function ReviewsPage({
   project,
+  scope,
   state,
   review,
   onReview,
-  historyRequest,
-  onHistoryShown,
+  destination,
+  onDestinationShown,
   onRefresh,
   onReviewFile,
 }: {
   project: Project;
+  scope: string;
   state: Snapshot;
   /** The request open on the review page; the list stays mounted behind it. */
   review: ReviewSelection | null;
   onReview: (review: ReviewSelection | null) => void;
-  historyRequest?: symbol;
-  onHistoryShown: (request: symbol) => void;
+  destination?: { view: ReviewsView; request: symbol };
+  onDestinationShown: (request: symbol) => void;
   onRefresh: () => Promise<void>;
   onReviewFile: (id: string) => void;
 }) {
@@ -298,17 +300,19 @@ export function ReviewsPage({
   const [error, setError] = useState("");
   // The view survives a trip through Settings, which unmounts this page.
   const [view, setView] = useState<ReviewsView>(
-    () => rememberedViews.get(project.id) ?? "open",
+    () => rememberedViews.get(scope) ?? "open",
   );
   useEffect(() => {
-    rememberedViews.set(project.id, view);
-  }, [project.id, view]);
+    rememberedViews.set(scope, view);
+  }, [scope, view]);
   const setMessage = useToastNotice();
+  const { notify } = useToasts();
   const root = useRef<HTMLElement>(null);
-  const [access, setAccess] = useState<ReviewRequest | null>(null);
+  const [access, setAccess] = useState<string | null>(null);
   const settled = useReviewDecisions();
-  const decision = (id: string) => reviewDecisions.get(project.id, id);
+  const decision = (id: string) => reviewDecisions.get(scope, id);
   const mounted = useRef(true);
+  const loadGeneration = useRef(0);
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -322,35 +326,41 @@ export function ReviewsPage({
     [project.id],
   );
   const load = useCallback(async () => {
-    setCatalog(await call<GovernanceCatalog>("catalog"));
-    setLoadFailed(false);
-  }, [call]);
-  useEffect(() => {
-    let active = true;
-    void call<GovernanceCatalog>("catalog")
-      .then((value) => {
-        if (!active) return;
+    const generation = ++loadGeneration.current;
+    try {
+      const value = await call<GovernanceCatalog>("catalog");
+      if (mounted.current && generation === loadGeneration.current) {
         setCatalog(value);
         setLoadFailed(false);
-      })
-      .catch(() => {
-        if (active) setLoadFailed(true);
-      });
-    return () => {
-      active = false;
-    };
-  }, [call, project.policyRevision]);
-  const focusView = useRef(false);
+      }
+      return value;
+    } catch (error) {
+      if (mounted.current && generation === loadGeneration.current)
+        setLoadFailed(true);
+      throw error;
+    }
+  }, [call]);
+  // Snapshots are polled even when nothing changed. Revalidate only when
+  // a request changes, ignoring notification-read updates and list order.
+  const requestState = JSON.stringify(
+    (state.reviewRequests ?? [])
+      .filter((item) => item.projectId === project.id)
+      .map(({ id, status, canReview }) => [id, status, canReview])
+      .sort((left, right) => String(left[0]).localeCompare(String(right[0]))),
+  );
   useEffect(() => {
-    if (!historyRequest) return;
-    focusView.current = true;
-    setView("history");
-    onHistoryShown(historyRequest);
-  }, [historyRequest, onHistoryShown]);
+    void load().catch(() => {});
+  }, [load, project.policyRevision, requestState]);
+  const focusView = useRef<ReviewsView | null>(null);
   useEffect(() => {
-    // Focus follows once History is the pressed view, not before it renders.
-    if (!focusView.current || view !== "history") return;
-    focusView.current = false;
+    if (!destination) return;
+    focusView.current = destination.view;
+    setView(destination.view);
+    onDestinationShown(destination.request);
+  }, [destination, onDestinationShown]);
+  useEffect(() => {
+    if (focusView.current !== view) return;
+    focusView.current = null;
     root.current
       ?.querySelector<HTMLElement>('.reviews-views [aria-pressed="true"]')
       ?.focus();
@@ -383,11 +393,16 @@ export function ReviewsPage({
     }
   };
   const members = catalog?.members ?? [];
+  // The decision response is authoritative even if reading the catalog fails.
+  const requests = (catalog?.requests ?? []).map((item) => {
+    const outcome = decision(item.id).outcome;
+    return outcome ? { ...item, ...outcome } : item;
+  });
+  useEffect(() => {
+    if (catalog) reviewDecisions.confirm(scope, catalog.requests);
+  }, [scope, catalog, settled]);
   const attention = catalog
-    ? projectAttention(
-        { ...state, reviewRequests: catalog.requests },
-        project.id,
-      )
+    ? projectAttention({ ...state, reviewRequests: requests }, project.id)
     : null;
   const resources = new Map(
     state.resources
@@ -403,8 +418,10 @@ export function ReviewsPage({
     requestTitle(item, resources.get(item.resourceId));
   /** Sends one decision. The lists refresh behind it; a failed refresh is not a failed decision. */
   const decide = async (item: ReviewRequest, choice: Decision) => {
-    if (decision(item.id).sending) throw new Error("Decision already sending");
-    reviewDecisions.start(project.id, item.id, choice);
+    const prior = decision(item.id);
+    if (prior.sending || prior.outcome)
+      throw new Error("Decision already submitted");
+    reviewDecisions.start(scope, item.id, choice);
     let result: ReviewRequest;
     try {
       result = await call<ReviewRequest>("decide", {
@@ -414,17 +431,34 @@ export function ReviewsPage({
         expectedPolicyRevision: catalog!.policyRevision,
       });
     } catch (error) {
-      reviewDecisions.fail(project.id, item.id);
-      // Whoever sent it may be on another page by now.
-      if (!mounted.current || viewing.current?.id !== item.id)
-        setMessage(`Couldn’t send your decision on ${titleOf(item)}`);
+      const message = error instanceof Error ? error.message : String(error);
+      const status = /^4\d\d(?=:)/.exec(message)?.[0];
+      const latest =
+        status === "403" || status === "409"
+          ? await load().catch(() => undefined)
+          : undefined;
+      const failure = {
+        serviceRejected: Boolean(status),
+        message: message.replace(/^4\d\d:\s*/, ""),
+      };
+      reviewDecisions.fail(scope, item.id, failure);
+      // The message still matters if the reviewer left or lost access.
+      if (
+        !mounted.current ||
+        viewing.current !== item.id ||
+        (latest && !latest.requests.some(({ id }) => id === item.id))
+      ) {
+        if (failure.serviceRejected && failure.message)
+          notify({ title: failure.message, kind: "error" });
+        else setMessage(`Couldn’t send your decision on ${titleOf(item)}`);
+      }
       throw error;
     }
     // The request stays locked until the lists show its new status.
     await load()
       .then(onRefresh)
       .catch(() => {})
-      .finally(() => reviewDecisions.settle(project.id, item.id));
+      .finally(() => reviewDecisions.settle(scope, item.id, result));
     setMessage(
       result.status === "stale"
         ? "The resource or permissions changed. A refreshed suggestion is needed."
@@ -433,15 +467,15 @@ export function ReviewsPage({
     return result;
   };
   const openAccess = (item: ReviewRequest) => {
-    setAccess(item);
+    setAccess(item.id);
     void call("read-notification", { id: item.id }).catch(() => {});
   };
   // A decision can land after the reviewer has moved on. It must not pull them back.
-  const viewing = useRef(review);
+  const viewing = useRef<string | undefined>(undefined);
   useEffect(() => {
-    viewing.current = review;
+    viewing.current = review?.id ?? access ?? undefined;
     return () => {
-      viewing.current = null;
+      viewing.current = undefined;
     };
   });
   // A page mounted after a decision was sent reloads once it settles.
@@ -544,8 +578,15 @@ export function ReviewsPage({
       .join(),
   );
   const reviewed = review
-    ? catalog?.requests.find((item) => item.id === review.id)
+    ? requests.find((item) => item.id === review.id)
     : undefined;
+  const accessRequest = access
+    ? requests.find((item) => item.id === access)
+    : undefined;
+  const lostAccess = Boolean(access && catalog && !accessRequest);
+  useEffect(() => {
+    if (lostAccess) setAccess(null);
+  }, [lostAccess]);
   const lostReview = Boolean(review && catalog && !reviewed);
   useEffect(() => {
     // The request left the project while its page was open.
@@ -587,14 +628,15 @@ export function ReviewsPage({
           request={reviewed}
           state={state}
           catalog={catalog}
-          repository={repositoryName(resources.get(reviewed.resourceId))}
+          sources={project.sources}
+          listedSourceId={resources.get(reviewed.resourceId)?.sourceId}
           title={titleOf(reviewed)}
           call={call}
           sending={decision(reviewed.id).sending}
-          unsent={Boolean(decision(reviewed.id).unsent)}
+          failure={decision(reviewed.id).failure}
           onDecide={async (item, decision) => {
             const result = await decide(item, decision);
-            if (result.status !== "stale" && viewing.current?.id === item.id) {
+            if (result.status !== "stale" && viewing.current === item.id) {
               // The next request takes this one's place; after the last, the list.
               const index = review.queue.indexOf(item.id);
               const queue = review.queue.filter((id) => id !== item.id);
@@ -602,7 +644,6 @@ export function ReviewsPage({
               advanced.current = true;
               onReview(next ? { id: next, queue } : null);
             }
-            return result;
           }}
         />
       )}
@@ -650,6 +691,20 @@ export function ReviewsPage({
           <p className="reviews-error" role="alert">
             {error}
           </p>
+        )}
+        {catalog && loadFailed && !error && (
+          <div className="reviews-error">
+            <p role="alert">Couldn’t refresh reviews.</p>
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={busy}
+              onClick={() => void retry()}
+            >
+              <Icon icon={RefreshCwIcon} size="sm" />
+              Retry
+            </Button>
+          </div>
         )}
         {!catalog && loadFailed ? (
           <ReaderState
@@ -708,13 +763,17 @@ export function ReviewsPage({
               disabled={busy}
             />
           ) : (
-            <ReaderState
-              illustration="previous-version-unavailable"
-              title="No decisions yet"
-            />
+            !loadFailed && (
+              <ReaderState
+                illustration="previous-version-unavailable"
+                title="No decisions yet"
+              />
+            )
           )
         ) : toDecide.length + sentByYou.length + onThisMac.length === 0 ? (
-          <ReaderState illustration="up-to-date" title="Nothing to review" />
+          !loadFailed && (
+            <ReaderState illustration="up-to-date" title="Nothing to review" />
+          )
         ) : (
           <>
             {toDecide.length > 0 && (
@@ -751,19 +810,18 @@ export function ReviewsPage({
           </>
         )}
       </div>
-      {access && catalog && (
+      {accessRequest && catalog && (
         <AccessRequestDialog
-          key={access.id}
-          request={access}
+          key={accessRequest.id}
+          request={accessRequest}
           catalog={catalog}
-          title={titleOf(access)}
-          author={personName(access.author, state.user, members)}
-          sending={decision(access.id).sending}
-          unsent={Boolean(decision(access.id).unsent)}
+          title={titleOf(accessRequest)}
+          author={personName(accessRequest.author, state.user, members)}
+          sending={decision(accessRequest.id).sending}
+          failure={decision(accessRequest.id).failure}
           onDecide={async (item, decision) => {
             const result = await decide(item, decision);
             if (result.status !== "stale") setAccess(null);
-            return result;
           }}
           onClose={() => setAccess(null)}
           onCloseAutoFocus={(event) => {
@@ -772,7 +830,7 @@ export function ReviewsPage({
             event.preventDefault();
             (
               root.current?.querySelector<HTMLElement>(
-                `[data-review-id="${CSS.escape(access.id)}"]`,
+                `[data-review-id="${CSS.escape(accessRequest.id)}"]`,
               ) ?? root.current
             )?.focus();
           }}

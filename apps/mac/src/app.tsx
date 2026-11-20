@@ -69,6 +69,7 @@ import { ResourceIndex } from "./components/resource-index.js";
 import {
   ReviewsPage,
   type ReviewSelection,
+  type ReviewsView,
 } from "./components/reviews-page.js";
 import { ReviewStepper } from "./components/review-stepper.js";
 import { RepositoryConnections } from "./components/repository-connections.js";
@@ -371,18 +372,18 @@ function WorkspaceApp({
   const [syncOpen, setSyncOpen] = useState(false);
   const syncStatusTrigger = useRef<HTMLButtonElement>(null);
   const projectScope = JSON.stringify([workspaceScope, project]);
-  // A request to show History, addressed to the project it was made in.
-  const [historyRequest, setHistoryRequest] = useState<{
+  const [reviewsDestination, setReviewsDestination] = useState<{
     scope: string;
+    view: ReviewsView;
     request: symbol;
   } | null>(null);
   useEffect(() => {
-    setHistoryRequest((current) =>
+    setReviewsDestination((current) =>
       current && current.scope !== projectScope ? null : current,
     );
   }, [projectScope]);
-  const consumeHistoryRequest = useCallback((request: symbol) => {
-    setHistoryRequest((current) =>
+  const consumeReviewsDestination = useCallback((request: symbol) => {
+    setReviewsDestination((current) =>
       current?.request === request ? null : current,
     );
   }, []);
@@ -396,22 +397,32 @@ function WorkspaceApp({
     env?: { title: string };
   } | null>(null);
   const openManagement = useCallback(
-    (section: ManagementSection = "members", historyScope?: string) => {
+    (
+      section: ManagementSection = "members",
+      view: ReviewsView = "open",
+      targetProject = project,
+    ) => {
       if (section === "members") {
         if (settingsNavigation.current)
           settingsNavigation.current.requestSection("members");
         else setSettings("members");
         return;
       }
-      setHistoryRequest(
-        historyScope ? { scope: historyScope, request: Symbol() } : null,
+      setReviewsDestination(
+        section === "requests"
+          ? {
+              scope: JSON.stringify([workspaceScope, targetProject]),
+              view,
+              request: Symbol(),
+            }
+          : null,
       );
       setSettings(null);
       setTab(section === "requests" ? "reviews" : "members");
       setReview(null);
       setResource("");
     },
-    [],
+    [project, workspaceScope],
   );
   useToastNavigation(
     useCallback(
@@ -773,7 +784,7 @@ function WorkspaceApp({
       setTab(target.kind);
       openResource(target.resourceId);
     } else {
-      openManagement("requests");
+      openManagement("requests", "open", projectId);
     }
   };
   const closeDetail = () => {
@@ -1118,7 +1129,7 @@ function WorkspaceApp({
                 onReview={() => leaveSettings(() => openManagement("requests"))}
                 onOpenRequestHistory={() =>
                   leaveSettings(
-                    () => openManagement("requests", projectScope),
+                    () => openManagement("requests", "history"),
                     (accepted) => {
                       if (!accepted) syncStatusTrigger.current?.focus();
                     },
@@ -1182,8 +1193,7 @@ function WorkspaceApp({
               onSectionChange={setSettings}
               onManage={(id, section) => {
                 setProject(id);
-                setSettings(null);
-                openManagement(section);
+                openManagement(section, "open", id);
               }}
               busy={busy}
               run={run}
@@ -1252,19 +1262,20 @@ function WorkspaceApp({
               >
                 {tab === "reviews" ? (
                   <ReviewsPage
-                    key={project}
+                    key={projectScope}
                     project={selectedProject}
+                    scope={projectScope}
                     state={state}
                     review={review}
                     onReview={(selection) =>
                       setReview(selection && { scope: projectScope, selection })
                     }
-                    historyRequest={
-                      historyRequest?.scope === projectScope
-                        ? historyRequest.request
+                    destination={
+                      reviewsDestination?.scope === projectScope
+                        ? reviewsDestination
                         : undefined
                     }
-                    onHistoryShown={consumeHistoryRequest}
+                    onDestinationShown={consumeReviewsDestination}
                     onRefresh={refresh}
                     onReviewFile={(resource) => setGovernance({ resource })}
                   />

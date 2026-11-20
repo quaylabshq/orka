@@ -17,16 +17,16 @@ import {
   unsentStatus,
 } from "./review-presentation.js";
 import { StatusPill } from "./review-status.js";
-import type { Decision } from "./review-decisions.js";
+import type { Decision, DecisionFailure } from "./review-decisions.js";
 
 /** An access request has nothing to read, so it is decided in a small dialog. */
 export function AccessRequestDialog({
-  request: listed,
+  request,
   catalog,
   title,
   author,
   sending,
-  unsent,
+  failure,
   onDecide,
   onClose,
   onCloseAutoFocus,
@@ -38,21 +38,17 @@ export function AccessRequestDialog({
   author: string;
   /** A decision already on its way, started before the dialog was reopened. */
   sending?: Decision;
-  /** The last decision on this request did not reach the service. */
-  unsent: boolean;
-  /** Resolves with the request as the service left it; rejects when unsent. */
-  onDecide: (
-    request: ReviewRequest,
-    decision: Decision,
-  ) => Promise<ReviewRequest>;
+  failure?: DecisionFailure;
+  onDecide: (request: ReviewRequest, decision: Decision) => Promise<void>;
   onClose: () => void;
   onCloseAutoFocus?: (event: Event) => void;
 }) {
-  const [request, setRequest] = useState(listed);
   const [local, setDeciding] = useState<Decision | null>(null);
   const deciding = local ?? sending ?? null;
   const pending = request.status === "pending";
   const canDecide = pending && Boolean(request.canReview);
+  const unsent = pending && failure && !failure.serviceRejected;
+  const decisionError = failure?.serviceRejected && failure.message;
   const current = request.requestedClass
     ? memberRule(catalog, request.author, request.requestedClass)?.mode
     : undefined;
@@ -77,9 +73,6 @@ export function AccessRequestDialog({
     if (deciding) return;
     setDeciding(decision);
     void onDecide(request, decision)
-      .then((result) => {
-        if (result.status === "stale") setRequest(result);
-      })
       .catch(() => {})
       .finally(() => setDeciding(null));
   };
@@ -135,6 +128,11 @@ export function AccessRequestDialog({
         <div role={unsent ? "alert" : "status"}>
           <StatusPill status={status} />
         </div>
+      )}
+      {decisionError && (
+        <p className="detail-info-note detail-info-note--error" role="alert">
+          {decisionError}
+        </p>
       )}
       {canDecide && (
         <div className="settings-confirm-actions">

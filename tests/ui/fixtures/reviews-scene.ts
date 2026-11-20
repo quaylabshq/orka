@@ -30,6 +30,8 @@ export type Scene = {
   longNames?: boolean;
   /** Extra shared resources, so requests can resolve a kind and repository. */
   resources?: Record<string, unknown>[];
+  /** Skill proposal returned by request detail, absent from the shared snapshot. */
+  proposedResource?: Record<string, unknown>;
 };
 
 export async function shot(page: Page, name: string, caption: string) {
@@ -149,7 +151,7 @@ export async function open(page: Page, scene: Scene = {}, viewport = wide) {
         ],
         sharing: { memory: true, skill: true, session: true, plan: true },
       };
-      const requests = scene.requests ?? [];
+      let requests = scene.requests ?? [];
       const suggest = Object.fromEntries(
         Object.entries(rules).map(([key, rule]) => [
           key,
@@ -205,6 +207,9 @@ export async function open(page: Page, scene: Scene = {}, viewport = wide) {
               },
             ];
       const w = window as any;
+      w.setReviewRequests = (next: typeof requests) => {
+        requests = next;
+      };
       Object.assign(window, {
         isTauri: true,
         __TAURI_EVENT_PLUGIN_INTERNALS__: { unregisterListener: () => {} },
@@ -238,7 +243,7 @@ export async function open(page: Page, scene: Scene = {}, viewport = wide) {
                 deviceId: "fixture",
                 background: true,
                 drafts: scene.drafts ?? [],
-                reviewRequests: requests,
+                reviewRequests: requests.map((item) => ({ ...item })),
               };
             if (command === "sync_progress")
               return { user: me, progress: null };
@@ -272,15 +277,28 @@ export async function open(page: Page, scene: Scene = {}, viewport = wide) {
                     ],
                     next: null,
                   };
-                case "catalog":
+                case "catalog": {
                   w.catalogCalls = (w.catalogCalls ?? 0) + 1;
                   if (scene.holdCatalog) await new Promise(() => {});
+                  if (w.failNextCatalog) {
+                    w.failNextCatalog = false;
+                    throw new Error("Network unavailable");
+                  }
                   if (scene.failCatalog || w.failCatalog)
                     throw new Error("Network unavailable");
+                  const policyRevision =
+                    w.serverPolicyRevision ?? catalog.policyRevision;
                   return {
                     ...catalog,
-                    requests: requests.map((item) => ({ ...item })),
+                    policyRevision,
+                    requests: requests.map((item) =>
+                      item.status === "pending" &&
+                      item.policyRevision !== policyRevision
+                        ? { ...item, status: "stale", canReview: false }
+                        : { ...item },
+                    ),
                   };
+                }
                 case "request": {
                   if (w.holdRequestLoad)
                     await new Promise<void>((resolve) => {
@@ -473,7 +491,7 @@ export async function open(page: Page, scene: Scene = {}, viewport = wide) {
                       "SKILL.md":
                         "---\nname: release-checklist\n---\n\n1. Run the UI suite.\n2. Tag the build.\n",
                     },
-                    content: { resource },
+                    content: { resource: scene.proposedResource ?? resource },
                   };
                 }
                 case "read-notification":
@@ -481,6 +499,19 @@ export async function open(page: Page, scene: Scene = {}, viewport = wide) {
                   return { ok: true };
                 case "decide": {
                   if (w.decideFail) throw new Error("Network unavailable");
+                  if (w.decisionError) {
+                    if (w.removeRequestOnDecision)
+                      requests = requests.filter(
+                        (item) => item.id !== args.input?.id,
+                      );
+                    throw w.decisionError;
+                  }
+                  if (
+                    w.serverPolicyRevision !== undefined &&
+                    args.input?.expectedPolicyRevision !==
+                      w.serverPolicyRevision
+                  )
+                    throw "409: Permissions changed; refresh and review again";
                   if (w.holdRequestDecision)
                     await new Promise<void>((resolve) => {
                       w.finishRequestDecision = resolve;

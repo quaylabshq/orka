@@ -240,12 +240,26 @@ test("20 long titles at the smallest window", async ({ page }) => {
   await toReviews(page);
   await shot(page, "20-open-long-900", "Long names end in an ellipsis.");
 });
-test("40 entry: settings button lands on Reviews", async ({ page }) => {
+test("40 entry: Settings pending work opens Open from History", async ({
+  page,
+}) => {
   await start(page, owner);
+  await toReviews(page);
+  await reviews(page).getByRole("button", { name: "History" }).click();
+  await expect(
+    reviews(page).getByRole("button", { name: "Old deploy notes" }),
+  ).toBeVisible();
   await page.getByRole("button", { name: "Settings", exact: true }).click();
   await page.getByRole("button", { name: "Members", exact: true }).click();
   await page.getByRole("button", { name: /Review pending requests/ }).click();
-  await expect(reviews(page)).toBeVisible();
+  await expect(
+    reviews(page).getByRole("button", { name: "Open", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await expect(
+    reviews(page)
+      .getByRole("region", { name: /^To decide/ })
+      .getByRole("button", { name: "release-checklist" }),
+  ).toBeVisible();
   await shot(
     page,
     "40-entry-settings",
@@ -278,8 +292,18 @@ test("42 permissions off still reaches setup", async ({ page }) => {
 });
 
 // ---------- The review page and the access dialog ----------
-const flag = (page: Page, flags: Record<string, boolean>) =>
+const flag = (page: Page, flags: Record<string, boolean | number | string>) =>
   page.evaluate((flags) => Object.assign(window, flags), flags);
+const setReviewRequests = (
+  page: Page,
+  requests: NonNullable<Scene["requests"]>,
+) =>
+  page.evaluate((next) => {
+    const fixture = window as unknown as {
+      setReviewRequests: (requests: typeof next) => void;
+    };
+    fixture.setReviewRequests(next);
+  }, requests);
 const openRow = async (page: Page, name: RegExp | string) => {
   await reviews(page).getByRole("row", { name }).first().click();
 };
@@ -318,6 +342,31 @@ test("R02 new memory", async ({ page }) => {
     "R02-new-memory",
     "Topic and scope are rows in the details panel.",
   );
+});
+test("a new skill shows the repository from the proposed content", async ({
+  page,
+}) => {
+  const title = "proposed-release-checklist";
+  const resourceId = "proposed-skill";
+  await start(page, {
+    requests: [req("skill-new", title, { resourceId, baseRevision: 0 })],
+    proposedResource: shared(resourceId, "skill", title, "backend"),
+  });
+  await toReviews(page);
+  await openRow(page, title);
+  await expect(info(page).getByText("backend", { exact: true })).toBeVisible();
+});
+test("an existing review shows the reviewed base revision", async ({
+  page,
+}) => {
+  await start(page, {
+    requests: [req("skill-1", "release-checklist", { baseRevision: 2 })],
+  });
+  await toReviews(page);
+  await openRow(page, /release-checklist/);
+  await expect(
+    info(page).getByText("Based on revision 2", { exact: true }),
+  ).toBeVisible();
 });
 test("R03 removal", async ({ page }) => {
   await start(page, { ...owner, detail: "deleted" });
@@ -763,6 +812,38 @@ test("a decided access request opens read only", async ({ page }) => {
     reviews(page).getByRole("button", { name: "Access to Sessions" }),
   ).toBeFocused();
 });
+test("an approved access request remains decided when its catalog refresh fails", async ({
+  page,
+}) => {
+  await start(page, owner);
+  await toReviews(page);
+  await openRow(page, /Access to Sessions/);
+  const dialog = accessDialog(page);
+  await flag(page, { holdRequestDecision: true });
+  await dialog.getByRole("button", { name: "Approve" }).click();
+  await expect(dialog.getByRole("button", { name: "Close" })).toBeDisabled();
+  await flag(page, { failCatalog: true });
+  await page.evaluate(() =>
+    (
+      window as unknown as { finishRequestDecision: () => void }
+    ).finishRequestDecision(),
+  );
+  await expect(dialog).toHaveCount(0);
+  const list = reviews(page);
+  await expect(list.getByRole("alert")).toHaveText("Couldn’t refresh reviews.");
+  await expect(
+    list.getByRole("button", { name: "Access to Sessions" }),
+  ).toHaveCount(0);
+  await list.getByRole("button", { name: "History" }).click();
+  await expect(
+    list.getByRole("row", { name: /Access to Sessions.*Approved/ }),
+  ).toBeVisible();
+  await openRow(page, /Access to Sessions/);
+  await expect(dialog).toContainText("Approved");
+  await expect(
+    dialog.getByRole("button", { name: /^(Approve|Reject)$/ }),
+  ).toHaveCount(0);
+});
 test("a member sees their own access request without a decision", async ({
   page,
 }) => {
@@ -941,6 +1022,155 @@ test("refresh asks the service again", async ({ page }) => {
   await reviews(page).getByRole("button", { name: "Refresh reviews" }).click();
   await expect.poll(calls).toBeGreaterThan(before);
   await expect(reviews(page).getByRole("row")).toHaveCount(8);
+});
+test("sync updates the Reviews count and the open list together", async ({
+  page,
+}) => {
+  await start(page, {});
+  await toReviews(page);
+  await expect(reviews(page).getByText("Nothing to review")).toBeVisible();
+
+  const pending = req("skill-1", "release-checklist");
+  await setReviewRequests(page, [pending]);
+  await expect(
+    page.getByRole("button", { name: "Reviews 1", exact: true }),
+  ).toBeVisible();
+  const actionable = reviews(page).getByRole("region", { name: "To decide 1" });
+  await expect(
+    actionable.getByRole("button", { name: "release-checklist" }),
+  ).toBeVisible();
+
+  await setReviewRequests(page, [{ ...pending, status: "approved" }]);
+  await expect(
+    page.getByRole("button", { name: "Reviews", exact: true }),
+  ).toBeVisible();
+  await expect(reviews(page).getByText("Nothing to review")).toBeVisible();
+});
+test("a failed sync refresh leaves a Retry button that restores the list", async ({
+  page,
+}) => {
+  await start(page, {});
+  await toReviews(page);
+  const list = reviews(page);
+  await expect(list.getByText("Nothing to review")).toBeVisible();
+
+  await flag(page, { failNextCatalog: true });
+  await setReviewRequests(page, [req("skill-1", "release-checklist")]);
+  const error = list.getByRole("alert");
+  await expect(error).toHaveText("Couldn’t refresh reviews.", {
+    timeout: 8000,
+  });
+  await expect(list.getByText("Nothing to review")).toHaveCount(0);
+  await list.getByRole("button", { name: "Retry", exact: true }).click();
+  await expect(
+    list.getByRole("button", { name: "release-checklist" }),
+  ).toBeVisible();
+  await expect(error).toHaveCount(0);
+});
+test("a policy conflict refreshes the review and keeps the explanation", async ({
+  page,
+}) => {
+  await start(page, {
+    requests: [req("skill-1", "release-checklist")],
+  });
+  await toReviews(page);
+  await openRow(page, /release-checklist/);
+  const approve = detail(page).getByRole("button", { name: "Approve" });
+  await expect(approve).toBeEnabled();
+  await flag(page, { serverPolicyRevision: 2 });
+  await approve.click();
+  await expect(detail(page).getByRole("alert")).toContainText(
+    "Permissions changed; refresh and review again",
+  );
+  await expect(info(page)).toContainText("Needs refresh");
+  await expect(approve).toHaveCount(0);
+});
+
+test("an acknowledged rejection supersedes a provisional stale status", async ({
+  page,
+}) => {
+  await start(page, {
+    requests: [req("skill-1", "release-checklist")],
+  });
+  await toReviews(page);
+  await openRow(page, /release-checklist/);
+  await flag(page, { holdRequestDecision: true });
+  const reject = detail(page).getByRole("button", { name: "Reject" });
+  await reject.click();
+  await expect(reject).toHaveAttribute("aria-busy", "true");
+
+  await page.evaluate(() => {
+    const w = window as unknown as {
+      __TAURI_INTERNALS__: {
+        invoke: (
+          command: string,
+          args: { action?: string },
+        ) => Promise<Record<string, unknown>>;
+      };
+    };
+    const invoke = w.__TAURI_INTERNALS__.invoke;
+    w.__TAURI_INTERNALS__.invoke = async (command, args) => {
+      const result = await invoke(command, args);
+      if (command === "snapshot" || args?.action === "catalog") {
+        const field = command === "snapshot" ? "reviewRequests" : "requests";
+        const requests = result[field] as Record<string, unknown>[];
+        return {
+          ...result,
+          [field]: requests.map((request) => ({
+            ...request,
+            status: "stale",
+            canReview: false,
+          })),
+        };
+      }
+      return result;
+    };
+  });
+  await expect(info(page)).toContainText("Needs refresh");
+  await flag(page, { failCatalog: true });
+  await page.evaluate(() =>
+    (
+      window as unknown as { finishRequestDecision: () => void }
+    ).finishRequestDecision(),
+  );
+  await expect(page.getByText("Rejected release-checklist")).toBeVisible();
+  const list = reviews(page);
+  await list.getByRole("button", { name: "History" }).click();
+  await expect(
+    list.getByRole("row", { name: /release-checklist.*Rejected/ }),
+  ).toBeVisible();
+});
+test("an access decision shows the service's role policy guidance", async ({
+  page,
+}) => {
+  const guidance =
+    "This project now uses role policies. Review the person's role in Settings instead of granting an individual exception. The pending request is retained.";
+  await start(page, owner);
+  await toReviews(page);
+  await openRow(page, /Access to Sessions/);
+  await flag(page, { decisionError: `409: ${guidance}` });
+  await accessDialog(page).getByRole("button", { name: "Approve" }).click();
+  await expect(accessDialog(page).getByRole("alert")).toHaveText(guidance);
+});
+test("an access decision retains its service error when the request becomes inaccessible", async ({
+  page,
+}) => {
+  const reason = "Review permission required";
+  await start(page, owner);
+  await toReviews(page);
+  await openRow(page, /Access to Sessions/);
+  await flag(page, {
+    decisionError: `403: ${reason}`,
+    removeRequestOnDecision: true,
+  });
+  await accessDialog(page).getByRole("button", { name: "Approve" }).click();
+  await expect(accessDialog(page)).toHaveCount(0);
+  await expect(
+    reviews(page).getByRole("button", { name: "Access to Sessions" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("alert").getByText(reason, { exact: true }),
+  ).toBeVisible();
 });
 test("a failed decision can be sent again from the page", async ({ page }) => {
   await start(page, {

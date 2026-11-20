@@ -1,11 +1,17 @@
 import { useSyncExternalStore } from "react";
+import type { ReviewRequest } from "@portable/protocol";
 
 export type Decision = "approve" | "reject";
+export interface DecisionFailure {
+  serviceRejected: boolean;
+  message: string;
+}
+
 export interface DecisionState {
   /** On its way to the service. */
   sending?: Decision;
-  /** The last attempt did not reach the service. */
-  unsent?: boolean;
+  failure?: DecisionFailure;
+  outcome?: Pick<ReviewRequest, "status" | "reviewer">;
 }
 
 /**
@@ -17,25 +23,33 @@ const decisions = new Map<string, DecisionState>();
 const listeners = new Set<() => void>();
 let version = 0;
 
-const key = (projectId: string, requestId: string) =>
-  `${projectId}\n${requestId}`;
+const key = (scope: string, requestId: string) => `${scope}\n${requestId}`;
 
-function change(id: string, state: DecisionState | null) {
-  if (state) decisions.set(id, state);
-  else decisions.delete(id);
+function change(id: string, state: DecisionState) {
+  decisions.set(id, state);
   version += 1;
   for (const listener of listeners) listener();
 }
 
 export const reviewDecisions = {
-  get: (projectId: string, requestId: string): DecisionState =>
-    decisions.get(key(projectId, requestId)) ?? {},
-  start: (projectId: string, requestId: string, decision: Decision) =>
-    change(key(projectId, requestId), { sending: decision }),
-  fail: (projectId: string, requestId: string) =>
-    change(key(projectId, requestId), { unsent: true }),
-  settle: (projectId: string, requestId: string) =>
-    change(key(projectId, requestId), null),
+  get: (scope: string, requestId: string): DecisionState =>
+    decisions.get(key(scope, requestId)) ?? {},
+  start: (scope: string, requestId: string, decision: Decision) =>
+    change(key(scope, requestId), { sending: decision }),
+  fail: (scope: string, requestId: string, failure: DecisionFailure) =>
+    change(key(scope, requestId), { failure }),
+  settle: (
+    scope: string,
+    requestId: string,
+    { status, reviewer }: ReviewRequest,
+  ) => change(key(scope, requestId), { outcome: { status, reviewer } }),
+  confirm: (scope: string, requests: ReviewRequest[]) => {
+    for (const { id, status } of requests) {
+      const entry = key(scope, id);
+      if (decisions.get(entry)?.outcome?.status === status)
+        decisions.delete(entry);
+    }
+  },
 };
 
 /** Re-renders when any decision starts, fails or settles. */
