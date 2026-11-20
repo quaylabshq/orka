@@ -263,11 +263,22 @@ pub fn launch_lock() -> Result<File> {
 }
 
 pub fn wait_for_lock(timeout: Duration) -> Result<File> {
+    wait_for_lock_unless(timeout, || false)
+}
+
+pub const LOCK_WAIT_CANCELLED: &str = "Cancelled while waiting for sync to finish.";
+
+/// Waits like [`wait_for_lock`] but gives up as soon as `cancelled` returns
+/// true, without taking the lock.
+pub fn wait_for_lock_unless(timeout: Duration, cancelled: impl Fn() -> bool) -> Result<File> {
     let waiting = lock_file("workspace-waiters.lock")?;
     FileExt::lock_shared(&waiting).map_err(|e| e.to_string())?;
     let file = lock_file("workspace.lock")?;
     let start = Instant::now();
     loop {
+        if cancelled() {
+            return Err(LOCK_WAIT_CANCELLED.into());
+        }
         match file.try_lock_exclusive() {
             Ok(()) => return Ok(file),
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {

@@ -9,6 +9,31 @@ async function choose(scope: Locator, label: string, value: string) {
   await scope.page().getByRole("option", { name: value, exact: true }).click();
 }
 
+test("opening Settings starts on Profile each time", async ({ page }) => {
+  const settings = await settingsFixture(page, { openSettings: false });
+  const entry = page.getByRole("button", { name: "Settings", exact: true });
+  await entry.click();
+  await expect(button(settings, "Profile")).toHaveAttribute(
+    "aria-current",
+    "page",
+  );
+  await expect(
+    settings.getByRole("textbox", { name: "Display name" }),
+  ).toHaveValue("Morgan Taylor");
+  await button(settings, "General").click();
+  await expect(button(settings, "General")).toHaveAttribute(
+    "aria-current",
+    "page",
+  );
+  await page.keyboard.press("Escape");
+  await expect(settings).toBeHidden();
+  await entry.click();
+  await expect(button(settings, "Profile")).toHaveAttribute(
+    "aria-current",
+    "page",
+  );
+});
+
 test("all nine destinations and no-project account and Mac settings stay usable", async ({
   page,
 }) => {
@@ -548,9 +573,10 @@ test("Save Discard and Stay navigation protect drafts, including a failed Save",
   await expect(guard.getByRole("alert")).toBeVisible();
   await expect(guard).toBeVisible();
   await guard.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(guard).toBeHidden();
   await expect(
     settings.getByRole("heading", { name: "Devices", exact: true }),
-  ).toBeVisible();
+  ).toBeFocused();
   await button(settings, "General").click();
   await name.fill("Discard this");
   await button(settings, "Profile").click();
@@ -558,6 +584,10 @@ test("Save Discard and Stay navigation protect drafts, including a failed Save",
     .getByRole("dialog", { name: "Save your changes?" })
     .getByRole("button", { name: "Discard", exact: true })
     .click();
+  await expect(guard).toBeHidden();
+  await expect(
+    settings.getByRole("heading", { name: "Profile", exact: true }),
+  ).toBeFocused();
   await button(settings, "General").click();
   await expect(name).toHaveValue("Keep this edit");
 });

@@ -423,6 +423,37 @@ fn sync_yields_to_waiting_imports_without_claiming_a_completed_sync() {
 }
 
 #[test]
+fn project_setup_wait_signals_sync_and_stops_when_cancelled() {
+    let _f = Fixture::new();
+    let held = crate::projects::lock().unwrap();
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let waiter = {
+        let cancel = cancel.clone();
+        std::thread::spawn(move || {
+            crate::projects::wait_for_lock_unless(std::time::Duration::from_secs(5), || {
+                cancel.load(std::sync::atomic::Ordering::SeqCst)
+            })
+            .map(drop)
+        })
+    };
+    while !crate::projects::foreground_waiting().unwrap() {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(
+        waiter.join().unwrap().unwrap_err(),
+        crate::projects::LOCK_WAIT_CANCELLED
+    );
+    // A cancelled wait never took the lock and no longer holds sync back.
+    assert!(crate::projects::try_lock().unwrap().is_none());
+    assert!(!crate::projects::foreground_waiting().unwrap());
+    drop(held);
+    let _lock =
+        crate::projects::wait_for_lock_unless(std::time::Duration::from_millis(20), || false)
+            .unwrap();
+}
+
+#[test]
 fn snapshot_handles_legacy_sync_without_review_requests() {
     let f = Fixture::new();
     let key = format!("requests:{}", f.project["id"].as_str().unwrap());

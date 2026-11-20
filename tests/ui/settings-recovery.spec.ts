@@ -384,6 +384,7 @@ test("closing to the menu bar discards Settings and protects edits after reopeni
   await button(dialog, "Discard").click();
   await expect(settings).toHaveCount(0);
   await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await button(settings, "General").click();
   await expect(name).toHaveValue(original);
   await name.fill("Protected after reopening");
   expect(

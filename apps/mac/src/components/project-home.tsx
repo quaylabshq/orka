@@ -18,6 +18,8 @@ import {
 } from "./use-session-titles.js";
 import { skillSummaryKey, useSkillSummaries } from "./use-skill-summaries.js";
 import { useMemberLabel } from "./member-names.js";
+import { EmptyState } from "./empty-state.js";
+import type { LocalKind } from "./use-local-resources.js";
 import "./project-home.css";
 
 const collections = [
@@ -58,6 +60,7 @@ export function ProjectHome({
   titleCache,
   project,
   resources,
+  pendingCounts,
   user,
   onNavigate,
   onOpen,
@@ -66,6 +69,7 @@ export function ProjectHome({
   titleCache: SessionTitleCache;
   project: Project;
   resources: Resource[];
+  pendingCounts: readonly LocalKind[];
   user?: string | null;
   onNavigate: (kind: Resource["kind"]) => void;
   onOpen: (resource: Resource) => void;
@@ -108,7 +112,9 @@ export function ProjectHome({
     <div className="project-home-overview">
       <section className="home-overview-totals" aria-label="Project totals">
         {collections.map(({ kind, label, icon: CollectionIcon }) => {
-          const count = items.filter((item) => item.kind === kind).length;
+          const count = pendingCounts.some((pending) => pending === kind)
+            ? null
+            : items.filter((item) => item.kind === kind).length;
           return (
             <button
               type="button"
@@ -125,7 +131,9 @@ export function ProjectHome({
                 />
                 {label}
               </span>
-              <strong>{count}</strong>
+              <strong aria-hidden={count === null ? true : undefined}>
+                {count ?? "—"}
+              </strong>
             </button>
           );
         })}
@@ -226,7 +234,13 @@ export function ProjectHome({
           </ul>
         ) : (
           <div className="home-updates-empty">
-            <h3>No updates yet</h3>
+            <EmptyState
+              illustration="updates"
+              size="compact"
+              heading="h3"
+              title="No updates yet"
+              description="Updated sessions, memories, plans, and skills for this project appear here."
+            />
           </div>
         )}
       </section>

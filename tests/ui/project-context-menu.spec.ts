@@ -50,6 +50,56 @@ test("project option context menus target the clicked project without selecting 
   await expect(picker).toContainText("Orka");
 });
 
+test("Source folders opens at its section from Profile and from General", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 900, height: 640 });
+  const settings = await settingsFixture(page);
+  await settings.getByRole("button", { name: "Profile", exact: true }).click();
+  for (const project of ["Website", "Orka"]) {
+    const menu = await projectMenu(page, project);
+    await menu.getByRole("menuitem", { name: "Source folders…" }).click();
+    await expect(
+      settings.getByRole("textbox", { name: "Project name", exact: true }),
+    ).toHaveValue(project);
+    await expect(
+      settings.getByRole("group", { name: `Project settings for ${project}` }),
+    ).toContainText(`Project · ${project}`);
+    const target = settings.getByRole("heading", { name: "Source Folder" });
+    await expect(target).toBeFocused();
+    await expect(target).toBeInViewport();
+  }
+});
+
+test("the Source folders shortcut preserves drafts through Stay and focuses the target after Discard", async ({
+  page,
+}) => {
+  const settings = await settingsFixture(page);
+  const name = settings.getByRole("textbox", {
+    name: "Project name",
+    exact: true,
+  });
+  await name.fill("Unsaved Orka name");
+  const menu = await projectMenu(page, "Website");
+  await menu.getByRole("menuitem", { name: "Source folders…" }).press("Enter");
+  const guard = page.getByRole("dialog", { name: "Save your changes?" });
+  await guard.getByRole("button", { name: "Stay", exact: true }).press("Enter");
+  await expect(name).toHaveValue("Unsaved Orka name");
+  await expect(
+    page.getByRole("combobox", { name: "Select project", exact: true }),
+  ).toBeFocused();
+
+  const retry = await projectMenu(page, "Website");
+  await retry.getByRole("menuitem", { name: "Source folders…" }).press("Enter");
+  await guard
+    .getByRole("button", { name: "Discard", exact: true })
+    .press("Enter");
+  await expect(name).toHaveValue("Website");
+  await expect(
+    settings.getByRole("heading", { name: "Source Folder" }),
+  ).toBeFocused();
+});
+
 test("source context and ellipsis menus share actions and bind native reveal to the chosen source", async ({
   page,
 }) => {

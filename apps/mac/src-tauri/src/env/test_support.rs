@@ -92,9 +92,10 @@ pub fn run() {
             let input: Value = serde_json::from_str(&line.map_err(|_| "Test input unavailable")?)
                 .map_err(|_| "Invalid test input")?;
             match input["action"].as_str().unwrap_or("") {
-                "cloud" => runtime.block_on(crate::commands::cloud_action(
+                "cloud" => runtime.block_on(crate::commands::run_cloud_action(
                     super::field(&input, "operation")?.into(),
                     input["input"].clone(),
+                    None,
                 )),
                 "project" => runtime.block_on(crate::projects::project_command(
                     input["operation"]

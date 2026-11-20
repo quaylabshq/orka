@@ -333,6 +333,8 @@ for (const viewport of [
         status = el.querySelector(".sync-status")!;
       return {
         filterHeight: filter.getBoundingClientRect().height,
+        filterWidth: filter.getBoundingClientRect().width,
+        filterChevron: filter.lastElementChild!.getBoundingClientRect().right,
         statusHeight: status.getBoundingClientRect().height,
         filterRadius: getComputedStyle(filter).borderRadius,
         statusRadius: getComputedStyle(status).borderRadius,
@@ -360,6 +362,30 @@ for (const viewport of [
       (await new AxeBuilder({ page }).include('[role="listbox"]').analyze())
         .violations,
     ).toEqual([]);
+    await page.keyboard.press("End");
+    await page.keyboard.press("Enter");
+    await expect(filter).toHaveText("orka-api");
+    const after = await filter.evaluate((control) => ({
+      right: control.getBoundingClientRect().right,
+      width: control.getBoundingClientRect().width,
+      chevron: control.lastElementChild!.getBoundingClientRect().right,
+    }));
+    expect(after).toEqual({
+      right: geometry.filterRight,
+      width: geometry.filterWidth,
+      chevron: geometry.filterChevron,
+    });
+    if (viewport.width === 900) {
+      await header
+        .getByRole("button", { name: "Collapse sidebar" })
+        .press("Enter");
+      await filter.click();
+      await page.getByRole("option", { name: longName, exact: true }).click();
+      await expect(filter).toHaveAttribute("title", longName);
+      expect((await filter.boundingBox())?.width).toBe(geometry.filterWidth);
+    }
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
+    await expect(filter).toHaveCount(0);
   });
 }
 

@@ -774,6 +774,11 @@ export async function settingsFixture(
   if (options.openSettings === false) return settings;
   await page.getByRole("button", { name: "Settings", exact: true }).click();
   await expect(settings).toBeVisible();
+  // Project settings specs use General as their starting point.
+  if (!options.noProjects)
+    await settings
+      .getByRole("button", { name: "General", exact: true })
+      .click();
   return settings;
 }
 export const settingsCalls = (page: Page) =>

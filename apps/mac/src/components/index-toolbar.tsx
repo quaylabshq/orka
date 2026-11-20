@@ -189,29 +189,31 @@ export function IndexToolbar({
           onChange={(source) => onChange({ ...filters, source })}
         />
       )}
-      {filtered && (
-        <span className="index-toolbar-count" role="status">
-          {count} {indexNoun(kind, count)}
-        </span>
-      )}
-      <SortMenu
-        options={(Object.keys(sortOptions) as IndexSort[])
-          .filter((sort) => sort !== "usage" || kind === "skill")
-          .map((sort) => ({ value: sort, ...sortOptions[sort] }))}
-        value={filters.sort}
-        onChange={(sort) => onChange({ ...filters, sort })}
-      />
-      {kind === "skill" && onRefreshUsage && (
-        <IconButton
-          icon={RefreshCwIcon}
-          size="sm"
-          variant="tertiary"
-          aria-label="Refresh skill usage"
-          title="Refresh skill usage"
-          disabled={usageLoading}
-          onClick={onRefreshUsage}
+      <div className="index-toolbar-actions">
+        {filtered && (
+          <span className="index-toolbar-count" role="status">
+            {count} {indexNoun(kind, count)}
+          </span>
+        )}
+        <SortMenu
+          options={(Object.keys(sortOptions) as IndexSort[])
+            .filter((sort) => sort !== "usage" || kind === "skill")
+            .map((sort) => ({ value: sort, ...sortOptions[sort] }))}
+          value={filters.sort}
+          onChange={(sort) => onChange({ ...filters, sort })}
         />
-      )}
+        {kind === "skill" && onRefreshUsage && (
+          <IconButton
+            icon={RefreshCwIcon}
+            size="sm"
+            variant="tertiary"
+            aria-label="Refresh skill usage"
+            title="Refresh skill usage"
+            disabled={usageLoading}
+            onClick={onRefreshUsage}
+          />
+        )}
+      </div>
     </div>
   );
 }

@@ -691,6 +691,30 @@
   .sync-menu-notification small {
     @apply text-xs text-muted;
   }
+  .sync-history-content {
+    @apply mt-3 flex flex-col items-start gap-3;
+  }
+  .sync-menu-notification .sync-history-list {
+    @apply m-0 w-full list-none rounded-lg border border-line bg-panel p-0;
+  }
+  .sync-history-list > li {
+    @apply grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-3 py-2.5;
+  }
+  .sync-history-list > li + li {
+    @apply border-t border-line;
+  }
+  .sync-history-list p {
+    @apply text-foreground;
+  }
+  .sync-history-status {
+    @apply capitalize;
+  }
+  .sync-menu .sync-history-action {
+    padding: calc(var(--control-padding-y) - 1px)
+      calc(var(--control-padding-x) - 1px);
+    border: 1px solid var(--border-default);
+    background: var(--surface-secondary);
+  }
   .sync-queue-row {
     @apply grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 py-2;
   }
@@ -788,8 +812,7 @@
   }
   .session-launcher {
     @apply inline-flex shrink-0 items-center;
-    border-radius: var(--radius-control);
-    background: var(--surface-tertiary);
+    gap: 1px;
   }
   .session-launcher .session-launcher-open {
     border-top-right-radius: 0;
@@ -804,6 +827,8 @@
   .session-launcher-popover {
     min-width: 240px;
     max-width: 340px;
+    max-height: var(--radix-popover-content-available-height);
+    overflow-y: auto;
   }
   .session-launcher-popover [role="menu"] {
     @apply flex flex-col gap-1;
@@ -930,14 +955,17 @@
   .resource-index-body {
     @apply min-h-0 flex-1 overflow-y-auto px-7 pb-7 pt-5;
   }
-  .resource-index-body > .empty {
-    @apply py-16;
-  }
   .resource-index--floating-action .resource-index-body {
     @apply pb-20;
   }
-  .global-skills-trigger {
+  .resource-index--floating-action .resource-index-action {
     @apply absolute bottom-5 right-7 z-[5];
+  }
+  .resource-index--inline-action .empty-state {
+    padding-bottom: 16px;
+  }
+  .resource-index--inline-action .resource-index-action {
+    @apply flex justify-center;
   }
   .modal.global-skills-modal {
     @apply flex w-[720px] flex-col overflow-hidden p-6;
@@ -1079,11 +1107,12 @@
   }
   /* Shared index toolbar: search, source filter, count, sort. */
   .index-toolbar {
-    @apply mb-4 flex shrink-0 items-center gap-3;
+    @apply mb-4 flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2;
   }
-  .index-toolbar .ui-field {
-    width: 240px;
-    flex-shrink: 0;
+  .index-toolbar > .ui-field {
+    @apply min-w-0;
+    flex: 1 1 144px;
+    max-width: 240px;
   }
   .index-toolbar .segmented-control .source-label {
     @apply gap-1;
@@ -1095,16 +1124,15 @@
   .index-toolbar .segmented-control .source-label > svg {
     @apply h-3.5 w-3.5;
   }
+  .index-toolbar-actions {
+    @apply ml-auto flex shrink-0 items-center gap-3;
+  }
   .index-toolbar-count {
-    @apply ml-auto whitespace-nowrap text-body-xs text-muted;
+    @apply whitespace-nowrap text-body-xs text-muted;
   }
   .index-toolbar .index-toolbar-sort {
     --control-gap: 4px;
     --control-padding-x: 10px;
-    margin-left: auto;
-  }
-  .index-toolbar-count + .index-toolbar-sort {
-    margin-left: 0;
   }
   .index-toolbar .index-toolbar-sort[data-state="open"] {
     background: var(--state-pressed);
@@ -1114,12 +1142,6 @@
   }
   .index-sort-option .index-sort-option-label {
     @apply min-w-0 flex-1 text-left;
-  }
-  .index-empty-filtered {
-    @apply flex flex-col items-center gap-2 py-16 text-center text-body-sm text-secondary;
-  }
-  .index-empty-filtered p {
-    @apply m-0;
   }
   .resource-table {
     --resource-meta-width: 128px;
@@ -1534,6 +1556,19 @@
   .modal .actions {
     @apply justify-end;
   }
+  .session-launch-heading {
+    @apply mb-2 flex items-center justify-between gap-3;
+  }
+  .modal.session-launch-dialog .session-launch-heading h2 {
+    @apply m-0 text-heading-xs;
+  }
+  .modal.session-launch-dialog .session-launch-title {
+    @apply mb-6 line-clamp-2 text-body-sm;
+    overflow-wrap: anywhere;
+  }
+  .modal.session-launch-dialog .session-launch-alert {
+    color: var(--red-text);
+  }
   .modal.create-project-modal {
     @apply w-[520px] overflow-hidden border-0 p-6;
     border-radius: var(--radius-overlay);
@@ -1578,6 +1613,12 @@
   }
   .change-source-folder {
     @apply w-full justify-start rounded-none;
+  }
+  .create-project-footer .create-project-status {
+    @apply m-0 min-w-0 flex-1 text-body-xs text-secondary;
+  }
+  .setup-error.create-project-connection-error {
+    @apply mt-2 max-h-24 shrink-0 overflow-y-auto;
   }
   .create-project-footer {
     @apply mt-4 flex shrink-0 items-center justify-end gap-4;
@@ -1647,8 +1688,8 @@
   .create-project-footer .ui-button--primary {
     border-radius: var(--radius-control);
   }
-  .setup-symbol {
-    @apply mb-5 flex h-11 w-11 items-center justify-center rounded-xl border border-line bg-raised text-foreground;
+  .create-project-submit {
+    min-inline-size: 10rem;
   }
   .setup-error {
     @apply mt-5 flex items-start gap-2.5 rounded-md border border-strong bg-raised p-3 text-body-xs;
@@ -1658,16 +1699,7 @@
     @apply mt-0.5;
   }
   .project-empty {
-    @apply flex min-h-0 flex-1 flex-col items-center justify-center overflow-y-auto px-8 py-8 text-center;
-  }
-  .project-empty h2 {
-    @apply mb-2 text-heading-sm;
-  }
-  .project-empty > p {
-    @apply max-w-sm text-sm text-secondary;
-  }
-  .project-empty .actions {
-    @apply mt-6 justify-center;
+    @apply flex min-h-0 flex-1 flex-col overflow-y-auto px-8 py-8;
   }
   .folder-connection {
     @apply mx-7 my-4 flex shrink-0 items-start gap-3 rounded-lg border border-strong bg-panel p-4;
@@ -1745,15 +1777,8 @@
     --resource-meta-width: 100px;
     --resource-cell-padding: 12px;
   }
-  /* Compact toolbar: a 200px search and no count; the sort keeps the right edge. */
-  .index-toolbar .ui-field {
-    width: 200px;
-  }
-  .index-toolbar-count {
-    display: none;
-  }
-  .index-toolbar .index-toolbar-sort {
-    margin-left: auto;
+  .index-toolbar > .ui-field {
+    max-width: 200px;
   }
 }
 
@@ -2312,8 +2337,10 @@
   color: var(--text-primary);
 }
 .workspace-header .workspace-repository-filter {
-  min-width: 0;
-  max-width: 200px;
+  width: 200px;
+}
+.workspace-repository-filter > span {
+  flex: 1;
 }
 .repository-select-trigger > svg {
   flex-shrink: 0;

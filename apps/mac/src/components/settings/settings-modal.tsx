@@ -2,6 +2,7 @@ import {
   forwardRef,
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useRef,
   useState,
 } from "react";
@@ -40,11 +41,25 @@ export interface SettingsNavigationHandle {
   ) => void;
   requestSection: (section: SettingsSection) => void;
   requestProject: (projectId: string, action: () => void) => void;
+  requestProjectSection: (
+    projectId: string,
+    section: SettingsSection,
+    onGuardCloseAutoFocus: (accepted: boolean) => void,
+  ) => void;
 }
 type Destination =
   { section: SettingsSection; projectId: string } | (() => void) | "close";
 const normalized = (section: SettingsSection) =>
   section === "folder" || section === "sharing" ? "general" : section;
+function focusSection(panel: HTMLDivElement | null, section: SettingsSection) {
+  if (section === "folder" || section === "sharing") {
+    const anchor = panel?.querySelector<HTMLElement>(`#settings-${section}`);
+    anchor?.scrollIntoView({ block: "start" });
+    anchor?.querySelector("h3")?.focus({ preventScroll: true });
+  } else {
+    panel?.querySelector("h2")?.focus();
+  }
+}
 const syncDraft = (state: Snapshot) => ({
   minutes: state.config ? String(state.config.syncMinutes ?? 15) : "",
   background: state.background,
@@ -70,7 +85,7 @@ export const SettingsModal = forwardRef<
     state,
     updates,
     initialProjectId,
-    initialSection = "general",
+    initialSection = "account",
     onSectionChange,
     busy: workspaceBusy,
     run: workspaceRun,
@@ -111,6 +126,13 @@ export const SettingsModal = forwardRef<
   const [serviceDirty, setServiceDirty] = useState(false),
     [draftVersion, setDraftVersion] = useState(0);
   const [pending, setPending] = useState<Destination | null>(null);
+  const [focusTarget, setFocusTarget] = useState<{
+    section: SettingsSection;
+  } | null>(() =>
+    initialSection === "folder" || initialSection === "sharing"
+      ? { section: initialSection }
+      : null,
+  );
   const guardCloseAutoFocus = useRef<(() => void) | undefined>(undefined);
   const [confirmation, setConfirmation] = useState<{
     action: "disconnect" | "remove-source" | "signout";
@@ -134,12 +156,9 @@ export const SettingsModal = forwardRef<
   useEffect(() => {
     forgetShapes();
   }, [projectId]);
-  useEffect(() => {
-    if (initialSection === "folder" || initialSection === "sharing")
-      document
-        .getElementById(`settings-${initialSection}`)
-        ?.scrollIntoView({ block: "start" });
-  }, [initialSection]);
+  useLayoutEffect(() => {
+    if (focusTarget) focusSection(heading.current, focusTarget.section);
+  }, [focusTarget]);
   const sharingDirty = Object.keys(sharing).some(
     (key) =>
       sharing[key as keyof typeof sharing] !==
@@ -236,6 +255,13 @@ export const SettingsModal = forwardRef<
     setFolderError("");
     setNotice("");
   };
+  const selectSection = (id: string, next: SettingsSection) => {
+    reset(id);
+    setProjectId(id);
+    setSection(normalized(next));
+    onSectionChange?.(normalized(next));
+    setFocusTarget({ section: next });
+  };
   const navigate = (destination: Destination) => {
     setPending(null);
     editor.current?.discard();
@@ -247,13 +273,10 @@ export const SettingsModal = forwardRef<
       destination();
       return;
     }
-    reset(destination.projectId);
-    setProjectId(destination.projectId);
-    setSection(normalized(destination.section));
-    onSectionChange?.(normalized(destination.section));
-    requestAnimationFrame(() =>
-      heading.current?.querySelector<HTMLHeadingElement>("h2")?.focus(),
-    );
+    if (pending && !guardCloseAutoFocus.current)
+      guardCloseAutoFocus.current = () =>
+        focusSection(heading.current, destination.section);
+    selectSection(destination.projectId, destination.section);
   };
   const request = (destination: Destination, onGuardClose?: () => void) => {
     if (locked.current || pending || confirmation) return;
@@ -262,25 +285,32 @@ export const SettingsModal = forwardRef<
       setPending(() => destination);
     } else navigate(destination);
   };
+  const requestNavigation: SettingsNavigationHandle["requestExit"] = (
+    action,
+    onGuardClose,
+  ) => {
+    let accepted = false;
+    request(
+      () => {
+        accepted = true;
+        action();
+      },
+      onGuardClose && (() => onGuardClose(accepted)),
+    );
+  };
   useImperativeHandle(ref, () => ({
-    requestExit: (action, onGuardClose) => {
-      let accepted = false;
-      request(
-        () => {
-          accepted = true;
-          action();
-        },
-        onGuardClose && (() => onGuardClose(accepted)),
-      );
-    },
+    requestExit: requestNavigation,
     requestProject: (id, action) =>
       request(() => {
         reset(id);
         setProjectId(id);
         action();
       }),
+    requestProjectSection: (id, next, onGuardClose) =>
+      requestNavigation(() => selectSection(id, next), onGuardClose),
     requestSection: (next) => {
       if (normalized(next) !== section) request({ section: next, projectId });
+      else if (next !== section) setFocusTarget({ section: next });
     },
   }));
   const exitGuard = useRef({ dirty, request, close: onClose });
@@ -698,7 +728,7 @@ export const SettingsModal = forwardRef<
                       </div>
                     )}
                     <section id="settings-folder" aria-label="Source folders">
-                      <h3>Source Folder</h3>
+                      <h3 tabIndex={-1}>Source Folder</h3>
                       <SettingsFolder
                         project={project}
                         state={state}
@@ -729,7 +759,7 @@ export const SettingsModal = forwardRef<
                       {folderError && <p role="alert">{folderError}</p>}
                     </section>
                     <section id="settings-sharing" aria-label="Sharing">
-                      <h3>Sharing</h3>
+                      <h3 tabIndex={-1}>Sharing</h3>
                       <ProjectSharingChoices
                         context="settings"
                         value={sharing}

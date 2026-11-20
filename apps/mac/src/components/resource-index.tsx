@@ -1,18 +1,19 @@
-import { RefreshCwIcon, TriangleAlertIcon } from "lucide-react";
+import { LockIcon, RefreshCwIcon, TriangleAlertIcon } from "lucide-react";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { ProjectResource as Resource } from "../types.js";
 import { SegmentedControl } from "./segmented-control.js";
 import { IconButton } from "./icon-button.js";
 import { Button } from "./button.js";
 import { Icon } from "./icon.js";
+import { EmptyState } from "./empty-state.js";
 import { useToasts } from "./toasts.js";
 import {
   IndexToolbar,
   applyIndexFilters,
   collectionNoun,
   defaultIndexFilters,
-  indexNoun,
   type IndexFilters,
+  type OwnershipFilter,
 } from "./index-toolbar.js";
 import { ResourceTable } from "./resource-table.js";
 import { LoadingRegion } from "./loading-region.js";
@@ -88,6 +89,7 @@ export function ResourceIndex({
   const memberName = useMemberLabel(user);
   const { notify } = useToasts();
   const discoveryErrors = discoveryResult?.errors ?? [];
+  const discoveryFailed = !resources.length && discoveryErrors.length > 0;
   const [refreshRequest, setRefreshRequest] = useState<{
     result: typeof discoveryResult;
   } | null>(null);
@@ -135,6 +137,28 @@ export function ResourceIndex({
     filters.source !== "all" ||
     (filters.repository && filters.repository !== "all"),
   );
+  const inlineAction = Boolean(
+    floatingAction &&
+    !resources.length &&
+    !filtered &&
+    !discovering &&
+    !discoveryErrors.length &&
+    !noAccess &&
+    connected,
+  );
+  const clearFilters = () => {
+    onFilters({
+      ...defaultIndexFilters,
+      ownership,
+      sort: filters.sort,
+    });
+    const focusTarget = resources.length
+      ? root.current?.querySelector<HTMLElement>('input[type="search"]')
+      : root.current?.querySelector<HTMLElement>(
+          '.resource-ownership-tabs [aria-pressed="true"]',
+        );
+    (focusTarget ?? root.current)?.focus();
+  };
   useEffect(() => {
     if (!focusResource) return;
     const target =
@@ -146,9 +170,10 @@ export function ResourceIndex({
   }, [focusResource, onFocusHandled]);
   return (
     <section
-      className={`resource-index${floatingAction ? " resource-index--floating-action" : ""}`}
+      className={`resource-index${floatingAction ? (inlineAction ? " resource-index--inline-action" : " resource-index--floating-action") : ""}`}
       aria-label={collectionNoun(kind)}
       ref={root}
+      tabIndex={-1}
     >
       {status}
       {kind === "skill" && skillUsage && (
@@ -199,11 +224,15 @@ export function ResourceIndex({
                   ? `Checking local ${collectionNoun(kind)}…`
                   : refreshFailed
                     ? `Couldn’t refresh local ${collectionNoun(kind)}`
-                    : `Some local ${collectionNoun(kind)} couldn’t be checked`}
+                    : discoveryFailed
+                      ? `Couldn’t check local ${collectionNoun(kind)}`
+                      : `Some local ${collectionNoun(kind)} couldn’t be checked`}
               </p>
-              <p className="resource-discovery-message">
-                Previously discovered items are still available.
-              </p>
+              {resources.length > 0 && (
+                <p className="resource-discovery-message">
+                  Previously discovered items are still available.
+                </p>
+              )}
               {!refreshing &&
                 discoveryErrors.map((error, index) => (
                   <p className="resource-discovery-message" key={index}>
@@ -246,42 +275,28 @@ export function ResourceIndex({
           >
             <div />
           </LoadingRegion>
-        ) : !visible.length &&
-          (!filtered ||
-            (!resources.length &&
-              (discovering || discoveryErrors.length > 0))) ? (
-          <p className="empty" role="status">
-            {discoveryErrors.length > 0 && !resources.length
-              ? `Local ${collectionNoun(kind)} could not be checked.`
-              : noAccess && ownership === "shared"
-                ? `Access to shared ${collectionNoun(kind)} is restricted.`
-                : ownership === "mine"
-                  ? `No ${collectionNoun(kind)} of your own yet.`
-                  : ownership === "shared"
-                    ? `No ${collectionNoun(kind)} have been shared with you yet.`
-                    : noAccess
-                      ? `Access to shared ${collectionNoun(kind)} is restricted.`
-                      : connected
-                        ? `No ${collectionNoun(kind)} yet.`
-                        : "Connect a folder to get started."}
-          </p>
-        ) : !visible.length ? (
-          <div className="index-empty-filtered" role="status">
-            <p>No {indexNoun(kind, 0)} match</p>
-            <Button
-              size="sm"
-              variant="tertiary"
-              onClick={() =>
-                onFilters({
-                  ...defaultIndexFilters,
-                  ownership,
-                  sort: filters.sort,
-                })
+        ) : discoveryFailed ? null : !visible.length ? (
+          filtered ? (
+            <EmptyState
+              illustration="search"
+              size="compact"
+              title={`No ${collectionNoun(kind)} match`}
+              description="Try a different search or clear your filters."
+              announce
+              actions={
+                <Button size="sm" variant="secondary" onClick={clearFilters}>
+                  Clear filters
+                </Button>
               }
-            >
-              Clear filters
-            </Button>
-          </div>
+            />
+          ) : (
+            <ResourceEmptyState
+              kind={kind}
+              ownership={ownership}
+              connected={connected}
+              restricted={noAccess && ownership !== "mine"}
+            />
+          )
         ) : kind === "skill" ? (
           <SkillGrid
             skills={visible}
@@ -312,8 +327,64 @@ export function ResourceIndex({
             onOpen={onOpen}
           />
         )}
+        {floatingAction && (
+          <div className="resource-index-action">{floatingAction}</div>
+        )}
       </div>
-      {floatingAction}
     </section>
+  );
+}
+
+const emptyDescriptions: Record<Resource["kind"], string> = {
+  session: "Start a chat in Claude Code or Codex from a connected folder.",
+  memory: "Project instructions and memories found by Orka appear here.",
+  plan: "Plans saved by your coding tools for this project appear here.",
+  skill: "Import a skill from Codex or Claude.",
+};
+
+function ResourceEmptyState({
+  kind,
+  ownership,
+  connected,
+  restricted,
+}: {
+  kind: Resource["kind"];
+  ownership: OwnershipFilter;
+  connected: boolean;
+  restricted?: boolean;
+}) {
+  const noun = collectionNoun(kind);
+  if (restricted) {
+    return (
+      <EmptyState
+        title={`Access to shared ${noun} is restricted.`}
+        icon={LockIcon}
+        size="compact"
+        announce
+      />
+    );
+  }
+  if (ownership === "shared") {
+    return (
+      <EmptyState
+        title={`No ${noun} shared with you yet`}
+        illustration={kind}
+        announce
+      />
+    );
+  }
+  return (
+    <EmptyState
+      title={
+        ownership === "mine" ? `No ${noun} of your own yet` : `No ${noun} yet`
+      }
+      description={
+        connected
+          ? emptyDescriptions[kind]
+          : "Items from connected folders appear here."
+      }
+      illustration={kind}
+      announce
+    />
   );
 }

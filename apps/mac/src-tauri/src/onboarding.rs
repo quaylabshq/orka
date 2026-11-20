@@ -380,7 +380,8 @@ async fn connect(input: Value, expected: Option<(&str, &str)>) -> Result<Value> 
             write_draft(&saved)?;
             request["requestId"] = json!(request_id);
         }
-        let result = commands::cloud_action_scoped("create".into(), request, Some(scope)).await?;
+        let result =
+            commands::cloud_action_scoped("create".into(), request, Some(scope), None).await?;
         let id = result["id"]
             .as_str()
             .ok_or("The service did not return a project")?

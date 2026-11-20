@@ -9,6 +9,7 @@ import {
   PlugIcon,
 } from "lucide-react";
 import type { Project } from "../../types.js";
+import { projectLabel } from "../project-navigation.js";
 
 export const settingsSections = {
   account: { label: "Profile", icon: UserIcon },
@@ -40,7 +41,8 @@ export function SettingsNavigation({
   section: SettingsSection;
   onSection: (section: SettingsSection) => void;
 }) {
-  const selected = projects.some((project) => project.id === projectId);
+  const selected = projects.find((project) => project.id === projectId);
+  const projectName = selected ? projectLabel(selected) : null;
   return (
     <aside className="settings-navigation">
       <nav aria-label="Settings sections">
@@ -48,10 +50,23 @@ export function SettingsNavigation({
           <div
             className="settings-nav-group"
             role="group"
-            aria-label={group}
+            aria-label={
+              group === "Project" && projectName
+                ? `Project settings for ${projectName}`
+                : group
+            }
             key={group}
           >
-            <p className="settings-nav-label">{group}</p>
+            <p
+              className="settings-nav-label"
+              title={
+                group === "Project" ? (projectName ?? undefined) : undefined
+              }
+            >
+              {group === "Project" && projectName
+                ? `Project · ${projectName}`
+                : group}
+            </p>
             {sections.map((id) => {
               const { label, icon: Icon } = settingsSections[id];
               return (

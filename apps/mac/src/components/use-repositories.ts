@@ -6,8 +6,10 @@ import {
   useState,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { useQuery } from "@tanstack/react-query";
 import type { Project, Snapshot } from "../types.js";
 import { activeSources } from "./project-sources.js";
+import { useWorkspaceScope } from "./workspace-cache.js";
 
 export interface GitHubStatus {
   connected: boolean;
@@ -104,8 +106,28 @@ export function useRepositories(
   refresh: () => Promise<unknown>,
 ) {
   const call = useRepositoryCommand(state);
-  const [enabled, setEnabled] = useState(false);
-  const [status, setStatus] = useState<GitHubStatus | null>(null);
+  const scope = useWorkspaceScope();
+  const capabilities = useQuery({
+    queryKey: ["repository-capabilities", scope],
+    queryFn: async () =>
+      (await call<{ enabled: boolean }>("capabilities")).enabled === true,
+  });
+  const enabled = capabilities.data === true;
+  const {
+    data,
+    isPending: statusPending,
+    error: statusError,
+    refetch,
+  } = useQuery({
+    queryKey: ["repository-account", scope],
+    queryFn: () => call<GitHubStatus>("status"),
+    enabled,
+    refetchOnMount: "always",
+  });
+  const status = data ?? null;
+  const reloadStatus = useCallback(async () => {
+    await refetch({ throwOnError: true });
+  }, [refetch]);
   const [authorization, setAuthorization] = useState<Authorization | null>(
     null,
   );
@@ -145,27 +167,9 @@ export function useRepositories(
     }
   };
   useEffect(() => {
-    let canceled = false;
-    setEnabled(false);
-    setStatus(null);
     setAuthorization(null);
     setAuthorizationError("");
     setAuthorizationConnectedVersion(0);
-    void call<{ enabled: boolean }>("capabilities")
-      .then(async (caps) => {
-        if (!caps.enabled || canceled) return;
-        setEnabled(true);
-        try {
-          const value = await call<GitHubStatus>("status");
-          if (!canceled) setStatus(value);
-        } catch (error) {
-          if (!canceled) setError(String(error));
-        }
-      })
-      .catch(() => {});
-    return () => {
-      canceled = true;
-    };
   }, [call]);
   const bindings = JSON.stringify(
     activeSources(project.sources)
@@ -258,9 +262,8 @@ export function useRepositories(
           return;
         }
         if (result.connected) {
-          const value = await call<GitHubStatus>("status");
+          await reloadStatus();
           if (!canceled) {
-            setStatus(value);
             setAccess({});
             setAccessVersion((v) => v + 1);
             setAuthorizationError("");
@@ -301,7 +304,7 @@ export function useRepositories(
       authorizationPoll.current = null;
       window.removeEventListener("focus", check);
     };
-  }, [authorization, call]);
+  }, [authorization, call, reloadStatus]);
   const activeJobs = jobs.some((job) =>
     ["queued", "cloning", "connecting"].includes(job.state),
   );
@@ -379,7 +382,7 @@ export function useRepositories(
   };
   const disconnectGitHub = async () => {
     await call("disconnect");
-    setStatus(await call<GitHubStatus>("status"));
+    await reloadStatus();
     setAccess({});
     setAccessVersion((v) => v + 1);
   };
@@ -404,11 +407,12 @@ export function useRepositories(
     call,
     enabled,
     status,
+    statusPending,
     authorization,
     authorizationError,
     authorizationConnectedVersion,
     busy,
-    error,
+    error: error || (!status && statusError ? String(statusError) : ""),
     access,
     jobs,
     run,
@@ -417,10 +421,7 @@ export function useRepositories(
     openGitHub,
     startClone,
     refresh,
-    reloadStatus: async () => {
-      const value = await call<GitHubStatus>("status");
-      if (alive.current) setStatus(value);
-    },
+    reloadStatus,
     checkAuthorization: () =>
       authorizationPoll.current?.() ?? Promise.resolve(),
     cancelAuthorization: async () => {

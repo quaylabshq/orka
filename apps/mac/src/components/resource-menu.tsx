@@ -15,6 +15,7 @@ import {
   RefreshCwIcon,
   TrashIcon,
   UploadIcon,
+  XIcon,
 } from "lucide-react";
 import React, {
   createContext,
@@ -39,6 +40,7 @@ import {
 import { Overlay } from "./overlay.js";
 import { Button } from "./button.js";
 import { Icon } from "./icon.js";
+import { IconButton } from "./icon-button.js";
 import { MarkdownMarkIcon } from "./icons.js";
 import { SessionLauncher } from "./session-launcher.js";
 import type { ResourceView } from "./use-resource-view.js";
@@ -208,6 +210,13 @@ export function ResourceMenuProvider({
             onClose={() => setRequest(null)}
             onRefresh={props.onRefresh}
             onNotice={props.onNotice}
+          />
+        ) : request.kind === "launch" ? (
+          <SessionLaunchDialog
+            key={`${props.scope}:launch:${identity(request.resource)}`}
+            resource={request.resource}
+            context={context}
+            onClose={() => setRequest(null)}
           />
         ) : (
           <ResourceCommandDialog
@@ -589,6 +598,81 @@ export function ResourceMenuButton({
   );
 }
 
+function restoreResourceFocus(event: Event, resourceId: string) {
+  event.preventDefault();
+  document
+    .querySelector<HTMLElement>(
+      `button[data-resource-id="${CSS.escape(resourceId)}"]`,
+    )
+    ?.focus();
+}
+
+function SessionLaunchDialog({
+  resource,
+  context,
+  onClose,
+}: {
+  resource: ProjectResource;
+  context: ResourceMenuContextValue;
+  onClose: () => void;
+}) {
+  const title = "Continue or fork session";
+  const project = context.state.projects.find(
+    (item) => item.id === resource.projectId,
+  );
+  const stale = !context.isCurrent(resource) || !project;
+  const actions = useResourceActions({
+    act: context.act,
+    resource,
+    user: context.state.user,
+    onNotice: context.onNotice,
+    scope: context.scope,
+  });
+  return (
+    <Overlay
+      open
+      title={title}
+      className="session-launch-dialog"
+      onClose={onClose}
+      onCloseAutoFocus={(event) =>
+        restoreResourceFocus(event, resource.resourceId)
+      }
+    >
+      <div className="session-launch-heading">
+        <h2>{title}</h2>
+        <IconButton
+          icon={XIcon}
+          variant="tertiary"
+          size="sm"
+          aria-label="Close session launcher"
+          onClick={onClose}
+        />
+      </div>
+      <p className="session-launch-title" title={resource.title}>
+        {resource.title}
+      </p>
+      {stale && (
+        <p className="session-launch-alert" role="alert">
+          This session or account changed. Reopen the launcher from the
+          session’s actions.
+        </p>
+      )}
+      {project && (
+        <div className="actions">
+          <SessionLauncher
+            resource={resource}
+            project={project}
+            scope={context.scope}
+            busy={context.busy || stale}
+            actions={actions}
+            onError={context.onError}
+          />
+        </div>
+      )}
+    </Overlay>
+  );
+}
+
 interface CommandPreview {
   previewToken: string;
   title: string;
@@ -617,7 +701,7 @@ function ResourceCommandDialog({
   context,
   onClose,
 }: {
-  kind: "share" | "delete" | "launch";
+  kind: "share" | "delete";
   resource: ProjectResource;
   context: ResourceMenuContextValue;
   onClose: () => void;
@@ -627,19 +711,12 @@ function ResourceCommandDialog({
   );
   const [preview, setPreview] = useState<CommandPreview | null>(null);
   const [error, setError] = useState("");
-  const [loading, setLoading] = useState(kind !== "launch");
+  const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<SyncProgress | null>(null);
   const [attempt, setAttempt] = useState(0);
   const active = useRef(true);
   const workspace = useRef<HTMLDivElement>(null);
-  const actions = useResourceActions({
-    act: context.act,
-    resource,
-    user: context.state.user,
-    onNotice: context.onNotice,
-    scope: context.scope,
-  });
   const stale = !context.isCurrent(resource) || !project;
   const current = useRef(true);
   current.current = !stale;
@@ -663,7 +740,6 @@ function ResourceCommandDialog({
     };
   }, []);
   useEffect(() => {
-    if (kind === "launch") return;
     let canceled = false;
     setLoading(true);
     setError("");
@@ -748,13 +824,11 @@ function ResourceCommandDialog({
     }
   };
   const title =
-    kind === "launch"
-      ? "Continue or fork session"
-      : kind === "share"
-        ? "Share snapshot with project"
-        : resource.kind === "session"
-          ? "Remove from history"
-          : `Delete shared ${resource.kind}`;
+    kind === "share"
+      ? "Share snapshot with project"
+      : resource.kind === "session"
+        ? "Remove from history"
+        : `Delete shared ${resource.kind}`;
   const total = progress?.total;
   const completed =
     total && total > 0 && progress?.completed !== undefined
@@ -776,14 +850,9 @@ function ResourceCommandDialog({
         if (!busy) onClose();
       }}
       className="resource-command-dialog"
-      onCloseAutoFocus={(event) => {
-        event.preventDefault();
-        document
-          .querySelector<HTMLElement>(
-            `button[data-resource-id="${CSS.escape(resource.resourceId)}"]`,
-          )
-          ?.focus();
-      }}
+      onCloseAutoFocus={(event) =>
+        restoreResourceFocus(event, resource.resourceId)
+      }
     >
       <h2 title={title}>{title}</h2>
       <section className="resource-command-item" aria-label="Selected item">
@@ -836,132 +905,117 @@ function ResourceCommandDialog({
           </p>
         )}
         {error && <p role="alert">{error}</p>}
-        {kind === "launch" && project ? (
-          <SessionLauncher
-            resource={resource}
-            project={project}
-            scope={context.scope}
-            busy={context.busy || stale}
-            actions={actions}
-            onError={context.onError}
-          />
+        {(loading || busy) && !stale && progress ? (
+          <section
+            className="resource-command-progress"
+            aria-label="Item action progress"
+          >
+            <div
+              className="resource-command-progress-status"
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+            >
+              <Icon
+                icon={RefreshCwIcon}
+                size="sm"
+                className="sync-activity-icon"
+              />
+              <div>
+                <strong title={progress.label}>{progress.label}</strong>
+                {progress.detail && (
+                  <p title={progress.detail}>{progress.detail}</p>
+                )}
+              </div>
+              <span
+                className="resource-command-progress-count"
+                title={progressCount}
+              >
+                {progressCount}
+              </span>
+            </div>
+            <div
+              className="resource-command-progress-track"
+              data-indeterminate={percentage === null || undefined}
+              role="progressbar"
+              aria-label={progress.label}
+              aria-valuemin={0}
+              aria-valuemax={
+                completed === null ? undefined : (total ?? undefined)
+              }
+              aria-valuenow={completed ?? undefined}
+              aria-valuetext={progressCount}
+            >
+              <span
+                style={
+                  percentage === null ? undefined : { width: `${percentage}%` }
+                }
+              />
+            </div>
+          </section>
         ) : (
           <>
-            {(loading || busy) && !stale && progress ? (
+            {preview?.files && (
               <section
-                className="resource-command-progress"
-                aria-label="Item action progress"
+                className="resource-command-manifest"
+                aria-label="Snapshot contents"
               >
-                <div
-                  className="resource-command-progress-status"
-                  role="status"
-                  aria-live="polite"
-                  aria-atomic="true"
-                >
-                  <Icon
-                    icon={RefreshCwIcon}
-                    size="sm"
-                    className="sync-activity-icon"
-                  />
-                  <div>
-                    <strong title={progress.label}>{progress.label}</strong>
-                    {progress.detail && (
-                      <p title={progress.detail}>{progress.detail}</p>
+                <div className="resource-command-manifest-heading">
+                  <h3>Snapshot files</h3>
+                  <span>
+                    {preview.files.length}{" "}
+                    {preview.files.length === 1 ? "file" : "files"} ·{" "}
+                    {fileSize(
+                      preview.totalBytes ??
+                        preview.files.reduce(
+                          (bytes, file) => bytes + file.size,
+                          0,
+                        ),
                     )}
-                  </div>
-                  <span
-                    className="resource-command-progress-count"
-                    title={progressCount}
-                  >
-                    {progressCount}
                   </span>
                 </div>
-                <div
-                  className="resource-command-progress-track"
-                  data-indeterminate={percentage === null || undefined}
-                  role="progressbar"
-                  aria-label={progress.label}
-                  aria-valuemin={0}
-                  aria-valuemax={
-                    completed === null ? undefined : (total ?? undefined)
-                  }
-                  aria-valuenow={completed ?? undefined}
-                  aria-valuetext={progressCount}
+                <ul
+                  className="resource-command-files"
+                  aria-label="Snapshot files"
+                  tabIndex={0}
                 >
-                  <span
-                    style={
-                      percentage === null
-                        ? undefined
-                        : { width: `${percentage}%` }
-                    }
-                  />
-                </div>
-              </section>
-            ) : (
-              <>
-                {preview?.files && (
-                  <section
-                    className="resource-command-manifest"
-                    aria-label="Snapshot contents"
-                  >
-                    <div className="resource-command-manifest-heading">
-                      <h3>Snapshot files</h3>
-                      <span>
-                        {preview.files.length}{" "}
-                        {preview.files.length === 1 ? "file" : "files"} ·{" "}
-                        {fileSize(
-                          preview.totalBytes ??
-                            preview.files.reduce(
-                              (bytes, file) => bytes + file.size,
-                              0,
-                            ),
-                        )}
+                  {preview.files.map((file) => (
+                    <li key={file.path}>
+                      <Icon icon={FileIcon} size="xs" variant="secondary" />
+                      <span
+                        className="resource-command-filename"
+                        title={file.path}
+                      >
+                        {file.path}
                       </span>
-                    </div>
-                    <ul
-                      className="resource-command-files"
-                      aria-label="Snapshot files"
-                      tabIndex={0}
-                    >
-                      {preview.files.map((file) => (
-                        <li key={file.path}>
-                          <Icon icon={FileIcon} size="xs" variant="secondary" />
-                          <span
-                            className="resource-command-filename"
-                            title={file.path}
-                          >
-                            {file.path}
-                          </span>
-                          <span
-                            className="resource-command-filesize"
-                            title={`${file.size.toLocaleString()} bytes`}
-                          >
-                            {fileSize(file.size)}
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
-                  </section>
-                )}
-                {kind === "delete" && !!preview?.paths?.length && (
-                  <section
-                    className="resource-command-paths"
-                    aria-label="Local copies affected"
-                  >
-                    <h3>Local copies affected</h3>
-                    <ul tabIndex={0}>
-                      {preview.paths.map((path) => (
-                        <li key={path}>{path}</li>
-                      ))}
-                    </ul>
-                  </section>
-                )}
-              </>
+                      <span
+                        className="resource-command-filesize"
+                        title={`${file.size.toLocaleString()} bytes`}
+                      >
+                        {fileSize(file.size)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </section>
             )}
-            {preview?.note && (
-              <p className="resource-command-note">{preview.note}</p>
+            {kind === "delete" && !!preview?.paths?.length && (
+              <section
+                className="resource-command-paths"
+                aria-label="Local copies affected"
+              >
+                <h3>Local copies affected</h3>
+                <ul tabIndex={0}>
+                  {preview.paths.map((path) => (
+                    <li key={path}>{path}</li>
+                  ))}
+                </ul>
+              </section>
             )}
           </>
+        )}
+        {preview?.note && (
+          <p className="resource-command-note">{preview.note}</p>
         )}
       </div>
       <div className="actions">
@@ -975,26 +1029,24 @@ function ResourceCommandDialog({
         )}
         <div className="resource-command-main-actions">
           <Button variant="tertiary" disabled={busy} onClick={onClose}>
-            {kind === "launch" ? "Close" : "Cancel"}
+            Cancel
           </Button>
-          {kind !== "launch" && (
-            <Button
-              className={`resource-command-confirm${kind === "delete" ? " management-danger" : ""}`}
-              disabled={busy || context.busy || loading || !preview || stale}
-              onClick={() => void submit()}
-            >
-              <span className="resource-command-button-size" aria-hidden="true">
-                {kind === "share" ? "Share this snapshot" : "Confirm deletion"}
-              </span>
-              <span>
-                {busy
-                  ? "Working…"
-                  : kind === "share"
-                    ? "Share this snapshot"
-                    : "Confirm deletion"}
-              </span>
-            </Button>
-          )}
+          <Button
+            className={`resource-command-confirm${kind === "delete" ? " management-danger" : ""}`}
+            disabled={busy || context.busy || loading || !preview || stale}
+            onClick={() => void submit()}
+          >
+            <span className="resource-command-button-size" aria-hidden="true">
+              {kind === "share" ? "Share this snapshot" : "Confirm deletion"}
+            </span>
+            <span>
+              {busy
+                ? "Working…"
+                : kind === "share"
+                  ? "Share this snapshot"
+                  : "Confirm deletion"}
+            </span>
+          </Button>
         </div>
       </div>
     </Overlay>

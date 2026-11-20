@@ -224,8 +224,10 @@ for (const size of [
       action: "create",
       input: {
         name: "My workspace",
+        requestId: expect.any(String),
         sharing: automaticDefault,
       },
+      onProgress: expect.anything(),
     });
     expect((await calls(page)).some((c) => c.command === "env_command")).toBe(
       false,
@@ -351,7 +353,12 @@ test("saving no categories and connecting a folder carries private defaults", as
       command: "cloud_action",
       args: {
         action: "create",
-        input: { name: "Private project", sharing: automaticDefault },
+        input: {
+          name: "Private project",
+          sharing: automaticDefault,
+          requestId: expect.any(String),
+        },
+        onProgress: expect.anything(),
       },
     },
     {
@@ -372,7 +379,7 @@ test("manual-only sharing explains both explicit sharing routes without enabling
       dialog.getByRole("combobox", { name: `${label} sharing`, exact: true }),
       false,
     );
-  await expect(dialog.getByRole("status")).toHaveText(
+  await expect(dialog.getByText(/^Automatic sharing is off/)).toHaveText(
     "Automatic sharing is off. Only snapshots you explicitly share from Orka or through the plugin will be sent.",
   );
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
@@ -403,6 +410,14 @@ test("failed creation retains selections for retry", async ({ page }) => {
     .getByRole("button", { name: "Create project", exact: true })
     .click();
   await expect(dialog).toBeHidden();
+  const attempts = (await calls(page)).filter(
+    (call) => call.command === "cloud_action",
+  );
+  expect(attempts).toHaveLength(2);
+  expect(attempts[0]!.args.input).toMatchObject({
+    requestId: expect.any(String),
+  });
+  expect(attempts[1]!.args.input).toEqual(attempts[0]!.args.input);
 });
 
 test("join carries explicit sharing choices before connecting a folder", async ({
@@ -433,6 +448,7 @@ test("join carries explicit sharing choices before connecting a folder", async (
       token: inviteToken,
       sharing: { ...automaticDefault, session: true },
     },
+    onProgress: expect.anything(),
   });
 });
 
@@ -458,6 +474,7 @@ test("browser invites are parsed and bound to the selected service", async ({
       serviceUrl: "https://test.orka",
       sharing: automaticDefault,
     },
+    onProgress: expect.anything(),
   });
 });
 

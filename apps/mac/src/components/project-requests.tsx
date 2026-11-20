@@ -1,5 +1,5 @@
 import { XIcon } from "lucide-react";
-import React, { useRef, useState } from "react";
+import React, { useCallback, useRef, useState } from "react";
 import type { ReviewRequest, Resource } from "@portable/protocol";
 import type { Project, Snapshot } from "../types.js";
 import { displayText } from "./resource-presentation.js";
@@ -34,6 +34,8 @@ export function ProjectRequests({
   project,
   state,
   catalog,
+  historyRequest,
+  onHistoryShown,
   call,
   run,
   busy,
@@ -44,6 +46,8 @@ export function ProjectRequests({
   project: Project;
   state: Snapshot;
   catalog: GovernanceCatalog;
+  historyRequest?: symbol;
+  onHistoryShown: (request: symbol) => void;
   call: ProjectCall;
   run: (fn: () => Promise<void>) => Promise<void>;
   busy: boolean;
@@ -54,6 +58,15 @@ export function ProjectRequests({
   const [visibleCount, setVisibleCount] = useState(5);
   const requestHeading = useRef<HTMLHeadingElement>(null);
   const requestTrigger = useRef<HTMLElement | null>(null);
+  const revealHistory = useCallback(
+    (details: HTMLDetailsElement | null) => {
+      if (!details || !historyRequest) return;
+      details.open = true;
+      details.querySelector("summary")?.focus();
+      onHistoryShown(historyRequest);
+    },
+    [historyRequest, onHistoryShown],
+  );
   const [selectedRequest, setSelectedRequest] = useState<ReviewRequest | null>(
     null,
   );
@@ -369,7 +382,7 @@ export function ProjectRequests({
       {(attention.historyRequests.length > 0 ||
         attention.historyDrafts.length > 0) && (
         <section aria-label="Request history">
-          <details>
+          <details ref={revealHistory}>
             <summary>
               History (
               {attention.historyRequests.length +

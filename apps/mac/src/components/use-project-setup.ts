@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { useEffect, useRef, useState } from "react";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { Project, ProjectSharing } from "../types.js";
 import type { ProjectSetupMode } from "./project-setup.js";
@@ -13,6 +13,8 @@ import {
 import { useInvitePreview } from "./use-invite-preview.js";
 import { useToastNotice } from "./toasts.js";
 import { useSourceFolders } from "./source-folders.js";
+
+const LOCK_WAIT_CANCELLED = "Cancelled while waiting for sync to finish.";
 
 export async function connectProject(
   id: string,
@@ -37,6 +39,7 @@ export function useProjectSetup(
   apiUrl?: string,
   onRepositorySetup?: (id: string) => void,
   existingProjects: readonly Project[] = [],
+  accountScope = apiUrl,
 ) {
   const setNotice = useToastNotice();
   const [repositoryEnabled, setRepositoryEnabled] = useState(false);
@@ -59,6 +62,18 @@ export function useProjectSetup(
   const [input, setInput] = useState("");
   const selection = useSourceFolders();
   const [sharing, setSharing] = useState<ProjectSharing>(defaultSharing);
+  // "waiting": the native side is holding the request until sync releases the
+  // workspace. "cancelling": the user asked to stop and the request is settling.
+  const [pending, setPending] = useState<"waiting" | "cancelling" | null>(null);
+  const createRequest = useRef<{ name: string; id: string } | null>(null);
+  const [folderConnection, setFolderConnection] = useState<{
+    id: string;
+    scope: string | undefined;
+    error: string;
+  } | null>(null);
+  const currentConnection =
+    folderConnection?.scope === accountScope ? folderConnection : null;
+  const currentDialog = folderConnection && !currentConnection ? null : dialog;
   let inviteService: string | undefined;
   let inviteToken = "";
   if (dialog === "join") {
@@ -84,11 +99,49 @@ export function useProjectSetup(
     selection.clear();
     setSourceChoice(null);
     setSharing(defaultSharing);
+    createRequest.current = null;
+    setFolderConnection(null);
+    setPending(null);
     setDialog(mode);
   };
+  const complete = (id?: string) => {
+    if (id) onProject(id);
+    setDialog(null);
+    setPending(null);
+    setFolderConnection(null);
+    setInput("");
+    selection.clear();
+    createRequest.current = null;
+  };
+  const close = () => complete(currentConnection?.id);
+  const attachFolders = async (id: string) => {
+    const connection = { id, scope: accountScope, error: "" };
+    setFolderConnection(connection);
+    try {
+      await invoke("connect_project_sources", {
+        id,
+        paths: selection.folders,
+      });
+    } catch (error) {
+      setFolderConnection({ ...connection, error: String(error) });
+      return;
+    }
+    complete(id);
+  };
+  const cancelWait = () => {
+    if (pending !== "waiting") return;
+    setPending("cancelling");
+    void invoke("cancel_project_setup").catch(() =>
+      setPending((current) => (current === "cancelling" ? "waiting" : current)),
+    );
+  };
   const submit = async () => {
-    if (!dialog) return;
-    const creating = dialog === "create";
+    if (!currentDialog) return;
+    if (currentConnection) {
+      if (selection.folders.length) await attachFolders(currentConnection.id);
+      return;
+    }
+    const creating = currentDialog === "create";
     let invite: ReturnType<typeof parseProjectInvite> | null = null;
     if (!creating) {
       try {
@@ -106,18 +159,31 @@ export function useProjectSetup(
       }
     }
     let result: { id: string; repositorySetup?: boolean };
+    const name = input.trim();
+    if (creating && createRequest.current?.name !== name) {
+      createRequest.current = { name, id: crypto.randomUUID() };
+    }
+    const onProgress = new Channel<{ waiting: boolean }>((value) =>
+      setPending(value.waiting ? "waiting" : null),
+    );
     try {
       result = await invoke("cloud_action", {
-        action: dialog,
+        action: currentDialog,
         input: creating
-          ? { name: input.trim(), sharing }
+          ? { name, sharing, requestId: createRequest.current?.id }
           : { ...invite, sharing },
+        onProgress,
       });
     } catch (error) {
-      if (creating) throw error;
-      // The dialog shows the reason on its own line, without the native
-      // bridge's status prefix.
-      onError(joinErrorMessage(error));
+      setPending(null);
+      const message = error instanceof Error ? error.message : String(error);
+      if (message === LOCK_WAIT_CANCELLED) {
+        complete();
+        return;
+      }
+      // Keep setup feedback with the dialog even if a deep link selected
+      // another project while the native request was waiting.
+      onError(creating ? message : joinErrorMessage(error));
       return;
     }
     // The service keeps the invite when the account already belongs to the
@@ -126,20 +192,17 @@ export function useProjectSetup(
     const known = creating
       ? undefined
       : existingProjects.find((item) => item.id === result.id);
-    onProject(result.id);
-    setDialog(null);
-    setInput("");
+    if (creating && sourceMode === "folder" && selection.folders.length) {
+      await attachFolders(result.id);
+      return;
+    }
+    // A Cancel that arrives after the workspace was free cannot stop the request.
+    complete(result.id);
     if (known) {
       setNotice("You’re already in this project");
       if (hasConnectedSource(known)) return;
     }
     if (creating) {
-      if (sourceMode === "folder" && selection.folders.length)
-        await invoke("connect_project_sources", {
-          id: result.id,
-          paths: selection.folders,
-        });
-      selection.clear();
       if (
         sourceMode === "github" &&
         result.repositorySetup &&
@@ -152,7 +215,9 @@ export function useProjectSetup(
   };
 
   return {
-    dialog,
+    dialog: currentDialog,
+    connectingFolders: currentConnection !== null,
+    folderError: currentConnection?.error ?? "",
     repositoryEnabled,
     sourceMode,
     setSourceMode: (value: "github" | "folder") => {
@@ -169,6 +234,9 @@ export function useProjectSetup(
     setSharing,
     show,
     submit,
-    close: () => setDialog(null),
+    waiting: pending !== null,
+    cancelling: pending === "cancelling",
+    cancelWait,
+    close,
   };
 }

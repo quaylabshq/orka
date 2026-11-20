@@ -9,8 +9,13 @@ use std::{
     fs,
     path::PathBuf,
     process::Command,
-    sync::{Arc, LazyLock, Mutex},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, LazyLock, Mutex,
+    },
+    time::Duration,
 };
+use tauri::ipc::{Channel, JavaScriptChannelId};
 use uuid::Uuid;
 
 const PENDING_UPLOADS: &str = "(SELECT count(*) FROM outbox WHERE project=projects.id)";
@@ -298,18 +303,80 @@ pub fn cancel_sync(project_id: String) -> Result<()> {
 pub fn sync_queue_state() -> Result<Value> {
     SyncQueue::states(&db::open()?, SyncQueue::now())
 }
+/// Bumped by `cancel_project_setup`; a create or join that is still waiting
+/// for the workspace lock gives up once this changes.
+static PROJECT_SETUP_CANCEL: AtomicU64 = AtomicU64::new(0);
+/// Long enough for a busy sync to reach its next checkpoint; the dialog can be
+/// cancelled sooner.
+const PROJECT_SETUP_WAIT: Duration = Duration::from_secs(10 * 60);
+
 #[tauri::command]
-pub async fn cloud_action(action: String, input: Value) -> Result<Value> {
+pub async fn cloud_action(
+    action: String,
+    input: Value,
+    on_progress: Option<JavaScriptChannelId>,
+    webview: tauri::Webview,
+) -> Result<Value> {
+    let progress = on_progress.map(|id| id.channel_on(webview));
+    run_cloud_action(action, input, progress.as_ref()).await
+}
+pub(crate) async fn run_cloud_action(
+    action: String,
+    input: Value,
+    progress: Option<&Channel<Value>>,
+) -> Result<Value> {
     if action == "invite-capabilities" {
         let caps = sync::api("GET", "/v2/instance", None).await?;
         return Ok(json!({"email": caps["invites"]["email"] == true}));
     }
-    cloud_action_scoped(action, input, None).await
+    cloud_action_scoped(action, input, None, progress).await
+}
+#[tauri::command]
+pub fn cancel_project_setup() {
+    PROJECT_SETUP_CANCEL.fetch_add(1, Ordering::SeqCst);
+}
+/// Takes the workspace lock for a project create or join. With a progress
+/// channel, the caller can show that it is waiting for sync and cancel; without
+/// one, a busy workspace fails at once as before.
+async fn project_setup_lock(progress: Option<&Channel<Value>>) -> Result<fs::File> {
+    let Some(progress) = progress else {
+        return projects::lock();
+    };
+    let generation = PROJECT_SETUP_CANCEL.load(Ordering::SeqCst);
+    if let Some(lock) = projects::try_lock()? {
+        return Ok(lock);
+    }
+    let account = setup_account()?;
+    let _ = progress.send(json!({"waiting": true}));
+    let lock = tauri::async_runtime::spawn_blocking(move || {
+        projects::wait_for_lock_unless(PROJECT_SETUP_WAIT, || {
+            PROJECT_SETUP_CANCEL.load(Ordering::SeqCst) != generation
+        })
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+    // Sign-out or a service switch can win the lock first; the request was
+    // meant for the account the dialog was opened in.
+    if setup_account()? != account {
+        return Err(
+            "Your account or service changed while waiting for sync. Nothing was changed.".into(),
+        );
+    }
+    let _ = progress.send(json!({"waiting": false}));
+    Ok(lock)
+}
+fn setup_account() -> Result<(Value, Value)> {
+    let db = db::open()?;
+    Ok((
+        db::get(&db, "user")?,
+        db::get(&db, "config")?["apiUrl"].clone(),
+    ))
 }
 pub(crate) async fn cloud_action_scoped(
     action: String,
     input: Value,
     scope: Option<(&str, &str)>,
+    progress: Option<&Channel<Value>>,
 ) -> Result<Value> {
     let adding = action == "create" || action == "join";
     let sharing = if adding {
@@ -324,7 +391,7 @@ pub(crate) async fn cloud_action_scoped(
     };
     // Save consent before the daemon can discover or scan this project.
     let _lock = if adding {
-        Some(projects::lock()?)
+        Some(project_setup_lock(progress).await?)
     } else {
         None
     };
