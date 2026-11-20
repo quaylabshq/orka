@@ -114,7 +114,7 @@ fn checked_paths(resource: &Value, source: &Value, binding: &Value) -> Result<Ve
                 &path,
             )?,
             Some("memory") if !path.starts_with(root) && resource["source"] == "claude" => {
-                indexer::claude_memory(root)?
+                indexer::claude_memory_base(root, &path)?
             }
             Some("memory") if !path.starts_with(root) && resource["source"] == "codex" => {
                 crate::native::codex_home()?.join("memories")

@@ -836,7 +836,7 @@ fn project_memory(project: &Value, resource: &Value) -> Result<(PathBuf, PathBuf
                 .ok_or("Invalid instruction path")?,
         )?)
     } else if resource["source"] == "claude" {
-        let memory = indexer::claude_memory(&root)?;
+        let memory = indexer::claude_memory_target(project, &root)?;
         return Ok((
             memory.clone(),
             memory.join(packages::safe_relative(
@@ -1188,7 +1188,7 @@ fn materialize_install(
                 } else if p.starts_with(&root) {
                     root.clone()
                 } else if resource["source"] == "claude" && kind == "memory" {
-                    indexer::claude_memory(&root)?
+                    indexer::claude_memory_base(&root, p)?
                 } else {
                     native::claude_home()?
                 };
@@ -1263,10 +1263,8 @@ fn materialize_install(
                 && b["paths"].is_array()
                 && resource["source"] == "claude"
             {
-                (
-                    indexer::claude_memory(&root)?,
-                    PathBuf::from(b["paths"][0].as_str().ok_or("Invalid memory path")?),
-                )
+                let path = PathBuf::from(b["paths"][0].as_str().ok_or("Invalid memory path")?);
+                (indexer::claude_memory_base(&root, &path)?, path)
             } else {
                 project_memory(project, resource)?
             };

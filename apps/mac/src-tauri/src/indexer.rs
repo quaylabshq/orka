@@ -45,37 +45,184 @@ pub fn folder_identity_matches(path: &Path, expected: &str) -> Result<bool> {
     let meta = fs::metadata(path).map_err(|e| e.to_string())?;
     Ok(format!("{}:{}", meta.dev(), meta.ino()) == expected)
 }
+/// The folder Claude Code keeps auto memory in for sessions in `root`.
+///
+/// Claude keys auto memory by git repository, so subfolders and worktrees of
+/// one repository share `<config dir>/projects/<repository root>/memory`;
+/// outside a repository the folder itself is used. `autoMemoryDirectory`
+/// overrides this from managed, local, project or user settings, highest
+/// first.
 pub fn claude_memory(root: &Path) -> Result<PathBuf> {
-    let encoded = root
+    if let Some(custom) = claude_memory_setting(root)? {
+        return Ok(custom);
+    }
+    claude_memory_for(&claude_memory_root(root))
+}
+
+/// Every folder Orka reads Claude memory from for `root`, Claude's own first.
+/// Older Orka versions read and wrote the folder keyed by the source folder
+/// itself; files there stay collected and writable so nothing is dropped.
+pub fn claude_memory_dirs(root: &Path) -> Result<Vec<PathBuf>> {
+    let mut dirs = vec![claude_memory(root)?];
+    let legacy = claude_memory_for(root)?;
+    if !dirs.contains(&legacy) && legacy.exists() {
+        dirs.push(legacy);
+    }
+    Ok(dirs)
+}
+
+/// The Claude memory folder that holds `path`, for safety checks on files
+/// Orka already tracks; Claude's own folder otherwise.
+pub fn claude_memory_base(root: &Path, path: &Path) -> Result<PathBuf> {
+    let dirs = claude_memory_dirs(root)?;
+    Ok(dirs
+        .iter()
+        .find(|dir| path.starts_with(dir))
+        .unwrap_or(&dirs[0])
+        .clone())
+}
+
+fn claude_memory_for(project: &Path) -> Result<PathBuf> {
+    let encoded = project
         .to_string_lossy()
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect::<String>();
-    let mut memory = native::claude_home()?
+    Ok(native::claude_home()?
         .join("projects")
         .join(encoded)
-        .join("memory");
-    for path in [
-        root.join(".claude/settings.json"),
-        root.join(".claude/settings.local.json"),
-    ] {
-        if path.try_exists().map_err(|e| e.to_string())? {
-            let value: Value = serde_json::from_slice(&fs::read(path).map_err(|e| e.to_string())?)
-                .map_err(|e| e.to_string())?;
-            if let Some(custom) = value["autoMemoryDirectory"].as_str() {
-                let p = custom
-                    .strip_prefix("~/")
-                    .map(|rest| db::home().map(|home| home.join(rest)))
-                    .transpose()?
-                    .unwrap_or(PathBuf::from(custom));
-                if !p.is_absolute() {
-                    return Err("Claude auto-memory directory must be absolute".into());
-                }
-                memory = p;
-            }
+        .join("memory"))
+}
+
+/// The repository root Claude keys memory by: the main worktree for linked
+/// worktrees and subfolders. Falls back to `root` outside a repository, for
+/// bare repositories and submodules without a main worktree folder, and
+/// when Git metadata can't be read.
+/// The Claude memory folders one source folder collects. When several
+/// source folders of a project share a repository, only one collects the
+/// repository's memory: the one at the repository root, otherwise the first
+/// by path. Each still collects its own older Orka location.
+/// Where Orka writes new Claude memory for this source folder: the first
+/// folder it collects, so a pulled memory is never collected by a second
+/// source folder of the same repository.
+pub fn claude_memory_target(project: &Value, root: &Path) -> Result<PathBuf> {
+    match claude_memory_scan_dirs(project, root)?.into_iter().next() {
+        Some(dir) => Ok(dir),
+        None => claude_memory_for(root),
+    }
+}
+
+fn claude_memory_scan_dirs(project: &Value, root: &Path) -> Result<Vec<PathBuf>> {
+    let mut dirs = claude_memory_dirs(root)?;
+    if claude_memory_setting(root)?.is_some() {
+        return Ok(dirs);
+    }
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let shared = claude_memory_root(&root);
+    // A source view keeps the project's full source list; removed sources and
+    // single-folder projects without one fall back to this folder alone.
+    let paths: Vec<PathBuf> = match project["sources"].as_array() {
+        Some(sources) => sources
+            .iter()
+            .filter(|source| source["removedAt"].is_null())
+            .filter_map(|source| Some(PathBuf::from(source["path"].as_str()?)))
+            .collect(),
+        None => vec![root.clone()],
+    };
+    let owner = paths
+        .into_iter()
+        .map(|path| path.canonicalize().unwrap_or(path))
+        .filter(|path| {
+            path.starts_with(&shared) && (!path.is_dir() || claude_memory_root(path) == shared)
+        })
+        .min_by_key(|path| (path != &shared, path.clone()));
+    if owner.is_some_and(|owner| owner != root) {
+        dirs.remove(0);
+    }
+    Ok(dirs)
+}
+
+pub(crate) fn claude_memory_root(root: &Path) -> PathBuf {
+    if !has_git_repository(root) {
+        return root.to_path_buf();
+    }
+    let mut command = std::process::Command::new("git");
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("GIT_") {
+            command.env_remove(key);
         }
     }
-    Ok(memory)
+    let Ok(output) = command
+        .arg("-C")
+        .arg(root)
+        .args([
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-common-dir",
+            "--show-toplevel",
+        ])
+        .output()
+    else {
+        return root.to_path_buf();
+    };
+    if !output.status.success() {
+        return root.to_path_buf();
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut lines = text.lines().map(Path::new);
+    let (Some(common), toplevel) = (lines.next(), lines.next()) else {
+        return root.to_path_buf();
+    };
+    if common.file_name().is_some_and(|name| name == ".git") {
+        if let Some(main) = common.parent().filter(|main| main.is_dir()) {
+            return main.to_path_buf();
+        }
+    }
+    toplevel.map_or_else(|| root.to_path_buf(), Path::to_path_buf)
+}
+
+fn claude_memory_setting(root: &Path) -> Result<Option<PathBuf>> {
+    let mut found = None;
+    // Lowest precedence first; a later file that sets the key wins. Project
+    // files must be valid as before. A broken user or managed file is
+    // skipped so it can't stop every project from syncing.
+    for (path, strict) in [
+        (native::claude_home()?.join("settings.json"), false),
+        (root.join(".claude/settings.json"), true),
+        (root.join(".claude/settings.local.json"), true),
+        (
+            PathBuf::from("/Library/Application Support/ClaudeCode/managed-settings.json"),
+            false,
+        ),
+    ] {
+        match memory_setting_in(&path) {
+            Ok(Some(custom)) => found = Some(custom),
+            Ok(None) => {}
+            Err(error) if strict => return Err(error),
+            Err(_) => {}
+        }
+    }
+    Ok(found)
+}
+
+fn memory_setting_in(path: &Path) -> Result<Option<PathBuf>> {
+    if !path.try_exists().map_err(|e| e.to_string())? {
+        return Ok(None);
+    }
+    let value: Value = serde_json::from_slice(&fs::read(path).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    let Some(custom) = value["autoMemoryDirectory"].as_str() else {
+        return Ok(None);
+    };
+    let p = custom
+        .strip_prefix("~/")
+        .map(|rest| db::home().map(|home| home.join(rest)))
+        .transpose()?
+        .unwrap_or(PathBuf::from(custom));
+    if !p.is_absolute() {
+        return Err("Claude auto-memory directory must be absolute".into());
+    }
+    Ok(Some(p))
 }
 pub fn resource_id(project: &str, kind: &str, path: &str) -> String {
     Uuid::new_v5(
@@ -1233,8 +1380,11 @@ fn scan_source(
                 })();
                 crate::sync::record_result(db, &format!("{scan_id}:scan:{logical}"), result)?;
             }
-            let memory = claude_memory(&root)?;
-            if memory.exists() {
+            let mut claude_names = BTreeSet::new();
+            for memory in claude_memory_scan_dirs(project, &root)? {
+                if !memory.exists() {
+                    continue;
+                }
                 for entry in WalkDir::new(&memory).follow_links(false) {
                     let e = entry.map_err(|e| e.to_string())?;
                     if e.file_type().is_file() && e.path().extension().is_some_and(|s| s == "md") {
@@ -1244,6 +1394,10 @@ fn scan_source(
                             .map_err(|e| e.to_string())?
                             .to_string_lossy()
                             .to_string();
+                        // Claude's own folder comes first and wins a shared name.
+                        if !claude_names.insert(rel.clone()) {
+                            continue;
+                        }
                         let logical = format!("claude/{rel}");
                         report_file(e.path())?;
                         seen.insert(scoped_resource_id(db, project, "memory", &logical)?);
