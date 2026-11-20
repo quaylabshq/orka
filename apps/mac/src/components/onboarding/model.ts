@@ -58,6 +58,7 @@ export interface DiscoveredProject {
     | "connecting"
     | "scanning"
     | "syncing"
+    | "scheduled"
     | "synced"
     | "error"
     | "skipped";
@@ -65,6 +66,7 @@ export interface DiscoveredProject {
   issues?: { error: string; item?: string }[];
   conflicts?: number;
   reviewPending?: number;
+  syncStartsAt?: number | null;
 }
 export interface ProjectMatch {
   id: string;

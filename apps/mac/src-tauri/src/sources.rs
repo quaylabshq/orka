@@ -125,7 +125,7 @@ pub(crate) fn without_waiting(
             let Some(source_id) = source["id"].as_str() else {
                 continue;
             };
-            if source["path"].is_string() {
+            if source["path"].is_string() && source["removedAt"].is_null() {
                 if let Some(at) = sync_after(db, id, source_id)? {
                     source["path"] = Value::Null;
                     earliest = Some(earliest.map_or(at, |e| e.min(at)));
@@ -134,6 +134,13 @@ pub(crate) fn without_waiting(
         }
     }
     Ok((view, earliest))
+}
+
+pub(crate) fn waiting_to_sync(db: &rusqlite::Connection, source: &Value) -> Result<bool> {
+    match (source["id"].as_str(), source["sourceId"].as_str()) {
+        (Some(id), Some(source_id)) => Ok(sync_after(db, id, source_id)?.is_some()),
+        _ => Ok(false),
+    }
 }
 
 #[tauri::command]
@@ -606,6 +613,7 @@ pub(crate) async fn connect_sources(
     }
     // A folder connected on this Mac waits a few minutes before its first sync.
     let at = chrono::Utc::now().timestamp_millis() + NEW_FOLDER_DELAY_MS;
+    db::set(&db, &format!("firstScan:{id}"), &Value::Null)?;
     for source in &newly_connected {
         db::set(&db, &sync_after_key(&id, source), &json!(at))?;
     }
