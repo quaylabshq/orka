@@ -150,6 +150,16 @@ fn removed_checkout_routes_capture_but_not_hooks_and_direct_root_wins_ties() {
         scope.for_session(tool, &id, &f.root).unwrap().is_none(),
         "a pinned native ID must not become a main-checkout session"
     );
+    assert_eq!(
+        native::hook(tool, json!({"cwd":f.root,"session_id":id})).unwrap(),
+        json!({})
+    );
+    assert!(
+        db::rows(&f.db, "SELECT value FROM active WHERE native_id=?", &[&id])
+            .unwrap()
+            .is_empty(),
+        "hook must not move the pinned app session to the root source"
+    );
 }
 
 #[test]

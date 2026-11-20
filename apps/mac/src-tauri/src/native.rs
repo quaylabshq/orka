@@ -880,6 +880,7 @@ fn hook_project(
     if crate::worktrees::is_stale(db, Path::new(cwd), &home)? {
         return Ok(None);
     }
+    let pinned = crate::worktrees::pinned_session(db, tool, id)?;
     for (predicate, capture_only) in [
         (crate::projects::ACTIVE, false),
         (crate::projects::CAPTURE_ONLY, true),
@@ -887,6 +888,13 @@ fn hook_project(
         let views = crate::worktrees::source_views(db, predicate)?;
         let resolver = crate::worktrees::Resolver::new(&views, &home);
         if let Some(route) = resolver.resolve(Path::new(cwd)) {
+            // A cwd change must not inject another source's context into a pinned session.
+            if pinned
+                .as_ref()
+                .is_some_and(|pin| !pin.matches(route.source))
+            {
+                return Ok(None);
+            }
             if let Some(observed) = route.observed {
                 observed.remember(db)?;
                 observed.pin(db, tool, id)?;
