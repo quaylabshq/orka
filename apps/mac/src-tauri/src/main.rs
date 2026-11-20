@@ -51,6 +51,7 @@ mod sync_schedule;
 mod tests;
 mod updates;
 mod upload_review;
+mod worktrees;
 use serde_json::json;
 #[cfg(debug_assertions)]
 use serde_json::Value;

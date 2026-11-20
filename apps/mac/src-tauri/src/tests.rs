@@ -17,6 +17,8 @@ mod codex_rollout_tests;
 mod context_sharing_tests;
 #[path = "sync_request_tests.rs"]
 mod sync_request_tests;
+#[path = "worktree_tests.rs"]
+mod worktree_tests;
 mod doctor_tests {
     use super::*;
     use crate::doctor::Doctor;

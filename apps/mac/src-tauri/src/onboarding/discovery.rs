@@ -283,21 +283,37 @@ fn usable_root(path: &Path, home: &Path) -> bool {
         && path != home
         && (path.starts_with(home) || !(path.starts_with("/tmp") || path.starts_with("/private")))
 }
+fn git_metadata(path: &Path) -> Option<String> {
+    const LIMIT: u64 = 16 * 1024;
+    let metadata = fs::symlink_metadata(path).ok()?;
+    if !metadata.is_file() || metadata.len() > LIMIT {
+        return None;
+    }
+    let mut text = String::new();
+    fs::File::open(path)
+        .ok()?
+        .take(LIMIT + 1)
+        .read_to_string(&mut text)
+        .ok()?;
+    (text.len() as u64 <= LIMIT).then_some(text)
+}
+
 /// Resolves a Git directory and the common directory shared by its worktrees.
 fn git_dirs(path: &Path) -> Option<(PathBuf, PathBuf)> {
     let git = path.join(".git");
-    if !git.is_file() {
-        return None;
+    if git.is_dir() {
+        let directory = git.canonicalize().ok()?;
+        return Some((directory.clone(), directory));
     }
-    let value = fs::read_to_string(&git).ok()?;
+    let value = git_metadata(&git)?;
     let target = value.trim().strip_prefix("gitdir:")?.trim();
     if target.is_empty() {
         return None;
     }
     let directory = resolved(&path.join(target));
-    let common = match fs::read_to_string(directory.join("commondir")) {
-        Ok(common) => resolved(&directory.join(common.trim())),
-        Err(_) => directory.clone(),
+    let common = match git_metadata(&directory.join("commondir")) {
+        Some(common) if !common.trim().is_empty() => resolved(&directory.join(common.trim())),
+        _ => directory.clone(),
     };
     Some((directory, common))
 }
@@ -307,6 +323,83 @@ fn resolved(path: &Path) -> PathBuf {
 fn linked_common_dir(path: &Path) -> Option<PathBuf> {
     let (directory, common) = git_dirs(path)?;
     (directory != common).then_some(common)
+}
+
+/// Walk only to the closest Git boundary, never inspect $HOME itself.
+pub(crate) fn enclosing_checkout(path: &Path, home: &Path) -> Option<PathBuf> {
+    for parent in path
+        .ancestors()
+        .take_while(|p| *p != home && *p != Path::new("/"))
+    {
+        if parent.is_absolute() && fs::symlink_metadata(parent.join(".git")).is_ok() {
+            return Some(parent.to_path_buf());
+        }
+    }
+    None
+}
+
+fn checkout_pointer(directory: &Path) -> Option<PathBuf> {
+    let pointer = git_metadata(&directory.join("gitdir"))?;
+    if pointer.trim().is_empty() {
+        return None;
+    }
+    let path = directory.join(pointer.trim()).canonicalize().ok()?;
+    (path.file_name()? == ".git").then_some(path)
+}
+
+/// Both sides of the registration must agree. A copied or stale .git file is
+/// not enough to inherit a connected folder's hooks or memory.
+pub(crate) fn registered_worktree(path: &Path) -> Option<(PathBuf, PathBuf)> {
+    let (directory, common) = git_dirs(path)?;
+    if directory == common || directory.parent()? != common.join("worktrees") {
+        return None;
+    }
+    (checkout_pointer(&directory)? == path.join(".git").canonicalize().ok()?)
+        .then_some((directory, common))
+}
+
+pub(crate) fn has_worktree_metadata(path: &Path) -> bool {
+    git_dirs(path).is_none_or(|(dir, common)| {
+        dir != common
+            || !dir.is_dir()
+            || dir.join("commondir").exists()
+            || (dir
+                .parent()
+                .and_then(Path::file_name)
+                .is_some_and(|name| name == "worktrees")
+                && dir.join("gitdir").is_file())
+    })
+}
+
+pub(crate) fn primary_common_dir(path: &Path) -> Option<PathBuf> {
+    let (directory, common) = git_dirs(path)?;
+    (directory == common && common.is_dir() && !is_bare_git_directory(&common)).then_some(common)
+}
+
+pub(crate) fn registered_checkout(directory: &Path) -> Option<PathBuf> {
+    let pointer = checkout_pointer(directory)?;
+    let root = pointer.parent()?;
+    let (admin, _) = registered_worktree(root)?;
+    (admin == directory).then(|| root.to_path_buf())
+}
+
+pub(crate) fn registered_worktrees(common: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let entries = match fs::read_dir(common.join("worktrees")) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    let mut roots = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        if let Some(root) = registered_checkout(&entry.path()) {
+            roots.push(root);
+        }
+    }
+    Ok(roots)
 }
 
 fn git_config_bool(path: &Path, section: &str, name: &str) -> Option<bool> {
@@ -1096,18 +1189,14 @@ fn source_remote_keys(path: &Path, home: Option<&Path>) -> Result<Vec<String>> {
 }
 
 fn remote_urls(root: &Path) -> Result<(Vec<String>, Vec<String>)> {
-    let git = root.join(".git");
-    let directory = if git.is_file() {
-        git_dirs(root)
-            .map(|(directory, _)| directory)
-            .ok_or("Invalid Git directory")?
-    } else {
-        git
-    };
+    if !root.join(".git").exists() {
+        return Ok(Default::default());
+    }
+    let (directory, common) = git_dirs(root).ok_or("Invalid Git directory")?;
     let config = if directory.join("config").is_file() {
         directory.join("config")
-    } else if let Ok(common) = fs::read_to_string(directory.join("commondir")) {
-        directory.join(common.trim()).join("config")
+    } else if common != directory {
+        common.join("config")
     } else {
         return Ok(Default::default());
     };

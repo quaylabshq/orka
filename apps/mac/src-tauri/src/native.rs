@@ -744,27 +744,36 @@ mod hook_tests;
 /// deleted project that can still be restored is returned to track the
 /// session, flagged as capture-only. An active parent folder still wins over
 /// a deleted nested project.
-fn hook_project(db: &rusqlite::Connection, cwd: &str) -> Result<Option<(Value, bool)>> {
+fn hook_project(
+    db: &rusqlite::Connection,
+    cwd: &str,
+    tool: &str,
+    id: &str,
+) -> Result<Option<(Value, PathBuf, bool)>> {
+    let home = crate::worktrees::home()?;
+    if crate::worktrees::is_stale(db, Path::new(cwd), &home)? {
+        return Ok(None);
+    }
+    let pinned = crate::worktrees::pinned_session(db, tool, id)?;
     for (predicate, capture_only) in [
         (crate::projects::ACTIVE, false),
         (crate::projects::CAPTURE_ONLY, true),
     ] {
-        let projects = db::rows(
-            db,
-            &format!("SELECT value FROM projects WHERE {predicate}"),
-            &[],
-        )?;
-        let found = projects
-            .iter()
-            .flat_map(crate::sources::views)
-            .filter(|p| {
-                p["path"]
-                    .as_str()
-                    .is_some_and(|s| Path::new(cwd).starts_with(s))
-            })
-            .max_by_key(|p| p["path"].as_str().unwrap_or("").len());
-        if let Some(project) = found {
-            return Ok(Some((project, capture_only)));
+        let views = crate::worktrees::source_views(db, predicate)?;
+        let resolver = crate::worktrees::Resolver::new(&views, &home);
+        if let Some(route) = resolver.resolve(Path::new(cwd)) {
+            // A cwd change must not inject another source's context into a pinned session.
+            if pinned
+                .as_ref()
+                .is_some_and(|pin| !pin.matches(route.source))
+            {
+                return Ok(None);
+            }
+            if let Some(observed) = route.observed {
+                observed.remember(db)?;
+                observed.pin(db, tool, id)?;
+            }
+            return Ok(Some((route.source.clone(), route.equivalent, capture_only)));
         }
     }
     Ok(None)
@@ -775,14 +784,14 @@ pub fn hook(tool: &str, input: Value) -> Result<Value> {
     let Some(cwd) = input["cwd"].as_str() else {
         return Ok(json!({}));
     };
-    let Some((project, capture_only)) = hook_project(&db, cwd)? else {
+    let id = input["session_id"].as_str().unwrap_or("unknown");
+    let Some((project, equivalent_cwd, capture_only)) = hook_project(&db, cwd, tool, id)? else {
         return Ok(json!({}));
     };
     let project = &project;
     if matches!(tool, "claude" | "codex") {
         db::set(&db, &format!("hookSeen:{tool}"), &json!(db::now()))?;
     }
-    let id = input["session_id"].as_str().unwrap_or("unknown");
     let project_id = project["id"].as_str().ok_or("Missing project")?;
     let event = input["hook_event_name"].as_str().unwrap_or("SessionStart");
     if event == "SessionEnd" {
@@ -863,7 +872,7 @@ pub fn hook(tool: &str, input: Value) -> Result<Value> {
     let (text, sources, fingerprints) = crate::governance::context_with_query(
         &db,
         project,
-        Path::new(cwd),
+        &equivalent_cwd,
         Some(input["prompt"].as_str().unwrap_or("")),
         // Missing session identities must never share a delivery cache.
         if id == "unknown" {
