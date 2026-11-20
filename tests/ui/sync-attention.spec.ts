@@ -95,7 +95,7 @@ test("saved history previews keep the original bytes and expose no publication c
   const openHistory = modal.getByRole("button", {
     name: "Open request history",
   });
-  await expect(openHistory).toHaveCSS("background-color", "rgb(28, 28, 28)");
+  await expect(openHistory).toHaveCSS("border-top-width", "1px");
   await expect(openHistory).toHaveCSS("height", "32px");
   await openHistory.press("Enter");
   const management = page.getByRole("region", { name: "Manage", exact: true });
@@ -141,64 +141,6 @@ test("saved history previews keep the original bytes and expose no publication c
     ),
   );
   expect(mutations).toEqual([]);
-});
-
-test("review and attention actions retain their alignment and resting fill at the compact size", async ({
-  page,
-}) => {
-  await page.setViewportSize({ width: 900, height: 640 });
-  const status = page.locator(".workspace-header .sync-status");
-  const modal = page.getByRole("dialog", {
-    name: "Sync status and notifications",
-  });
-  await status.click();
-  const selected = modal.getByRole("group", {
-    name: "Writing guide",
-    exact: true,
-  });
-  const review = selected.getByRole("button", {
-    name: "Review copies",
-    exact: true,
-  });
-  const conflict = modal.getByRole("button", {
-    name: "Review conflict",
-    exact: true,
-  });
-  const sync = modal.getByRole("button", { name: "Sync now", exact: true });
-  await expect(modal).toHaveCSS("background-color", "rgb(18, 18, 18)");
-  for (const action of [review, conflict, sync])
-    await expect(action).toHaveCSS("background-color", "rgb(28, 28, 28)");
-  const rightEdge = async (action: typeof review) => {
-    const bounds = (await action.boundingBox())!;
-    return bounds.x + bounds.width;
-  };
-  const reviewEdge = await rightEdge(review);
-  expect(await rightEdge(conflict)).toBeCloseTo(reviewEdge, 0);
-  await expect(
-    selected.getByRole("button", { name: "Review requests" }),
-  ).toBeVisible();
-  await selected.locator("summary").press("Enter");
-  await expect(
-    selected.getByText("/synthetic/product/.agents/skills/writing", {
-      exact: true,
-    }),
-  ).toBeVisible();
-  await expect(
-    selected.getByText("/synthetic/product/.claude/skills/writing", {
-      exact: true,
-    }),
-  ).toBeVisible();
-  await page.keyboard.press("Escape");
-  await page.getByRole("combobox", { name: /Select project/ }).click();
-  await page.getByRole("option", { name: "Docs", exact: true }).click();
-  await status.click();
-  const other = modal.getByRole("group", { name: "Writing guide in Product" });
-  const compactReview = other.getByRole("button", {
-    name: "Review copies for Writing guide",
-  });
-  await expect(compactReview).toHaveText("Review copies");
-  expect(await rightEdge(compactReview)).toBeCloseTo(reviewEdge, 0);
-  await expect(other.locator("summary")).toHaveCount(0);
 });
 
 test("history navigation respects a Settings draft and does not replay after opening Settings again", async ({
@@ -252,4 +194,72 @@ test("history navigation respects a Settings draft and does not replay after ope
   await page.keyboard.press("Escape");
   await expect(disclosure).toBeVisible();
   await expect(disclosure).not.toHaveAttribute("open", "");
+});
+
+test("review and attention actions retain their alignment and resting fill at the compact size", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 900, height: 640 });
+  const status = page.locator(".workspace-header .sync-status");
+  const modal = page.getByRole("dialog", {
+    name: "Sync status and notifications",
+  });
+  await status.click();
+  const selected = modal.getByRole("group", {
+    name: "Writing guide",
+    exact: true,
+  });
+  const review = selected.getByRole("button", {
+    name: "Review copies",
+    exact: true,
+  });
+  const conflict = modal.getByRole("button", {
+    name: "Review conflict",
+    exact: true,
+  });
+  const sync = modal.getByRole("button", { name: "Sync now", exact: true });
+  await expect(modal).toHaveCSS("background-color", "rgb(18, 18, 18)");
+  await expect(modal.getByRole("heading", { name: "Needs review" })).toHaveCSS(
+    "margin-top",
+    "0px",
+  );
+  for (const action of [review, conflict, sync])
+    await expect(action).toHaveCSS("background-color", "rgb(28, 28, 28)");
+  const rightEdge = async (action: typeof review) => {
+    const bounds = (await action.boundingBox())!;
+    return bounds.x + bounds.width;
+  };
+  const reviewEdge = await rightEdge(review);
+  const reviewSection = modal.getByRole("region", {
+    name: "Changes that need review",
+  });
+  const inset = (await rightEdge(reviewSection)) - reviewEdge;
+  expect(await rightEdge(conflict)).toBeCloseTo(reviewEdge, 0);
+  await expect(
+    selected.getByRole("button", { name: "Review requests" }),
+  ).toBeVisible();
+  await selected.locator("summary").press("Enter");
+  await expect(
+    selected.getByText("/synthetic/product/.agents/skills/writing", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    selected.getByText("/synthetic/product/.claude/skills/writing", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await page.keyboard.press("Escape");
+  await page.getByRole("combobox", { name: /Select project/ }).click();
+  await page.getByRole("option", { name: "Docs", exact: true }).click();
+  await status.click();
+  const other = modal.getByRole("group", { name: "Writing guide in Product" });
+  const compactReview = other.getByRole("button", {
+    name: "Review copies for Writing guide",
+  });
+  await expect(compactReview).toHaveText("Review copies");
+  expect(
+    (await rightEdge(reviewSection)) - (await rightEdge(compactReview)),
+  ).toBeCloseTo(inset, 0);
+  await expect(other.locator("summary")).toHaveCount(0);
 });

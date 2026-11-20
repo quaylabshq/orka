@@ -648,7 +648,7 @@
     @apply min-w-0;
   }
   .sync-feed-section h3 {
-    @apply mb-2 text-label-xs text-secondary;
+    @apply mb-2 mt-0 text-label-xs text-secondary;
   }
   .sync-feed-panel {
     @apply min-w-0 rounded-lg border border-line;
@@ -691,6 +691,9 @@
   .sync-feed-details small {
     @apply block text-body-xs text-muted;
   }
+  .sync-feed-related-action {
+    @apply justify-self-end;
+  }
   .sync-feed-panel summary {
     @apply flex min-h-6 cursor-pointer list-none items-center gap-1.5 rounded text-label-xs text-secondary;
   }
@@ -728,8 +731,12 @@
   .sync-history-status {
     @apply text-body-xs capitalize text-muted;
   }
-  .sync-history-action {
+  .sync-menu .sync-history-action {
     @apply self-end;
+    padding: calc(var(--control-padding-y) - 1px)
+      calc(var(--control-padding-x) - 1px);
+    border: 1px solid var(--border-default);
+    background: var(--surface-secondary);
   }
   .sync-history-list li {
     @apply text-body-xs text-secondary;

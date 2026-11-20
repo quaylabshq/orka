@@ -6,8 +6,14 @@ import {
   within,
 } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import type { ComponentProps } from "react";
 import type { Snapshot, SyncQueueEntry } from "../types.js";
-import type { ProjectAttention } from "./sync-attention.js";
+import {
+  preservedSkillEditsMessage,
+  projectAttention,
+  syncReviewItems,
+  type ProjectAttention,
+} from "./sync-attention.js";
 import { SyncMenu } from "./sync-menu.js";
 
 const state: Snapshot = {
@@ -58,6 +64,7 @@ function menu(
   snapshot = state,
   onCancel = vi.fn(),
   review: ProjectAttention = attention,
+  props: Partial<ComponentProps<typeof SyncMenu>> = {},
 ) {
   return (
     <SyncMenu
@@ -73,6 +80,7 @@ function menu(
       onSettings={vi.fn()}
       onConnect={vi.fn()}
       onOpen={vi.fn()}
+      {...props}
     />
   );
 }
@@ -108,6 +116,56 @@ test("the panel identifies its scope and keeps an idle queue compact", () => {
   expect(screen.getByRole("button", { name: "Sync now" })).toBeTruthy();
   expect(document.querySelector(".sync-queue-row")).toBeNull();
   expect(screen.queryByRole("progressbar")).toBeNull();
+});
+
+test("a local-copy review retains recovery for a separate retryable upload", () => {
+  const snapshot: Snapshot = {
+    ...state,
+    outbox: [
+      {
+        id: "queued-skill",
+        project: "one",
+        resourceId: "skill",
+        title: "Writing guide",
+        kind: "skill",
+        error: "503: offline",
+      },
+    ],
+    errors: [
+      { source: "one:scan:skills/writing", error: preservedSkillEditsMessage },
+    ],
+    resources: [
+      {
+        projectId: "one",
+        resourceId: "skill",
+        kind: "skill",
+        source: "shared",
+        logicalPath: "writing",
+        title: "Writing guide",
+        revision: 1,
+        hash: "shared",
+        owner: "user",
+        updatedBy: "user",
+        updatedAt: "2026-11-19T00:00:00Z",
+        files: [],
+        deleted: false,
+      },
+    ],
+  };
+  const attention = projectAttention(snapshot, "one");
+  const onRetry = vi.fn();
+  render(
+    menu([], snapshot, vi.fn(), attention, {
+      projectId: "one",
+      reviews: syncReviewItems(snapshot, "one", attention),
+      onReviewItem: vi.fn(),
+      onRetry,
+    }),
+  );
+  const review = within(screen.getByRole("group", { name: "Writing guide" }));
+  expect(review.getByRole("button", { name: "Review copies" })).toBeTruthy();
+  fireEvent.click(review.getByRole("button", { name: "Retry uploads" }));
+  expect(onRetry).toHaveBeenCalledOnce();
 });
 
 test("pending uploads cannot be presented as up to date", () => {

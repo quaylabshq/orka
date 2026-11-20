@@ -333,7 +333,7 @@ export function SyncMenu({
               : "Review changes"}
           </Button>
         )
-      ) : !review && item.uploads.length > 0 ? (
+      ) : !reviewId && !item.binding && item.uploads.length > 0 ? (
         item.uploads.every(
           (upload) =>
             !/^4\d\d:/.test(upload.error ?? "") ||
@@ -427,7 +427,9 @@ export function SyncMenu({
                 </ul>
               </details>
             )}
-            {reviewAction && relatedAction && <div>{relatedAction}</div>}
+            {reviewAction && relatedAction && (
+              <div className="sync-feed-related-action">{relatedAction}</div>
+            )}
           </>
         )}
       </SyncFeedRow>
