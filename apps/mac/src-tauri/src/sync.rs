@@ -836,7 +836,7 @@ fn project_memory(project: &Value, resource: &Value) -> Result<(PathBuf, PathBuf
                 .ok_or("Invalid instruction path")?,
         )?)
     } else if resource["source"] == "claude" {
-        let memory = indexer::claude_memory_target(project, &root)?;
+        let memory = indexer::claude_memory_target(&root)?;
         return Ok((
             memory.clone(),
             memory.join(packages::safe_relative(
@@ -974,6 +974,25 @@ fn guard_unbound_destinations(
         .any(|hash| hash != &empty && hash != &incoming)
     {
         return Err("Unindexed local files preserved; incoming version staged. Review or index the local files in Orka before applying this update.".into());
+    }
+    Ok(())
+}
+
+fn check_claude_memory_claim(
+    db: &rusqlite::Connection,
+    project_id: &str,
+    id: &str,
+    path: &Path,
+) -> Result<()> {
+    let claimed: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM bindings, json_each(bindings.value,'$.paths') AS paths WHERE bindings.project=?1 AND bindings.id<>?2 AND paths.value=?3 AND coalesce(json_extract(bindings.value,'$.base.deleted'),0)=0)",
+        params![project_id, id, path.to_str().ok_or("Invalid memory path")?],
+        |row| row.get(0),
+    ).map_err(|e| e.to_string())?;
+    if claimed {
+        return Err(
+            "Claude memory path belongs to another synced item; local file preserved".into(),
+        );
     }
     Ok(())
 }
@@ -1176,6 +1195,35 @@ fn materialize_install(
             if let Some(n) = b["nativeId"].as_str() {
                 native::Rpc::connect()?.call("thread/archive", json!({"threadId":n}))?;
             }
+        } else if kind == "memory" && resource["source"] == "claude" {
+            for path in b["paths"].as_array().into_iter().flatten() {
+                let path = Path::new(path.as_str().ok_or("Invalid memory path")?);
+                let (base, expected) =
+                    if project["governed"] == true && !crate::governance::protected(resource) {
+                        project_memory(project, resource)?
+                    } else {
+                        let base = indexer::claude_memory_base(&root, path)?;
+                        let relative = resource["logicalPath"]
+                            .as_str()
+                            .and_then(|p| p.strip_prefix("claude/"))
+                            .ok_or("Invalid Claude memory path")?;
+                        let expected = base.join(packages::safe_relative(relative)?);
+                        (base, expected)
+                    };
+                if path != expected {
+                    return Err("Unexpected Claude memory deletion path".into());
+                }
+                check_claude_memory_claim(db, project_id, id, path)?;
+                match fs::symlink_metadata(path) {
+                    Ok(meta) if meta.is_file() => {
+                        packages::safe_directory(&base, path.parent().ok_or("Missing parent")?)?;
+                        fs::remove_file(path).map_err(|e| e.to_string())?;
+                    }
+                    Ok(_) => return Err("Claude memory deletion requires a regular file".into()),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
+                    Err(e) => return Err(e.to_string()),
+                }
+            }
         } else if let Some(paths) = b["paths"].as_array() {
             for p in paths {
                 let p = Path::new(p.as_str().ok_or("Invalid path")?);
@@ -1187,8 +1235,6 @@ fn materialize_install(
                     )?
                 } else if p.starts_with(&root) {
                     root.clone()
-                } else if resource["source"] == "claude" && kind == "memory" {
-                    indexer::claude_memory_base(&root, p)?
                 } else {
                     native::claude_home()?
                 };
@@ -1264,10 +1310,21 @@ fn materialize_install(
                 && resource["source"] == "claude"
             {
                 let path = PathBuf::from(b["paths"][0].as_str().ok_or("Invalid memory path")?);
-                (indexer::claude_memory_base(&root, &path)?, path)
+                let base = indexer::claude_memory_base(&root, &path)?;
+                let relative = resource["logicalPath"]
+                    .as_str()
+                    .and_then(|p| p.strip_prefix("claude/"))
+                    .ok_or("Invalid Claude memory path")?;
+                if path != base.join(packages::safe_relative(relative)?) {
+                    return Err("Unexpected Claude memory write path".into());
+                }
+                (base, path)
             } else {
                 project_memory(project, resource)?
             };
+            if resource["source"] == "claude" {
+                check_claude_memory_claim(db, project_id, id, &path)?;
+            }
             guard_unbound_destinations(&b, resource, &root, std::slice::from_ref(&path))?;
             fs::create_dir_all(&base).map_err(|e| e.to_string())?;
             packages::write_file(&base, &path, files.first().ok_or("Missing memory file")?)?;
