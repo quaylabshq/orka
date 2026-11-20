@@ -476,7 +476,7 @@ test("skill reviews from another project stay separate from automatic retries", 
   const review = reviews.getByRole("group", { name: "Writing guide in Docs" });
   await expect(review).toContainText("Local skill copies need review");
   await expect(
-    review.getByRole("button", { name: "Review copies for Writing guide" }),
+    review.getByRole("button", { name: "Review Writing guide" }),
   ).toBeEnabled();
   const accessibility = await new AxeBuilder({ page })
     .include(".sync-menu")
@@ -490,9 +490,7 @@ test("skill reviews from another project stay separate from automatic retries", 
   await expect(page.locator(".workspace-header .sync-status")).toContainText(
     "Needs review",
   );
-  const action = review.getByRole("button", {
-    name: "Review copies for Writing guide",
-  });
+  const action = review.getByRole("button", { name: "Review Writing guide" });
   await action.focus();
   await action.press("Enter");
   await expect(dialog).toHaveCount(0);

@@ -38,7 +38,7 @@ export function ConflictPanel({
   const remote: SessionVersion = local === "current" ? "candidate" : "current";
   const ownerOnly = busy || owner !== user;
   return (
-    <div className="conflict">
+    <div className="conflict rounded-xl border border-line bg-panel">
       <strong>
         <TriangleAlertIcon size={16} aria-hidden="true" />
         Two session versions need a choice.

@@ -61,10 +61,8 @@ export interface ProjectAttention {
   accountIssues: Snapshot["errors"];
 }
 
-export const preservedSkillEditsMessage =
-  "Local skill edits preserved; resolve them before applying the shared update";
 const skillConflictMessages = new Set([
-  preservedSkillEditsMessage,
+  "Local skill edits preserved; resolve them before applying the shared update",
   "Skill copies differ between .agents/skills and .claude/skills. Review and align them to resume this skill's sync; both local copies are preserved.",
 ]);
 const staleVersionMessage =
@@ -119,7 +117,7 @@ export function syncReviewItems(
         item.kind === "skill" &&
         item.binding?.installationState !== "kept_local" &&
         (item.binding?.skillReviewFingerprint ||
-          item.messages.some((message) => skillConflictMessages.has(message)))
+          item.messages.some((m) => skillConflictMessages.has(m)))
       )
         return [
           {
@@ -129,9 +127,7 @@ export function syncReviewItems(
             showDetails:
               hasOtherReview ||
               item.uploads.length > 0 ||
-              item.messages.some(
-                (message) => !skillConflictMessages.has(message),
-              ),
+              item.messages.some((m) => !skillConflictMessages.has(m)),
           },
         ];
       const upload = item.uploads.find(needsPlanReview);

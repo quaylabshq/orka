@@ -994,6 +994,7 @@ test("account controls and unlinking are tucked into explicit menus", async ({
     .click();
   const setup = picker(page).locator(".repository-access-setup");
   await expect(setup).toHaveCSS("background-color", "rgb(18, 18, 18)");
+  await expect(setup).toHaveCSS("border-top-left-radius", "12px");
   const confirm = setup.getByRole("button", { name: "I’ve configured access" });
   await expect(confirm).toHaveCSS("background-color", "rgb(28, 28, 28)");
   await confirm.click();

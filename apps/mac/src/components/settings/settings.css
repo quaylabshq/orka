@@ -152,7 +152,7 @@
     @apply truncate;
   }
   .repository-access-setup {
-    @apply flex flex-col items-start gap-3 rounded-lg border border-line bg-panel p-4;
+    @apply flex flex-col items-start gap-3 rounded-xl border border-line bg-panel p-4;
   }
   .repository-source-choice {
     @apply mt-3 flex min-w-0 flex-wrap items-center gap-3 text-body-xs;

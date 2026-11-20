@@ -827,6 +827,7 @@ test("a conflict panel sits above the session content with its actions", async (
     name: "View incoming version",
   });
   await expect(conflict).toHaveCSS("background-color", "rgb(18, 18, 18)");
+  await expect(conflict).toHaveCSS("border-top-left-radius", "12px");
   await expect(incoming).toHaveCSS("background-color", "rgb(28, 28, 28)");
   await expect(shared).toHaveAttribute("aria-pressed", "true");
   await incoming.click();

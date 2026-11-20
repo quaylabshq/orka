@@ -21,44 +21,12 @@ import {
   retryTime,
 } from "./sync-queue.js";
 import { syncIssueRecovery } from "./sync-issues.js";
-import {
-  preservedSkillEditsMessage,
-  type AttentionItem,
-  type ProjectAttention,
-  type SyncReviewItem,
+import type {
+  AttentionItem,
+  ProjectAttention,
+  SyncReviewItem,
 } from "./sync-attention.js";
 import { useQueuedUploadReview } from "./resource-menu.js";
-
-function SyncFeedRow({
-  title,
-  description,
-  label,
-  action,
-  children,
-}: {
-  title: string;
-  description?: string;
-  label?: string;
-  action?: React.ReactNode;
-  children?: React.ReactNode;
-}) {
-  return (
-    <div
-      className="sync-feed-row"
-      role={label ? "group" : undefined}
-      aria-label={label}
-    >
-      <div className="sync-feed-summary">
-        <div className="sync-feed-copy">
-          <strong>{title}</strong>
-          {description && <p>{description}</p>}
-        </div>
-        {action}
-      </div>
-      {children && <div className="sync-feed-details">{children}</div>}
-    </div>
-  );
-}
 
 export function SyncMenu({
   state,
@@ -273,38 +241,77 @@ export function SyncMenu({
         Cancel
       </Button>
     );
-  const attentionRow = (item: AttentionItem, review?: SyncReviewItem) => {
-    const selected = !review || review.projectId === projectId;
-    const showDetails = !review || (selected && review.showDetails);
-    const name = projectName(review?.projectId ?? projectId ?? "");
-    const skillReview = review?.reason === "Local skill copies need review";
-    const relatedUpload = item.uploads.find(
-      (entry) => entry.reviewable && entry.id !== review?.uploadId,
-    );
-    const reviewId = review?.uploadId;
-    const openReview =
-      reviewId && reviewUpload
-        ? () => reviewUpload(reviewId)
-        : review && onReviewItem
-          ? () => onReviewItem(review)
-          : undefined;
-    const reviewAction = openReview && (
-      <Button
-        variant="secondary"
-        size="sm"
-        className="sync-queue-action"
-        aria-label={
-          reviewId || selected ? undefined : `Review copies for ${item.title}`
-        }
-        disabled={reviewId ? busy : undefined}
-        onClick={() => leave(openReview)}
-      >
-        {reviewId ? "Review upload" : "Review copies"}
-      </Button>
-    );
-    const relatedAction =
-      showDetails &&
-      (item.conflicts.length > 0 ? (
+  const attentionCard = (item: AttentionItem, review?: SyncReviewItem) => (
+    <section
+      className="sync-menu-notification"
+      key={item.key}
+      role="group"
+      aria-label={item.title}
+    >
+      <h4>{item.title}</h4>
+      {review && (
+        <p>
+          {projectName(review.projectId)} · {review.reason}
+        </p>
+      )}
+      {item.requests.length > 0 && (
+        <p>
+          {item.requests.length === 1
+            ? "A request is ready for your decision."
+            : `${item.requests.length} requests are ready for your decision.`}
+        </p>
+      )}
+      {item.binding && (
+        <p>
+          {item.binding.installationState === "locally_modified"
+            ? "Local edits are preserved. Review the shared update and local copies."
+            : "A local update needs review."}
+        </p>
+      )}
+      {item.draft && !item.binding && (
+        <p>Local changes are ready for review.</p>
+      )}
+      {item.messages.map((message) => (
+        <p key={message}>{message}</p>
+      ))}
+      {item.paths.length > 0 && (
+        <details>
+          <summary>
+            <ChevronRightIcon
+              className="sync-disclosure-chevron"
+              size={14}
+              aria-hidden="true"
+            />
+            Show affected copies ({item.paths.length})
+          </summary>
+          <ul>
+            {item.paths.map((path) => (
+              <li key={path}>{path}</li>
+            ))}
+          </ul>
+        </details>
+      )}
+      {item.messages.map(
+        (message) =>
+          syncIssueRecovery(message) && (
+            <small key={message}>{syncIssueRecovery(message)}</small>
+          ),
+      )}
+      {item.messages.some((message) =>
+        /unsupported.*version|unsupported.*format/i.test(message),
+      ) && (
+        <small>Requires compatible tool or transcript support in Orka.</small>
+      )}
+      {review && !review.uploadId && onReviewItem && (
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() => leave(() => onReviewItem(review))}
+        >
+          Review local copies
+        </Button>
+      )}
+      {item.conflicts.length > 0 ? (
         <Button
           variant="secondary"
           size="sm"
@@ -312,28 +319,28 @@ export function SyncMenu({
         >
           Review conflict
         </Button>
-      ) : reviewUpload && relatedUpload ? (
+      ) : reviewUpload && item.uploads.some((upload) => upload.reviewable) ? (
         <Button
           variant="secondary"
           size="sm"
           disabled={busy}
-          onClick={() => leave(() => reviewUpload(relatedUpload.id))}
+          onClick={() =>
+            leave(() =>
+              reviewUpload(
+                item.uploads.find((upload) => upload.reviewable)!.id,
+              ),
+            )
+          }
         >
           Review upload
         </Button>
-      ) : item.requests.length > 0 ||
-        item.draft ||
-        (item.binding && !skillReview) ? (
+      ) : item.requests.length > 0 || item.binding || item.draft ? (
         onReview && (
           <Button variant="secondary" size="sm" onClick={() => leave(onReview)}>
-            {skillReview
-              ? item.requests.length
-                ? "Review requests"
-                : "Review draft"
-              : "Review changes"}
+            Review changes
           </Button>
         )
-      ) : !reviewId && !item.binding && item.uploads.length > 0 ? (
+      ) : item.uploads.length > 0 ? (
         item.uploads.every(
           (upload) =>
             !/^4\d\d:/.test(upload.error ?? "") ||
@@ -358,83 +365,9 @@ export function SyncMenu({
             </Button>
           )
         )
-      ) : null);
-    const messages = showDetails
-      ? item.messages.filter(
-          (message) => !skillReview || message !== preservedSkillEditsMessage,
-        )
-      : [];
-    const bindingNote = item.binding
-      ? item.binding.installationState === "locally_modified"
-        ? "Local edits are preserved. Review the shared update and local copies."
-        : "A local update needs review."
-      : item.draft
-        ? "Local changes are ready for review."
-        : undefined;
-    const note = skillReview
-      ? item.messages.includes(preservedSkillEditsMessage)
-        ? "Local edits are preserved on this Mac."
-        : undefined
-      : bindingNote;
-    return (
-      <SyncFeedRow
-        key={`${review?.projectId ?? projectId}:${item.key}`}
-        title={item.title}
-        label={review && !showDetails ? `${item.title} in ${name}` : item.title}
-        description={review ? `${name} · ${review.reason}` : note}
-        action={reviewAction || relatedAction}
-      >
-        {showDetails && (
-          <>
-            {review && note && <p>{note}</p>}
-            {item.requests.length > 0 && (
-              <p>
-                {item.requests.length === 1
-                  ? "A request is ready for your decision."
-                  : `${item.requests.length} requests are ready for your decision.`}
-              </p>
-            )}
-            {messages.map((message) => {
-              const recovery = syncIssueRecovery(message);
-              return (
-                <div key={message}>
-                  <p>{message}</p>
-                  {recovery && <small>{recovery}</small>}
-                </div>
-              );
-            })}
-            {messages.some((message) =>
-              /unsupported.*version|unsupported.*format/i.test(message),
-            ) && (
-              <small>
-                Requires compatible tool or transcript support in Orka.
-              </small>
-            )}
-            {item.paths.length > 0 && (
-              <details>
-                <summary>
-                  <ChevronRightIcon
-                    className="sync-disclosure-chevron"
-                    size={14}
-                    aria-hidden="true"
-                  />
-                  Show affected copies ({item.paths.length})
-                </summary>
-                <ul>
-                  {item.paths.map((path) => (
-                    <li key={path}>{path}</li>
-                  ))}
-                </ul>
-              </details>
-            )}
-            {reviewAction && relatedAction && (
-              <div className="sync-feed-related-action">{relatedAction}</div>
-            )}
-          </>
-        )}
-      </SyncFeedRow>
-    );
-  };
+      ) : null}
+    </section>
+  );
   return (
     <Popover.Root open={open} onOpenChange={setOpen}>
       <Popover.Trigger asChild>
@@ -564,12 +497,7 @@ export function SyncMenu({
           ) : (
             <div className="sync-menu-status">
               <strong role="status">
-                {!running
-                  ? "Background sync stopped"
-                  : visibleStatus === "Needs attention" ||
-                      visibleStatus === "Needs review"
-                    ? `${count} ${count === 1 ? "notification" : "notifications"}`
-                    : visibleStatus}
+                {!running ? "Background sync stopped" : visibleStatus}
               </strong>
               <div className="sync-menu-actions">
                 {running ? (
@@ -606,179 +534,184 @@ export function SyncMenu({
               aria-label="Sync details"
             >
               {waiting.length > 0 && (
-                <section className="sync-feed-section" aria-label="Sync queue">
+                <section className="sync-menu-queue" aria-label="Sync queue">
                   <h3>
                     {waiting.length}{" "}
                     {waiting.length === 1 ? "project" : "projects"} waiting
                   </h3>
-                  <div className="sync-feed-panel">
-                    {waiting.map((entry) => (
-                      <div
-                        className="sync-queue-row sync-feed-row"
-                        key={entry.projectId}
-                      >
-                        <div className="sync-queue-project">
-                          <strong title={projectName(entry.projectId)}>
-                            {projectName(entry.projectId)}
-                          </strong>
-                          <small title={retryTime(entry)}>
-                            {queueStateLabel(entry, now)}
-                          </small>
-                        </div>
-                        {cancelButton(entry)}
+                  {waiting.map((entry) => (
+                    <div className="sync-queue-row" key={entry.projectId}>
+                      <div className="sync-queue-project">
+                        <strong title={projectName(entry.projectId)}>
+                          {projectName(entry.projectId)}
+                        </strong>
+                        <small title={retryTime(entry)}>
+                          {queueStateLabel(entry, now)}
+                        </small>
                       </div>
-                    ))}
-                  </div>
+                      {cancelButton(entry)}
+                    </div>
+                  ))}
                 </section>
               )}
               {reviews.length > 0 && (
                 <section
-                  className="sync-feed-section"
+                  className="sync-menu-queue"
                   aria-label="Changes that need review"
                 >
                   <h3>Needs review</h3>
-                  <div className="sync-feed-panel">
-                    {reviews.map((review) => attentionRow(review.item, review))}
-                  </div>
-                </section>
-              )}
-              {!!(setup || attentionCount || needsReconnect) && (
-                <section
-                  className="sync-feed-section"
-                  aria-label="Sync attention"
-                >
-                  <h3>
-                    {attentionCount || needsReconnect
-                      ? "Needs attention"
-                      : "Setup"}
-                  </h3>
-                  <div className="sync-feed-panel">
-                    {setup && (
-                      <SyncFeedRow
-                        title={
-                          setup.deferred
-                            ? "Project setup saved"
-                            : setupRunning
-                              ? "Initial project sync"
-                              : "Project setup needs attention"
-                        }
-                        action={
-                          !setupRunning &&
-                          onResumeSetup && (
-                            <Button
-                              size="sm"
-                              variant="secondary"
-                              disabled={busy}
-                              onClick={() => leave(onResumeSetup)}
-                            >
-                              {setup.deferred
-                                ? "Resume setup"
-                                : "Open setup recovery"}
-                            </Button>
-                          )
-                        }
+                  {reviews.map((review) => {
+                    if (review.projectId === projectId && review.showDetails)
+                      return attentionCard(review.item, review);
+                    const { uploadId } = review;
+                    const name = projectName(review.projectId);
+                    const detail = `${name} · ${review.reason}`;
+                    const reviewAction =
+                      uploadId && reviewUpload
+                        ? () => reviewUpload(uploadId)
+                        : onReviewItem && (() => onReviewItem(review));
+                    return (
+                      <div
+                        className="sync-queue-row"
+                        key={`${review.projectId}:${review.item.key}`}
+                        role="group"
+                        aria-label={`${review.item.title} in ${name}`}
                       >
-                        {setup.deferred ? (
-                          <p>Resume where you left off when you’re ready.</p>
-                        ) : (
-                          <>
-                            <p>
-                              {
-                                setupProjects.filter(
-                                  (p) => p.status === "synced",
-                                ).length
-                              }{" "}
-                              of {setupProjects.length} projects synced
-                            </p>
-                            <ul>
-                              {setupProjects.map((p) => (
-                                <li key={p.path}>
-                                  {p.name} ·{" "}
-                                  {p.status === "synced"
-                                    ? "Synced"
-                                    : p.error ||
-                                      (setupRunning
-                                        ? "In progress"
-                                        : "Pending")}
-                                </li>
-                              ))}
-                            </ul>
-                          </>
-                        )}
-                      </SyncFeedRow>
-                    )}
-                    {independentActionError && (
-                      <SyncFeedRow
-                        title="Action details"
-                        description={actionError}
-                        label="Action details"
-                        action={
-                          onDismissError && (
-                            <Button
-                              size="sm"
-                              variant="secondary"
-                              onClick={onDismissError}
-                            >
-                              Dismiss
-                            </Button>
-                          )
-                        }
-                      />
-                    )}
-                    {attention.accountError && (
-                      <SyncFeedRow
-                        title="Account sync"
-                        description={attention.accountError}
-                        label="Account sync"
-                      />
-                    )}
-                    {attentionItems.map((item) => attentionRow(item))}
-                    {needsReconnect && (
-                      <SyncFeedRow
-                        title="Project folder"
-                        action={
+                        <div className="sync-queue-project">
+                          <strong title={review.item.title}>
+                            {review.item.title}
+                          </strong>
+                          <small title={detail}>{detail}</small>
+                        </div>
+                        {reviewAction && (
                           <Button
                             variant="secondary"
                             size="sm"
-                            disabled={busy || !canConnect}
-                            onClick={() => leave(onConnect)}
+                            className="sync-queue-action"
+                            aria-label={
+                              uploadId
+                                ? undefined
+                                : `Review ${review.item.title}`
+                            }
+                            disabled={uploadId ? busy : undefined}
+                            onClick={() => leave(reviewAction)}
                           >
-                            Reconnect folder
+                            {uploadId ? "Review upload" : "Review"}
                           </Button>
-                        }
-                      />
-                    )}
-                  </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </section>
               )}
-              {attention.waitingRequests.length > 0 && (
+              {attentionCount > 0 && (
+                <h3 className="sync-menu-attention-heading">Needs attention</h3>
+              )}
+              {setup && (
+                <section className="sync-menu-notification">
+                  <h3>
+                    {setup.deferred
+                      ? "Project setup saved"
+                      : setupRunning
+                        ? "Initial project sync"
+                        : "Project setup needs attention"}
+                  </h3>
+                  {setup.deferred ? (
+                    <p>Resume where you left off when you’re ready.</p>
+                  ) : (
+                    <>
+                      <p>
+                        {
+                          setupProjects.filter((p) => p.status === "synced")
+                            .length
+                        }{" "}
+                        of {setupProjects.length} projects synced
+                      </p>
+                      <ul>
+                        {setupProjects.map((p) => (
+                          <li key={p.path}>
+                            {p.name} ·{" "}
+                            {p.status === "synced"
+                              ? "Synced"
+                              : p.error ||
+                                (setupRunning ? "In progress" : "Pending")}
+                          </li>
+                        ))}
+                      </ul>
+                    </>
+                  )}
+                  {!setupRunning && onResumeSetup && (
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      disabled={busy}
+                      onClick={() => leave(onResumeSetup)}
+                    >
+                      {setup.deferred ? "Resume setup" : "Open setup recovery"}
+                    </Button>
+                  )}
+                </section>
+              )}
+              {independentActionError && (
                 <section
-                  className="sync-feed-panel"
-                  aria-label="Waiting for approval"
+                  className="sync-menu-notification"
+                  aria-label="Action details"
                 >
-                  <SyncFeedRow
-                    title="Waiting for approval"
-                    action={
-                      onReview && (
-                        <Button
-                          size="sm"
-                          variant="secondary"
-                          onClick={() => leave(onReview)}
-                        >
-                          Open requests
-                        </Button>
-                      )
-                    }
+                  <h3>Action details</h3>
+                  <p>{actionError}</p>
+                  {onDismissError && (
+                    <Button
+                      size="sm"
+                      variant="tertiary"
+                      onClick={onDismissError}
+                    >
+                      Dismiss
+                    </Button>
+                  )}
+                </section>
+              )}
+              {attention.accountError && (
+                <section
+                  className="sync-menu-notification"
+                  aria-label="Account sync"
+                >
+                  <h3>Account sync</h3>
+                  <p>{attention.accountError}</p>
+                </section>
+              )}
+              {attentionItems.map((item) => attentionCard(item))}
+              {needsReconnect && (
+                <div className="sync-menu-notification">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={busy || !canConnect}
+                    onClick={() => leave(onConnect)}
                   >
-                    {attention.waitingRequests.map((request) => (
-                      <p key={request.id}>{request.title}</p>
-                    ))}
-                  </SyncFeedRow>
+                    Reconnect folder
+                  </Button>
+                </div>
+              )}
+              {attention.waitingRequests.length > 0 && (
+                <section className="sync-menu-notification">
+                  <h3>Waiting for approval</h3>
+                  {attention.waitingRequests.map((request) => (
+                    <p key={request.id}>{request.title}</p>
+                  ))}
+                  {onReview && (
+                    <Button
+                      size="sm"
+                      variant="tertiary"
+                      onClick={() => leave(onReview)}
+                    >
+                      Open requests
+                    </Button>
+                  )}
                 </section>
               )}
               {historyCount > 0 && (
-                <section className="sync-feed-panel">
-                  <details className="sync-feed-disclosure">
+                <section className="sync-menu-notification">
+                  <details>
                     <summary>
                       <ChevronRightIcon
                         className="sync-disclosure-chevron"
@@ -855,21 +788,22 @@ export function SyncMenu({
               )}
               {skillUsagePartial && (
                 <section
-                  className="sync-feed-panel"
+                  className="sync-menu-notification"
                   aria-label="Skill usage details"
                 >
-                  <SyncFeedRow
-                    title="Skill usage"
-                    description="Usage covers available local history; some records could not be read."
-                  />
+                  <h3>Skill usage</h3>
+                  <p>
+                    Usage covers available local history; some records could not
+                    be read.
+                  </p>
                 </section>
               )}
               {attention.accountIssues.length > 0 && (
                 <section
-                  className="sync-feed-panel"
+                  className="sync-menu-notification"
                   aria-label="Account diagnostics"
                 >
-                  <details className="sync-feed-disclosure">
+                  <details>
                     <summary>
                       <ChevronRightIcon
                         className="sync-disclosure-chevron"
@@ -878,16 +812,14 @@ export function SyncMenu({
                       />
                       Account diagnostics ({attention.accountIssues.length})
                     </summary>
-                    <div className="sync-feed-details">
-                      {attention.accountIssues.map((issue) => (
-                        <div key={issue.source}>
-                          <p>{issue.error}</p>
-                          <small>
-                            {issue.source.slice("history:unattributed:".length)}
-                          </small>
-                        </div>
-                      ))}
-                    </div>
+                    {attention.accountIssues.map((issue) => (
+                      <div key={issue.source}>
+                        <p>{issue.error}</p>
+                        <small>
+                          {issue.source.slice("history:unattributed:".length)}
+                        </small>
+                      </div>
+                    ))}
                   </details>
                 </section>
               )}
