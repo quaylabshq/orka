@@ -88,6 +88,12 @@ pub fn snapshot() -> Result<Value> {
                 if let Some(id) = source["id"].as_str().map(str::to_owned) {
                     source["queuedChanges"] =
                         json!(crate::sources::queued_for_source(&db, &project_id, &id)?);
+                    if let Some(path) = source["path"].as_str() {
+                        // Shown as a hint; a folder outside Git can still sync.
+                        source["gitRepository"] = json!(crate::indexer::has_git_repository(
+                            std::path::Path::new(path)
+                        ));
+                    }
                     if source["path"].is_string() {
                         if let Some(at) = crate::sources::sync_after(&db, &project_id, &id)? {
                             source["syncStartsAt"] =

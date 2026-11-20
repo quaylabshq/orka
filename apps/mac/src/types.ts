@@ -49,6 +49,8 @@ export interface Project {
     folderState?: "connected" | "reconnect" | "locate";
     /** Unsent changes that block disconnecting this folder on this Mac. */
     queuedChanges?: number;
+    /** False when the connected folder is not inside a Git repository. */
+    gitRepository?: boolean;
     /** When a folder newly connected on this Mac starts its first sync. */
     syncStartsAt?: string | null;
     repository?: RepositoryBinding | null;

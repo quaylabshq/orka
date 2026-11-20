@@ -214,6 +214,50 @@ pub fn resource_id(project: &Value, kind: &str, path: &str) -> Result<String> {
     Ok(indexer::resource_id(&namespace, kind, path))
 }
 
+/// Why a folder is too broad to be one project's source, if it is: syncing it
+/// would scan a whole disk, account or system area. `root` is canonical.
+pub(crate) fn too_broad(root: &Path, home: Option<&Path>) -> Option<&'static str> {
+    if root.parent().is_none() {
+        return Some("It is the top of the disk.");
+    }
+    if let Some(home) = home {
+        if root == home {
+            return Some("It is your home folder.");
+        }
+        if home.starts_with(root) {
+            return Some("It contains your home folder.");
+        }
+        if root.starts_with(home.join("Library")) {
+            return Some("It is inside your Library folder.");
+        }
+    }
+    let depth = root.components().count();
+    if root.starts_with("/Volumes") && depth <= 3 {
+        return Some("It is the top of a drive.");
+    }
+    if root.starts_with("/System")
+        || root.starts_with("/Library")
+        || [
+            "/Applications",
+            "/Users",
+            "/private",
+            "/var",
+            "/usr",
+            "/opt",
+            "/etc",
+        ]
+        .iter()
+        .any(|system| root == Path::new(system))
+    {
+        return Some("It is a system folder.");
+    }
+    None
+}
+
+fn home_folder() -> Option<PathBuf> {
+    dirs::home_dir().and_then(|home| home.canonicalize().ok())
+}
+
 fn canonical(raw: &str) -> Result<PathBuf> {
     let root = PathBuf::from(raw)
         .canonicalize()
@@ -375,6 +419,15 @@ pub(crate) async fn connect_sources(
         .iter()
         .map(|path| canonical(path))
         .collect::<Result<Vec<_>>>()?;
+    let home = home_folder();
+    for root in &roots {
+        if let Some(reason) = too_broad(root, home.as_deref()) {
+            return Err(format!(
+                "{} can't be a source folder. {reason} Choose the project's own folder instead.",
+                root.display()
+            ));
+        }
+    }
     let mut used = BTreeSet::new();
     for root in &roots {
         if !used.insert(root.clone()) {
@@ -577,6 +630,34 @@ mod folder_state_tests {
             registration_id(&[json!({"id":"removed-id"})], &pending, root),
             "removed-id"
         );
+    }
+
+    #[test]
+    fn whole_disks_accounts_and_system_areas_are_refused_as_source_folders() {
+        let home = Path::new("/Users/alex");
+        for broad in [
+            "/",
+            "/Users",
+            "/Users/alex",
+            "/Users/alex/Library",
+            "/Users/alex/Library/Application Support",
+            "/Volumes/Backup",
+            "/System/Library",
+            "/Library",
+            "/Applications",
+            "/private",
+        ] {
+            assert!(too_broad(Path::new(broad), Some(home)).is_some(), "{broad}");
+        }
+        for project in [
+            "/Users/alex/code/api",
+            "/Users/alex/Documents/notes",
+            "/Volumes/Backup/code/api",
+            "/private/var/folders/xy/T/fixture",
+            "/Users/sam/code/api",
+        ] {
+            assert_eq!(too_broad(Path::new(project), Some(home)), None, "{project}");
+        }
     }
 
     #[test]

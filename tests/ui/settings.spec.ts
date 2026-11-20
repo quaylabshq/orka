@@ -265,6 +265,40 @@ test("only a folder's own unsent changes block disconnecting it", async ({
   ).toBeVisible();
 });
 
+test("a new folder shows its first-sync wait and a non-Git hint", async ({
+  page,
+}) => {
+  const settings = await settingsFixture(page, {
+    sourceRows: [
+      {
+        id: "notes",
+        name: "notes",
+        path: "/Users/alex/Downloads/notes",
+        folderState: "connected",
+        gitRepository: false,
+        syncStartsAt: new Date(Date.now() + 150_000).toISOString(),
+      },
+      {
+        id: "api",
+        name: "api",
+        path: "/Projects/api",
+        folderState: "connected",
+        gitRepository: true,
+      },
+    ],
+  });
+  await expect(settings.getByText("Not a Git repository")).toHaveCount(1);
+  const start = button(settings, "Start syncing notes now");
+  await expect(start).toHaveText("Starts in 3 min · Sync now");
+  await start.click();
+  expect(
+    (await settingsCalls(page)).some(
+      (call) => call.command === "start_source_sync",
+    ),
+  ).toBe(true);
+  await expect(button(settings, "Start syncing api now")).toHaveCount(0);
+});
+
 test("folder recovery states expose paths in name tooltips and reconnect the selected source", async ({
   page,
 }, info) => {

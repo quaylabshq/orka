@@ -417,6 +417,10 @@
   .settings-folder-name {
     @apply min-w-0 truncate;
   }
+  .settings-folder-hint {
+    @apply shrink-0 text-xs;
+    color: var(--text-secondary);
+  }
   .settings-folder-icon {
     --icon-container: 16px;
     --icon-size: 16px;

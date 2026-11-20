@@ -10,6 +10,10 @@ Create a project and use **Add folders** to select several directories, or
 results require selection. Scanning recognizes both `.git` directories and files,
 does not follow directory symlinks, and does not recursively include unrelated
 repositories. Ordinary folders can be added through the folder picker.
+The top of a disk or drive, a home folder or a folder containing it, the
+Library folder and system folders are refused. Settings notes a connected
+folder that is not in a Git repository, since Orka matches folders across Macs
+by their repository.
 
 Use **Settings → General → Source Folder** to attach more repositories, locate a shared
 source on this Mac, or disconnect one source. In the source’s options menu,

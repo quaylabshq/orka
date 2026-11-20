@@ -67,6 +67,8 @@ export async function settingsFixture(
       folderState: "connected" | "reconnect" | "locate";
       removedAt?: string | null;
       queuedChanges?: number;
+      gitRepository?: boolean;
+      syncStartsAt?: string;
     }[];
     deletedProjects?: {
       id: string;
@@ -758,6 +760,13 @@ export async function settingsFixture(
           }
           if (command === "disconnect_project")
             projects.find((project) => project.id === args.id)!.path = null;
+          if (command === "start_source_sync") {
+            const project = projects.find((project) => project.id === args.id)!;
+            const source = project.sources.find(
+              (source) => source.id === args.sourceId,
+            ) as { syncStartsAt?: string | null } | undefined;
+            if (source) source.syncStartsAt = null;
+          }
           if (command === "switch_service") {
             if (controls.failSwitch)
               throw new Error("Service changed during validation. Try again.");

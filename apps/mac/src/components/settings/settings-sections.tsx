@@ -294,6 +294,14 @@ export function SettingsFolder({
                         >
                           {source.name}
                         </span>
+                        {source.path && source.gitRepository === false && (
+                          <span
+                            className="settings-folder-hint"
+                            title="Orka matches folders across Macs by their Git repository. Check this is the project's folder."
+                          >
+                            Not a Git repository
+                          </span>
+                        )}
                       </div>
                       <div className="settings-folder-actions">
                         {source.id &&
