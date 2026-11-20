@@ -1,12 +1,21 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { createServer } from "node:http";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  realpath,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
+import { once } from "node:events";
 
 const home = await mkdtemp(join(tmpdir(), "orka-repository-access-"));
 const binary =
@@ -15,6 +24,7 @@ const binary =
 let state = "ready",
   checks = 0,
   credentials = 0;
+let catalogFailure = 0;
 let removalCatalog:
   | {
       id: string;
@@ -26,14 +36,33 @@ let removalCatalog:
     }[]
   | null = null;
 const catalogRequests: string[] = [];
+const repository = {
+  id: "4242",
+  fullName: "fixtures/private-repo",
+  cloneUrl: "https://github.com/fixtures/private-repo.git",
+  defaultBranch: "main",
+  private: true,
+};
+const addedRepository = {
+  ...repository,
+  id: "8484",
+  fullName: "fixtures/new-repo",
+  cloneUrl: "https://github.com/fixtures/new-repo.git",
+};
 const server = createServer((req, res) => {
   void (async () => {
     const chunks: Buffer[] = [];
     for await (const chunk of req) chunks.push(Buffer.from(chunk));
     const input = JSON.parse(Buffer.concat(chunks).toString() || "{}") as {
       action: string;
+      input?: { sourceId?: string };
     };
     res.setHeader("Content-Type", "application/json");
+    if (catalogFailure && req.url?.startsWith("/v2/projects?")) {
+      res.statusCode = catalogFailure;
+      res.end(JSON.stringify({ error: "Project catalog is unavailable" }));
+      return;
+    }
     if (removalCatalog && req.url === "/v2/projects/capabilities") {
       res.end(JSON.stringify({ sourcesRemoval: 1 }));
       return;
@@ -64,7 +93,24 @@ const server = createServer((req, res) => {
         res.end(JSON.stringify({ error: "Service unavailable" }));
         return;
       }
-      res.end(JSON.stringify({ state }));
+      const added = input.input?.sourceId === addedSourceId;
+      res.end(
+        JSON.stringify({
+          state,
+          repository: added ? addedRepository : repository,
+          bindingRevision: added ? 1 : revision,
+        }),
+      );
+    } else if (input.action === "bind") {
+      res.end(JSON.stringify({ repository, revision: revision + 1 }));
+    } else if (input.action === "add-source") {
+      res.end(
+        JSON.stringify({
+          sourceId: addedSourceId,
+          repository: addedRepository,
+          revision: 1,
+        }),
+      );
     } else if (input.action === "clone-credentials") {
       credentials++;
       res.statusCode = 403;
@@ -81,7 +127,8 @@ assert.ok(address && typeof address !== "string");
 const service = `http://127.0.0.1:${address.port}`;
 const user = randomUUID(),
   projectId = randomUUID(),
-  sourceId = randomUUID();
+  sourceId = randomUUID(),
+  addedSourceId = randomUUID();
 let revision = 1;
 function native() {
   const child = spawn(binary, ["--orka-env-test"], {
@@ -144,14 +191,7 @@ async function setup(account = user, origin = service) {
         id: sourceId,
         name: "private-repo",
         path: null,
-        repository: {
-          id: "4242",
-          fullName: "fixtures/private-repo",
-          cloneUrl: "https://github.com/fixtures/private-repo.git",
-          defaultBranch: "main",
-          private: true,
-          revision,
-        },
+        repository: { ...repository, revision },
       },
     ],
   });
@@ -170,7 +210,7 @@ const command = <T>(
   });
 const input = { projectId, sourceId };
 const check = (force = false, account = user, origin = service) =>
-  command<{ state: string }>(
+  command<{ state: string; bindingRevision: number }>(
     "access-status",
     { ...input, force },
     account,
@@ -218,7 +258,32 @@ try {
     "A cached green tick must never bypass the live clone authorization",
   );
   assert.equal((await command<{ state: string }[]>("jobs"))[0].state, "failed");
-  assert.equal((await check(true)).state, "access_unavailable");
+  // A running sync holds the workspace lock. Linking a repository must wait
+  // for it: the server link already happened, and failing here made the
+  // user's retry hit a stale-revision conflict.
+  const sync = spawn(
+    "/usr/bin/python3",
+    [
+      "-c",
+      "import fcntl,sys,time;f=open(sys.argv[1],'a+');fcntl.flock(f,fcntl.LOCK_EX);print('held',flush=True);time.sleep(1)",
+      join(home, "orka", "workspace.lock"),
+    ],
+    { stdio: ["ignore", "pipe", "inherit"] },
+  );
+  await once(sync.stdout, "data");
+  const waited = Date.now();
+  await command("bind", {
+    ...input,
+    repositoryId: "4242",
+    expectedRevision: revision,
+  });
+  assert.ok(
+    Date.now() - waited >= 500,
+    "Linking a repository waits for a running sync instead of failing",
+  );
+  const afterBind = await check(true);
+  assert.equal(afterBind.state, "access_unavailable");
+  assert.equal(afterBind.bindingRevision, revision + 1);
   assert.equal(checks, 2);
   state = "ready";
   const db = database();
@@ -245,7 +310,7 @@ try {
     4,
     "Changing GitHub authorization must invalidate the saved status",
   );
-  revision = 2;
+  revision = 3;
   await setup();
   await check();
   assert.equal(
@@ -290,6 +355,100 @@ try {
     "ready",
     "A failed refresh must never revive an older green status",
   );
+  await setup();
+  catalogFailure = 503;
+  const added = await command<{ sourceId: string }>("add-source", {
+    projectId,
+    repositoryId: "8484",
+  });
+  assert.equal(added.sourceId, addedSourceId);
+  const clone = await command<{ sourceId: string; repositoryId: string }>(
+    "clone",
+    {
+      projectId,
+      sourceId: added.sourceId,
+      directory: join(home, "checkouts"),
+      folderName: "new-repo",
+    },
+  );
+  assert.equal(clone.sourceId, addedSourceId);
+  assert.equal(clone.repositoryId, "8484");
+  for (let i = 0; i < 50 && credentials < 2; i++) {
+    await new Promise((done) => setTimeout(done, 50));
+  }
+  assert.equal(
+    credentials,
+    2,
+    "A new source can start cloning when the catalog GET is unavailable",
+  );
+  const checkout = join(home, "checkouts", "completed-new-repo");
+  execFileSync("/usr/bin/git", ["init", "--quiet", checkout]);
+  execFileSync("/usr/bin/git", [
+    "-C",
+    checkout,
+    "remote",
+    "add",
+    "origin",
+    addedRepository.cloneUrl,
+  ]);
+  const destination = await realpath(checkout);
+  const identity = await stat(destination, { bigint: true });
+  const jobId = randomUUID();
+  const checkoutDb = database();
+  checkoutDb.prepare("INSERT INTO meta (key,value) VALUES (?,?)").run(
+    `repository-job:${jobId}`,
+    JSON.stringify({
+      id: jobId,
+      projectId,
+      sourceId: addedSourceId,
+      repositoryId: addedRepository.id,
+      bindingRevision: 1,
+      destination,
+      folderIdentity: `${identity.dev}:${identity.ino}`,
+      state: "interrupted",
+    }),
+  );
+  const readProject = () =>
+    String(
+      checkoutDb.prepare("SELECT value FROM projects WHERE id=?").get(projectId)
+        ?.value,
+    );
+  const readSource = () =>
+    (
+      JSON.parse(readProject()) as { sources: { id: string; path?: string }[] }
+    ).sources.find((source) => source.id === addedSourceId);
+  const finish = () =>
+    command<{ state: string }>("retry-connect", { id: jobId });
+  try {
+    catalogFailure = 403;
+    await assert.rejects(finish(), /403: Project catalog is unavailable/);
+    catalogFailure = 503;
+    state = "access_unavailable";
+    await assert.rejects(finish(), /GitHub access changed/);
+    state = "ready";
+
+    const unchanged = readProject();
+    const changed = JSON.parse(unchanged) as {
+      sources: { id: string; repositoryRevision?: number }[];
+    };
+    changed.sources.find(
+      (source) => source.id === addedSourceId,
+    )!.repositoryRevision = 2;
+    const saveProject = checkoutDb.prepare(
+      "UPDATE projects SET value=? WHERE id=?",
+    );
+    saveProject.run(JSON.stringify(changed), projectId);
+    await assert.rejects(finish(), /Repository link or GitHub access changed/);
+    saveProject.run(unchanged, projectId);
+    assert.equal(readSource()?.path, undefined);
+
+    assert.equal((await finish()).state, "connected");
+    assert.equal(readSource()?.path, destination);
+  } finally {
+    checkoutDb.close();
+  }
+  catalogFailure = 0;
+
   await setup();
   const archivedId = randomUUID(),
     archivedSourceId = randomUUID(),
@@ -394,7 +553,7 @@ try {
   );
   connection.close();
   console.log(
-    "Passed native repository access: daily cache, launch refresh, authorization/binding invalidation, account/service isolation, live clone authorization and archived project preservation during source removal.",
+    "Passed native repository access: daily cache, launch refresh, authorization/binding invalidation, account/service isolation, live clone authorization, new-source clone and checkout attachment during a catalog outage, and archived project preservation during source removal.",
   );
 } finally {
   await mac.close();
