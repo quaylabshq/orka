@@ -34,6 +34,18 @@ so a folder chosen by mistake can be disconnected before anything scans it.
 Settings shows when it starts and offers **Sync now**; reconnecting a folder
 that was already connected is not delayed.
 
+On services that advertise `sourceRemoteKey`, the first Git checkout any member
+connects to a source pins that source to its repository, by the same hashed
+remote used to suggest projects during onboarding. Other Macs can then only
+connect a checkout of that repository, over SSH or HTTPS, including a linked
+worktree; a folder of another repository, a plain folder or a repository
+without a remote is refused, and a same-named folder of another repository is
+not matched to the source by name. If a connected checkout's remote later names
+another repository, the source asks to be reconnected and pauses local writes;
+a removed or unreadable remote is not treated as another repository. Owners can
+reset a pin after a repository moves. Older services and sources connected
+before the pin keep the previous behaviour until a member connects a checkout.
+
 Services with GitHub enabled can also [link and clone repositories](github-repositories.md)
 without an existing local checkout. GitHub repository access and app installation
 remain separate from Orka project membership and context permissions.

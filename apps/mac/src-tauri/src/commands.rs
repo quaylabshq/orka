@@ -83,7 +83,7 @@ pub fn snapshot() -> Result<Value> {
         let project_id = project["id"].as_str().unwrap_or_default().to_owned();
         if let Some(sources) = project["sources"].as_array_mut() {
             for source in sources {
-                source["folderState"] = json!(crate::sources::folder_state(source));
+                source["folderState"] = json!(crate::sources::source_folder_state(source));
                 // Disconnecting a folder only waits for its own unsent changes.
                 if let Some(id) = source["id"].as_str().map(str::to_owned) {
                     source["queuedChanges"] =

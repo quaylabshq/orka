@@ -30,6 +30,7 @@ pub fn views(project: &Value) -> Vec<Value> {
             view["folderIdentity"] = source["folderIdentity"].clone();
             view["repository"] = source["repository"].clone();
             view["repositoryRevision"] = source["repositoryRevision"].clone();
+            view["sourceRemoteKey"] = source["remoteKey"].clone();
             view
         })
         .collect()
@@ -143,6 +144,40 @@ pub fn start_source_sync(id: String, source_id: String) -> Result<()> {
     SyncQueue::request(&db, &id, Priority::User, "folder")
 }
 
+/// What a folder's Git settings say about which repository it is.
+#[derive(Debug, PartialEq)]
+pub(crate) enum FolderRemote {
+    /// The hashed remote, as the server stores a source's pin.
+    Key(String),
+    /// Not in Git, or a Git repository without a remote.
+    Missing,
+    /// The Git settings could not be read; the folder is not known to differ.
+    Unknown,
+}
+
+pub(crate) fn folder_remote(root: &Path) -> FolderRemote {
+    match root.to_str().map(crate::onboarding::discovery::remote_key) {
+        Some(Ok(Some(key))) => FolderRemote::Key(key),
+        Some(Ok(None)) => FolderRemote::Missing,
+        _ => FolderRemote::Unknown,
+    }
+}
+
+const PIN_MISMATCH: &str = "This folder is a different Git repository from the one this source is linked to. Choose that repository's checkout, or ask a project owner to reset the source.";
+
+/// A source pinned to a repository only accepts a checkout of it.
+fn check_pin(source: &Value, remote: &FolderRemote) -> Result<()> {
+    let Some(pinned) = source["remoteKey"].as_str() else {
+        return Ok(());
+    };
+    match remote {
+        FolderRemote::Key(key) if key == pinned => Ok(()),
+        FolderRemote::Key(_) => Err(PIN_MISMATCH.into()),
+        FolderRemote::Missing => Err("This source is linked to a Git repository, but this folder has no Git remote to compare. Choose a checkout of that repository.".into()),
+        FolderRemote::Unknown => Err("Orka can't read this folder's Git settings to confirm it is this source's repository. Check the folder's permissions, then try again.".into()),
+    }
+}
+
 pub fn validate(project: &Value) -> Result<()> {
     if !project["removedAt"].is_null() {
         return Err("This source folder was removed from the project".into());
@@ -175,7 +210,22 @@ pub fn validate(project: &Value) -> Result<()> {
             }
         }
     }
+    if let Some(pinned) = project["sourceRemoteKey"].as_str() {
+        // Only a remote that is known and different pauses the folder; a
+        // removed or unreadable remote is not treated as another repository.
+        if matches!(folder_remote(root), FolderRemote::Key(key) if key != pinned) {
+            return Err(PIN_MISMATCH.into());
+        }
+    }
     Ok(())
+}
+
+/// [`folder_state`] for an entry of a project's `sources`, which keeps its pin
+/// as `remoteKey`; views and legacy projects use other fields.
+pub fn source_folder_state(source: &Value) -> &'static str {
+    let mut view = source.clone();
+    view["sourceRemoteKey"] = source["remoteKey"].clone();
+    folder_state(&view)
 }
 
 /// Presentation-only local state; paths and identity checks remain native.
@@ -370,6 +420,42 @@ pub fn scan_project_folders(path: String) -> Result<Vec<Value>> {
     Ok(folders)
 }
 
+/// Pins each source to the Git remote of the folder just connected to it, when
+/// the service supports it. The first Mac to connect a source sets its pin; a
+/// conflicting pin set meanwhile by another Mac refuses this folder. An
+/// unreachable or older service leaves the source unpinned, as before.
+async fn pin_sources(
+    project: &str,
+    sources: &mut [Value],
+    unpinned: Vec<(Value, String)>,
+) -> Result<()> {
+    if unpinned.is_empty() {
+        return Ok(());
+    }
+    let supported = sync::api("GET", "/v2/projects/capabilities", None)
+        .await
+        .is_ok_and(|capabilities| capabilities["sourceRemoteKey"] == 1);
+    if !supported {
+        return Ok(());
+    }
+    for (source_id, key) in unpinned {
+        let body = json!({"action":"set-source-remote","projectId":project,"sourceId":source_id,"remoteKey":key});
+        match sync::api("POST", "/v2/projects/action", Some(&body)).await {
+            Ok(_) => {
+                if let Some(source) = sources.iter_mut().find(|source| source["id"] == source_id) {
+                    source["remoteKey"] = json!(key);
+                }
+            }
+            // The service explains the conflict, such as another Mac's pin.
+            Err(error) if error.starts_with("409:") => {
+                return Err(error.trim_start_matches("409:").trim().to_owned())
+            }
+            Err(error) => eprintln!("source repository pin deferred: {error}"),
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn connect_project_sources(
     id: String,
@@ -457,12 +543,15 @@ pub(crate) async fn connect_sources(
     }
     let mut additions = Vec::new();
     let mut newly_connected = Vec::new();
+    let mut unpinned = Vec::new();
     for root in roots {
         let name = root
             .file_name()
             .ok_or("Choose a named folder")?
             .to_string_lossy()
             .to_string();
+        let remote = folder_remote(&root);
+        let mut skipped_pinned = false;
         let exact = sources.iter().position(|source| {
             source["path"]
                 .as_str()
@@ -478,11 +567,17 @@ pub(crate) async fn connect_sources(
                     if !source["removedAt"].is_null() {
                         return false;
                     }
-                    source_id.as_ref().map_or(
-                        source["name"] == name
-                            && source["path"]
-                                .as_str()
-                                .is_none_or(|path| Path::new(path) == root),
+                    source_id.as_ref().map_or_else(
+                        || {
+                            let named = source["name"] == name
+                                && source["path"]
+                                    .as_str()
+                                    .is_none_or(|path| Path::new(path) == root);
+                            // A same-named folder of another repository is not this source.
+                            let other_repository = check_pin(source, &remote).is_err();
+                            skipped_pinned |= named && other_repository;
+                            named && !other_repository
+                        },
                         |id| source["id"] == *id,
                     )
                 })
@@ -492,6 +587,7 @@ pub(crate) async fn connect_sources(
         let index = match candidates.as_slice() {
             [index] => *index,
             [] if source_id.is_some() => return Err("Repository no longer belongs to this project; refresh and try again".into()),
+            [] if skipped_pinned => return Err(format!("“{name}” is a different Git repository from the project's “{name}” source. Choose that repository's checkout, or use Locate folder beside the intended source.")),
             [] => {
                 let source_id = registration_id(&sources, &pending, &root);
                 let source = json!({"id":source_id,"name":name});
@@ -504,6 +600,10 @@ pub(crate) async fn connect_sources(
             .is_some_and(|old| Path::new(old) != root)
         {
             return Err("Disconnect this repository before changing its folder".into());
+        }
+        check_pin(&sources[index], &remote)?;
+        if let (true, FolderRemote::Key(key)) = (sources[index]["remoteKey"].is_null(), remote) {
+            unpinned.push((sources[index]["id"].clone(), key));
         }
         if sources[index]["path"].is_null() {
             if let Some(source) = sources[index]["id"].as_str() {
@@ -531,6 +631,7 @@ pub(crate) async fn connect_sources(
         )
         .await?;
     }
+    pin_sources(&id, &mut sources, unpinned).await?;
     for source in &sources {
         if let Some(path) = source["path"]
             .as_str()
@@ -540,6 +641,7 @@ pub(crate) async fn connect_sources(
             view["path"] = source["path"].clone();
             view["folderIdentity"] = source["folderIdentity"].clone();
             view["repository"] = source["repository"].clone();
+            view["sourceRemoteKey"] = source["remoteKey"].clone();
             validate(&view)?;
             native::Hooks::install(Path::new(path))?;
         }

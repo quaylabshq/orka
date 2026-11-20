@@ -30,6 +30,7 @@
     "lint": "eslint . --max-warnings 0",
     "backend:update": "node scripts/update-backend.mjs",
     "test:repository-access": "tsx scripts/repository-access-e2e.ts",
+    "test:source-pin": "tsx scripts/source-pin-e2e.ts",
     "test:plugin-native": "python3 -B scripts/plugin-native-acceptance.py"
   },
   "devDependencies": {

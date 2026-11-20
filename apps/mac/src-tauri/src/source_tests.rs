@@ -607,3 +607,97 @@ fn a_newly_connected_folder_waits_before_sync_scans_or_writes_into_it() {
     .unwrap();
     assert_eq!(sources::without_waiting(&f.db, &project).unwrap().1, None);
 }
+
+#[test]
+fn a_pinned_source_accepts_any_checkout_of_its_repository_and_nothing_else() {
+    let temp = tempfile::tempdir().unwrap();
+    let git = |dir: &std::path::Path, args: &[&str]| {
+        let output = std::process::Command::new("/usr/bin/git")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .args([
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.test",
+            ])
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    let main = temp.path().join("api");
+    fs::create_dir(&main).unwrap();
+    git(&main, &["init", "-q"]);
+    git(
+        &main,
+        &["remote", "add", "origin", "git@github.com:team/api.git"],
+    );
+    git(&main, &["commit", "-q", "--allow-empty", "-m", "fixture"]);
+    let sources::FolderRemote::Key(pin) = sources::folder_remote(&main) else {
+        panic!("a checkout with a remote has a key");
+    };
+    // A linked worktree shares the repository's remote.
+    let worktree = temp.path().join("api-feature");
+    git(
+        &main,
+        &["worktree", "add", "-q", worktree.to_str().unwrap()],
+    );
+    assert_eq!(
+        sources::folder_remote(&worktree),
+        sources::FolderRemote::Key(pin.clone())
+    );
+    // HTTPS and a different case name the same GitHub repository.
+    let https = temp.path().join("https");
+    fs::create_dir(&https).unwrap();
+    git(&https, &["init", "-q"]);
+    git(
+        &https,
+        &["remote", "add", "origin", "https://github.com/Team/API.git"],
+    );
+    assert_eq!(
+        sources::folder_remote(&https),
+        sources::FolderRemote::Key(pin.clone())
+    );
+    // Another repository, a repository without a remote and a plain folder differ.
+    let other = temp.path().join("other");
+    fs::create_dir(&other).unwrap();
+    git(&other, &["init", "-q"]);
+    git(
+        &other,
+        &["remote", "add", "origin", "git@github.com:someone/api.git"],
+    );
+    assert!(
+        matches!(sources::folder_remote(&other), sources::FolderRemote::Key(key) if key != pin)
+    );
+    let bare = temp.path().join("no-remote");
+    fs::create_dir(&bare).unwrap();
+    git(&bare, &["init", "-q"]);
+    assert_eq!(
+        sources::folder_remote(&bare),
+        sources::FolderRemote::Missing
+    );
+    let plain = temp.path().join("plain");
+    fs::create_dir(&plain).unwrap();
+    assert_eq!(
+        sources::folder_remote(&plain),
+        sources::FolderRemote::Missing
+    );
+
+    // A connected folder whose remote now names another repository pauses.
+    let view = |root: &std::path::Path| json!({"path":root,"folderIdentity":indexer::folder_identity(root).unwrap(),"sourceRemoteKey":pin});
+    assert!(sources::validate(&view(&main)).is_ok());
+    assert!(sources::validate(&view(&worktree)).is_ok());
+    assert!(sources::validate(&view(&other)).is_err());
+    // Without a known remote the folder is not treated as another repository.
+    assert!(sources::validate(&view(&bare)).is_ok());
+    // A legacy project's remote hint is not a source pin.
+    let mut legacy = view(&other);
+    legacy["sourceRemoteKey"] = Value::Null;
+    legacy["remoteKey"] = json!(pin);
+    assert!(sources::validate(&legacy).is_ok());
+}
