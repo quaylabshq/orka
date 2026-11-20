@@ -108,7 +108,7 @@ pub(crate) async fn api_at(
     Ok(value)
 }
 
-pub(crate) async fn register_device(owner: &str, origin: &str, device: &str) -> Result<()> {
+async fn register_device(owner: &str, origin: &str, device: &str) -> Result<Value> {
     let capabilities = api_at(owner, origin, "GET", "/v2/projects/capabilities", None)
         .await
         .unwrap_or(Value::Null);
@@ -116,7 +116,8 @@ pub(crate) async fn register_device(owner: &str, origin: &str, device: &str) -> 
     if capabilities["deviceHardware"] == 1 {
         registration["hardwareFamily"] = json!(crate::device_metadata::local_family(&db::open()?)?);
     }
-    post_device_registration(owner, origin, registration).await
+    post_device_registration(owner, origin, registration).await?;
+    Ok(capabilities)
 }
 
 pub(crate) async fn post_device_registration(
@@ -1864,10 +1865,15 @@ impl<'a> SyncPass<'a> {
             .as_str()
             .ok_or("Configure the service")?
             .to_string();
-        register_device(owner, &origin, &device).await?;
+        let capabilities = register_device(owner, &origin, &device).await?;
         let projects = api_as(owner, "GET", crate::projects::CATALOG_PATH, None).await?;
         crate::projects::merge_catalog(db, &projects)?;
-        crate::sources::backfill_remote_pins(db, owner, &origin).await?;
+        // Reuse registration's capabilities instead of probing again for pins.
+        let origin = origin.as_str();
+        crate::sources::backfill_remote_pins(db, &capabilities, |body| async move {
+            crate::sources::post_remote_pin(owner, origin, &body).await
+        })
+        .await?;
         Ok(Continue(()))
     }
 

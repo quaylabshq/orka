@@ -166,6 +166,7 @@ fn linked_keys(repository: &Value) -> Vec<String> {
         .collect()
 }
 
+// Any matching remote guards against mistakes, not tampering: Git config is editable.
 fn matches_pin(pinned: &str, repository: &Value, keys: &[String]) -> bool {
     if repository["cloneUrl"].is_string() {
         let linked = linked_keys(repository);
@@ -474,97 +475,79 @@ fn pin_candidate(project: &Value, source: &Value) -> Option<(String, Vec<String>
 
 /// Try again after every catalog refresh. Nothing records a failed attempt as
 /// complete, and the server returns the winner even if another Mac wrote first.
-pub(crate) async fn backfill_remote_pins(
+pub(crate) async fn backfill_remote_pins<F: std::future::Future<Output = Result<Value>> + Send>(
     db: &mut rusqlite::Connection,
-    owner: &str,
-    origin: &str,
+    capabilities: &Value,
+    mut post_pin: impl FnMut(Value) -> F + Send,
 ) -> Result<()> {
+    if capabilities["sourceRemoteKey"] != 1 {
+        return Ok(());
+    }
     let mut projects = db::rows(
         db,
         &format!("SELECT value FROM projects WHERE {}", projects::ACTIVE),
         &[],
     )?;
-    let Some(remote) = PinService::discover(owner, origin).await else {
-        return Ok(());
-    };
     for project in &mut projects {
         if projects::foreground_waiting()? {
             break;
         }
-        remote.pin_project(db, project, &[]).await?;
+        pin_project(db, project, &[], &mut post_pin).await?;
     }
     Ok(())
 }
 
-struct PinService<'a> {
-    owner: &'a str,
-    origin: &'a str,
+pub(crate) async fn post_remote_pin(owner: &str, origin: &str, body: &Value) -> Result<Value> {
+    sync::api_at(owner, origin, "POST", "/v2/projects/action", Some(body)).await
 }
 
-impl<'a> PinService<'a> {
-    async fn discover(owner: &'a str, origin: &'a str) -> Option<Self> {
-        sync::api_at(owner, origin, "GET", "/v2/projects/capabilities", None)
-            .await
-            .is_ok_and(|capabilities| capabilities["sourceRemoteKey"] == 1)
-            .then_some(Self { owner, origin })
-    }
-
-    async fn pin_project(
-        &self,
-        db: &mut rusqlite::Connection,
-        project: &mut Value,
-        newly_connected: &[String],
-    ) -> Result<()> {
-        let Some(mut sources) = project["sources"].as_array().cloned() else {
-            return Ok(());
+async fn pin_project<F: std::future::Future<Output = Result<Value>> + Send>(
+    db: &mut rusqlite::Connection,
+    project: &mut Value,
+    newly_connected: &[String],
+    mut post_pin: impl FnMut(Value) -> F + Send,
+) -> Result<()> {
+    let Some(mut sources) = project["sources"].as_array().cloned() else {
+        return Ok(());
+    };
+    let project_id = project["id"].as_str().ok_or("Missing project")?.to_owned();
+    let mut conflict = false;
+    for source in &mut sources {
+        let Some(id) = source["id"].as_str().map(str::to_owned) else {
+            continue;
         };
-        let project_id = project["id"].as_str().ok_or("Missing project")?.to_owned();
-        let mut conflict = false;
-        for source in &mut sources {
-            let Some(id) = source["id"].as_str().map(str::to_owned) else {
-                continue;
-            };
-            let Some((key, keys)) = pin_candidate(project, source) else {
-                continue;
-            };
-            let body = json!({"action":"set-source-remote","projectId":project_id,"sourceId":id,"remoteKey":key});
-            match sync::api_at(
-                self.owner,
-                self.origin,
-                "POST",
-                "/v2/projects/action",
-                Some(&body),
-            )
-            .await
-            {
-                Ok(receipt) if receipt["sourceId"] == id && receipt["remoteKey"].is_string() => {
-                    let pinned = receipt["remoteKey"]
-                        .as_str()
-                        .ok_or("Missing source repository key")?;
-                    source["remoteKey"] = json!(pinned);
-                    if newly_connected.contains(&id)
-                        && !matches_pin(pinned, &source["repository"], &keys)
-                    {
-                        // Keep old bindings on a conflict, but refuse a new folder
-                        // when another Mac won the race during this connection.
-                        source["path"] = Value::Null;
-                        source["folderIdentity"] = Value::Null;
-                        conflict = true;
-                    }
+        let Some((key, keys)) = pin_candidate(project, source) else {
+            continue;
+        };
+        let body = json!({"action":"set-source-remote","projectId":project_id,"sourceId":id,"remoteKey":key});
+        match post_pin(body).await {
+            Ok(receipt) if receipt["sourceId"] == id && receipt["remoteKey"].is_string() => {
+                let pinned = receipt["remoteKey"]
+                    .as_str()
+                    .ok_or("Missing source repository key")?;
+                source["remoteKey"] = json!(pinned);
+                if newly_connected.contains(&id)
+                    && !matches_pin(pinned, &source["repository"], &keys)
+                {
+                    // Keep old bindings on a conflict, but refuse a new folder
+                    // when another Mac won the race during this connection.
+                    source["path"] = Value::Null;
+                    source["folderIdentity"] = Value::Null;
+                    conflict = true;
                 }
-                Err(error) => eprintln!("source repository pin deferred: {error}"),
-                Ok(_) => eprintln!("source repository pin deferred: invalid service response"),
             }
+            Err(error) => eprintln!("source repository pin deferred: {error}"),
+            Ok(_) => eprintln!("source repository pin deferred: invalid service response"),
         }
-        if project["sources"].as_array() != Some(&sources) {
-            project["sources"] = json!(sources);
-            db::upsert(db, "projects", &project_id, &project_id, project)?;
-        }
-        if conflict {
-            Err(PIN_MISMATCH.into())
-        } else {
-            Ok(())
-        }
+    }
+    if project["sources"].as_array() != Some(&sources) {
+        project["sources"] = json!(sources);
+        db::upsert(db, "projects", &project_id, &project_id, project)?;
+    }
+    if conflict {
+        Err(PIN_MISMATCH.into())
+    } else {
+        Ok(())
     }
 }
 
@@ -784,13 +767,24 @@ pub(crate) async fn connect_sources(
     }
     // The connection is now saved and queued. The sync pass will retry if the
     // service is unavailable, without treating a failed pin as a failed connect.
-    let owner = db::get(&db, "user")?;
-    let config = db::get(&db, "config")?;
-    if let (Some(owner), Some(origin)) = (owner.as_str(), config["apiUrl"].as_str()) {
-        if let Some(remote) = PinService::discover(owner, origin).await {
-            remote
-                .pin_project(&mut db, &mut project, &newly_connected)
+    if project["sources"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|source| source["id"].is_string() && pin_candidate(&project, source).is_some())
+    {
+        let owner = db::get(&db, "user")?;
+        let config = db::get(&db, "config")?;
+        if let (Some(owner), Some(origin)) = (owner.as_str(), config["apiUrl"].as_str()) {
+            if sync::api_at(owner, origin, "GET", "/v2/projects/capabilities", None)
+                .await
+                .is_ok_and(|capabilities| capabilities["sourceRemoteKey"] == 1)
+            {
+                pin_project(&mut db, &mut project, &newly_connected, |body| async move {
+                    post_remote_pin(owner, origin, &body).await
+                })
                 .await?;
+            }
         }
     }
     Ok(())

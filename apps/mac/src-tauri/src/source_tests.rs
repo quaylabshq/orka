@@ -686,10 +686,15 @@ fn a_pinned_source_accepts_any_checkout_of_its_repository_and_nothing_else() {
     legacy["remoteKey"] = json!(pin);
     assert!(sources::validate(&legacy).is_ok());
     assert_eq!(sources::folder_state(&view(&other)), "repository-conflict");
+    let mut linked = view(&other);
+    linked["repository"] = json!({"cloneUrl":"https://github.com/team/api.git"});
+    assert!(sources::validate(&linked).is_err());
     git(
         &other,
         &["remote", "add", "upstream", "git@github.com:team/api.git"],
     );
+    // An extra matching remote passes the mistake guard even on the wrong checkout.
+    assert!(sources::validate(&linked).is_ok());
     let subfolder = other.join("packages/frontend");
     fs::create_dir_all(&subfolder).unwrap();
     assert!(sources::validate(&view(&subfolder)).is_ok());
@@ -698,4 +703,49 @@ fn a_pinned_source_accepts_any_checkout_of_its_repository_and_nothing_else() {
     assert!(sources::validate(&renamed).is_ok());
     renamed["sourceRemoteKey"] = json!(remote_keys(&other).unwrap()[0]);
     assert!(sources::validate(&renamed).is_err());
+}
+
+#[test]
+fn pin_backfill_only_sends_writes_for_supported_unpinned_sources() {
+    let mut f = Fixture::new();
+    let git = f.root.join(".git");
+    fs::create_dir_all(&git).unwrap();
+    fs::write(
+        git.join("config"),
+        "[remote \"origin\"]\nurl = git@github.com:team/api.git\n",
+    )
+    .unwrap();
+    let key = db::digest(b"orka-remote-v1:github.com/team/api");
+    let id = f.project["id"].as_str().unwrap().to_owned();
+    f.project["sources"] = json!([{"id":"source","path":f.root}]);
+    db::upsert(&f.db, "projects", &id, &id, &f.project).unwrap();
+
+    let supported = json!({"sourceRemoteKey":1});
+    tauri::async_runtime::block_on(async {
+        sources::backfill_remote_pins(&mut f.db, &json!({}), |_| async {
+            panic!("unsupported service received a pin write")
+        })
+        .await
+        .unwrap();
+
+        let mut sent = Vec::new();
+        sources::backfill_remote_pins(&mut f.db, &supported, |body| {
+            sent.push(body);
+            std::future::ready(Ok(json!({"sourceId":"source", "remoteKey":key})))
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            sent,
+            vec![
+                json!({"action":"set-source-remote","projectId":id,"sourceId":"source","remoteKey":key})
+            ]
+        );
+
+        sources::backfill_remote_pins(&mut f.db, &supported, |_| async {
+            panic!("fully pinned project sent another pin write")
+        })
+        .await
+        .unwrap();
+    });
 }
