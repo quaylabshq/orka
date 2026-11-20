@@ -37,6 +37,17 @@ fn trusted_only_when_every_orka_hook_is_approved() {
     let mut mixed = orka("trusted");
     mixed[2]["trustStatus"] = json!("untrusted");
     assert_eq!(check(mixed, json!({})), Trust::HooksNotApproved);
+    let mut duplicate = orka("trusted");
+    duplicate.push(hook(
+        "stop",
+        "untrusted",
+        ORKA,
+        &format!("{ROOT}/.codex/hooks.json"),
+    ));
+    assert_eq!(check(duplicate, json!({})), Trust::HooksNotApproved);
+    let mut missing = orka("trusted");
+    missing.pop();
+    assert!(matches!(check(missing, json!({})), Trust::Unknown(_)));
     let mut changed = orka("trusted");
     changed[0]["trustStatus"] = json!("modified");
     assert_eq!(check(changed, json!({})), Trust::HooksChanged);
@@ -112,6 +123,12 @@ fn missing_or_unrecognized_answers_stay_unknown() {
         &json!({}),
     );
     assert!(matches!(none, Trust::Unknown(_)));
+    let mut failed = listed(Vec::new());
+    failed["data"][0]["errors"] = json!(["Cannot load hooks"]);
+    assert!(matches!(
+        classify(Path::new(ROOT), &failed, &json!({})),
+        Trust::Unknown(_)
+    ));
     let mut odd = orka("trusted");
     odd[0]["trustStatus"] = json!("pending-review");
     assert!(matches!(check(odd, json!({})), Trust::Unknown(_)));

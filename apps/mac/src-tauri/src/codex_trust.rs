@@ -44,7 +44,7 @@ pub fn inspect(roots: &[PathBuf]) -> Report {
     if roots.is_empty() {
         return Report::Folders(Vec::new());
     }
-    let mut rpc = match native::Rpc::connect() {
+    let mut rpc = match native::Rpc::connect_for_trust() {
         Ok(rpc) => rpc,
         Err(error) => return Report::Unavailable(error),
     };
@@ -71,6 +71,9 @@ pub fn inspect(roots: &[PathBuf]) -> Report {
 
 /// Classifies one folder from Codex's `hooks/list` and `config/read` results.
 pub fn classify(root: &Path, listed: &Value, config: &Value) -> Trust {
+    if !config.is_object() {
+        return Trust::Unknown("Codex did not return its configuration".into());
+    }
     if config["features"]["hooks"] == false {
         return Trust::HooksDisabled;
     }
@@ -83,6 +86,14 @@ pub fn classify(root: &Path, listed: &Value, config: &Value) -> Trust {
     else {
         return Trust::Unknown(format!("Codex did not report hooks for {root_text}"));
     };
+    if ["errors", "warnings"].iter().any(|field| {
+        entry[*field]
+            .as_array()
+            .is_some_and(|items| !items.is_empty())
+    }) || !entry["hooks"].is_array()
+    {
+        return Trust::Unknown("Codex could not inspect the folder's hooks reliably".into());
+    }
     let file = root.join(".codex/hooks.json");
     let ours: Vec<&Value> = entry["hooks"]
         .as_array()
@@ -106,7 +117,17 @@ pub fn classify(root: &Path, listed: &Value, config: &Value) -> Trust {
             .iter()
             .all(|hook| matches!(hook["trustStatus"].as_str(), Some("trusted" | "managed")))
         {
-            Trust::Trusted
+            if native::Hooks::EVENTS.iter().all(|event| {
+                ours.iter().any(|hook| {
+                    hook["eventName"]
+                        .as_str()
+                        .is_some_and(|name| name.eq_ignore_ascii_case(event))
+                })
+            }) {
+                Trust::Trusted
+            } else {
+                Trust::Unknown("Codex did not load every Orka hook event".into())
+            }
         } else {
             Trust::Unknown("Codex reported an unrecognized hook trust status".into())
         };
@@ -124,12 +145,24 @@ pub fn classify(root: &Path, listed: &Value, config: &Value) -> Trust {
 /// parent's (a repository root entry also covers its subfolders).
 fn folder_trust<'a>(root: &Path, config: &'a Value) -> Option<&'a str> {
     let projects = config["projects"].as_object()?;
-    root.ancestors().find_map(|folder| {
-        projects
-            .iter()
-            .find(|(key, _)| same_path(Some(key), folder))
-            .and_then(|(_, entry)| entry["trust_level"].as_str())
-    })
+    let canonical = root.canonicalize().ok();
+    canonical
+        .as_deref()
+        .unwrap_or(root)
+        .ancestors()
+        .find_map(|folder| {
+            projects
+                .iter()
+                .filter_map(|(key, entry)| {
+                    let level = entry["trust_level"].as_str()?;
+                    same_path(Some(key), folder).then_some(level)
+                })
+                .min_by_key(|level| *level != "untrusted")
+        })
+        .or_else(|| {
+            root.ancestors()
+                .find_map(|folder| projects.get(folder.to_str()?)?["trust_level"].as_str())
+        })
 }
 
 fn same_path(reported: Option<&str>, expected: &Path) -> bool {

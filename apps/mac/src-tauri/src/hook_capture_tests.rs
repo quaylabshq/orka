@@ -268,7 +268,7 @@ fn hook_activity_is_recorded_per_source_folder_and_tool_wide() {
     let mut project = f.project.clone();
     project["path"] = Value::Null;
     project["sources"] = json!([{"id":"one","path":f.root},{"id":"two","path":second}]);
-    let id = project["id"].as_str().unwrap();
+    let id = f.project["id"].as_str().unwrap();
     db::upsert(&f.db, "projects", id, "", &project).unwrap();
     native::hook(
         "codex",
@@ -280,4 +280,9 @@ fn hook_activity_is_recorded_per_source_folder_and_tool_wide() {
     assert!(db::get(&f.db, "hookSeen:codex:two").unwrap().is_string());
     assert!(db::get(&f.db, "hookSeen:codex:one").unwrap().is_null());
     assert!(db::get(&f.db, "hookSeen:claude:two").unwrap().is_null());
+    let legacy = db::get(&f.db, "hookSeen:codex").unwrap();
+    project["sources"][1]["removedAt"] = json!(db::now());
+    db::upsert(&f.db, "projects", id, "", &project).unwrap();
+    assert!(db::get(&f.db, "hookSeen:codex:two").unwrap().is_null());
+    assert_eq!(db::get(&f.db, "hookSeen:codex").unwrap(), legacy);
 }
