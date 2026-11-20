@@ -37,14 +37,19 @@ export function ConflictPanel({
     conflict.deviceId === deviceId ? "candidate" : "current";
   const remote: SessionVersion = local === "current" ? "candidate" : "current";
   const ownerOnly = busy || owner !== user;
+  const session = conflict.candidate.kind === "session";
   return (
     <div className="conflict rounded-xl border border-line bg-panel">
       <strong>
         <TriangleAlertIcon size={16} aria-hidden="true" />
-        Two session versions need a choice.
+        {session
+          ? "Two session versions need a choice."
+          : "Two versions need a choice."}
       </strong>
       <p>
-        Open sessions stay untouched. Override applies after the session closes.
+        {session
+          ? "Open sessions stay untouched. Override applies after the session closes."
+          : "Review the shared and incoming versions before choosing which to keep."}
       </p>
       <div className="actions">
         <Button

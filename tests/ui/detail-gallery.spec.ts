@@ -21,6 +21,19 @@ async function open(
 }
 const stateTitle = (page: Page) => page.locator(".reader-state-title");
 
+test("a memory conflict describes the versions and keeps its review controls visible", async ({
+  page,
+}) => {
+  const view = await open(page, compact, { kind: "memory", conflict: true });
+  const panel = view.locator(".conflict");
+  await expect(panel).toContainText("Two versions need a choice.");
+  await expect(panel).toHaveCSS("background-color", "rgb(18, 18, 18)");
+  const incoming = panel.getByRole("button", { name: "View incoming version" });
+  await expect(incoming).toHaveCSS("background-color", "rgb(28, 28, 28)");
+  await incoming.press("Enter");
+  await expect(incoming).toHaveAttribute("aria-pressed", "true");
+});
+
 for (const kind of ["memory", "plan"] as const) {
   const folder = kind === "memory" ? "memories" : "plans";
   const label = kind === "memory" ? "Memory" : "Plan";
