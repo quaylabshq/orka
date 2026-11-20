@@ -11,6 +11,126 @@ fn inspect(f: &Fixture) -> Trust {
     }
 }
 
+#[test]
+fn codex_trust_refuses_unsupported_or_unversioned_writes_and_retries_conflicts_once() {
+    use std::os::unix::fs::PermissionsExt;
+
+    for (mode, message, writes) in [
+        ("old-list", "Codex version", 0),
+        ("old-write", "Codex version", 1),
+        ("no-version", "Codex version", 0),
+        ("conflict", "changed while Orka was saving", 2),
+        ("changed-snapshot", "changed while Orka was saving", 0),
+    ] {
+        let f = Fixture::new();
+        native::Hooks::install(&f.root).unwrap();
+        let bin = f._home.path().join(".local/bin");
+        fs::create_dir_all(&bin).unwrap();
+        fs::create_dir_all(native::codex_home().unwrap()).unwrap();
+        let binary = bin.join("codex");
+        let script = r#"#!/bin/sh
+mode=@MODE@
+reads=0
+while IFS= read -r line; do
+  case "$line" in '{"id":'*) ;; *) continue ;; esac
+  id=${line#*\"id\":}; id=${id%%,*}
+  case "$line" in
+    *'"method":"initialize"'*) result='{}' ;;
+    *'"method":"config/read"'*)
+      reads=$((reads+1)); version=version-1
+      if [ "$mode" = changed-snapshot ]; then version=version-$reads; fi
+      if [ "$mode" = no-version ]; then version=; fi
+      result='{"config":{},"layers":[{"name":{"type":"user"},"version":"'"$version"'","config":{}}]}' ;;
+    *'"method":"hooks/list"'*)
+      if [ "$mode" = old-list ]; then
+        printf '{"id":%s,"error":{"code":-32601}}\n' "$id"; continue
+      fi
+      result='{"data":[{"cwd":@ROOT@,"hooks":[]}]}' ;;
+    *'"method":"config/batchWrite"'*)
+      case "$line" in *'"expectedVersion":"version-1"'*) ;; *) exit 1 ;; esac
+      echo write >> "$CODEX_HOME/writes"
+      if [ "$mode" = old-write ]; then
+        printf '{"id":%s,"error":{"code":-32601}}\n' "$id"
+      else
+        printf '{"id":%s,"error":{"code":-32000,"message":"stale","data":{"config_write_error_code":"configVersionConflict"}}}\n' "$id"
+      fi
+      continue ;;
+    *) exit 1 ;;
+  esac
+  printf '{"id":%s,"result":%s}\n' "$id" "$result"
+done
+"#;
+        fs::write(
+            &binary,
+            script
+                .replace("@MODE@", mode)
+                .replace("@ROOT@", &json!(f.root).to_string()),
+        )
+        .unwrap();
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+        let project = f.project["id"].as_str().unwrap();
+        let status = codex_trust::project_status(&f.db, project).unwrap();
+        assert_eq!(
+            status["state"],
+            if mode == "old-list" {
+                "unsupported"
+            } else {
+                "ready"
+            }
+        );
+        let token = status["folders"][0]["folderToken"].as_str();
+        // Obtain a real folder token if this server could never report one.
+        let token = token.map(str::to_owned).unwrap_or_else(|| {
+            let identity = crate::indexer::folder_identity(&f.root).unwrap();
+            db::digest(json!([f.root, identity]).to_string().as_bytes())
+        });
+        let error = codex_trust::trust(&f.db, project, project, &token).unwrap_err();
+        assert!(error.contains(message), "{mode}: {error}");
+        assert_eq!(
+            fs::read_to_string(native::codex_home().unwrap().join("writes"))
+                .unwrap_or_default()
+                .lines()
+                .count(),
+            writes,
+            "{mode}"
+        );
+    }
+}
+
+#[test]
+fn codex_status_times_out_and_reaps_its_one_child() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new();
+    native::Hooks::install(&f.root).unwrap();
+    let bin = f._home.path().join(".local/bin");
+    fs::create_dir_all(&bin).unwrap();
+    let home = native::codex_home().unwrap();
+    fs::create_dir_all(&home).unwrap();
+    let binary = bin.join("codex");
+    fs::write(
+        &binary,
+        "#!/bin/sh\necho $$ >> \"$CODEX_HOME/pids\"\nexec /bin/sleep 60\n",
+    )
+    .unwrap();
+    fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+    let started = std::time::Instant::now();
+    let project = f.project["id"].as_str().unwrap();
+    let status = codex_trust::project_status(&f.db, project).unwrap();
+    assert_eq!(status["state"], "unavailable", "{status}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(20));
+    let pids = fs::read_to_string(home.join("pids")).unwrap();
+    assert_eq!(pids.lines().count(), 1, "{pids}");
+    let pid = pids.trim().parse::<u32>().unwrap().to_string();
+    let child = std::process::Command::new("/bin/ps")
+        .args(["-p", &pid])
+        .output()
+        .unwrap();
+    assert!(
+        !child.status.success(),
+        "Codex child is still present: {child:?}"
+    );
+}
+
 /// Approves every Orka hook Codex lists for the folder, as `/hooks` would.
 fn approve(f: &Fixture, config: &Path) {
     let mut rpc = native::Rpc::connect().unwrap();
@@ -79,7 +199,18 @@ fn codex_trust_live_trust_action_approves_only_orka_and_keeps_user_config() {
     let project = f.project["id"].as_str().unwrap();
     let status = codex_trust::project_status(&f.db, project).unwrap();
     assert_eq!(status["folders"][0]["state"], "folder-not-trusted");
-    let result = codex_trust::trust(&f.db, project, project).unwrap();
+    let token = status["folders"][0]["folderToken"].as_str().unwrap();
+    let replacement = f.root.join("replacement");
+    fs::create_dir(&replacement).unwrap();
+    native::Hooks::install(&replacement).unwrap();
+    let mut changed = f.project.clone();
+    changed["path"] = json!(replacement);
+    db::upsert(&f.db, "projects", project, project, &changed).unwrap();
+    let error = codex_trust::trust(&f.db, project, project, token).unwrap_err();
+    assert!(error.contains("folder changed"), "{error}");
+    assert_eq!(fs::read_to_string(&config).unwrap(), before);
+    db::upsert(&f.db, "projects", project, project, &f.project).unwrap();
+    let result = codex_trust::trust(&f.db, project, project, token).unwrap();
     assert_eq!(result["state"], "trusted", "{result}");
     let after = fs::read_to_string(&config).unwrap();
     assert!(after.contains("# my settings") && after.contains("model = \"gpt-5\""));
@@ -97,7 +228,7 @@ fn codex_trust_live_trust_action_approves_only_orka_and_keeps_user_config() {
     assert_eq!(mine[0]["trustStatus"], "untrusted");
     // Running it again is a no-op.
     assert_eq!(
-        codex_trust::trust(&f.db, project, project).unwrap()["state"],
+        codex_trust::trust(&f.db, project, project, token).unwrap()["state"],
         "trusted"
     );
     assert_eq!(fs::read_to_string(&config).unwrap(), after);
@@ -114,9 +245,82 @@ fn codex_trust_live_trust_action_approves_only_orka_and_keeps_user_config() {
     );
     assert_ne!(untrusted, after);
     fs::write(&config, &untrusted).unwrap();
-    let error = codex_trust::trust(&f.db, project, project).unwrap_err();
+    let error = codex_trust::trust(&f.db, project, project, token).unwrap_err();
     assert!(error.contains("marked untrusted"), "{error}");
     assert_eq!(fs::read_to_string(&config).unwrap(), untrusted);
     // Unknown folders are refused before Codex is touched.
-    assert!(codex_trust::trust(&f.db, project, "other").is_err());
+    assert!(codex_trust::trust(&f.db, project, "other", token).is_err());
+    let parent = f.root.canonicalize().unwrap();
+    let conflicting = format!(
+        "{after}\n[projects.{:?}]\ntrust_level = \"untrusted\"\n",
+        parent.parent().unwrap()
+    );
+    fs::write(&config, &conflicting).unwrap();
+    let error = codex_trust::trust(&f.db, project, project, token).unwrap_err();
+    assert!(error.contains("marked untrusted"), "{error}");
+    assert_eq!(fs::read_to_string(&config).unwrap(), conflicting);
+}
+
+#[test]
+#[ignore = "requires installed Codex with hooks/list; isolated CODEX_HOME"]
+fn codex_trust_live_reapproves_moved_app_without_adding_a_nested_trust_entry() {
+    let f = Fixture::new();
+    f.select_codex_binary();
+    // The saved source is a subfolder of a repository already trusted in Codex.
+    let repo = f.root.parent().unwrap();
+    assert!(std::process::Command::new("git")
+        .arg("init")
+        .arg(repo)
+        .output()
+        .unwrap()
+        .status
+        .success());
+    native::Hooks::install(&f.root).unwrap();
+    let hooks = f.root.join(".codex/hooks.json");
+    let installed = fs::read_to_string(&hooks).unwrap();
+    let executable = crate::updates::executable().unwrap();
+    let old = executable.with_file_name("Orka-before-moving");
+    // Simulate hooks created by a legacy Orka build at the previous location.
+    let legacy = installed
+        .replace(executable.to_str().unwrap(), old.to_str().unwrap())
+        .replace("--orka-hook", "--workspace-hook");
+    fs::write(&hooks, legacy).unwrap();
+    let home = native::codex_home().unwrap();
+    fs::create_dir_all(&home).unwrap();
+    let config = home.join("config.toml");
+    fs::write(
+        &config,
+        format!("[projects.{repo:?}]\ntrust_level = \"trusted\"\n"),
+    )
+    .unwrap();
+    assert_eq!(inspect(&f), Trust::HooksNotApproved);
+    approve(&f, &config);
+    assert_eq!(inspect(&f), Trust::Trusted);
+    let approved = fs::read_to_string(&config).unwrap();
+    fs::write(
+        &config,
+        approved.replacen(
+            "trusted_hash =",
+            "enabled = true # keep this preference\ntrusted_hash =",
+            1,
+        ),
+    )
+    .unwrap();
+    // Reconnect replaces obsolete commands; approval is still tied to the old hashes.
+    fs::write(&hooks, installed).unwrap();
+    let project = f.project["id"].as_str().unwrap();
+    let status = codex_trust::project_status(&f.db, project).unwrap();
+    assert_eq!(status["folders"][0]["state"], "hooks-changed");
+    let token = status["folders"][0]["folderToken"].as_str().unwrap();
+    assert_eq!(
+        codex_trust::trust(&f.db, project, project, token).unwrap()["state"],
+        "trusted"
+    );
+    let after = fs::read_to_string(&config).unwrap();
+    assert_eq!(after.matches("trust_level").count(), 1, "{after}");
+    assert_eq!(after.matches("trusted_hash").count(), 4, "{after}");
+    assert!(
+        after.contains("enabled = true # keep this preference"),
+        "{after}"
+    );
 }

@@ -4,8 +4,7 @@
 //! and it only runs each project hook after that hook's current hash has been
 //! approved (`hooks.state.<key>.trusted_hash` in the user's `config.toml`). A
 //! correct hook file is therefore not proof that Codex receives Orka memory.
-//! This module asks Codex itself through `hooks/list` and `config/read`, and
-//! never writes Codex configuration.
+//! Status reads Codex configuration. Only the explicit trust action writes it.
 use crate::{
     db::{self, Result},
     native, projects, sources,
@@ -216,23 +215,46 @@ mod codex_trust_tests;
 pub fn project_status(db: &rusqlite::Connection, project_id: &str) -> Result<Value> {
     let folders = connected_sources(db, project_id)?;
     let roots: Vec<PathBuf> = folders.iter().map(|(_, root)| root.clone()).collect();
-    Ok(match inspect(&roots) {
-        Report::Folders(found) => {
-            let folders: Vec<Value> = folders
+    let tokens: Vec<_> = roots.iter().map(|root| folder_token(root).ok()).collect();
+    Ok(
+        match inspect_with(&roots, |root, listed, config| {
+            let trust = classify(root, listed, config);
+            let original = folders
                 .iter()
-                .zip(found)
-                .map(|((source, root), (_, trust))| {
-                    let mut value = trust.to_json();
-                    value["sourceId"] = source["sourceId"].clone();
-                    value["path"] = json!(root);
-                    value
-                })
-                .collect();
-            json!({"state":"ready","folders":folders})
-        }
-        Report::Unsupported => json!({"state":"unsupported","folders":[]}),
-        Report::Unavailable(reason) => json!({"state":"unavailable","reason":reason,"folders":[]}),
-    })
+                .find(|(_, path)| path == root)
+                .and_then(|(source, _)| source["path"].as_str())
+                .map_or(root, Path::new);
+            if matches!(
+                trust,
+                Trust::FolderNotTrusted | Trust::HooksChanged | Trust::HooksNotApproved
+            ) && explicitly_untrusted(root, original, config)
+            {
+                Trust::FolderUntrusted
+            } else {
+                trust
+            }
+        }) {
+            Report::Folders(found) => {
+                let folders: Vec<Value> = folders
+                    .iter()
+                    .zip(found)
+                    .zip(tokens)
+                    .map(|(((source, root), (_, trust)), token)| {
+                        let mut value = trust.to_json();
+                        value["sourceId"] = source["sourceId"].clone();
+                        value["path"] = json!(root);
+                        value["folderToken"] = json!(token);
+                        value
+                    })
+                    .collect();
+                json!({"state":"ready","folders":folders})
+            }
+            Report::Unsupported => json!({"state":"unsupported","folders":[]}),
+            Report::Unavailable(reason) => {
+                json!({"state":"unavailable","reason":reason,"folders":[]})
+            }
+        },
+    )
 }
 
 fn connected_sources(db: &rusqlite::Connection, project_id: &str) -> Result<Vec<(Value, PathBuf)>> {
@@ -252,7 +274,16 @@ fn connected_sources(db: &rusqlite::Connection, project_id: &str) -> Result<Vec<
         .into_iter()
         .filter(|source| sources::validate(source).is_ok())
         .filter_map(|source| {
-            let root = PathBuf::from(source["path"].as_str()?);
+            let root = Path::new(source["path"].as_str()?).canonicalize().ok()?;
+            for path in [root.join(".codex"), root.join(".codex/hooks.json")] {
+                if std::fs::symlink_metadata(path)
+                    .ok()?
+                    .file_type()
+                    .is_symlink()
+                {
+                    return None;
+                }
+            }
             let configured = native::Hooks::inspect(&root)
                 .ok()?
                 .files
@@ -268,18 +299,46 @@ fn connected_sources(db: &rusqlite::Connection, project_id: &str) -> Result<Vec<
 /// that folder only. Never overrides a folder the user marked untrusted, never
 /// turns hooks back on, and writes through Codex with a version check so a
 /// concurrent edit to config.toml is never overwritten.
-pub fn trust(db: &rusqlite::Connection, project_id: &str, source_id: &str) -> Result<Value> {
-    let (_, root) = connected_sources(db, project_id)?
+pub fn trust(
+    db: &rusqlite::Connection,
+    project_id: &str,
+    source_id: &str,
+    token: &str,
+) -> Result<Value> {
+    let (source, root) = connected_sources(db, project_id)?
         .into_iter()
         .find(|(source, _)| {
             source["sourceId"].as_str().or(source["id"].as_str()) == Some(source_id)
         })
         .ok_or("Reconnect this folder in Orka before trusting it in Codex")?;
+    let original = Path::new(source["path"].as_str().ok_or("Missing source folder")?);
+    let verify_folder = || {
+        let current = connected_sources(db, project_id)?
+            .into_iter()
+            .find(|(source, _)| {
+                source["sourceId"].as_str().or(source["id"].as_str()) == Some(source_id)
+            });
+        if current.as_ref().is_some_and(|(source, path)| {
+            path == &root
+                && source["path"]
+                    .as_str()
+                    .is_some_and(|path| Path::new(path) == original)
+        }) && folder_token(&root)? == token
+        {
+            Ok(())
+        } else {
+            Err(
+                "The connected folder changed. Reopen Settings and review it before trusting it."
+                    .to_owned(),
+            )
+        }
+    };
+    verify_folder()?;
     let executable = crate::updates::executable().map_err(|e| e.to_string())?;
-    let mut rpc = native::Rpc::connect()?;
+    let mut rpc = native::Rpc::connect_for_trust()?;
     // A concurrent edit makes Codex reject the write; read again and retry once.
     for attempt in 0..2 {
-        match approve(&mut rpc, &root, &executable) {
+        match approve(&mut rpc, &root, original, &executable, &verify_folder) {
             Err(Write::Conflict) if attempt == 0 => continue,
             Err(Write::Conflict) => {
                 return Err("Codex settings changed while Orka was saving. Try again.".into())
@@ -289,6 +348,25 @@ pub fn trust(db: &rusqlite::Connection, project_id: &str, source_id: &str) -> Re
         }
     }
     unreachable!()
+}
+
+fn folder_token(root: &Path) -> Result<String> {
+    let identity = crate::indexer::folder_identity(root)?;
+    Ok(db::digest(
+        &serde_json::to_vec(&json!([root, identity])).map_err(|e| e.to_string())?,
+    ))
+}
+
+fn explicitly_untrusted(root: &Path, original: &Path, config: &Value) -> bool {
+    config["projects"].as_object().is_some_and(|projects| {
+        projects.iter().any(|(path, entry)| {
+            entry["trust_level"] == "untrusted"
+                && root
+                    .ancestors()
+                    .chain(original.ancestors())
+                    .any(|ancestor| same_path(Some(path), ancestor))
+        })
+    })
 }
 
 enum Write {
@@ -311,9 +389,11 @@ const MANUAL: &str = "This Codex version can't be updated by Orka. Update Codex,
 fn approve(
     rpc: &mut native::Rpc,
     root: &Path,
+    original: &Path,
     executable: &Path,
+    verify_folder: &impl Fn() -> Result<()>,
 ) -> std::result::Result<Trust, Write> {
-    let (listed, config, version) = read(rpc, root)?;
+    let (mut listed, mut config, mut version) = read(rpc, root, original)?;
     match classify(root, &listed, &config) {
         Trust::Trusted => return Ok(Trust::Trusted),
         Trust::FolderUntrusted => {
@@ -323,14 +403,20 @@ fn approve(
             return Err("Codex hooks are turned off. Turn them back on in Codex, then try again.".into())
         }
         Trust::FolderNotTrusted => {
-            let key = root.canonicalize().unwrap_or_else(|_| root.to_owned());
-            let key = key.to_string_lossy();
+            let key = root.to_str().ok_or("Unsupported Codex folder path")?;
+            verify_folder()?;
             write(rpc, json!({"keyPath":"projects","value":{key:{"trust_level":"trusted"}},"mergeStrategy":"upsert"}), &version)?;
+            // Hooks are visible only after Codex loads the newly trusted layer.
+            (listed, config, version) = read(rpc, root, original)?;
         }
-        Trust::HooksNotApproved | Trust::HooksChanged | Trust::Unknown(_) => {}
+        Trust::HooksNotApproved | Trust::HooksChanged => {}
+        Trust::Unknown(reason) => return Err(reason.into()),
     }
-    // Project hooks only appear in hooks/list once the folder is trusted.
-    let (listed, _, version) = read(rpc, root)?;
+    match classify(root, &listed, &config) {
+        Trust::Trusted => return Ok(Trust::Trusted),
+        Trust::HooksNotApproved | Trust::HooksChanged => {}
+        other => return Ok(other),
+    }
     let expected = native::Hooks::current_command(executable, "codex");
     let file = root.join(".codex/hooks.json");
     let approvals: serde_json::Map<String, Value> = listed["data"]
@@ -343,7 +429,14 @@ fn approve(
             hook["source"] == "project"
                 && same_path(hook["sourcePath"].as_str(), &file)
                 && hook["command"] == expected
-                && hook["trustStatus"] != "trusted"
+                && hook["handlerType"] == "command"
+                && hook["enabled"] == true
+                && matches!(hook["trustStatus"].as_str(), Some("modified" | "untrusted"))
+                && native::Hooks::EVENTS.iter().any(|event| {
+                    hook["eventName"]
+                        .as_str()
+                        .is_some_and(|name| name.eq_ignore_ascii_case(event))
+                })
         })
         .filter_map(|hook| {
             Some((
@@ -353,41 +446,78 @@ fn approve(
         })
         .collect();
     if !approvals.is_empty() {
+        verify_folder()?;
         write(
             rpc,
             json!({"keyPath":"hooks.state","value":approvals,"mergeStrategy":"upsert"}),
             &version,
         )?;
     }
-    let (listed, config, _) = read(rpc, root)?;
+    let (listed, config, _) = read(rpc, root, original)?;
     Ok(classify(root, &listed, &config))
 }
 
-/// Codex's hooks for `root`, its effective config, and the user config
-/// version a write must match.
-fn read(rpc: &mut native::Rpc, root: &Path) -> std::result::Result<(Value, Value, Value), Write> {
+fn refuse_untrusted(
+    root: &Path,
+    original: &Path,
+    config: &Value,
+) -> std::result::Result<(), Write> {
+    if explicitly_untrusted(root, original, config) {
+        return Err(
+            "This folder or a parent is marked untrusted in Codex. Orka won't change that.".into(),
+        );
+    }
+    Ok(())
+}
+
+/// Bind the hook listing to the user-layer revision on both sides of the read.
+fn read(
+    rpc: &mut native::Rpc,
+    root: &Path,
+    original: &Path,
+) -> std::result::Result<(Value, Value, String), Write> {
+    let before = rpc.call("config/read", json!({"includeLayers":true,"cwd":root}))?;
     let listed = rpc
         .call_optional("hooks/list", json!({"cwds":[root]}))?
         .ok_or(MANUAL)?;
-    let read = rpc.call("config/read", json!({"includeLayers":true}))?;
-    let version = read["layers"]
+    let after = rpc.call("config/read", json!({"includeLayers":true,"cwd":root}))?;
+    let layer = user_layer(&after)?;
+    let version = layer["version"]
+        .as_str()
+        .filter(|version| !version.is_empty())
+        .ok_or(MANUAL)?;
+    if user_layer(&before)?["version"] != version || before["config"] != after["config"] {
+        return Err(Write::Conflict);
+    }
+    refuse_untrusted(root, original, &layer["config"])?;
+    refuse_untrusted(root, original, &after["config"])?;
+    Ok((listed, after["config"].clone(), version.to_owned()))
+}
+
+fn user_layer(read: &Value) -> std::result::Result<&Value, Write> {
+    read["layers"]
         .as_array()
         .into_iter()
         .flatten()
         .find(|layer| layer["name"]["type"] == "user")
-        .map(|layer| layer["version"].clone())
-        .unwrap_or(Value::Null);
-    Ok((listed, read["config"].clone(), version))
+        .ok_or_else(|| MANUAL.into())
 }
 
-fn write(rpc: &mut native::Rpc, edit: Value, version: &Value) -> std::result::Result<(), Write> {
-    match rpc.call_optional(
-        "config/batchWrite",
-        json!({"edits":[edit],"expectedVersion":version}),
-    ) {
-        Ok(Some(_)) => Ok(()),
-        Ok(None) => Err(MANUAL.into()),
-        Err(error) if error.contains("modified since last read") => Err(Write::Conflict),
-        Err(error) => Err(error.into()),
+fn write(rpc: &mut native::Rpc, edit: Value, version: &str) -> std::result::Result<(), Write> {
+    let method = "config/batchWrite";
+    let response = rpc.request(method, json!({"edits":[edit],"expectedVersion":version}))?;
+    let error = &response["error"];
+    if native::unsupported_method(error, method) {
+        return Err(MANUAL.into());
     }
+    if error["data"]["config_write_error_code"] == "configVersionConflict" {
+        return Err(Write::Conflict);
+    }
+    if !error.is_null() {
+        return Err(error["message"]
+            .as_str()
+            .unwrap_or("Codex could not save its settings")
+            .into());
+    }
+    Ok(())
 }

@@ -262,6 +262,11 @@ test("folders Codex skips explain why and trust in Codex only on request", async
       .locator(".settings-codex-trust")
       .screenshot({ path: info.outputPath(`codex-trust-${width}.png`) });
   }
+  expect(
+    (await settingsCalls(page)).filter(
+      (call) => call.args?.action === "codex-trust",
+    ),
+  ).toHaveLength(1);
   await button(settings, "Trust app in Codex").click();
   await expect(
     page.getByText("Codex will load Orka in app from its next session"),
@@ -273,7 +278,14 @@ test("folders Codex skips explain why and trust in Codex only on request", async
   const trusts = (await settingsCalls(page)).filter(
     (call) => call.args?.action === "trust-codex",
   );
-  expect(trusts.map((call) => call.args.input.sourceId)).toEqual(["app"]);
+  expect(trusts.map((call) => call.args.input)).toEqual([
+    { projectId: "one", sourceId: "app", folderToken: "snapshot:app" },
+  ]);
+  expect(
+    (await settingsCalls(page)).filter(
+      (call) => call.args?.action === "codex-trust",
+    ),
+  ).toHaveLength(2);
 });
 
 test("a failed trust in Codex keeps the notice and shows the reason", async ({

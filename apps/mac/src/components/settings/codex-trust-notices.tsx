@@ -16,7 +16,12 @@ type TrustState =
 
 type Status = {
   state: "ready" | "unsupported" | "unavailable";
-  folders: { sourceId: string | null; path: string; state: TrustState }[];
+  folders: {
+    sourceId: string | null;
+    path: string;
+    state: TrustState;
+    folderToken: string | null;
+  }[];
 };
 
 const fixable: TrustState[] = [
@@ -28,14 +33,15 @@ const fixable: TrustState[] = [
 function message(state: TrustState, name: string) {
   switch (state) {
     case "folder-not-trusted":
-    case "hooks-not-approved":
       return `Codex isn’t loading Orka in ${name}, so Codex sessions there don’t get shared memory.`;
+    case "hooks-not-approved":
+      return `Codex hasn’t approved all of Orka’s hooks in ${name}. Shared memory may be incomplete there.`;
     case "hooks-changed":
-      return `Orka changed since Codex last approved it in ${name}, so Codex sessions there don’t get shared memory.`;
+      return `Orka changed since Codex last approved it in ${name}. Shared memory may be incomplete there.`;
     case "folder-untrusted":
-      return `${name} is marked untrusted in Codex, so Codex sessions there don’t get shared memory. Change this in Codex if you want it.`;
+      return `${name} is marked untrusted in Codex, directly or through a parent folder. Review the trust settings in Codex to enable Orka’s hooks.`;
     case "hooks-disabled":
-      return "Hooks are turned off in Codex, so Codex sessions don’t get shared memory. Turn them back on in Codex if you want it.";
+      return "Hooks are turned off in Codex for one or more source folders. Turn them back on in Codex to get shared memory there.";
     default:
       return null;
   }
@@ -56,12 +62,14 @@ export function CodexTrustNotices({
   const notice = useToastNotice();
   const [pending, setPending] = useState<string | null>(null);
   const [error, setError] = useState("");
-  const revision = (project.sources ?? [])
-    .map(
-      (source) =>
-        `${source.id}:${source.path ?? ""}:${source.folderState ?? ""}`,
-    )
-    .join("|");
+  const revision = JSON.stringify([
+    project.path,
+    (project.sources ?? []).map(({ id, path, folderState }) => [
+      id,
+      path,
+      folderState,
+    ]),
+  ]);
   const load = useCallback(
     () =>
       invoke<Status>("settings_command", {
@@ -71,11 +79,7 @@ export function CodexTrustNotices({
       }),
     [project.id, user, service],
   );
-  const status = useSettingsQuery(
-    load,
-    null,
-    `${project.path ?? ""}|${revision}`,
-  );
+  const status = useSettingsQuery(load, null, revision);
   const name = (sourceId: string | null, path: string) =>
     project.sources?.find((source) => source.id === sourceId)?.name ??
     path.split("/").filter(Boolean).at(-1) ??
@@ -83,21 +87,25 @@ export function CodexTrustNotices({
   const folders = (status.data?.folders ?? []).filter(
     (folder) => message(folder.state, "") !== null,
   );
-  // Hooks turned off is one Codex-wide setting; say it once.
+  // Group folders with disabled hooks into one notice.
   const shown = folders.filter(
     (folder, index) =>
       folder.state !== "hooks-disabled" ||
       folders.findIndex((other) => other.state === "hooks-disabled") === index,
   );
-  if (shown.length === 0) return null;
-  const trust = async (sourceId: string, label: string) => {
+  if (shown.length === 0 && !error) return null;
+  const trust = async (
+    sourceId: string,
+    label: string,
+    folderToken: string,
+  ) => {
     setPending(sourceId);
     setError("");
     try {
       const result = await invoke<{ state: TrustState }>("settings_command", {
         action: "trust-codex",
         context: { user, service },
-        input: { projectId: project.id, sourceId },
+        input: { projectId: project.id, sourceId, folderToken },
       });
       if (result.state === "trusted")
         notice(`Codex will load Orka in ${label} from its next session`);
@@ -105,8 +113,8 @@ export function CodexTrustNotices({
     } catch (failure) {
       setError(String(failure));
     } finally {
-      setPending(null);
       await status.refresh();
+      setPending(null);
     }
   };
   return (
@@ -114,23 +122,28 @@ export function CodexTrustNotices({
       {shown.map((folder) => {
         const label = name(folder.sourceId, folder.path);
         const sourceId = folder.sourceId ?? project.id;
+        const folderToken = folder.folderToken;
         return (
           <div
             key={`${folder.path}:${folder.state}`}
             className="settings-notice settings-folder-notice"
+            title={folder.path}
           >
             <p>{message(folder.state, label)}</p>
-            {fixable.includes(folder.state) && (
+            {fixable.includes(folder.state) && folderToken && (
               <>
                 <p className="settings-codex-trust-detail">
-                  This trusts the folder and Orka’s hooks in your Codex
-                  settings. Nothing else in Codex changes.
+                  {folder.state === "folder-not-trusted"
+                    ? "Codex will load this folder’s project configuration and approve Orka’s hooks."
+                    : "This approves Orka’s hooks in your Codex settings."}
                 </p>
                 <Button
                   size="sm"
-                  disabled={busy || pending !== null}
+                  disabled={
+                    busy || status.loading || !!status.error || pending !== null
+                  }
                   aria-label={`Trust ${label} in Codex`}
-                  onClick={() => void trust(sourceId, label)}
+                  onClick={() => void trust(sourceId, label, folderToken)}
                 >
                   {pending === sourceId ? "Trusting…" : "Trust in Codex"}
                 </Button>

@@ -392,7 +392,7 @@ impl Rpc {
         }
         Err(format!("Cannot detect Codex pagination support: {message}"))
     }
-    fn request(&mut self, method: &str, params: Value) -> Result<Value> {
+    pub(crate) fn request(&mut self, method: &str, params: Value) -> Result<Value> {
         self.next += 1;
         let id = self.next;
         let deadline = std::time::Instant::now() + self.remaining();
@@ -413,7 +413,7 @@ impl Rpc {
         }
     }
 }
-fn unsupported_method(error: &Value, method: &str) -> bool {
+pub(crate) fn unsupported_method(error: &Value, method: &str) -> bool {
     error["code"] == -32601
         || (error["code"] == -32600
             && error["message"]

@@ -457,7 +457,10 @@ export async function settingsFixture(
               return options.codexTrust
                 ? {
                     state: options.codexTrust.state ?? "ready",
-                    folders: structuredClone(options.codexTrust.folders),
+                    folders: options.codexTrust.folders.map((folder) => ({
+                      ...folder,
+                      folderToken: `snapshot:${folder.sourceId}`,
+                    })),
                   }
                 : { state: "unavailable", folders: [] };
             if (args.action === "trust-codex") {

@@ -22,12 +22,18 @@ pub async fn settings_command(
         let input = input.unwrap_or_default();
         return tauri::async_runtime::spawn_blocking(move || {
             let db = db::open()?;
+            if db::get(&db, "user")? != owner || db::get(&db, "config")?["apiUrl"] != service {
+                return Err("Account or service changed. Reopen Settings.".into());
+            }
             let project = input["projectId"].as_str().ok_or("Missing project")?;
             if action == "codex-trust" {
                 return codex_trust::project_status(&db, project);
             }
             let source = input["sourceId"].as_str().ok_or("Missing source folder")?;
-            codex_trust::trust(&db, project, source)
+            let token = input["folderToken"]
+                .as_str()
+                .ok_or("Refresh Codex trust status first")?;
+            codex_trust::trust(&db, project, source, token)
         })
         .await
         .map_err(|e| e.to_string())?;
