@@ -380,7 +380,7 @@ export function SyncMenu({
       <SyncFeedRow
         key={`${review?.projectId ?? projectId}:${item.key}`}
         title={item.title}
-        label={review && !selected ? `${item.title} in ${name}` : item.title}
+        label={review && !showDetails ? `${item.title} in ${name}` : item.title}
         description={review ? `${name} · ${review.reason}` : note}
         action={reviewAction || relatedAction}
       >
