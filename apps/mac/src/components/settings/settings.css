@@ -512,7 +512,7 @@
     color: var(--red-text);
   }
   .project-lifecycle-feedback {
-    @apply rounded-lg border border-line bg-raised p-3;
+    @apply rounded-xl border border-line bg-panel p-3;
   }
   .settings-lifecycle-feedback {
     @apply basis-full;
