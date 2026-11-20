@@ -744,27 +744,16 @@ mod hook_tests;
 /// deleted project that can still be restored is returned to track the
 /// session, flagged as capture-only. An active parent folder still wins over
 /// a deleted nested project.
-fn hook_project(db: &rusqlite::Connection, cwd: &str) -> Result<Option<(Value, bool)>> {
+fn hook_project(db: &rusqlite::Connection, cwd: &str) -> Result<Option<(Value, PathBuf, bool)>> {
+    let home = crate::worktrees::home()?;
+    let location = crate::worktrees::Location::new(Path::new(cwd), &home);
     for (predicate, capture_only) in [
         (crate::projects::ACTIVE, false),
         (crate::projects::CAPTURE_ONLY, true),
     ] {
-        let projects = db::rows(
-            db,
-            &format!("SELECT value FROM projects WHERE {predicate}"),
-            &[],
-        )?;
-        let found = projects
-            .iter()
-            .flat_map(crate::sources::views)
-            .filter(|p| {
-                p["path"]
-                    .as_str()
-                    .is_some_and(|s| Path::new(cwd).starts_with(s))
-            })
-            .max_by_key(|p| p["path"].as_str().unwrap_or("").len());
-        if let Some(project) = found {
-            return Ok(Some((project, capture_only)));
+        let views = crate::worktrees::source_views(db, predicate)?;
+        if let Some((source, equivalent)) = location.resolve(&views, &home) {
+            return Ok(Some((source.clone(), equivalent, capture_only)));
         }
     }
     Ok(None)
@@ -775,7 +764,7 @@ pub fn hook(tool: &str, input: Value) -> Result<Value> {
     let Some(cwd) = input["cwd"].as_str() else {
         return Ok(json!({}));
     };
-    let Some((project, capture_only)) = hook_project(&db, cwd)? else {
+    let Some((project, equivalent_cwd, capture_only)) = hook_project(&db, cwd)? else {
         return Ok(json!({}));
     };
     let project = &project;
@@ -863,7 +852,7 @@ pub fn hook(tool: &str, input: Value) -> Result<Value> {
     let (text, sources, fingerprints) = crate::governance::context_with_query(
         &db,
         project,
-        Path::new(cwd),
+        &equivalent_cwd,
         Some(input["prompt"].as_str().unwrap_or("")),
         // Missing session identities must never share a delivery cache.
         if id == "unknown" {

@@ -1655,6 +1655,8 @@ fn scan_source(
     if crate::projects::sharing_allowed(project, "session")
         || crate::projects::sharing_allowed(project, "plan")
     {
+        let session_scope = crate::worktrees::SessionScope::new(db, project, &root)?;
+        let topology = session_scope.cache_scope()?;
         let mut last_history_progress = None;
         for (tool, directory) in [
             ("codex", codex.join("sessions")),
@@ -1685,7 +1687,8 @@ fn scan_source(
                         last_history_progress = Some(Instant::now());
                     }
                 }
-                let negative = history::NegativeAttribution::new(project, &root, tool, e.path());
+                let negative =
+                    history::NegativeAttribution::new(project, &root, &topology, tool, e.path());
                 let cached_unrelated = negative
                     .as_ref()
                     .map(|cache| cache.contains(db))
@@ -1696,7 +1699,7 @@ fn scan_source(
                 if cached_unrelated
                     || (tool == "codex"
                         && history::session_cwd_prefix(e.path(), tool)
-                            .is_some_and(|cwd| !cwd.starts_with(&root)))
+                            .is_some_and(|cwd| session_scope.checkout_scope(&cwd).is_none()))
                 {
                     if !cached_unrelated {
                         if let Some(cache) = &negative {
@@ -1732,7 +1735,7 @@ fn scan_source(
                                         [&unattributed],
                                     )
                                     .map_err(|e| e.to_string())?;
-                                    if !cwd.starts_with(&root) {
+                                    if session_scope.checkout_scope(&cwd).is_none() {
                                         if let Some(cache) = &negative {
                                             cache.remember(db, e.path())?;
                                         }
@@ -1760,10 +1763,12 @@ fn scan_source(
                             r["cwd"]
                                 .as_str()
                                 .or(r["payload"]["cwd"].as_str())
-                                .is_some_and(|p| Path::new(p).starts_with(&root))
+                                .is_some_and(|p| {
+                                    session_scope.checkout_scope(Path::new(p)).is_some()
+                                })
                         })
                     },
-                    |cwd| cwd.starts_with(&root),
+                    |cwd| session_scope.checkout_scope(&cwd).is_some(),
                 );
                 if !attributable {
                     if native::session_cwd(tool, &records).is_ok() {
@@ -1782,9 +1787,9 @@ fn scan_source(
                         continue;
                     }
                 };
-                if !cwd.starts_with(&root) {
+                let Some(checkout_scope) = session_scope.checkout_scope(&cwd) else {
                     continue;
-                }
+                };
                 if tool == "codex" {
                     match crate::history::current_path(e.path(), &id) {
                         Ok(latest) if latest != e.path() => continue,
@@ -1816,14 +1821,15 @@ fn scan_source(
                 {
                     continue;
                 }
-                let files = match crate::history::session_files(tool, e.path(), Some(&root)) {
-                    Ok(files) => files,
-                    Err(err) => {
-                        error(db, &format!("{scan_id}:scan:{}", e.path().display()), &err)?;
-                        sessions_complete = false;
-                        continue;
-                    }
-                };
+                let files =
+                    match crate::history::session_files(tool, e.path(), Some(&checkout_scope)) {
+                        Ok(files) => files,
+                        Err(err) => {
+                            error(db, &format!("{scan_id}:scan:{}", e.path().display()), &err)?;
+                            sessions_complete = false;
+                            continue;
+                        }
+                    };
                 if project["governed"] == true && project["catalogOnly"] != true {
                     let records =
                         crate::history::resource_records(&json!({"source":tool,"files":files}))?;
@@ -1833,13 +1839,13 @@ fn scan_source(
                     let plan_records =
                         crate::history::resource_records(&json!({"source":tool,"files":files}))?;
                     let mut has_plan_file = false;
-                    match plans::references(tool, &root, &plan_records) {
+                    match plans::references(tool, &checkout_scope, &plan_records) {
                         Ok(paths) => {
                             for path in paths {
                                 if !path.try_exists().map_err(|e| e.to_string())? {
                                     continue;
                                 }
-                                let local = plans::project_directory(&root, tool)?;
+                                let local = plans::project_directory(&checkout_scope, tool)?;
                                 let logical = if let Ok(relative) = path.strip_prefix(&local) {
                                     format!("{tool}/files/{}", relative.to_string_lossy())
                                 } else {

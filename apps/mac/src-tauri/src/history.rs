@@ -33,10 +33,17 @@ pub(crate) fn read_counts(path: &Path) -> (usize, usize) {
 pub(crate) struct NegativeAttribution {
     key: String,
     fingerprint: Value,
+    topology: String,
 }
 
 impl NegativeAttribution {
-    pub(crate) fn new(project: &Value, root: &Path, tool: &str, path: &Path) -> Option<Self> {
+    pub(crate) fn new(
+        project: &Value,
+        root: &Path,
+        topology: &str,
+        tool: &str,
+        path: &Path,
+    ) -> Option<Self> {
         let path = std::path::absolute(path).ok()?;
         let scope = json!([project["id"], project["sourceId"], root, tool, path]);
         Some(Self {
@@ -45,6 +52,7 @@ impl NegativeAttribution {
                 db::digest(scope.to_string().as_bytes())
             ),
             fingerprint: Self::fingerprint(&path)?,
+            topology: topology.into(),
         })
     }
 
@@ -63,12 +71,12 @@ impl NegativeAttribution {
     }
 
     pub(crate) fn contains(&self, db: &rusqlite::Connection) -> Result<bool> {
-        Ok(db::get(db, &self.key)? == self.fingerprint)
+        Ok(db::get(db, &self.key)? == json!([self.topology, self.fingerprint]))
     }
 
     pub(crate) fn remember(&self, db: &rusqlite::Connection, path: &Path) -> Result<()> {
         if Self::fingerprint(path).as_ref() == Some(&self.fingerprint) {
-            db::set(db, &self.key, &self.fingerprint)?;
+            db::set(db, &self.key, &json!([self.topology, self.fingerprint]))?;
         }
         Ok(())
     }
