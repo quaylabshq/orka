@@ -113,11 +113,12 @@ pub fn run() {
                     input["input"].clone(),
                     input.get("context").cloned(),
                 )),
-                "disconnect-source" => crate::sources::disconnect_project_source(
-                    super::field(&input, "projectId")?.into(),
-                    super::field(&input, "sourceId")?.into(),
-                )
-                .map(|_| json!({})),
+                "disconnect-source" => runtime
+                    .block_on(crate::sources::disconnect_project_source(
+                        super::field(&input, "projectId")?.into(),
+                        super::field(&input, "sourceId")?.into(),
+                    ))
+                    .map(|_| json!({})),
                 "switch-service" => {
                     crate::commands::switch_service(input["config"].clone()).map(|_| json!({}))
                 }

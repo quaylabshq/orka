@@ -225,6 +225,46 @@ test("queued writes block disconnect while reconnect remains usable", async ({
   ).toBe(false);
 });
 
+test("only a folder's own unsent changes block disconnecting it", async ({
+  page,
+}) => {
+  const settings = await settingsFixture(page, {
+    queued: true,
+    sourceRows: [
+      {
+        id: "api",
+        name: "api",
+        path: "/Projects/api",
+        folderState: "connected",
+        queuedChanges: 2,
+      },
+      {
+        id: "web",
+        name: "web",
+        path: "/Projects/web",
+        folderState: "connected",
+        queuedChanges: 0,
+      },
+    ],
+  });
+  const disconnect = () =>
+    page.getByRole("menuitem", {
+      name: "Disconnect folder on this Mac",
+      exact: true,
+    });
+  await button(settings, "Options for api").click();
+  await expect(disconnect()).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await button(settings, "Options for web").click();
+  await expect(disconnect()).toBeEnabled();
+  await page.keyboard.press("Escape");
+  await expect(
+    settings.getByText(
+      "Folders with unsent changes can be disconnected once they sync.",
+    ),
+  ).toBeVisible();
+});
+
 test("folder recovery states expose paths in name tooltips and reconnect the selected source", async ({
   page,
 }, info) => {

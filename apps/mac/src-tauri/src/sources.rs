@@ -445,24 +445,37 @@ pub(crate) async fn connect_sources(
     SyncQueue::request(&db, &id, Priority::User, "project")
 }
 
+/// Queued uploads that may belong to `source`. A change whose source cannot be
+/// determined counts too, so disconnecting never strands unsent work.
+pub(crate) fn queued_for_source(
+    db: &rusqlite::Connection,
+    project: &str,
+    source: &str,
+) -> Result<i64> {
+    db.query_row(
+        "SELECT count(*) FROM outbox o LEFT JOIN resources r ON r.project=o.project AND r.id=json_extract(o.value,'$.resourceId') \
+         WHERE o.project=?1 AND coalesce(json_extract(o.value,'$.resource.sourceId'),json_extract(o.value,'$.sourceId'),json_extract(r.value,'$.sourceId'),?2)=?2",
+        [project, source],
+        |row| row.get(0),
+    )
+    .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
-pub fn disconnect_project_source(id: String, source_id: String) -> Result<()> {
-    let _lock = projects::lock()?;
+pub async fn disconnect_project_source(id: String, source_id: String) -> Result<()> {
+    // A running sync pauses for this instead of failing it.
+    let _lock = projects::wait_for_lock_async(projects::FOREGROUND_LOCK_WAIT).await?;
     let db = db::open()?;
     let mut project = crate::governance::project(&db, &id)?;
     let source = project["sources"]
         .as_array_mut()
         .and_then(|sources| sources.iter_mut().find(|source| source["id"] == source_id))
         .ok_or("Repository not found")?;
-    let pending: bool = db
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM outbox WHERE project=?)",
-            [&id],
-            |row| row.get(0),
-        )
-        .map_err(|e| e.to_string())?;
-    if pending {
-        return Err("Sync queued changes before disconnecting a source folder".into());
+    // Only this folder's unsent changes matter; other folders keep syncing.
+    match queued_for_source(&db, &id, &source_id)? {
+        0 => {}
+        1 => return Err("This folder has 1 change waiting to upload. Let it sync, then disconnect the folder.".into()),
+        count => return Err(format!("This folder has {count} changes waiting to upload. Let them sync, then disconnect the folder.")),
     }
     source["path"] = Value::Null;
     source["folderIdentity"] = Value::Null;
