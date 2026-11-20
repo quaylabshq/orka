@@ -20,6 +20,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { RepositoryAccessRequest } from "@portable/protocol";
 import type { Project, Snapshot } from "../types.js";
 import { Button } from "./button.js";
+import { SourceSyncButton } from "./source-sync-button.js";
 import { PermissionSelect } from "./permission-select.js";
 import { IconButton } from "./icon-button.js";
 import { TextField } from "./text-field.js";
@@ -482,6 +483,22 @@ export function RepositoryConnections({
                     <StatusIcon size={16} />
                   </span>
                   <div className="repository-card-actions">
+                    {!active && connected && source.syncStartsAt && (
+                      <SourceSyncButton
+                        name={source.name}
+                        startsAt={source.syncStartsAt}
+                        disabled={disabled}
+                        onStart={() =>
+                          void run(async () => {
+                            await invoke("start_source_sync", {
+                              id: project.id,
+                              sourceId: source.id,
+                            });
+                            await refresh();
+                          })
+                        }
+                      />
+                    )}
                     {active ? (
                       job.state !== "connecting" && (
                         <IconButton

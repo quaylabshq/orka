@@ -176,6 +176,15 @@ export const SettingsModal = forwardRef<
   const queued = state.outbox.filter(
     (item) => item.project === projectId,
   ).length;
+  const queuedForConfirmation =
+    confirmation?.action === "disconnect" && confirmation.sourceId
+      ? (project?.sources?.find((source) => source.id === confirmation.sourceId)
+          ?.queuedChanges ?? queued)
+      : queued;
+  const folderChangeBlocked =
+    !availableProject ||
+    (confirmation?.action !== "reset-source-remote" &&
+      queuedForConfirmation > 0);
   const projectMembers = project
     ? (state.governance?.find((entry) => entry.projectId === project.id)
         ?.catalog.members?.length ?? null)
@@ -526,10 +535,7 @@ export const SettingsModal = forwardRef<
     if (confirmation?.action === "signout") {
       if (await run(() => invoke("sign_out"))) onSignedOut();
     } else if (confirmation) {
-      if (
-        !project ||
-        (queued && confirmation.action !== "reset-source-remote")
-      ) {
+      if (folderChangeBlocked) {
         setFolderError(
           "Finish syncing queued changes before changing source folders.",
         );
@@ -1062,10 +1068,7 @@ export const SettingsModal = forwardRef<
               disabled={
                 busy ||
                 folderBusy ||
-                (confirmation.action !== "signout" &&
-                  (!project ||
-                    (queued > 0 &&
-                      confirmation.action !== "reset-source-remote")))
+                (confirmation.action !== "signout" && folderChangeBlocked)
               }
               onClick={() => void confirm()}
             >

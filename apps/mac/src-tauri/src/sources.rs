@@ -130,7 +130,7 @@ pub(crate) fn without_waiting(
             let Some(source_id) = source["id"].as_str() else {
                 continue;
             };
-            if source["path"].is_string() {
+            if source["path"].is_string() && source["removedAt"].is_null() {
                 if let Some(at) = sync_after(db, id, source_id)? {
                     source["path"] = Value::Null;
                     earliest = Some(earliest.map_or(at, |e| e.min(at)));
@@ -139,6 +139,13 @@ pub(crate) fn without_waiting(
         }
     }
     Ok((view, earliest))
+}
+
+pub(crate) fn waiting_to_sync(db: &rusqlite::Connection, source: &Value) -> Result<bool> {
+    match (source["id"].as_str(), source["sourceId"].as_str()) {
+        (Some(id), Some(source_id)) => Ok(sync_after(db, id, source_id)?.is_some()),
+        _ => Ok(false),
+    }
 }
 
 #[tauri::command]
@@ -351,7 +358,7 @@ pub(crate) fn too_broad(root: &Path, home: Option<&Path>) -> Option<&'static str
         }
     }
     let depth = root.components().count();
-    if root.starts_with("/Volumes") && depth <= 3 {
+    if (root.starts_with("/Volumes") && depth <= 3) || is_mount_root(root) {
         return Some("It is the top of a drive.");
     }
     if root.starts_with("/System")
@@ -360,6 +367,8 @@ pub(crate) fn too_broad(root: &Path, home: Option<&Path>) -> Option<&'static str
             "/Applications",
             "/Users",
             "/private",
+            "/private/var",
+            "/private/etc",
             "/var",
             "/usr",
             "/opt",
@@ -371,6 +380,46 @@ pub(crate) fn too_broad(root: &Path, home: Option<&Path>) -> Option<&'static str
         return Some("It is a system folder.");
     }
     None
+}
+
+#[cfg(target_os = "macos")]
+fn is_mount_root(path: &Path) -> bool {
+    use std::{
+        ffi::{CString, OsStr},
+        mem::MaybeUninit,
+        os::unix::ffi::OsStrExt,
+    };
+
+    let Ok(name) = CString::new(path.as_os_str().as_bytes()) else {
+        return false;
+    };
+    let mut stats = MaybeUninit::<libc::statfs>::uninit();
+    // statfs initializes the structure on success and reports the mount point
+    // even when it is outside /Volumes or shares a device with its parent.
+    if unsafe { libc::statfs(name.as_ptr(), stats.as_mut_ptr()) } != 0 {
+        return false;
+    }
+    let stats = unsafe { stats.assume_init() };
+    let mount: Vec<u8> = stats
+        .f_mntonname
+        .iter()
+        .take_while(|&&byte| byte != 0)
+        .map(|&byte| byte as u8)
+        .collect();
+    let mount = Path::new(OsStr::from_bytes(&mount));
+    mount == path || mount.canonicalize().is_ok_and(|resolved| resolved == path)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn is_mount_root(path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    let Some(parent) = path.parent() else {
+        return true;
+    };
+    fs::metadata(path)
+        .and_then(|metadata| Ok(metadata.dev() != fs::metadata(parent)?.dev()))
+        .unwrap_or(false)
 }
 
 fn home_folder() -> Option<PathBuf> {
@@ -822,34 +871,37 @@ pub(crate) async fn connect_sources(
         .as_object_mut()
         .ok_or("Invalid project")?
         .remove("folderIdentity");
-    let tx = db.transaction().map_err(|error| error.to_string())?;
-    db::upsert(&tx, "projects", &id, &id, &project)?;
-    db::set(&tx, &pending_key, &Value::Null)?;
-    if newly_connected.is_empty() {
-        SyncQueue::request(&tx, &id, Priority::User, "project")?;
-    } else {
-        let at = chrono::Utc::now().timestamp_millis() + NEW_FOLDER_DELAY_MS;
-        for source in &newly_connected {
-            db::set(&tx, &sync_after_key(&id, source), &json!(at))?;
-        }
-        SyncQueue::request_at(&tx, &id, Priority::User, "new folder", at)?;
-    }
-    if pin_scope.is_some()
-        && project["sources"].as_array().is_some_and(|sources| {
-            sources.iter().any(|source| {
-                newly_connected.iter().any(|id| source["id"] == *id)
-                    && pin_candidate(&project, source).is_some()
-            })
-        })
     {
-        SyncQueue::request(
-            &tx,
-            crate::sync_queue::WORKSPACE,
-            Priority::User,
-            "source repository pin",
-        )?;
+        let tx = db.transaction().map_err(|error| error.to_string())?;
+        db::upsert(&tx, "projects", &id, &id, &project)?;
+        db::set(&tx, &pending_key, &Value::Null)?;
+        if newly_connected.is_empty() {
+            SyncQueue::request(&tx, &id, Priority::User, "project")?;
+        } else {
+            let at = chrono::Utc::now().timestamp_millis() + NEW_FOLDER_DELAY_MS;
+            db::set(&tx, &format!("firstScan:{id}"), &Value::Null)?;
+            for source in &newly_connected {
+                db::set(&tx, &sync_after_key(&id, source), &json!(at))?;
+            }
+            SyncQueue::request_at(&tx, &id, Priority::User, "new folder", at)?;
+        }
+        if pin_scope.is_some()
+            && project["sources"].as_array().is_some_and(|sources| {
+                sources.iter().any(|source| {
+                    newly_connected.iter().any(|id| source["id"] == *id)
+                        && pin_candidate(&project, source).is_some()
+                })
+            })
+        {
+            SyncQueue::request(
+                &tx,
+                crate::sync_queue::WORKSPACE,
+                Priority::User,
+                "source repository pin",
+            )?;
+        }
+        tx.commit().map_err(|error| error.to_string())?;
     }
-    tx.commit().map_err(|error| error.to_string())?;
 
     // Claim the pin only after the checkout, hooks and local binding have
     // passed validation and saved. A batch is already saved as one unit and
@@ -1009,6 +1061,8 @@ mod folder_state_tests {
             "/Library",
             "/Applications",
             "/private",
+            "/private/etc",
+            "/private/var",
         ] {
             assert!(too_broad(Path::new(broad), Some(home)).is_some(), "{broad}");
         }
@@ -1021,6 +1075,18 @@ mod folder_state_tests {
         ] {
             assert_eq!(too_broad(Path::new(project), Some(home)), None, "{project}");
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn canonical_system_aliases_and_mounts_outside_volumes_are_refused() {
+        for alias in ["/etc", "/var", "/dev"] {
+            let root = canonical(alias).unwrap();
+            assert!(too_broad(&root, None).is_some(), "{alias}: {root:?}");
+        }
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path().canonicalize().unwrap();
+        assert_eq!(too_broad(&root, None), None);
     }
 
     #[test]

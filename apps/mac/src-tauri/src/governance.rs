@@ -417,6 +417,7 @@ pub fn reset(db: &Connection, project_id: &str, events: &Value) -> Result<()> {
         .into_iter()
         .next()
         .ok_or("Project unavailable")?;
+    let (project, _) = crate::sources::without_waiting(db, &project)?;
     let mut sources = crate::sources::views(&project);
     if project["sources"].is_array() {
         let mut global = project.clone();

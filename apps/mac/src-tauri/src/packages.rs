@@ -307,6 +307,9 @@ fn recover_current_installation(
     )?;
     let source = crate::sources::for_resource(&project, &journal["project"])
         .ok_or("409: Installation source is removed or disconnected; original recovery journal and local files preserved for review")?;
+    if crate::sources::waiting_to_sync(db, &source)? {
+        return Ok(());
+    }
     crate::sources::validate(&source)?;
     if source["path"] != journal["project"]["path"]
         || source["folderIdentity"] != journal["project"]["folderIdentity"]
