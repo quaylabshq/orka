@@ -41,8 +41,7 @@ const server = createServer((req, res) => {
         ),
       );
     }
-    if (req.url === "/v2/devices" && req.method === "GET")
-      return res.end("[]");
+    if (req.url === "/v2/devices" && req.method === "GET") return res.end("[]");
     if (req.url === "/v2/projects/capabilities")
       return res.end(JSON.stringify(supported ? { sourceRemoteKey: 1 } : {}));
     if (
