@@ -898,14 +898,9 @@ pub(crate) async fn connect_sources(
             }
             SyncQueue::request_at(&tx, &id, Priority::User, "new folder", at)?;
         }
-        if pin_scope.is_some()
-            && project["sources"].as_array().is_some_and(|sources| {
-                sources.iter().any(|source| {
-                    newly_connected.iter().any(|id| source["id"] == *id)
-                        && pin_candidate(&project, source).is_some()
-                })
-            })
-        {
+        if pin_scope.is_some() && !newly_connected.is_empty() {
+            // Reconcile before the delayed scan, including plain folders that
+            // could not submit a candidate if another Mac pinned concurrently.
             SyncQueue::request(
                 &tx,
                 crate::sync_queue::WORKSPACE,

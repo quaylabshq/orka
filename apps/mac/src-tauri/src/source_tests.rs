@@ -607,8 +607,9 @@ fn a_newly_connected_folder_waits_before_sync_scans_or_writes_into_it() {
     assert_eq!(states[0]["state"], "scheduled");
     assert!(states[0]["notBefore"].is_string());
 
-    // Sync now on the folder clears the wait.
+    // An in-flight pass still holds writes and uploads after Sync now.
     sources::clear_sync_after(&f.db, id, desktop).unwrap();
+    assert!(sources::paused_upload_sources(&view).contains(desktop));
     let (view, earliest) = sources::without_waiting(&f.db, &project).unwrap();
     assert_eq!(earliest, None);
     assert_eq!(view["sources"][0]["path"], project["sources"][0]["path"]);

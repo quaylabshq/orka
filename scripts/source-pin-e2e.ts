@@ -283,6 +283,22 @@ check(
   /no Git remote/.test(r.error ?? "") && !(await c.source()).path,
   r,
 );
+const racingPlain = mac("racing-plain");
+await racingPlain.setup({ id: api, name: "api", path: null });
+const racingFolder = join(racingPlain.home, "notes", "api");
+await mkdir(racingFolder, { recursive: true });
+omitNextPin = true;
+r = await racingPlain.connect(racingFolder, api);
+check("A catalog response may miss a concurrent first pin", !r.error, r);
+r = await racingPlain.call({ action: "sync" });
+const racingSource = await racingPlain.source();
+check(
+  "The next workspace refresh holds the unverified attachment",
+  !r.error &&
+    !!racingSource.path &&
+    racingSource.folderState === "repository-conflict",
+  racingSource,
+);
 const linkRace = mac("link-race");
 const linkedId = randomUUID();
 await linkRace.setup({ id: linkedId, name: "api", path: null });
@@ -462,7 +478,8 @@ check(
   r,
 );
 
-for (const m of [a, b, c, d, saved, conflict, renamed, linkRace]) m.close();
+for (const m of [a, b, c, d, saved, conflict, renamed, linkRace, racingPlain])
+  m.close();
 server.close();
 await rm(root, { recursive: true, force: true });
 const failed = results.filter(([, ok]) => !ok);
