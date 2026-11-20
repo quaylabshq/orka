@@ -336,7 +336,7 @@ async fn attach(context: &Context, job: &Value) -> Result<()> {
     )
     .await?;
     {
-        let _lock = projects::lock()?;
+        let _lock = projects::wait_for_lock_async(projects::FOREGROUND_LOCK_WAIT).await?;
         context.check()?;
         projects::merge_catalog(&context.database()?, &catalog)?;
     }
@@ -441,7 +441,7 @@ pub async fn repository_command(action: String, input: Value, context: Context) 
         let repository = context
             .api("repository", json!({"repositoryId":input["repositoryId"]}))
             .await?;
-        let _lock = projects::lock()?;
+        let _lock = projects::wait_for_lock_async(projects::FOREGROUND_LOCK_WAIT).await?;
         context.check()?;
         let project = crate::governance::project(&context.database()?, project_id)?;
         return matching_source(
@@ -613,7 +613,7 @@ pub async fn repository_command(action: String, input: Value, context: Context) 
     }
     let result = context.api(&action, input).await?;
     if action == "disconnect" || (action == "poll" && result["connected"] == true) {
-        let _lock = projects::lock()?;
+        let _lock = projects::wait_for_lock_async(projects::FOREGROUND_LOCK_WAIT).await?;
         context.check()?;
         let db = context.database()?;
         let revision = db::get(&db, "repository-auth-revision")?
@@ -622,19 +622,37 @@ pub async fn repository_command(action: String, input: Value, context: Context) 
         db::set(&db, "repository-auth-revision", &json!(revision + 1))?;
     }
     if action == "bind" || action == "unlink" || action == "add-source" {
-        let catalog = sync::api_at(
-            &context.user,
-            &context.service,
-            "GET",
-            crate::projects::CATALOG_PATH,
-            None,
-        )
-        .await?;
-        let _lock = projects::lock()?;
-        context.check()?;
-        projects::merge_catalog(&context.database()?, &catalog)?;
+        // The link already changed on the server. Refreshing the local catalog
+        // is best effort: reporting a failure here would invite a retry that
+        // the server rejects as a stale revision, and the next sync merges the
+        // same catalog anyway.
+        if let Err(error) = refresh_catalog(&context).await {
+            eprintln!("repository catalog refresh deferred to sync: {error}");
+            if context.check().is_ok() {
+                crate::sync_queue::SyncQueue::request(
+                    &context.database()?,
+                    crate::sync_queue::WORKSPACE,
+                    crate::sync_queue::Priority::User,
+                    "repository link",
+                )?;
+            }
+        }
     }
     Ok(result)
+}
+
+async fn refresh_catalog(context: &Context) -> Result<()> {
+    let catalog = sync::api_at(
+        &context.user,
+        &context.service,
+        "GET",
+        crate::projects::CATALOG_PATH,
+        None,
+    )
+    .await?;
+    let _lock = projects::wait_for_lock_async(projects::FOREGROUND_LOCK_WAIT).await?;
+    context.check()?;
+    projects::merge_catalog(&context.database()?, &catalog)
 }
 
 #[cfg(test)]

@@ -7,6 +7,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
+import { once } from "node:events";
 
 const home = await mkdtemp(join(tmpdir(), "orka-repository-access-"));
 const binary =
@@ -218,6 +219,29 @@ try {
     "A cached green tick must never bypass the live clone authorization",
   );
   assert.equal((await command<{ state: string }[]>("jobs"))[0].state, "failed");
+  // A running sync holds the workspace lock. Linking a repository must wait
+  // for it: the server link already happened, and failing here made the
+  // user's retry hit a stale-revision conflict.
+  const sync = spawn(
+    "/usr/bin/python3",
+    [
+      "-c",
+      "import fcntl,sys,time;f=open(sys.argv[1],'a+');fcntl.flock(f,fcntl.LOCK_EX);print('held',flush=True);time.sleep(1)",
+      join(home, "orka", "workspace.lock"),
+    ],
+    { stdio: ["ignore", "pipe", "inherit"] },
+  );
+  await once(sync.stdout, "data");
+  const waited = Date.now();
+  await command("bind", {
+    ...input,
+    repositoryId: "4242",
+    expectedRevision: revision,
+  });
+  assert.ok(
+    Date.now() - waited >= 500,
+    "Linking a repository waits for a running sync instead of failing",
+  );
   assert.equal((await check(true)).state, "access_unavailable");
   assert.equal(checks, 2);
   state = "ready";
