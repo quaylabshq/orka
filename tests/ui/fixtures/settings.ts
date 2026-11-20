@@ -64,8 +64,12 @@ export async function settingsFixture(
       id: string;
       name: string;
       path: string | null;
-      folderState: "connected" | "reconnect" | "locate";
+      folderState: "connected" | "reconnect" | "locate" | "repository-conflict";
+      remoteKey?: string;
       removedAt?: string | null;
+      queuedChanges?: number;
+      gitRepository?: boolean;
+      syncStartsAt?: string;
     }[];
     deletedProjects?: {
       id: string;
@@ -476,7 +480,12 @@ export async function settingsFixture(
             if (args.action === "capabilities")
               return options.olderService
                 ? {}
-                : { rolePolicies: 1, policyOperations: 1, sourcesRemoval: 1 };
+                : {
+                    rolePolicies: 1,
+                    policyOperations: 1,
+                    sourcesRemoval: 1,
+                    sourceRemoteKey: 1,
+                  };
             await wait(controls.delay);
             if (options.devices === "unavailable" || controls.failRefresh)
               throw new Error("Service unavailable");
@@ -736,6 +745,16 @@ export async function settingsFixture(
               project.name = args.input.name;
               project.lifecycleRevision++;
             }
+            if (args.action === "reset-source-remote") {
+              const source = project.sources.find(
+                (source: { id: string }) => source.id === args.input.sourceId,
+              );
+              if (!source) throw new Error("Source not found");
+              Object.assign(source, {
+                remoteKey: null,
+                folderState: "connected",
+              });
+            }
             if (args.action === "remove-source") {
               if (options.failSourceRemoval)
                 throw new Error("Service unavailable. Try again.");
@@ -783,6 +802,13 @@ export async function settingsFixture(
           }
           if (command === "disconnect_project")
             projects.find((project) => project.id === args.id)!.path = null;
+          if (command === "start_source_sync") {
+            const project = projects.find((project) => project.id === args.id)!;
+            const source = project.sources.find(
+              (source) => source.id === args.sourceId,
+            ) as { syncStartsAt?: string | null } | undefined;
+            if (source) source.syncStartsAt = null;
+          }
           if (command === "switch_service") {
             if (controls.failSwitch)
               throw new Error("Service changed during validation. Try again.");

@@ -867,12 +867,15 @@ test("pending memories keep owner review available after setup without claiming 
   await page
     .getByRole("button", { name: "Review changes", exact: true })
     .click();
+  const local = page
+    .getByRole("region", { name: "Reviews", exact: true })
+    .getByRole("region", { name: /^On this Mac \d+$/ });
   await expect(
-    page.getByRole("heading", { name: "Changes on this Mac", exact: true }),
+    local.getByRole("button", { name: "Project instructions", exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "Review changes", exact: true }),
-  ).toBeVisible();
+    local.getByRole("row", { name: /Project instructions/ }),
+  ).toContainText("Local edits");
   await page.screenshot({
     animations: "disabled",
     path: info.outputPath("pending-review-after-setup.png"),

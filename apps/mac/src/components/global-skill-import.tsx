@@ -1,39 +1,44 @@
 import {
-  ArrowDownAZIcon,
-  ChartNoAxesColumnIncreasingIcon,
   CheckIcon,
+  ChevronDownIcon,
+  CircleXIcon,
+  FileIcon,
+  FolderIcon,
   PlusIcon,
   RefreshCwIcon,
+  SearchIcon,
+  TriangleAlertIcon,
   XIcon,
 } from "lucide-react";
 import React, {
   useCallback,
   useEffect,
+  useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
+import * as Popover from "@radix-ui/react-popover";
 import { invoke } from "@tauri-apps/api/core";
 import type { Project } from "../types.js";
 import { Button } from "./button.js";
 import { Icon } from "./icon.js";
-import { IconButton } from "./icon-button.js";
-import { Overlay } from "./overlay.js";
-import { SearchField } from "./search-field.js";
-import { SourceLabel } from "./source-label.js";
+import { activeSources, repositoryLabel } from "./project-sources.js";
 import { readSkillMarkdown } from "./skill-markdown.js";
-import { projectLabel } from "./project-navigation.js";
-import { SkillUsageCount, type SkillUsage } from "./skill-usage.js";
-import { SortMenu } from "./sort-menu.js";
-import { activeSources } from "./project-sources.js";
-import { RepositorySelect } from "./repository-filter.js";
-import { LoadingRegion } from "./loading-region.js";
+import { useToasts } from "./toasts.js";
+import { connectProject } from "./use-project-setup.js";
+import "./item-menu.css";
+import "./global-skill-import.css";
 
+type Agent = "codex" | "claude";
 interface GlobalSkill {
   id: string;
   name: string;
   path: string;
-  sources: ("codex" | "claude")[];
+  sources: Agent[];
   markdown: string;
   fileCount: number;
   exists: boolean;
@@ -43,22 +48,6 @@ interface Scan {
   skills: GlobalSkill[];
   errors: string[];
 }
-const sampleSkills = [
-  "Project review",
-  "Writing guide",
-  "Frontend patterns",
-].map((name, index) => ({
-  id: `sample-${index}`,
-  folder: "project-guidance",
-  name,
-  description: "Reusable project guidance, supporting scripts, and references.",
-  path: ".codex/skills/project-guidance",
-  sources: ["codex" as const],
-  markdown: "",
-  fileCount: 3,
-  exists: false,
-  error: null,
-}));
 interface ImportResult {
   skillId: string;
   result?: { status: "draft" | "queued" | "local" };
@@ -66,135 +55,222 @@ interface ImportResult {
 }
 type Run = (action: () => Promise<unknown>) => Promise<void>;
 
+/** How long the pointer rests on a row before its details open. */
+const PEEK_DELAY = 400;
+/** After this long the Add button says it is waiting on a running sync. */
+const SYNC_WAIT_MS = 5000;
+/** The one per-skill failure a second attempt can fix: the list went stale. */
+const STALE_SKILL = "Global skill unavailable. Scan again.";
+
+const agentName = (agent: Agent) => (agent === "codex" ? "Codex" : "Claude");
+const plural = (count: number) => (count === 1 ? "skill" : "skills");
+
+function AgentLogos({ agents }: { agents: Agent[] }) {
+  return (
+    <span
+      className="add-skills-agents"
+      role="img"
+      aria-label={agents.map(agentName).join(" and ")}
+    >
+      {agents.map((agent) => (
+        <img
+          key={agent}
+          src={`${import.meta.env.BASE_URL}source-icons/${agent}.svg`}
+          width={14}
+          height={14}
+          alt=""
+          draggable={false}
+        />
+      ))}
+    </span>
+  );
+}
+
+/** Paths keep both ends readable: the home folder and the skill's own name. */
+function middle(path: string, max = 38) {
+  if (path.length <= max) return path;
+  const tail = Math.ceil((max - 1) * 0.45);
+  return `${path.slice(0, max - 1 - tail)}…${path.slice(-tail)}`;
+}
+
 export function GlobalSkillImport({
   project,
   busy,
   run,
   onReview,
+  compact = false,
 }: {
   project: Project;
   busy: boolean;
   run: Run;
   onReview: () => void;
+  /** Toolbar size and the short label, for use beside Filter and Sort. */
+  compact?: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const content = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (adding) content.current?.focus({ preventScroll: true });
+  }, [adding]);
   return (
-    <>
-      <Button
-        size="lg"
-        variant="primary"
-        aria-label="Add global skills"
-        title="Add global skills"
-        aria-haspopup="dialog"
-        onClick={() => setOpen(true)}
-      >
-        <Icon icon={PlusIcon} />
-        Add Global Skills
-      </Button>
-      {open && (
-        <GlobalSkillsDialog
-          project={project}
-          busy={busy}
-          run={run}
-          onClose={() => setOpen(false)}
-          onReview={() => {
-            setOpen(false);
-            onReview();
+    <Popover.Root
+      open={open}
+      // Skills are being copied in; the popover stays until that finishes.
+      onOpenChange={(next) => (next || !adding) && setOpen(next)}
+    >
+      <Popover.Trigger asChild>
+        <Button
+          size={compact ? "sm" : "lg"}
+          variant="primary"
+          aria-label={compact ? undefined : "Add global skills"}
+          title="Add global skills"
+          aria-haspopup="dialog"
+        >
+          {compact ? (
+            "Add skills"
+          ) : (
+            <>
+              <Icon icon={PlusIcon} />
+              Add Global Skills
+            </>
+          )}
+        </Button>
+      </Popover.Trigger>
+      {adding &&
+        createPortal(
+          <div
+            className="add-skills-add-backdrop"
+            aria-hidden="true"
+            onPointerDown={(event) => event.preventDefault()}
+          />,
+          document.body,
+        )}
+      <Popover.Portal>
+        <Popover.Content
+          ref={content}
+          className="add-skills-popover"
+          role="dialog"
+          aria-label="Add global skills"
+          aria-modal={adding || undefined}
+          onFocusOutside={(event) => {
+            if (!adding) return;
+            event.preventDefault();
+            content.current?.focus({ preventScroll: true });
           }}
-        />
-      )}
-    </>
+          onPointerDownOutside={(event) => {
+            if (adding) event.preventDefault();
+          }}
+          onEscapeKeyDown={(event) => {
+            if (adding) event.preventDefault();
+          }}
+          onKeyDown={(event) => {
+            if (adding && event.key === "Tab") event.preventDefault();
+          }}
+          align="end"
+          sideOffset={8}
+          collisionPadding={12}
+        >
+          {/* Mounted per open, so every open reads the folders again. */}
+          <AddSkills
+            project={project}
+            busy={busy}
+            run={run}
+            onReview={onReview}
+            onAdding={setAdding}
+            onClose={() => setOpen(false)}
+          />
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
   );
 }
 
-function GlobalSkillsDialog({
+function AddSkills({
   project,
   busy,
   run,
-  onClose,
   onReview,
+  onAdding,
+  onClose,
 }: {
   project: Project;
   busy: boolean;
   run: Run;
-  onClose: () => void;
   onReview: () => void;
+  onAdding: (adding: boolean) => void;
+  onClose: () => void;
 }) {
-  const [scan, setScan] = useState<Scan | null>(null);
-  const [sourceId, setSourceId] = useState(
-    activeSources(project.sources).find((source) => source.path)?.id ?? "",
+  const { notify } = useToasts();
+  const repositories = useMemo(
+    () => activeSources(project.sources ?? []).filter((source) => source.path),
+    [project.sources],
   );
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  const [picked, setPicked] = useState(repositories[0]?.id);
+  const sourceId = picked ?? repositories[0]?.id;
+  // The first connected repository is the default only before a destination exists.
+  if (picked === undefined && sourceId) setPicked(sourceId);
+  const repository = repositories.find((source) => source.id === sourceId);
+  const path = project.sources ? repository?.path : project.path;
+  const needsDestination = Boolean(
+    project.sources && !repository && repositories.length,
+  );
+  const destination = repository
+    ? (repositoryLabel(project.sources ?? [], repository.id) ?? repository.name)
+    : project.name;
+  const peekId = useId();
+  const [connectError, setConnectError] = useState("");
+  const [scan, setScan] = useState<Scan | null>(null);
+  const [scanError, setScanError] = useState("");
   const [query, setQuery] = useState("");
-  const [sort, setSort] = useState("usage");
-  const [usage, setUsage] = useState<SkillUsage | null>(null);
-  const [usageLoading, setUsageLoading] = useState(true);
-  const [usageError, setUsageError] = useState(false);
-  const [pending, setPending] = useState("");
-  const [added, setAdded] = useState<Set<string>>(new Set());
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [message, setMessage] = useState("");
-  const [reviewable, setReviewable] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [waiting, setWaiting] = useState(false);
+  /** Why the last attempt failed, when trying again can fix it. */
+  const [retry, setRetry] = useState("");
+  const [failed, setFailed] = useState<Record<string, string>>({});
+  const [peek, setPeek] = useState<{ id: string; top: number }>();
   const active = useRef(true);
-  const locked = useRef(false);
   const generation = useRef(0);
-  const usageLocked = useRef(false);
-  const loadUsage = useCallback(async () => {
-    if (usageLocked.current) return;
-    usageLocked.current = true;
-    setUsageLoading(true);
-    setUsageError(false);
-    try {
-      const next = await invoke<SkillUsage>("global_skill_usage", {
-        projectId: project.id,
-      });
-      if (active.current) setUsage(next);
-    } catch {
-      if (active.current) setUsageError(true);
-    } finally {
-      usageLocked.current = false;
-      if (active.current) setUsageLoading(false);
-    }
-  }, [project.id]);
+  const peekTimer = useRef(0);
+  const list = useRef<HTMLUListElement>(null);
+
+  const target = path ? JSON.stringify([sourceId, path]) : null;
+  const [previousTarget, setPreviousTarget] = useState(target);
+  if (previousTarget !== target) {
+    setPreviousTarget(target);
+    setScan(null);
+    setScanError("");
+    setSelected(new Set());
+    setFailed({});
+    setRetry("");
+    setPeek(undefined);
+  }
+
   const rescan = useCallback(async () => {
     const current = ++generation.current;
-    setLoading(true);
-    setError("");
+    setScan(null);
+    setScanError("");
     try {
       const next = await invoke<Scan>("scan_global_skills", {
         projectId: project.id,
         sourceId: sourceId || undefined,
       });
-      if (active.current && current === generation.current) {
-        setScan(next);
-        setSelected(
-          (selected) =>
-            new Set(
-              [...selected].filter((id) =>
-                next.skills.some(
-                  (skill) => skill.id === id && !skill.exists && !skill.error,
-                ),
-              ),
-            ),
-        );
-      }
+      if (active.current && current === generation.current) setScan(next);
     } catch (error) {
       if (active.current && current === generation.current)
-        setError(`Couldn’t scan global skills: ${String(error)}`);
-    } finally {
-      if (active.current && current === generation.current) setLoading(false);
+        setScanError(String(error));
     }
   }, [project.id, sourceId]);
   useEffect(() => {
     active.current = true;
-    void rescan();
-    void loadUsage();
+    if (target) void rescan();
     return () => {
       active.current = false;
       generation.current += 1;
+      window.clearTimeout(peekTimer.current);
     };
-  }, [rescan, loadUsage]);
+  }, [rescan, target]);
 
   const skills = useMemo(
     () =>
@@ -210,412 +286,567 @@ function GlobalSkillsDialog({
         })
         .sort(
           (a, b) =>
-            (sort === "usage"
-              ? (usage?.counts[b.id] ?? 0) - (usage?.counts[a.id] ?? 0)
-              : 0) ||
-            a.name.localeCompare(b.name) ||
-            a.path.localeCompare(b.path),
+            a.name.localeCompare(b.name) || a.path.localeCompare(b.path),
         ),
-    [scan, sort, usage],
+    [scan],
   );
+  type Skill = (typeof skills)[number];
+  const unavailable = (skill: Skill) =>
+    skill.exists ? "Already in project" : skill.error ? "Can’t be added" : "";
+  const addable = skills.filter((skill) => !unavailable(skill));
   const search = query.trim().toLocaleLowerCase();
-  const visible = skills.filter((skill) =>
-    [skill.name, skill.description, skill.folder, skill.path, ...skill.sources]
-      .join(" ")
-      .toLocaleLowerCase()
-      .includes(search),
+  // Skills that cannot be added stay out of sight until a search asks for one.
+  const visible = skills.filter(
+    (skill) =>
+      (search ? skill.name.toLocaleLowerCase().includes(search) : true) &&
+      (search || !unavailable(skill)),
   );
-  const destinations = activeSources(project.sources).filter(
-    (source) => source.path,
-  );
-  const connected = project.sources
-    ? destinations.some((source) => source.id === sourceId)
-    : Boolean(project.path);
-  const selectable = visible.filter((skill) => !skill.exists && !skill.error);
-  const selectedSkills = skills.filter(
-    (skill) => selected.has(skill.id) && !skill.exists && !skill.error,
-  );
-  const allVisibleSelected =
+  const selectable = visible.filter((skill) => !unavailable(skill));
+  const chosen = addable.filter((skill) => selected.has(skill.id));
+  const allSelected =
     selectable.length > 0 &&
     selectable.every((skill) => selected.has(skill.id));
-  const add = async (chosen: typeof skills) => {
-    if (locked.current) return;
-    locked.current = true;
-    setPending(chosen.length === 1 ? chosen[0].id : `${chosen.length} skills`);
-    setError("");
-    setMessage("");
+  const someSelected = selectable.some((skill) => selected.has(skill.id));
+  const locked = pending || busy;
+
+  const toggle = (id: string) =>
+    setSelected((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  const report = (
+    added: ImportResult[],
+    dead: ImportResult[],
+    name: (id: string) => string,
+  ) => {
+    if (added.length) {
+      const subject =
+        added.length === 1 ? name(added[0].skillId) : `${added.length} skills`;
+      const statuses = added.map((item) => item.result?.status);
+      if (statuses.includes("draft"))
+        notify({
+          kind: "success",
+          title: `${subject} added on this Mac. Review ${added.length === 1 ? "it" : "them"} to share.`,
+          action: { label: "Review", onClick: onReview },
+        });
+      else if (statuses.every((status) => status === "local"))
+        notify({
+          kind: "success",
+          title: `${subject} added on this Mac. Sharing is off for skills.`,
+        });
+      else
+        notify({
+          kind: "success",
+          title: `${subject} added to ${destination}`,
+        });
+    }
+    // A failure that trying again cannot fix is explained once and let go.
+    if (dead.length)
+      notify({
+        kind: "error",
+        title:
+          dead.length === 1
+            ? `${name(dead[0].skillId)} wasn’t added. ${dead[0].error}`
+            : `${dead.length} skills weren’t added. ${dead[0].error}`,
+      });
+  };
+  const scanNow = () =>
+    invoke<Scan>("scan_global_skills", {
+      projectId: project.id,
+      sourceId: sourceId || undefined,
+    });
+  const add = async () => {
+    if (locked || !target || !chosen.length) return;
+    setPending(true);
+    onAdding(true);
+    setRetry("");
+    setFailed({});
+    const timer = window.setTimeout(() => setWaiting(true), SYNC_WAIT_MS);
+    const attempted = chosen;
+    const name = (id: string) =>
+      attempted.find((skill) => skill.id === id)?.name ?? "A skill";
+    // Set once native has answered: a later refresh failure is not a failed add.
+    let answered = false;
+    let closeOnSuccess = false;
     try {
       await run(async () => {
-        const scope = {
-          projectId: project.id,
-          sourceId: sourceId || undefined,
-        };
-        const results: ImportResult[] =
-          chosen.length === 1
-            ? [
-                {
-                  skillId: chosen[0].id,
-                  result: await invoke("add_global_skill", {
-                    ...scope,
-                    skillId: chosen[0].id,
-                  }),
-                },
-              ]
-            : (
-                await invoke<{ results: ImportResult[] }>("add_global_skills", {
-                  ...scope,
-                  skillIds: chosen.map((skill) => skill.id),
-                })
-              ).results;
+        const { results } = await invoke<{ results: ImportResult[] }>(
+          "add_global_skills",
+          {
+            projectId: project.id,
+            sourceId: sourceId || undefined,
+            skillIds: attempted.map((skill) => skill.id),
+          },
+        );
+        answered = true;
+        const added = results.filter((item) => item.result);
+        let stale = results.filter((item) => item.error === STALE_SKILL);
+        const dead = results.filter(
+          (item) => item.error && item.error !== STALE_SKILL,
+        );
+        const current = ++generation.current;
+        let next: Scan | null = null;
+        if (stale.length || dead.length) {
+          try {
+            next = await scanNow();
+          } catch {
+            // The list on screen stays; the next open reads the folders again.
+          }
+        }
+        if (next) {
+          const fresh = new Map(next.skills.map((skill) => [skill.id, skill]));
+          const retryable: ImportResult[] = [];
+          for (const item of stale) {
+            const skill = fresh.get(item.skillId);
+            if (skill && !skill.exists && !skill.error) retryable.push(item);
+            else
+              dead.push({
+                ...item,
+                error: skill?.exists
+                  ? "It is already in this project."
+                  : (skill?.error ?? "It is no longer in your global skills."),
+              });
+          }
+          stale = retryable;
+        }
+        report(added, dead, name);
         if (!active.current) return;
-        const succeeded = results.filter((item) => item.result);
-        const ids = new Set(succeeded.map((item) => item.skillId));
-        const folders = new Set(
-          chosen
-            .filter((skill) => ids.has(skill.id))
-            .map((skill) => skill.folder),
-        );
-        setAdded((current) => new Set([...current, ...ids]));
-        setSelected(
-          (current) => new Set([...current].filter((id) => !ids.has(id))),
-        );
-        setScan(
-          (current) =>
-            current && {
-              ...current,
-              skills: current.skills.map((item) =>
-                folders.has(item.name) ? { ...item, exists: true } : item,
-              ),
-            },
-        );
-        setReviewable(
-          (current) =>
-            current ||
-            succeeded.some((item) => item.result?.status === "draft"),
-        );
-        const failures = results.filter((item) => item.error);
-        if (failures.length)
-          setError(
-            failures
-              .map(
-                (item) =>
-                  `${chosen.find((skill) => skill.id === item.skillId)?.name}: ${item.error}`,
-              )
-              .join("; "),
-          );
-        if (succeeded.length) {
-          const name =
-            chosen.length === 1 ? chosen[0].name : `${succeeded.length} skills`;
-          const local = succeeded.filter(
-            (item) => item.result?.status === "local",
-          ).length;
-          setMessage(
-            succeeded.some((item) => item.result?.status === "draft")
-              ? `${name} added on this Mac. Review changes to share with the project.`
-              : local === succeeded.length
-                ? `${name} added on this Mac. Skills sharing is off.`
-                : `${name} added. Sharing queued; approval is requested only if permissions require it.`,
+        if (next && current === generation.current) setScan(next);
+        else if (added.length && current === generation.current) {
+          const addedIds = new Set(added.map((item) => item.skillId));
+          setScan(
+            (current) =>
+              current && {
+                ...current,
+                skills: current.skills.map((skill) =>
+                  addedIds.has(skill.id) ? { ...skill, exists: true } : skill,
+                ),
+              },
           );
         }
+        const done = new Set([...added, ...dead].map((item) => item.skillId));
+        setSelected(
+          (current) => new Set([...current].filter((id) => !done.has(id))),
+        );
+        if (stale.length) {
+          setFailed(
+            Object.fromEntries(
+              stale.map((item) => [
+                item.skillId,
+                "Its folder changed since the list was read.",
+              ]),
+            ),
+          );
+          setRetry(
+            added.length
+              ? `${added.length} added. ${stale.length} couldn’t be added.`
+              : `Couldn’t add ${stale.length} ${plural(stale.length)}.`,
+          );
+        }
+        closeOnSuccess = !stale.length && !dead.length;
       });
     } catch (error) {
-      if (active.current)
-        setError(`Couldn’t complete adding skills: ${String(error)}`);
+      if (active.current && !answered)
+        setRetry(
+          `Couldn’t add ${attempted.length} ${plural(attempted.length)}.\n${String(error)}`,
+        );
     } finally {
-      locked.current = false;
-      if (active.current) setPending("");
+      window.clearTimeout(timer);
+      if (active.current) {
+        setPending(false);
+        setWaiting(false);
+      }
+      onAdding(false);
+      if (closeOnSuccess) onClose();
     }
   };
 
-  return (
-    <Overlay
-      open
-      title="Add global skills"
-      className="global-skills-modal"
-      onClose={() => !pending && onClose()}
-    >
-      <div className="global-skills-heading">
-        <div>
-          <h2>Add global skills</h2>
-          <p>Choose skills for {projectLabel(project)}.</p>
-        </div>
-        <IconButton
-          icon={XIcon}
-          variant="tertiary"
-          aria-label="Close global skills"
-          disabled={Boolean(pending)}
-          onClick={onClose}
-        />
-      </div>
-      <div className="global-skills-toolbar">
-        {destinations.length > 0 && (
-          <RepositorySelect
-            className="global-skills-destination"
-            label="Install into repository"
-            placeholder="Choose repository"
-            size="lg"
-            align="start"
-            disabled={Boolean(pending)}
-            value={sourceId}
-            repositories={destinations}
-            labelSources={project.sources}
-            onChange={(nextSourceId) => {
-              setSourceId(nextSourceId);
-              setAdded(new Set());
-              setSelected(new Set());
-              setScan(null);
-              setMessage("");
-              setReviewable(false);
-            }}
-          />
-        )}
-        <SearchField
-          size="lg"
-          aria-label="Search global skills"
-          placeholder="Search global skills"
-          value={query}
-          onValueChange={setQuery}
-        />
-        <IconButton
-          icon={RefreshCwIcon}
-          size="lg"
-          variant="secondary"
-          aria-label="Scan again"
-          title="Scan again"
-          disabled={loading || Boolean(pending)}
+  const openPeek = (id: string, row: HTMLElement, delay: number) => {
+    window.clearTimeout(peekTimer.current);
+    const popover = row.closest<HTMLElement>(".add-skills-popover");
+    if (!popover) return;
+    const top =
+      row.getBoundingClientRect().top - popover.getBoundingClientRect().top;
+    peekTimer.current = window.setTimeout(() => setPeek({ id, top }), delay);
+  };
+  const closePeek = () => {
+    window.clearTimeout(peekTimer.current);
+    setPeek(undefined);
+  };
+  const peeked = peek && skills.find((skill) => skill.id === peek.id);
+
+  const moveFocus = (event: React.KeyboardEvent) => {
+    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+    const boxes = Array.from(
+      list.current?.querySelectorAll<HTMLInputElement>(
+        "input:not(:disabled)",
+      ) ?? [],
+    );
+    if (!boxes.length) return;
+    const index = boxes.indexOf(document.activeElement as HTMLInputElement);
+    const next =
+      event.key === "Home"
+        ? 0
+        : event.key === "End"
+          ? boxes.length - 1
+          : event.key === "ArrowDown"
+            ? Math.min(index + 1, boxes.length - 1)
+            : Math.max(index - 1, 0);
+    event.preventDefault();
+    boxes[next].focus();
+  };
+
+  if (!target && !needsDestination)
+    return (
+      <div className="add-skills-message">
+        <Icon icon={FolderIcon} size="lg" variant="secondary" />
+        <h2>Connect a folder first</h2>
+        <p>
+          Skills are added to a project folder on this Mac, and this project
+          does not have one yet.
+        </p>
+        <Button
+          size="sm"
+          variant="primary"
+          disabled={busy}
           onClick={() => {
-            void rescan();
-            void loadUsage();
+            setConnectError("");
+            run(async () => {
+              await connectProject(project.id);
+            }).catch((error) => {
+              if (active.current) setConnectError(String(error));
+            });
           }}
-        />
-        <SortMenu
-          label="Sort global skills"
-          size="lg"
-          variant="secondary"
-          className="global-skills-sort"
-          value={sort}
-          onChange={setSort}
-          options={[
-            {
-              value: "usage",
-              label: "Most used",
-              icon: ChartNoAxesColumnIncreasingIcon,
-            },
-            { value: "name", label: "Name", icon: ArrowDownAZIcon },
-          ]}
-        />
+        >
+          <Icon icon={FolderIcon} size="sm" />
+          Connect folder
+        </Button>
+        {connectError && (
+          <p className="add-skills-note" data-tone="error" role="alert">
+            <span className="add-skills-note-icon">
+              <CircleXIcon size={14} aria-hidden="true" />
+            </span>
+            <span>Couldn’t connect the folder. {connectError}</span>
+          </p>
+        )}
       </div>
-      <div className="global-skills-usage-status" role="status">
-        {usageLoading ? (
-          "Checking usage in local chat history…"
-        ) : usageError ? (
-          <>
-            Usage unavailable. Skills can still be added.
+    );
+
+  return (
+    <div
+      className="add-skills"
+      onKeyDown={(event) => {
+        // A portaled menu's keys bubble here through React; only keys from
+        // inside the popover itself may submit.
+        if (
+          event.key === "Enter" &&
+          event.currentTarget.contains(event.target as Node) &&
+          !(event.target as HTMLElement).closest("button")
+        ) {
+          event.preventDefault();
+          void add();
+        }
+      }}
+    >
+      <label className="add-skills-search">
+        <SearchIcon size={16} aria-hidden="true" />
+        <input
+          type="search"
+          aria-label="Search global skills"
+          placeholder="Search your global skills…"
+          value={query}
+          autoFocus
+          disabled={locked || needsDestination}
+          onChange={(event) => setQuery(event.target.value)}
+        />
+        {query && (
+          <button
+            type="button"
+            className="add-skills-clear"
+            aria-label="Clear search"
+            disabled={locked || needsDestination}
+            onClick={() => setQuery("")}
+          >
+            <XIcon size={12} aria-hidden="true" />
+          </button>
+        )}
+      </label>
+      {(repositories.length > 1 || needsDestination) && (
+        <div className="add-skills-repository">
+          <FolderIcon size={16} aria-hidden="true" />
+          <span>Add to repository</span>
+          <DropdownMenu.Root modal={false}>
+            <DropdownMenu.Trigger asChild>
+              <button
+                type="button"
+                className="add-skills-repository-select"
+                aria-label="Add to repository"
+                title={needsDestination ? undefined : destination}
+                disabled={locked}
+              >
+                <span>
+                  {needsDestination ? "Choose repository" : destination}
+                </span>
+                <ChevronDownIcon size={14} aria-hidden="true" />
+              </button>
+            </DropdownMenu.Trigger>
+            <DropdownMenu.Portal>
+              <DropdownMenu.Content
+                className="item-menu-content add-skills-repository-menu"
+                onKeyDown={(event) => event.stopPropagation()}
+                align="end"
+                sideOffset={4}
+                collisionPadding={10}
+              >
+                <DropdownMenu.RadioGroup
+                  value={repository?.id ?? ""}
+                  onValueChange={setPicked}
+                >
+                  {repositories.map((source) => (
+                    <DropdownMenu.RadioItem
+                      key={source.id}
+                      value={source.id}
+                      className="item-menu-action"
+                    >
+                      <FolderIcon
+                        className="item-menu-icon"
+                        size={16}
+                        aria-hidden
+                      />
+                      <span className="item-menu-label">
+                        {repositoryLabel(project.sources ?? [], source.id)}
+                      </span>
+                      <DropdownMenu.ItemIndicator>
+                        <CheckIcon size={14} aria-hidden="true" />
+                      </DropdownMenu.ItemIndicator>
+                    </DropdownMenu.RadioItem>
+                  ))}
+                </DropdownMenu.RadioGroup>
+              </DropdownMenu.Content>
+            </DropdownMenu.Portal>
+          </DropdownMenu.Root>
+        </div>
+      )}
+      {needsDestination ? (
+        <div className="add-skills-message" role="status">
+          <Icon icon={FolderIcon} size="lg" variant="secondary" />
+          <h2>Repository unavailable</h2>
+          <p>Choose a connected repository to continue adding skills.</p>
+        </div>
+      ) : scanError ? (
+        <div className="add-skills-message">
+          <Icon icon={TriangleAlertIcon} size="lg" variant="secondary" />
+          <h2>Couldn’t read your global skills</h2>
+          <p>{scanError}</p>
+          <Button size="sm" variant="secondary" onClick={() => void rescan()}>
+            <Icon icon={RefreshCwIcon} size="sm" />
+            Try again
+          </Button>
+        </div>
+      ) : !scan ? (
+        <div className="add-skills-loading" role="status">
+          <span className="sr-only">Reading your global skills…</span>
+          {Array.from({ length: 6 }, (_, index) => (
+            <span key={index} className="loading-fade" aria-hidden="true" />
+          ))}
+        </div>
+      ) : !addable.length && !search ? (
+        <div className="add-skills-message">
+          <Icon icon={CheckIcon} size="lg" variant="secondary" />
+          <h2>Nothing to add</h2>
+          <p>
+            {skills.some((skill) => !skill.exists)
+              ? "Search to see why individual skills can’t be added."
+              : skills.length
+                ? "Every global skill on this Mac is already in this project."
+                : scan.errors.length
+                  ? "No global skills could be read on this Mac."
+                  : "No global skills were found in Codex or Claude on this Mac."}
+          </p>
+          {scan.errors.map((error, index) => (
+            <p key={index} className="add-skills-note" role="status">
+              <span className="add-skills-note-icon">
+                <TriangleAlertIcon size={14} aria-hidden="true" />
+              </span>
+              <span>{error}</span>
+            </p>
+          ))}
+        </div>
+      ) : (
+        <>
+          <label className="add-skills-select-all">
+            <input
+              type="checkbox"
+              className="add-skills-checkbox"
+              checked={allSelected}
+              ref={(input) => {
+                if (input) input.indeterminate = !allSelected && someSelected;
+              }}
+              disabled={locked || !selectable.length}
+              onChange={() =>
+                setSelected((current) => {
+                  const next = new Set(current);
+                  for (const skill of selectable) {
+                    if (allSelected) next.delete(skill.id);
+                    else next.add(skill.id);
+                  }
+                  return next;
+                })
+              }
+            />
+            <span>Select all</span>
+            <small>
+              {search
+                ? `${selectable.length} of ${addable.length} match`
+                : `${addable.length} global ${plural(addable.length)}`}
+            </small>
+          </label>
+          {visible.length ? (
+            <ul
+              ref={list}
+              className="add-skills-list"
+              aria-label="Global skills"
+              onKeyDown={moveFocus}
+              onScroll={closePeek}
+            >
+              {visible.map((skill) => {
+                const reason = unavailable(skill);
+                return (
+                  <li key={skill.id}>
+                    <label
+                      className="add-skills-row"
+                      data-unavailable={reason ? "" : undefined}
+                      onPointerEnter={(event) =>
+                        openPeek(skill.id, event.currentTarget, PEEK_DELAY)
+                      }
+                      onPointerLeave={closePeek}
+                      onFocus={(event) =>
+                        openPeek(skill.id, event.currentTarget, 0)
+                      }
+                      onBlur={closePeek}
+                    >
+                      <input
+                        type="checkbox"
+                        className="add-skills-checkbox"
+                        aria-label={`Select skill: ${skill.name}`}
+                        aria-describedby={
+                          peek?.id === skill.id ? peekId : undefined
+                        }
+                        checked={selected.has(skill.id)}
+                        disabled={locked || Boolean(reason)}
+                        onChange={() => toggle(skill.id)}
+                      />
+                      <span className="add-skills-name">{skill.name}</span>
+                      {reason && (
+                        <span className="add-skills-reason">{reason}</span>
+                      )}
+                      {failed[skill.id] && (
+                        <TriangleAlertIcon
+                          className="add-skills-failed"
+                          size={14}
+                          aria-label="Couldn’t be added"
+                        />
+                      )}
+                      <AgentLogos agents={skill.sources} />
+                    </label>
+                  </li>
+                );
+              })}
+            </ul>
+          ) : (
+            <div className="add-skills-message">
+              <h2>No global skills match “{query.trim()}”</h2>
+              <Button
+                size="sm"
+                variant="secondary"
+                disabled={locked}
+                onClick={() => setQuery("")}
+              >
+                Clear search
+              </Button>
+            </div>
+          )}
+          <div className="add-skills-footer">
+            {scan.errors.map((error, index) => (
+              <p key={index} className="add-skills-note" role="status">
+                <span className="add-skills-note-icon">
+                  <TriangleAlertIcon size={14} aria-hidden="true" />
+                </span>
+                <span>{error}</span>
+              </p>
+            ))}
+            {retry && (
+              <p className="add-skills-note" data-tone="error" role="alert">
+                <span className="add-skills-note-icon">
+                  <CircleXIcon size={14} aria-hidden="true" />
+                </span>
+                <span>{retry}</span>
+              </p>
+            )}
             <Button
               size="sm"
-              variant="tertiary"
-              onClick={() => void loadUsage()}
+              variant="primary"
+              className="add-skills-submit"
+              disabled={!chosen.length || locked}
+              aria-busy={pending}
+              onClick={() => void add()}
             >
-              Retry usage
-            </Button>
-          </>
-        ) : null}
-      </div>
-      <div className="global-skills-feedback">
-        {pending && (
-          <p className="global-skills-notice" role="status">
-            Adding{" "}
-            {skills.find((skill) => skill.id === pending)?.name ?? pending}…
-            This can wait for an active sync to finish.
-          </p>
-        )}
-        {!connected && (
-          <p className="global-skills-notice">
-            Connect a project folder to add skills.
-          </p>
-        )}
-        {error && (
-          <p className="global-skills-notice" role="alert">
-            {error}
-          </p>
-        )}
-        {scan?.errors.map((error, index) => (
-          <p className="global-skills-notice" key={index} role="status">
-            {error}
-          </p>
-        ))}
-      </div>
-      <div className="global-skills-selection">
-        <label>
-          <input
-            type="checkbox"
-            checked={allVisibleSelected}
-            ref={(input) => {
-              if (input)
-                input.indeterminate =
-                  !allVisibleSelected &&
-                  selectable.some((skill) => selected.has(skill.id));
-            }}
-            disabled={
-              loading ||
-              busy ||
-              Boolean(pending) ||
-              !connected ||
-              !selectable.length
-            }
-            onChange={() =>
-              setSelected((current) => {
-                const next = new Set(current);
-                for (const skill of selectable) {
-                  if (allVisibleSelected) next.delete(skill.id);
-                  else next.add(skill.id);
-                }
-                return next;
-              })
-            }
-          />
-          Select all visible
-        </label>
-        <span>{selectedSkills.length} selected</span>
-      </div>
-      <div
-        className="global-skills-list"
-        role="region"
-        aria-label="Global skill results"
-        tabIndex={0}
-        aria-busy={loading}
-      >
-        {loading && scan && (
-          <span className="sr-only" role="status">
-            Scanning Codex and Claude global skills…
-          </span>
-        )}
-        <LoadingRegion
-          key={sourceId}
-          id={`global-skills:${project.id}:${sourceId}`}
-          label="Scanning Codex and Claude global skills…"
-          data={scan ? visible : error ? [] : null}
-          sample={sampleSkills}
-        >
-          {(items) =>
-            !scan && error ? null : !items.length ? (
-              skills.length ? (
-                <p role="status">No skills match your search.</p>
+              {pending ? (
+                waiting ? (
+                  "Waiting for sync…"
+                ) : (
+                  "Adding…"
+                )
+              ) : retry ? (
+                <>
+                  <Icon icon={RefreshCwIcon} size="sm" />
+                  Try again
+                </>
+              ) : chosen.length ? (
+                <>
+                  <Icon icon={PlusIcon} size="sm" />
+                  Add {chosen.length} {plural(chosen.length)}
+                </>
               ) : (
-                <p role="status">No global skills found in Codex or Claude.</p>
-              )
-            ) : (
-              <ul aria-label="Global skills">
-                {items.map((skill) => (
-                  <li key={skill.id} className="global-skill-row">
-                    <input
-                      className="global-skill-checkbox"
-                      type="checkbox"
-                      aria-label={`Select skill: ${skill.name}`}
-                      checked={selected.has(skill.id)}
-                      disabled={
-                        loading ||
-                        busy ||
-                        Boolean(pending) ||
-                        !connected ||
-                        skill.exists ||
-                        Boolean(skill.error)
-                      }
-                      onChange={(event) =>
-                        setSelected((current) => {
-                          const next = new Set(current);
-                          if (event.target.checked) next.add(skill.id);
-                          else next.delete(skill.id);
-                          return next;
-                        })
-                      }
-                    />
-                    <div className="global-skill-info">
-                      <h3>{skill.name}</h3>
-                      {skill.description && (
-                        <p
-                          className="global-skill-description"
-                          title={skill.description}
-                        >
-                          {skill.description}
-                        </p>
-                      )}
-                      <div className="global-skill-meta">
-                        {skill.sources.map((source) => (
-                          <SourceLabel key={source} source={source} />
-                        ))}
-                        {skill.fileCount > 1 && (
-                          <span>{skill.fileCount} files</span>
-                        )}
-                        <SkillUsageCount count={usage?.counts[skill.id]} />
-                      </div>
-                      <small className="global-skill-path" title={skill.path}>
-                        {skill.path}
-                      </small>
-                      {skill.error && <p>{skill.error}</p>}
-                    </div>
-                    <Button
-                      size="sm"
-                      disabled={
-                        loading ||
-                        busy ||
-                        Boolean(pending) ||
-                        !connected ||
-                        skill.exists ||
-                        Boolean(skill.error)
-                      }
-                      aria-label={`${added.has(skill.id) ? "Added" : skill.exists ? "Already in project" : "Add to project"}: ${skill.name}`}
-                      onClick={() => void add([skill])}
-                    >
-                      {added.has(skill.id) ? (
-                        <>
-                          <Icon icon={CheckIcon} size="sm" />
-                          Added
-                        </>
-                      ) : skill.exists ? (
-                        "Already in project"
-                      ) : pending === skill.id ? (
-                        "Adding…"
-                      ) : (
-                        "Add to project"
-                      )}
-                    </Button>
-                  </li>
-                ))}
-              </ul>
-            )
-          }
-        </LoadingRegion>
-      </div>
-      <div className="global-skills-footer">
-        <p role="status">{message}</p>
-        <Button
-          variant="primary"
-          disabled={
-            !selectedSkills.length ||
-            loading ||
-            busy ||
-            Boolean(pending) ||
-            !connected
-          }
-          onClick={() => void add(selectedSkills)}
+                "Add skills"
+              )}
+            </Button>
+          </div>
+        </>
+      )}
+      {peeked && peek && (
+        <div
+          id={peekId}
+          className="add-skills-peek"
+          role="tooltip"
+          style={{ top: Math.max(0, peek.top - 40) }}
         >
-          Add selected
-          {selectedSkills.length ? ` (${selectedSkills.length})` : ""}
-        </Button>
-        {reviewable && (
-          <Button
-            size="sm"
-            disabled={Boolean(pending) || busy}
-            onClick={onReview}
-          >
-            Review changes
-          </Button>
-        )}
-        <Button disabled={Boolean(pending)} onClick={onClose}>
-          Done
-        </Button>
-      </div>
-    </Overlay>
+          <div className="add-skills-peek-heading">
+            <strong>{peeked.name}</strong>
+            <AgentLogos agents={peeked.sources} />
+          </div>
+          {(failed[peeked.id] || peeked.error) && (
+            <p className="add-skills-peek-error">
+              <CircleXIcon size={12} aria-hidden="true" />
+              <span>{failed[peeked.id] || peeked.error}</span>
+            </p>
+          )}
+          <p>{peeked.description || "No description"}</p>
+          <p className="add-skills-peek-meta">
+            <FileIcon size={12} aria-hidden="true" />
+            <span>
+              {peeked.fileCount} {peeked.fileCount === 1 ? "file" : "files"}
+            </span>
+          </p>
+          <p className="add-skills-peek-meta" title={peeked.path}>
+            <FolderIcon size={12} aria-hidden="true" />
+            <span>{middle(peeked.path)}</span>
+          </p>
+        </div>
+      )}
+    </div>
   );
 }

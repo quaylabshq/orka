@@ -24,6 +24,7 @@ import { IconButton } from "../icon-button.js";
 import { TextField } from "../text-field.js";
 import { connectProject } from "../use-project-setup.js";
 import { activeSources } from "../project-sources.js";
+import { SourceSyncButton } from "../source-sync-button.js";
 import { useSettingsQuery } from "./use-settings-query.js";
 import { useToastNotice } from "../toasts.js";
 import { CodexTrustNotices } from "./codex-trust-notices.js";
@@ -102,6 +103,7 @@ export function SettingsFolder({
   onDisconnect,
   onDisconnectSource,
   onRemoveSource,
+  onResetSourceRemote,
   onSyncActivity,
   run,
 }: {
@@ -113,6 +115,7 @@ export function SettingsFolder({
   onDisconnect: () => void;
   onDisconnectSource: (sourceId: string) => void;
   onRemoveSource: (sourceId: string) => void;
+  onResetSourceRemote: (sourceId: string) => void;
   onSyncActivity: () => void;
   run: (action: () => Promise<unknown>) => Promise<unknown>;
 }) {
@@ -120,21 +123,22 @@ export function SettingsFolder({
     service = state.config?.apiUrl;
   const notice = useToastNotice();
   const loadCapabilities = useCallback(async () => {
-    const capabilities = await invoke<{ sourcesRemoval?: number }>(
-      "settings_command",
-      {
-        action: "capabilities",
-        context: { user, service },
-      },
-    );
-    return { user, service, supported: capabilities.sourcesRemoval === 1 };
+    const capabilities = await invoke<{
+      sourcesRemoval?: number;
+      sourceRemoteKey?: number;
+    }>("settings_command", {
+      action: "capabilities",
+      context: { user, service },
+    });
+    return { user, service, capabilities };
   }, [user, service]);
-  const capabilities = useSettingsQuery(loadCapabilities);
-  const canRemove =
-    project.role === "owner" &&
-    capabilities.data?.user === user &&
-    capabilities.data?.service === service &&
-    capabilities.data.supported;
+  const { data } = useSettingsQuery(loadCapabilities);
+  const ownerCapabilities =
+    project.role === "owner" && data?.user === user && data?.service === service
+      ? data?.capabilities
+      : undefined;
+  const canRemove = ownerCapabilities?.sourcesRemoval === 1;
+  const canReset = ownerCapabilities?.sourceRemoteKey === 1;
   const sources: NonNullable<Project["sources"]> = project.sources
     ? activeSources(project.sources)
     : [
@@ -155,6 +159,7 @@ export function SettingsFolder({
         queued={queued}
         onDisconnectSource={onDisconnectSource}
         onRemoveSource={canRemove ? onRemoveSource : undefined}
+        onResetSourceRemote={canReset ? onResetSourceRemote : undefined}
         onLocalFolder={async () => {
           let connected = false;
           await run(async () => {
@@ -176,6 +181,8 @@ export function SettingsFolder({
                 const folderState = source.path
                   ? (source.folderState ?? "connected")
                   : "locate";
+                // Legacy single-folder projects have no per-source count.
+                const pending = source.queuedChanges ?? queued;
                 const connect = () =>
                   source.id
                     ? void run(() =>
@@ -187,7 +194,9 @@ export function SettingsFolder({
                       )
                     : onConnect();
                 const actions: ItemMenuAction[] = [];
-                if (folderState !== "connected")
+                const canLocate =
+                  folderState === "locate" || folderState === "reconnect";
+                if (canLocate)
                   actions.push({
                     id: "connect",
                     icon: FolderSearchIcon,
@@ -250,10 +259,10 @@ export function SettingsFolder({
                   id: "disconnect",
                   label: "Disconnect folder on this Mac",
                   icon: UnplugIcon,
-                  disabled: busy || queued > 0 || !source.path,
+                  disabled: busy || pending > 0 || !source.path,
                   reason:
-                    queued > 0
-                      ? "Sync queued changes before disconnecting"
+                    pending > 0
+                      ? "Let this folder's changes sync before disconnecting"
                       : !source.path
                         ? "Connect this folder before disconnecting"
                         : undefined,
@@ -261,6 +270,14 @@ export function SettingsFolder({
                   onSelect: () =>
                     source.id ? onDisconnectSource(source.id) : onDisconnect(),
                 });
+                if (canReset && source.remoteKey)
+                  actions.push({
+                    id: "reset-repository",
+                    label: "Reset Git repository",
+                    icon: LinkIcon,
+                    disabled: busy,
+                    onSelect: () => onResetSourceRemote(source.id),
+                  });
                 if (canRemove && source.id)
                   actions.push({
                     id: "remove",
@@ -292,9 +309,43 @@ export function SettingsFolder({
                         >
                           {source.name}
                         </span>
+                        {folderState === "repository-conflict" && (
+                          <span
+                            className="settings-folder-hint"
+                            title="This folder does not match the project's saved Git repository. A project owner can use Reset Git repository."
+                          >
+                            Sync paused · Git repository mismatch
+                          </span>
+                        )}
+                        {source.path && source.gitRepository === false && (
+                          <span
+                            className="settings-folder-hint"
+                            title="Orka matches folders across Macs by their Git repository. Check this is the project's folder."
+                          >
+                            Not a Git repository
+                          </span>
+                        )}
                       </div>
                       <div className="settings-folder-actions">
-                        {folderState !== "connected" && (
+                        {source.id &&
+                          source.path &&
+                          source.syncStartsAt &&
+                          folderState === "connected" && (
+                            <SourceSyncButton
+                              name={source.name}
+                              startsAt={source.syncStartsAt}
+                              disabled={busy}
+                              onStart={() =>
+                                void run(() =>
+                                  invoke("start_source_sync", {
+                                    id: project.id,
+                                    sourceId: source.id,
+                                  }),
+                                )
+                              }
+                            />
+                          )}
+                        {canLocate && (
                           <Button
                             variant={
                               folderState === "locate" ? "primary" : "secondary"
@@ -329,11 +380,11 @@ export function SettingsFolder({
                             title={
                               !source.path
                                 ? "Connect this folder before disconnecting"
-                                : queued > 0
-                                  ? "Sync queued changes before disconnecting"
+                                : pending > 0
+                                  ? "Let this folder's changes sync before disconnecting"
                                   : "Disconnect folder on this Mac"
                             }
-                            disabled={busy || queued > 0 || !source.path}
+                            disabled={busy || pending > 0 || !source.path}
                             onClick={() =>
                               source.id
                                 ? onDisconnectSource(source.id)
@@ -373,9 +424,11 @@ export function SettingsFolder({
         service={service}
         busy={busy}
       />
-      {queued > 0 && (
+      {sources.some(
+        (source) => source.path && (source.queuedChanges ?? queued) > 0,
+      ) && (
         <div className="settings-notice settings-folder-notice">
-          <p>Sync queued changes before disconnecting folders.</p>
+          <p>Folders with unsent changes can be disconnected once they sync.</p>
           <Button size="sm" onClick={onSyncActivity}>
             View sync activity
           </Button>

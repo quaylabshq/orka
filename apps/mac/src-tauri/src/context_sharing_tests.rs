@@ -688,6 +688,7 @@ fn owners_submit_memory_directly_and_legacy_pending_requests_finish_without_self
         "cannot-review",
         "already-decided",
         "sharing-paused",
+        "source-waiting",
     ] {
         let mut catalog = catalog.clone();
         let mut project = f.project.clone();
@@ -695,6 +696,9 @@ fn owners_submit_memory_directly_and_legacy_pending_requests_finish_without_self
             "other-author" => catalog["requests"][0]["author"] = json!("teammate"),
             "cannot-review" => catalog["requests"][0]["canReview"] = json!(false),
             "already-decided" => catalog["requests"][0]["status"] = json!("rejected"),
+            "source-waiting" => {
+                project["sources"] = json!([{"id":"waiting","firstSyncWaiting":true}])
+            }
             _ => project["sharing"]["memory"] = json!(false),
         }
         assert!(

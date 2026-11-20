@@ -25,7 +25,8 @@ export type ProjectResource = Resource & {
   localForkId?: string;
   nativeForkParentId?: string;
 };
-export type ProjectPage = "home" | "env" | "members" | Resource["kind"];
+export type ProjectPage =
+  "home" | "env" | "members" | "reviews" | Resource["kind"];
 export type ProjectSharing = Record<Resource["kind"] | "env", boolean>;
 export interface ProjectMember {
   id: string;
@@ -46,7 +47,14 @@ export interface Project {
     name: string;
     removedAt?: string | null;
     path?: string | null;
-    folderState?: "connected" | "reconnect" | "locate";
+    folderState?: "connected" | "reconnect" | "locate" | "repository-conflict";
+    remoteKey?: string;
+    /** Unsent changes that block disconnecting this folder on this Mac. */
+    queuedChanges?: number;
+    /** False when the connected folder is not inside a Git repository. */
+    gitRepository?: boolean;
+    /** When a folder newly connected on this Mac starts its first sync. */
+    syncStartsAt?: string | null;
     repository?: RepositoryBinding | null;
     repositoryRevision?: number;
   }[];
@@ -93,7 +101,8 @@ export interface SyncProgress {
 /** One queued project from `sync_queue_state`; the workspace `*` row is not sent. */
 export interface SyncQueueEntry {
   projectId: string;
-  state: "queued" | "running" | "waiting";
+  /** `scheduled`: a newly connected folder waits before its first sync. */
+  state: "queued" | "running" | "waiting" | "scheduled";
   reason: string;
   attempts: number;
   notBefore: string | null;

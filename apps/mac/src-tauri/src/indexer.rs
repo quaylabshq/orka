@@ -97,7 +97,7 @@ pub fn scoped_resource_id(
     }
     crate::sources::resource_id(project, kind, path)
 }
-fn has_git_repository(path: &Path) -> bool {
+pub(crate) fn has_git_repository(path: &Path) -> bool {
     path.ancestors()
         .any(|directory| fs::symlink_metadata(directory.join(".git")).is_ok())
 }

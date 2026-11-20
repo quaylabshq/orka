@@ -116,11 +116,7 @@ function EnabledEnvPage({
         <div role="alert" className="env-status">
           {c.error}
           {enabled && (
-            <Button
-              size="sm"
-              variant="tertiary"
-              onClick={() => void c.run("Refreshing…", c.load)}
-            >
+            <Button size="sm" onClick={() => void c.run("Refreshing…", c.load)}>
               Retry
             </Button>
           )}

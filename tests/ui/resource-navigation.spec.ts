@@ -369,27 +369,22 @@ test("skills switch files from the rail or the compact selector", async ({
 }) => {
   await resourceFixture(page);
   await page.getByRole("button", { name: /^Skills/ }).click();
-  const grid = page.locator(".skill-grid");
-  const columns = () =>
-    grid.evaluate(
-      (element) =>
-        getComputedStyle(element).gridTemplateColumns.split(" ").length,
-    );
-  await expect(grid.locator(".skill-card")).toHaveCount(2);
-  await expect(grid).toContainText("How we write.");
+  const grid = page.locator(".skill-table");
+  await expect(grid.locator("tbody tr")).toHaveCount(2);
+  // Rows carry the name only; the description waits in the hover peek.
+  await expect(grid).not.toContainText("How we write.");
   await expect(grid).not.toContainText("1 file");
   await expect(grid).not.toContainText("2 files");
-  await expect.poll(columns).toBe(3);
   await expect(page.locator(".inspector")).toHaveCount(0);
   await page
-    .locator(".skill-card")
+    .locator(".skill-table tbody tr")
     .filter({ hasText: "Review checklist" })
     .click();
   const view = page.locator(".resource-detail--skill");
   await expect(view.locator("h2").first()).toHaveText("Review checklist");
   await expect(view.locator(".skill-description")).toHaveText("How we write.");
   await expect(view).toContainText("Some content");
-  await expect(page.locator(".skill-grid")).toHaveCount(0);
+  await expect(page.locator(".skill-table")).toHaveCount(0);
   await expect(view).toHaveAttribute("data-layout", "wide");
   // The Files card switches the inspected file; the title card stays put.
   const rail = view.getByRole("complementary", { name: "Skill information" });
@@ -407,8 +402,7 @@ test("skills switch files from the rail or the compact selector", async ({
   await expect(page.getByRole("button", { name: "Files, 2" })).toBeVisible();
   await expect(heading(page)).toHaveText("Skills");
   await backButton(page, "Skills").click();
-  await expect(grid.locator(".skill-card")).toHaveCount(2);
-  await expect.poll(columns).toBe(2);
+  await expect(grid.locator("tbody tr")).toHaveCount(2);
 });
 
 test("a failed file read clears old content and retries only on request", async ({
@@ -419,7 +413,7 @@ test("a failed file read clears old content and retries only on request", async 
   await resourceFixture(page);
   await page.getByRole("button", { name: /^Skills/ }).click();
   await page
-    .locator(".skill-card")
+    .locator(".skill-table tbody tr")
     .filter({ hasText: "Review checklist" })
     .click();
   const view = page.locator(".resource-detail--skill");
@@ -480,7 +474,7 @@ for (const outcome of ["success", "failure"] as const)
     await resourceFixture(page);
     await page.getByRole("button", { name: /^Skills/ }).click();
     await page
-      .locator(".skill-card")
+      .locator(".skill-table tbody tr")
       .filter({ hasText: "Review checklist" })
       .click();
     const view = page.locator(".resource-detail--skill");
@@ -595,13 +589,14 @@ test("skill title sorting follows frontmatter names instead of folder titles", a
 }) => {
   await resourceFixture(page, true);
   await page.getByRole("button", { name: /^Skills/ }).click();
-  const titles = page.locator(".skill-card strong");
-  await expect(titles).toContainText(["Alpha writing", "Zebra review"]);
-  await page
-    .getByRole("button", { name: "Sort by Most used", exact: true })
-    .click();
-  await page.getByRole("menuitemradio", { name: "Title", exact: true }).click();
+  const titles = page.locator(".skill-table-open");
+  // Name A to Z is the default order.
   await expect(titles).toHaveText(["Alpha writing", "Zebra review"]);
+  await page.getByRole("button", { name: "Sort Name", exact: true }).click();
+  await page
+    .getByRole("menuitemradio", { name: "Z to A", exact: true })
+    .click();
+  await expect(titles).toHaveText(["Zebra review", "Alpha writing"]);
 });
 
 test("empty collections omit tools and source filters stay clearable after items disappear", async ({

@@ -534,16 +534,25 @@ function ResourceMenuTarget({
   return children(primary);
 }
 
+/** One list: the "More actions" submenu's items take its place. */
+const flatten = (actions: ItemMenuAction[]) =>
+  actions.flatMap((action) =>
+    action.id === "more" && action.children ? action.children : [action],
+  );
+
 export function ResourceItemMenu({
   resource,
   file,
   extraActions,
+  flat = false,
   onOpenChange,
   children,
 }: {
   resource: ProjectResource;
   file?: string;
   extraActions?: ItemMenuAction[];
+  /** Show every action in one list instead of nesting the rest under More. */
+  flat?: boolean;
   onOpenChange?: (open: boolean) => void;
   children: (actions: ItemMenuAction[]) => React.ReactElement;
 }) {
@@ -555,15 +564,18 @@ export function ResourceItemMenu({
       file={file}
       extraActions={extraActions}
     >
-      {(actions) => (
-        <ItemContextMenu
-          actions={actions}
-          label={`${resource.kind} actions`}
-          onOpenChange={onOpenChange}
-        >
-          {children(actions)}
-        </ItemContextMenu>
-      )}
+      {(nested) => {
+        const actions = flat ? flatten(nested) : nested;
+        return (
+          <ItemContextMenu
+            actions={actions}
+            label={`${resource.kind} actions`}
+            onOpenChange={onOpenChange}
+          >
+            {children(actions)}
+          </ItemContextMenu>
+        );
+      }}
     </ResourceMenuTarget>
   );
 }

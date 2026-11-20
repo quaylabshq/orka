@@ -4,6 +4,7 @@ import {
   FileIcon,
   FolderIcon,
   HouseIcon,
+  InboxIcon,
   KeyRoundIcon,
   LayersIcon,
   MessagesSquareIcon,
@@ -32,6 +33,7 @@ const sections = [
   { kind: "skill", label: "Skills", icon: FileIcon },
   { kind: "session", label: "Sessions", icon: MessagesSquareIcon },
   { kind: "plan", label: "Plans", icon: ScrollTextIcon },
+  { kind: "reviews", label: "Reviews", icon: InboxIcon },
   { kind: "env", label: "ENVs", icon: KeyRoundIcon },
 ] as const;
 type NavigationSection = (typeof sections)[number];
@@ -363,6 +365,7 @@ export function ProjectNavigation({
   activeKind,
   resources,
   pendingCounts,
+  reviewCount,
   onNavigate,
   collapsed,
 }: {
@@ -371,13 +374,17 @@ export function ProjectNavigation({
   activeKind: ProjectPage | null;
   resources: Resource[];
   pendingCounts: readonly LocalKind[];
+  /** Requests waiting on this person; omit to hide the Reviews tab. */
+  reviewCount?: number;
   onNavigate: (kind: ProjectPage) => void;
   collapsed: boolean;
 }) {
   const reduced = useReducedMotion(),
     selected = projects.find((project) => project.id === projectId);
   const visibleSections = sections.filter(
-    (item) => ENV_ENABLED || item.kind !== "env",
+    (item) =>
+      (ENV_ENABLED || item.kind !== "env") &&
+      (reviewCount !== undefined || item.kind !== "reviews"),
   );
   const [instant, setInstant] = React.useState(true);
   const listRef = React.useRef<HTMLElement>(null);
@@ -422,11 +429,13 @@ export function ProjectNavigation({
           item={item}
           index={index}
           count={
-            item.kind === "home" ||
-            item.kind === "env" ||
-            pendingCounts.some((kind) => kind === item.kind)
-              ? undefined
-              : (counts[item.kind] ?? 0)
+            item.kind === "reviews"
+              ? reviewCount || undefined
+              : item.kind === "home" ||
+                  item.kind === "env" ||
+                  pendingCounts.some((kind) => kind === item.kind)
+                ? undefined
+                : (counts[item.kind] ?? 0)
           }
           selected={Boolean(selected && activeKind === item.kind)}
           collapsed={collapsed}

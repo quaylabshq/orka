@@ -10,10 +10,16 @@ Create a project and use **Add folders** to select several directories, or
 results require selection. Scanning recognizes both `.git` directories and files,
 does not follow directory symlinks, and does not recursively include unrelated
 repositories. Ordinary folders can be added through the folder picker.
+The top of a disk or drive, a home folder or a folder containing it, the
+Library folder and system folders are refused. Settings notes a connected
+folder that is not in a Git repository, since Orka matches folders across Macs
+by their repository.
 
 Use **Settings → General → Source Folder** to attach more repositories, locate a shared
 source on this Mac, or disconnect one source. In the source’s options menu,
 **Disconnect folder on this Mac** preserves the checkout and shared source.
+It waits only for that folder's own unsent changes; changes queued for other
+folders do not block it.
 Owners can choose **Remove source folder** on updated services to stop syncing
 that source for everyone. Existing local files and previously shared content are
 retained; the removed source cannot be reconnected or accept new uploads. Adding
@@ -23,6 +29,25 @@ queued changes for a source when it is removed, Orka keeps those snapshots in
 Queued changes for other sources continue normally. Owners register shared sources;
 members connect their checkout using Locate folder. Paths can differ between Macs.
 Two source folders cannot cover the same or overlapping local directories.
+A folder newly connected on this Mac waits three minutes before its first sync,
+including during first-run setup or after cloning from GitHub. A folder chosen by
+mistake can be disconnected before sync scans it.
+Settings shows when it starts and offers **Sync now**; reconnecting a folder
+that was already connected is not delayed.
+
+On services that advertise `sourceRemoteKey`, the first Git checkout any member
+connects to a source pins that source to its repository, by the same hashed
+remote used to suggest projects during onboarding. Other Macs can then only
+connect a checkout of that repository, over SSH or HTTPS, including a linked
+worktree; a folder of another repository, a plain folder or a repository
+without a remote is refused, and a same-named folder of another repository is
+not matched to the source by name. Workspace sync also pins eligible checkouts
+that were already connected. A connected checkout with a conflicting pin stays
+attached. Orka pauses local writes and keeps that folder's queued changes until
+the conflict is resolved. A previously verified checkout can temporarily lose
+its remote settings, but an unverified checkout must match the pin before it
+can sync. Owners can reset a pin after a repository moves. Older services keep
+the previous behaviour, and older desktops ignore saved pins.
 
 Services with GitHub enabled can also [link and clone repositories](github-repositories.md)
 without an existing local checkout. GitHub repository access and app installation

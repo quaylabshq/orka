@@ -80,9 +80,28 @@ pub fn snapshot() -> Result<Value> {
         )?);
     }
     for project in &mut projects {
+        let project_id = project["id"].as_str().unwrap_or_default().to_owned();
         if let Some(sources) = project["sources"].as_array_mut() {
             for source in sources {
-                source["folderState"] = json!(crate::sources::folder_state(source));
+                source["folderState"] = json!(crate::sources::source_folder_state(source));
+                // Disconnecting a folder only waits for its own unsent changes.
+                if let Some(id) = source["id"].as_str().map(str::to_owned) {
+                    source["queuedChanges"] =
+                        json!(crate::sources::queued_for_source(&db, &project_id, &id)?);
+                    if let Some(path) = source["path"].as_str() {
+                        // Shown as a hint; a folder outside Git can still sync.
+                        source["gitRepository"] = json!(crate::indexer::has_git_repository(
+                            std::path::Path::new(path)
+                        ));
+                    }
+                    if source["path"].is_string() {
+                        if let Some(at) = crate::sources::sync_after(&db, &project_id, &id)? {
+                            source["syncStartsAt"] =
+                                json!(chrono::DateTime::from_timestamp_millis(at)
+                                    .map(|at| at.to_rfc3339()));
+                        }
+                    }
+                }
             }
         } else {
             project["folderState"] = json!(crate::sources::folder_state(project));

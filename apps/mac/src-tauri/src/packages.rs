@@ -1,7 +1,7 @@
 use crate::db::{self, Result};
 use serde_json::{json, Value};
 use std::{
-    fs,
+    fs, io,
     path::{Component, Path, PathBuf},
 };
 use walkdir::WalkDir;
@@ -20,9 +20,16 @@ pub fn reject_env_files(files: &[Value]) -> Result<()> {
     }
     Ok(())
 }
+fn skill_walk_error(error: walkdir::Error) -> String {
+    match error.io_error() {
+        Some(source) => format!("Cannot read skill folder: {source}"),
+        None => error.to_string(),
+    }
+}
+
 pub fn check_skill_directory(path: &Path) -> Result<()> {
     for entry in WalkDir::new(path).follow_links(false) {
-        let e = entry.map_err(|_| "Cannot inspect skill folder")?;
+        let e = entry.map_err(skill_walk_error)?;
         if e.file_type().is_symlink() {
             return Err("Package contains symlink".into());
         }
@@ -73,30 +80,43 @@ pub fn safe_directory(base: &Path, target: &Path) -> Result<()> {
     Ok(())
 }
 pub fn file(path: &Path, name: &str) -> Result<Value> {
+    capture_file(path, name, false)
+}
+
+fn capture_file(path: &Path, name: &str, skill_package: bool) -> Result<Value> {
+    let read_error = |error: io::Error| {
+        if skill_package {
+            format!("Cannot read {name}: {error}")
+        } else {
+            error.to_string()
+        }
+    };
     if is_env_path(name) {
         return Err(env_file_error());
     }
     if fs::symlink_metadata(path)
-        .map_err(|e| e.to_string())?
+        .map_err(read_error)?
         .file_type()
         .is_symlink()
     {
         return Err("Symlinked files are excluded".into());
     }
-    let bytes = fs::read(path).map_err(|e| e.to_string())?;
+    let bytes = fs::read(path).map_err(read_error)?;
     #[cfg(unix)]
     let executable = {
         use std::os::unix::fs::PermissionsExt;
-        fs::metadata(path)
-            .map_err(|e| e.to_string())?
-            .permissions()
-            .mode()
-            & 0o111
-            != 0
+        fs::metadata(path).map_err(read_error)?.permissions().mode() & 0o111 != 0
     };
     #[cfg(not(unix))]
     let executable = false;
-    Ok(json!({"path":name,"hash":db::blob(&bytes)?,"size":bytes.len(),"executable":executable}))
+    let hash = db::blob(&bytes).map_err(|error| {
+        if skill_package {
+            format!("Cannot cache {name}: {error}")
+        } else {
+            error
+        }
+    })?;
+    Ok(json!({"path":name,"hash":hash,"size":bytes.len(),"executable":executable}))
 }
 
 fn env_file_error() -> String {
@@ -120,7 +140,7 @@ pub fn directory(path: &Path) -> Result<Vec<Value>> {
     let mut files = Vec::new();
     let mut total = 0;
     for entry in WalkDir::new(path).follow_links(false) {
-        let e = entry.map_err(|e| e.to_string())?;
+        let e = entry.map_err(skill_walk_error)?;
         if e.file_type().is_symlink() {
             return Err("Package contains symlink".into());
         }
@@ -134,7 +154,7 @@ pub fn directory(path: &Path) -> Result<Vec<Value>> {
             .to_string_lossy()
             .to_string();
         safe_relative(&rel)?;
-        let f = file(e.path(), &rel)?;
+        let f = capture_file(e.path(), &rel, true)?;
         total += f["size"].as_u64().unwrap_or(0);
         if files.len() >= 200 || total > 4_000_000 || f["size"].as_u64().unwrap_or(0) > 1_000_000 {
             return Err("Skill exceeds size limits".into());
@@ -307,6 +327,9 @@ fn recover_current_installation(
     )?;
     let source = crate::sources::for_resource(&project, &journal["project"])
         .ok_or("409: Installation source is removed or disconnected; original recovery journal and local files preserved for review")?;
+    if crate::sources::waiting_to_sync(db, &source)? {
+        return Ok(());
+    }
     crate::sources::validate(&source)?;
     if source["path"] != journal["project"]["path"]
         || source["folderIdentity"] != journal["project"]["folderIdentity"]

@@ -108,7 +108,7 @@ pub(crate) async fn api_at(
     Ok(value)
 }
 
-pub(crate) async fn register_device(owner: &str, origin: &str, device: &str) -> Result<()> {
+async fn register_device(owner: &str, origin: &str, device: &str) -> Result<Value> {
     let capabilities = api_at(owner, origin, "GET", "/v2/projects/capabilities", None)
         .await
         .unwrap_or(Value::Null);
@@ -116,7 +116,8 @@ pub(crate) async fn register_device(owner: &str, origin: &str, device: &str) -> 
     if capabilities["deviceHardware"] == 1 {
         registration["hardwareFamily"] = json!(crate::device_metadata::local_family(&db::open()?)?);
     }
-    post_device_registration(owner, origin, registration).await
+    post_device_registration(owner, origin, registration).await?;
+    Ok(capabilities)
 }
 
 pub(crate) async fn post_device_registration(
@@ -1720,12 +1721,14 @@ impl<'a> SyncPass<'a> {
         self.finish().await.map(Continue)
     }
 
-    async fn sync_project(&mut self, p: &Value) -> Stage {
+    async fn sync_project(&mut self, project: &Value) -> Stage {
+        let (p, waiting) = sync_ready_view(self.db, project)?;
+        let p = &p;
         let project = p["id"].as_str().ok_or("Missing project")?;
         if boundary(self.db, project)?.is_break()
             || self.prepare_project(p)?.is_break()
             || boundary(self.db, project)?.is_break()
-            || self.preflight(p)?.is_break()
+            || self.preflight(p, waiting)?.is_break()
             || boundary(self.db, project)?.is_break()
         {
             return Ok(Break(()));
@@ -1749,7 +1752,8 @@ impl<'a> SyncPass<'a> {
         if crate::projects::foreground_waiting()? {
             return Ok(Break(()));
         }
-        prepare_local(self.db, project)?;
+        let (view, _) = crate::sources::without_waiting(self.db, project)?;
+        prepare_local(self.db, &view)?;
         Ok(Continue(()))
     }
 
@@ -1819,7 +1823,7 @@ impl<'a> SyncPass<'a> {
     }
 
     /// Scans (or, for a retry, validates) one project's local files.
-    fn preflight(&mut self, p: &Value) -> Stage {
+    fn preflight(&mut self, p: &Value, waiting: Option<i64>) -> Stage {
         let db = &mut *self.db;
         let retry_only = self.mode == ProjectMode::RetryOnly;
         if crate::projects::foreground_waiting()? {
@@ -1834,7 +1838,7 @@ impl<'a> SyncPass<'a> {
         )?;
         match preflight_project(db, p, retry_only) {
             Ok(()) => {
-                if !retry_only {
+                if !retry_only && waiting.is_none() {
                     db::set(
                         db,
                         &format!("firstScan:{}", p["id"].as_str().unwrap_or("")),
@@ -1864,9 +1868,15 @@ impl<'a> SyncPass<'a> {
             .as_str()
             .ok_or("Configure the service")?
             .to_string();
-        register_device(owner, &origin, &device).await?;
+        let capabilities = register_device(owner, &origin, &device).await?;
         let projects = api_as(owner, "GET", crate::projects::CATALOG_PATH, None).await?;
         crate::projects::merge_catalog(db, &projects)?;
+        // Reuse registration's capabilities instead of probing again for pins.
+        let origin = origin.as_str();
+        crate::sources::backfill_remote_pins(db, &capabilities, |body| async move {
+            crate::sources::post_remote_pin(owner, origin, &body).await
+        })
+        .await?;
         Ok(Continue(()))
     }
 
@@ -1881,7 +1891,7 @@ impl<'a> SyncPass<'a> {
         if p["governed"] == true {
             let id = p["id"].as_str().ok_or("Missing project")?;
             let result: Result<()> = async {
-                let local = crate::governance::project(db, id)?;
+                crate::projects::active(db, id)?;
                 let catalog = api_as(
                     owner,
                     "POST",
@@ -1893,13 +1903,12 @@ impl<'a> SyncPass<'a> {
                 // A lifecycle refusal must leave queued work unchanged. Only
                 // prepare legacy knowledge after current access is confirmed.
                 if !retry_only {
-                    crate::governance::localize_outbox(db, &local)?;
+                    crate::governance::localize_outbox(db, p)?;
                 } else {
-                    crate::governance::block_legacy_retry(db, &local)?;
+                    crate::governance::block_legacy_retry(db, p)?;
                 }
                 if !retry_only {
-                    crate::context_sharing::approve_own_pending(db, owner, &local, &catalog)
-                        .await?;
+                    crate::context_sharing::approve_own_pending(db, owner, p, &catalog).await?;
                 }
                 Ok(())
             }
@@ -1941,10 +1950,16 @@ impl<'a> SyncPass<'a> {
         }
         let blocked_projects = &mut self.blocked;
         let mut outbox = ProjectOutbox::open(db, project)?;
+        let paused_sources = crate::sources::paused_upload_sources(p);
         let queued: Vec<_> = outbox
             .queued(db)?
             .into_iter()
             .filter(|q| {
+                // Unattributed older rows may belong to the paused source.
+                // Keep the bytes and request ID untouched for a verified retry.
+                if crate::sources::upload_paused(&paused_sources, &q["sourceId"]) {
+                    return false;
+                }
                 if q["path"] == crate::selective_sharing::QUEUE_PATH {
                     crate::selective_sharing::authorized_origin(db, q)
                         .is_ok_and(|origin| origin.is_some())
@@ -2322,9 +2337,10 @@ async fn sync_workspace(
     )?
     .into_iter()
     .filter(selected)
-    .collect::<Vec<_>>();
-    for p in &local {
-        if pass.preflight(p)?.is_break() {
+    .map(|project| sync_ready_view(pass.db, &project))
+    .collect::<Result<Vec<_>>>()?;
+    for (p, waiting) in &local {
+        if pass.preflight(p, *waiting)?.is_break() {
             return Ok(WorkspaceSync::Yielded);
         }
     }
@@ -2346,17 +2362,17 @@ async fn sync_workspace(
     if connected?.is_break() {
         return Ok(WorkspaceSync::Yielded);
     }
-    for p in &local {
+    for (p, _) in &local {
         if pass.authorize(p).await?.is_break() {
             return Ok(WorkspaceSync::Yielded);
         }
     }
-    for p in &local {
+    for (p, _) in &local {
         if pass.drain_outbox(p).await?.is_break() {
             return Ok(WorkspaceSync::Yielded);
         }
     }
-    for p in &local {
+    for (p, _) in &local {
         if pass.pull_project(p).await?.is_break() {
             return Ok(WorkspaceSync::Yielded);
         }
@@ -2494,6 +2510,16 @@ async fn sync_job(db: &mut rusqlite::Connection, job: &crate::sync_queue::Job) -
     } else {
         Outcome::Synced
     })
+}
+
+/// A sooner sync can serve ready folders without consuming the delayed run.
+fn sync_ready_view(db: &rusqlite::Connection, project: &Value) -> Result<(Value, Option<i64>)> {
+    let (view, waiting) = crate::sources::without_waiting(db, project)?;
+    if let Some(at) = waiting {
+        let id = project["id"].as_str().ok_or("Missing project")?;
+        SyncQueue::request_at(db, id, Priority::Local, "new folder", at)?;
+    }
+    Ok((view, waiting))
 }
 
 fn project_has_retryable_errors(db: &rusqlite::Connection, project: &str) -> Result<bool> {
@@ -2699,7 +2725,8 @@ impl<'p> ProjectOutbox<'p> {
 
     /// Queued rows that may be sent now, oldest first.
     fn queued(&self, db: &rusqlite::Connection) -> Result<Vec<Value>> {
-        db::rows(db, "SELECT json_object('sequence',rowid,'id',id,'project',project,'path',path,'value',json(value),'error',error) FROM outbox WHERE project=? AND (EXISTS(SELECT 1 FROM meta WHERE key='sessionOutboxRedaction:'||outbox.id) OR error IS NULL OR error NOT GLOB '4[0-9][0-9]:*' OR substr(error,1,3) IN ('401','408','429')) ORDER BY rowid", &[&self.project])
+        let source = crate::sources::OUTBOX_SOURCE;
+        db::rows(db, &format!("SELECT json_object('sequence',o.rowid,'id',o.id,'project',o.project,'path',o.path,'value',json(o.value),'error',o.error,'sourceId',{source}) FROM outbox o WHERE o.project=? AND (EXISTS(SELECT 1 FROM meta WHERE key='sessionOutboxRedaction:'||o.id) OR o.error IS NULL OR o.error NOT GLOB '4[0-9][0-9]:*' OR substr(o.error,1,3) IN ('401','408','429')) ORDER BY o.rowid"), &[&self.project])
     }
 
     fn batch<'q>(&self, queued: &'q [Value]) -> Vec<&'q Value> {
@@ -2974,7 +3001,7 @@ fn prepare_local(db: &rusqlite::Connection, project: &Value) -> Result<()> {
 /// Scans a deleted project's files into the outbox as held captures.
 fn scan_held(db: &rusqlite::Connection, project: &Value) -> Result<bool> {
     indexer::clear_orphan_held_captures(db)?;
-    let mut capture = project.clone();
+    let (mut capture, _) = crate::sources::without_waiting(db, project)?;
     capture["captureOnly"] = json!(true);
     capture["deferAutomaticSharing"] = json!(true);
     indexer::scan_with_status(db, &capture, false)
