@@ -25,7 +25,8 @@ export type ProjectResource = Resource & {
   localForkId?: string;
   nativeForkParentId?: string;
 };
-export type ProjectPage = "home" | "env" | "members" | Resource["kind"];
+export type ProjectPage =
+  "home" | "env" | "members" | "reviews" | Resource["kind"];
 export type ProjectSharing = Record<Resource["kind"] | "env", boolean>;
 export interface ProjectMember {
   id: string;

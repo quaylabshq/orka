@@ -1,4 +1,4 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Locator, type Page } from "@playwright/test";
 import type { FileManifestEntry } from "../../apps/mac/src/components/diff-model.js";
 import {
   defaultProjectRules,
@@ -57,6 +57,10 @@ async function fixture(
         projectId: "project",
         resource: {
           ...resource,
+          // A draft is its own row unless the test wants it on the resource
+          // that also has a shared update waiting.
+          resourceId:
+            mode === "draft-blocked" ? resource.resourceId : "saved-learning",
           kind: "memory",
           title: "Saved learning",
           files: Object.entries(
@@ -523,14 +527,35 @@ async function fixture(
 
 const management = (page: Page) =>
   page.getByRole("region", { name: "Manage", exact: true });
+const requestPage = (page: Page) =>
+  page.getByRole("region", { name: "Review details", exact: true });
+const requestInfo = (page: Page) =>
+  page.getByRole("complementary", { name: "Review information" });
+const reviews = (page: Page) =>
+  page.getByRole("region", { name: "Reviews", exact: true });
+/** A titled table on the Open view; its name is the heading plus a count. */
+const section = (
+  page: Page,
+  title: "To decide" | "Sent by you" | "On this Mac",
+) => reviews(page).getByRole("region", { name: new RegExp(`^${title} \\d+$`) });
+/** The button that names a row; the row and the button both open the review. */
+const rowButton = (scope: Locator, title: string) =>
+  scope.getByRole("button", { name: title, exact: true });
+const toMembers = async (page: Page) => {
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await page
+    .getByRole("region", { name: "Settings", exact: true })
+    .getByRole("button", { name: "Members", exact: true })
+    .click();
+};
+const draftRow = (page: Page) =>
+  rowButton(section(page, "On this Mac"), "Saved learning");
 
 test("Settings Members opens activity logs, paginates, and returns to Members", async ({
   page,
 }) => {
   await fixture(page, true, false, "paginated-logs");
-  await management(page)
-    .getByRole("button", { name: "Back to Members", exact: true })
-    .click();
+  await toMembers(page);
   const settings = page.getByRole("region", { name: "Settings", exact: true });
   await settings
     .getByRole("button", { name: "View logs", exact: true })
@@ -563,35 +588,27 @@ test("Settings Members opens activity logs, paginates, and returns to Members", 
   ).toBeVisible();
 });
 
-test("pending reviews remain reachable and expand without removing existing requests", async ({
+test("Reviews stays reachable from Settings and lists every request without paging", async ({
   page,
 }) => {
   await fixture(page, true, false, "many");
-  const screen = management(page);
+  const screen = reviews(page);
+  await expect(screen).toBeVisible();
+  const requests = section(page, "To decide");
+  await expect(requests).toHaveAccessibleName("To decide 12");
+  // Every request renders at once; there is no paging.
   await expect(
-    screen.getByRole("heading", { name: "Pending reviews", exact: true }),
-  ).toBeVisible();
-  await expect(
-    screen.getByRole("button", { name: "Review request", exact: true }),
-  ).toHaveCount(5);
-  await screen
-    .getByRole("button", { name: "View more requests", exact: true })
-    .click();
-  await expect(
-    screen.getByRole("button", { name: "Review request", exact: true }),
-  ).toHaveCount(10);
-  await screen
-    .getByRole("button", { name: "View more requests", exact: true })
-    .click();
-  await expect(
-    screen.getByRole("button", { name: "Review request", exact: true }),
+    requests.getByRole("button", { name: /^Request \d+$/ }),
   ).toHaveCount(12);
+  for (const title of ["Request 1", "Request 12"])
+    await expect(rowButton(requests, title)).toBeVisible();
+  await expect(
+    screen.getByRole("button", { name: "View more requests", exact: true }),
+  ).toHaveCount(0);
   await expect(
     screen.getByRole("button", { name: "Requests", exact: true }),
   ).toHaveCount(0);
-  await screen
-    .getByRole("button", { name: "Back to Members", exact: true })
-    .click();
+  await toMembers(page);
   await expect(
     page
       .getByRole("region", { name: "Settings", exact: true })
@@ -599,11 +616,11 @@ test("pending reviews remain reachable and expand without removing existing requ
   ).toBeVisible();
 });
 
-test("switching projects keeps pending reviews and returns to Settings Members", async ({
+test("switching projects keeps Reviews open and returns to Settings Members", async ({
   page,
 }) => {
   await fixture(page, true, false, "multi-project");
-  const screen = management(page);
+  const screen = reviews(page);
   for (const [projectName, requestTitle] of [
     ["Second project", "Second project request"],
     ["Team · project", "Sample skill"],
@@ -612,10 +629,10 @@ test("switching projects keeps pending reviews and returns to Settings Members",
       .getByRole("combobox", { name: "Select project", exact: true })
       .click();
     await page.getByRole("option", { name: projectName, exact: true }).click();
+    await expect(screen).toBeVisible();
     await expect(
-      screen.getByRole("heading", { name: "Pending reviews", exact: true }),
+      rowButton(section(page, "To decide"), requestTitle),
     ).toBeVisible();
-    await expect(screen).toContainText(requestTitle);
     await expect(
       screen.getByRole("button", {
         name: "Default member permissions",
@@ -623,9 +640,7 @@ test("switching projects keeps pending reviews and returns to Settings Members",
       }),
     ).toHaveCount(0);
   }
-  await screen
-    .getByRole("button", { name: "Back to Members", exact: true })
-    .click();
+  await toMembers(page);
   await expect(
     page
       .getByRole("region", { name: "Settings", exact: true })
@@ -648,10 +663,14 @@ async function calls(page: Page, action: string) {
     action,
   );
 }
-async function openUpdates(page: Page, name = "Review local update") {
-  await management(page)
-    .getByRole("button", { name: "Review update", exact: true })
-    .click();
+const updateRow = (page: Page, title = "Sample skill") =>
+  rowButton(section(page, "On this Mac"), title);
+async function openUpdates(
+  page: Page,
+  name = "Review local update",
+  title?: string,
+) {
+  await updateRow(page, title).click();
   return page.getByRole("dialog", { name, exact: true });
 }
 
@@ -665,12 +684,7 @@ for (const publisher of [true, false]) {
       false,
       publisher ? "draft-publisher" : "draft-suggester",
     );
-    const local = management(page).getByRole("region", {
-      name: "Local reviews",
-    });
-    await local
-      .getByRole("button", { name: "Review changes", exact: true })
-      .click();
+    await draftRow(page).click();
     const dialog = page.getByRole("dialog", {
       name: "Review changes",
       exact: true,
@@ -721,9 +735,7 @@ test("local review compares the accepted version with additions and removals in 
     },
     files: { "content.md": "Saved learning\n", "added.md": "New learning\n" },
   });
-  await management(page)
-    .getByRole("button", { name: "Review changes", exact: true })
-    .click();
+  await draftRow(page).click();
   const dialog = page.getByRole("dialog", {
     name: "Review changes",
     exact: true,
@@ -776,9 +788,7 @@ test("local review keeps a readable diff when modern renderer features are unava
     before: { "content.md": "Original learning\n" },
     baseRevision: 3,
   });
-  await management(page)
-    .getByRole("button", { name: "Review changes", exact: true })
-    .click();
+  await draftRow(page).click();
   const dialog = page.getByRole("dialog", {
     name: "Review changes",
     exact: true,
@@ -813,9 +823,7 @@ test("local review includes executable-only changes and distinguishes binary ass
     ],
     baseRevision: 3,
   });
-  await management(page)
-    .getByRole("button", { name: "Review changes", exact: true })
-    .click();
+  await draftRow(page).click();
   const dialog = page.getByRole("dialog", {
     name: "Review changes",
     exact: true,
@@ -845,9 +853,7 @@ test("a removed source keeps its saved preview readable and private", async ({
     baseRevision: 2,
     before: { "content.md": "Earlier learning\n" },
   });
-  await management(page)
-    .getByRole("button", { name: "Review changes", exact: true })
-    .click();
+  await draftRow(page).click();
   const dialog = page.getByRole("dialog", {
     name: "Review changes",
     exact: true,
@@ -873,10 +879,7 @@ test("closing local review restores focus without dismissing or publishing priva
   page,
 }) => {
   await fixture(page, true, false, "draft-publisher");
-  const trigger = management(page).getByRole("button", {
-    name: "Review changes",
-    exact: true,
-  });
+  const trigger = draftRow(page);
   for (const close of ["Cancel", "Close review changes", "Escape"]) {
     await trigger.click();
     const dialog = page.getByRole("dialog", {
@@ -900,9 +903,7 @@ test("local publication failures remain visible beside the exact reviewed versio
     baseRevision: 3,
     before: { "content.md": "Original learning\n" },
   });
-  await management(page)
-    .getByRole("button", { name: "Review changes", exact: true })
-    .click();
+  await draftRow(page).click();
   const dialog = page.getByRole("dialog", {
     name: "Review changes",
     exact: true,
@@ -935,9 +936,7 @@ test("an in-flight local publication keeps the review open and prevents duplicat
   page,
 }) => {
   await fixture(page, true, false, "draft-publisher");
-  await management(page)
-    .getByRole("button", { name: "Review changes", exact: true })
-    .click();
+  await draftRow(page).click();
   const dialog = page.getByRole("dialog", {
     name: "Review changes",
     exact: true,
@@ -963,6 +962,23 @@ test("an in-flight local publication keeps the review open and prevents duplicat
   await expect(dialog).toHaveCount(0);
 });
 
+// An item with both a shared update and local edits gets a row for each.
+test("local edits stay reviewable when a shared update is waiting on the same item", async ({
+  page,
+}) => {
+  await fixture(page, true, false, "draft-blocked");
+  const rows = section(page, "On this Mac").getByRole("row", {
+    name: /Sample skill/,
+  });
+  await expect(rows).toHaveCount(2);
+  await expect(rows.first()).toContainText("Update blocked");
+  await expect(rows.last()).toContainText("Local edits");
+  await rows.last().getByRole("button", { name: "Sample skill" }).click();
+  await expect(
+    page.getByRole("dialog", { name: "Review changes", exact: true }),
+  ).toBeVisible();
+});
+
 for (const local of [false, true]) {
   test(`${local ? "local changes" : "pending requests"} show deletion diffs when tombstones retain file metadata`, async ({
     page,
@@ -975,16 +991,14 @@ for (const local of [false, true]) {
       false,
       { before: { "content.md": "Saved learning\n" }, baseRevision: 3 },
     );
-    await management(page)
-      .getByRole("button", {
-        name: local ? "Review changes" : "Review request",
-        exact: true,
-      })
-      .click();
-    const review = page.getByRole("dialog", {
-      name: local ? "Review changes" : "Review request",
-      exact: true,
-    });
+    await (
+      local
+        ? draftRow(page)
+        : rowButton(section(page, "To decide"), "Sample skill")
+    ).click();
+    const review = local
+      ? page.getByRole("dialog", { name: "Review changes", exact: true })
+      : requestPage(page);
     await expect(review.locator(".diff-card-removed")).toHaveText("Removed");
     await expect(
       review.getByRole("group", { name: "File changes", exact: true }),
@@ -994,7 +1008,7 @@ for (const local of [false, true]) {
     ).toHaveCount(0);
     if (!local) {
       await review
-        .getByRole("button", { name: "Approve request", exact: true })
+        .getByRole("button", { name: "Approve", exact: true })
         .click();
       expect(await calls(page, "decide")).toEqual([
         {
@@ -1013,23 +1027,20 @@ test("request approval sends the exact reviewed hash and reports stale proposals
   page,
 }) => {
   await fixture(page);
-  const screen = management(page);
-  await screen
-    .getByRole("button", { name: "Review request", exact: true })
-    .click();
-  const dialog = page.getByRole("dialog", {
-    name: "Review request",
-    exact: true,
-  });
-  await expect(dialog.getByLabel("File changes")).toContainText(
+  await rowButton(section(page, "To decide"), "Sample skill").click();
+  const review = requestPage(page);
+  await expect(review.getByLabel("File changes")).toContainText(
     "Reviewed candidate",
   );
-  await dialog
-    .getByRole("button", { name: "Approve request", exact: true })
-    .click();
+  await review.getByRole("button", { name: "Approve", exact: true }).click();
   await expect(
     page.locator("[data-orka-toast]").getByRole("status"),
   ).toHaveText("Suggestion needs a fresh review");
+  // A stale decision keeps its page, with the new status and no buttons.
+  await expect(requestInfo(page)).toContainText("Needs refresh");
+  await expect(
+    review.getByRole("button", { name: "Approve", exact: true }),
+  ).toHaveCount(0);
   expect(await calls(page, "decide")).toEqual([
     {
       projectId: "project",
@@ -1105,8 +1116,9 @@ test("access requests start from resource pages and do not appear in management"
   page,
 }) => {
   await fixture(page, true, false, "member");
+  await expect(reviews(page)).toBeVisible();
   await expect(
-    management(page).getByRole("button", {
+    reviews(page).getByRole("button", {
       name: "Request access",
       exact: true,
     }),
@@ -1157,7 +1169,11 @@ for (const removed of [false, true]) {
     page,
   }) => {
     await fixture(page, true, removed, "instructions");
-    const dialog = await openUpdates(page);
+    const dialog = await openUpdates(
+      page,
+      "Review local update",
+      "Project instructions",
+    );
     await expect(dialog).toHaveClass(/governance-dialog/);
     await expect(
       dialog.getByRole("heading", {
@@ -1256,68 +1272,40 @@ for (const viewport of [
   }) => {
     await page.setViewportSize(viewport);
     await fixture(page, true, false, "many");
-    const screen = management(page);
-    await screen
-      .getByRole("button", { name: "View more requests", exact: true })
-      .click();
-    await screen
-      .getByRole("button", { name: "View more requests", exact: true })
-      .click();
-    const trigger = screen
-      .getByRole("button", { name: "Review request", exact: true })
-      .first();
-    for (const close of ["Cancel", "Close review request", "Escape"]) {
+    const trigger = rowButton(section(page, "To decide"), "Request 1");
+    const review = requestPage(page);
+    for (const leave of ["Back to Reviews", "Reviews"]) {
       await trigger.click();
-      const dialog = page.getByRole("dialog", {
-        name: "Review request",
-        exact: true,
-      });
       await expect(
-        dialog.getByRole("heading", { name: "Request 1", exact: true }),
+        review.getByRole("heading", { name: "Request 1", exact: true }),
       ).toBeInViewport();
-      await expect(dialog.getByLabel("File changes")).toContainText(
+      await expect(review.getByLabel("File changes")).toContainText(
         "Reviewed candidate",
       );
-      await expect(
-        dialog.getByRole("button", { name: "Approve request", exact: true }),
-      ).toBeInViewport();
-      await expect
-        .poll(() =>
-          dialog.evaluate((element) =>
-            element.contains(document.activeElement),
-          ),
-        )
-        .toBe(true);
-      await expect(
-        dialog.getByRole("button", { name: "Approve request", exact: true }),
-      ).toBeEnabled();
-      await dialog
-        .getByRole("button", { name: "Approve request", exact: true })
-        .focus();
-      await page.keyboard.press("Tab");
-      const feedback = dialog.getByRole("button", {
-        name: "Start feedback mode",
+      const approve = review.getByRole("button", {
+        name: "Approve",
         exact: true,
       });
-      if (await feedback.isVisible()) {
-        await expect(feedback).toBeFocused();
-        await page.keyboard.press("Tab");
-      }
+      await expect(approve).toBeInViewport();
+      await expect(approve).toBeEnabled();
+      // Focus moves onto the page, so the keyboard does not stay on a hidden row.
+      await expect(reviews(page)).toBeFocused();
       await expect(
-        dialog.getByRole("button", {
-          name: "Close review request",
-          exact: true,
-        }),
-      ).toBeFocused();
-      if (close === "Escape") await page.keyboard.press("Escape");
-      else
-        await dialog.getByRole("button", { name: close, exact: true }).click();
-      await expect(dialog).toHaveCount(0);
-      await expect(trigger).toBeFocused();
+        page.getByRole("navigation", { name: "Requests", exact: true }),
+      ).toContainText("1 of 12");
+      await page
+        .getByRole("button", {
+          name: leave === "Reviews" ? /^Reviews\b/ : leave,
+        })
+        .first()
+        .click();
+      await expect(review).toHaveCount(0);
+      await expect(trigger).toBeVisible();
+      if (leave === "Back to Reviews") await expect(trigger).toBeFocused();
     }
     expect(await calls(page, "decide")).toEqual([]);
     expect(await calls(page, "request")).toEqual(
-      Array(3).fill({ projectId: "project", id: "request-0" }),
+      Array(2).fill({ projectId: "project", id: "request-0" }),
     );
   });
 }
@@ -1330,83 +1318,70 @@ test("request review loads in place, retries failed reads, and respects review p
     (window as any).holdRequestLoad = true;
     (window as any).requestLoadFailure = true;
   });
-  await management(page)
-    .getByRole("button", { name: "View request", exact: true })
-    .click();
-  const dialog = page.getByRole("dialog", {
-    name: "Review request",
-    exact: true,
-  });
-  await expect(dialog.getByRole("status")).toHaveText("Loading request…");
-  await page.evaluate(() => (window as any).finishRequestLoad());
-  await expect(dialog.getByRole("alert")).toContainText(
-    "Could not load this request",
-  );
+  await rowButton(section(page, "Sent by you"), "Sample skill").click();
+  const review = requestPage(page);
+  // The name comes from the list, so it is there while the rest loads.
   await expect(
-    dialog.getByRole("button", { name: "Try again", exact: true }),
-  ).toBeEnabled();
+    review.getByRole("heading", { name: "Sample skill", exact: true }),
+  ).toBeVisible();
+  await expect(review.getByLabel("File changes")).toHaveCount(0);
+  await page.evaluate(() => (window as any).finishRequestLoad());
+  await expect(review.getByRole("alert")).toContainText(
+    "Couldn’t load this request",
+  );
   await page.evaluate(() => {
     (window as any).holdRequestLoad = false;
     (window as any).requestLoadFailure = false;
   });
-  await dialog.getByRole("button", { name: "Try again", exact: true }).click();
-  await expect(dialog.getByLabel("File changes")).toContainText(
+  await review.getByRole("button", { name: "Retry", exact: true }).click();
+  await expect(review.getByLabel("File changes")).toContainText(
     "Reviewed candidate",
   );
+  await expect(requestInfo(page)).toContainText("Awaiting approval");
   await expect(
-    dialog.getByRole("button", { name: "Approve request", exact: true }),
+    review.getByRole("button", { name: "Approve", exact: true }),
   ).toHaveCount(0);
   await expect(
-    dialog.getByRole("button", { name: "Reject", exact: true }),
+    review.getByRole("button", { name: "Reject", exact: true }),
   ).toHaveCount(0);
   expect(await calls(page, "read-notification")).toEqual([
     { projectId: "project", id: "request" },
   ]);
 });
 
-test("request decisions keep the prepared review open and focus the review list when the decided row moves to history", async ({
+test("request decisions lock the page while sending, and a stale result stays with its new status", async ({
   page,
 }) => {
   await fixture(page);
-  const trigger = management(page).getByRole("button", {
-    name: "Review request",
-    exact: true,
-  });
+  const trigger = rowButton(section(page, "To decide"), "Sample skill");
   await trigger.click();
-  const dialog = page.getByRole("dialog", {
-    name: "Review request",
-    exact: true,
-  });
+  const review = requestPage(page);
   await page.evaluate(() => {
     (window as any).holdRequestDecision = true;
   });
-  await dialog
-    .getByRole("button", { name: "Approve request", exact: true })
-    .click();
+  const approve = review.getByRole("button", { name: "Approve", exact: true });
+  await approve.click();
+  await expect(approve).toBeDisabled();
   await expect(
-    dialog.getByRole("button", { name: "Cancel", exact: true }),
+    review.getByRole("button", { name: "Reject", exact: true }),
   ).toBeDisabled();
-  await expect(
-    dialog.getByRole("button", { name: "Approve request", exact: true }),
-  ).toBeDisabled();
-  await page.keyboard.press("Escape");
-  await expect(dialog).toBeVisible();
   expect(await calls(page, "decide")).toHaveLength(1);
   await page.evaluate(() => (window as any).finishRequestDecision());
-  await expect(dialog).toHaveCount(0);
-  await expect(
-    management(page).getByRole("heading", {
-      name: "Requests to review",
-      exact: true,
-    }),
-  ).toBeFocused();
+  await expect(requestInfo(page)).toContainText("Needs refresh");
+  await expect(approve).toHaveCount(0);
+  await page.getByRole("button", { name: "Back to Reviews" }).click();
+  await expect(review).toHaveCount(0);
+  await expect(reviews(page)).toBeFocused();
   await expect(trigger).toHaveCount(0);
+  await expect(section(page, "To decide")).toHaveCount(0);
+  await reviews(page)
+    .getByRole("button", { name: "History", exact: true })
+    .click();
   await expect(
-    management(page).getByRole("region", {
-      name: "Request history",
-      exact: true,
-    }),
-  ).toBeVisible();
+    reviews(page)
+      .getByRole("region", { name: "Requests", exact: true })
+      .getByRole("row", { name: /Sample skill/ }),
+  ).toContainText("Needs refresh");
 });
 
 test("instruction previews load directly, recover from failures, and require a fresh review after edits", async ({
@@ -1418,10 +1393,7 @@ test("instruction previews load directly, recover from failures, and require a f
     (window as any).holdInstallPreview = true;
     (window as any).installPreviewFailure = true;
   });
-  const trigger = management(page).getByRole("button", {
-    name: "Review update",
-    exact: true,
-  });
+  const trigger = updateRow(page, "Project instructions");
   await trigger.click();
   const dialog = page.getByRole("dialog", {
     name: "Review local update",
@@ -1485,7 +1457,7 @@ test("legacy activation keeps the consequence visible and migration details avai
 }) => {
   await page.setViewportSize({ width: 900, height: 640 });
   await fixture(page, false);
-  const activation = management(page).getByRole("region", {
+  const activation = reviews(page).getByRole("region", {
     name: "Enable project permissions",
     exact: true,
   });

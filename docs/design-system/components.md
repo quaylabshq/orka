@@ -56,10 +56,10 @@ Text and icon buttons keep their resting size on hover. Background, color, and p
 Both icon components are separate files. Standalone Icon variants select primary, secondary, or tertiary text tones; `inherit` is the default so icons inside a white button use its dark label color. An optional `label` exposes a standalone icon to assistive technology; otherwise it is decorative. IconButton requires an accessible name and supports all three action treatments in all three sizes.
 
 | Size | Button / icon-button height | Inline icon container | Icon glyph | Icon/text gap |
-| ---- | --------------------------- | --------------------- | ------------- | ------------- |
-| lg   | 48px                        | 24px                  | 20px          | 8px           |
-| md   | 40px                        | 20px                  | 16px          | 8px           |
-| sm   | 32px                        | 18px                  | 14px          | 6px           |
+| ---- | --------------------------- | --------------------- | ---------- | ------------- |
+| lg   | 48px                        | 24px                  | 20px       | 8px           |
+| md   | 40px                        | 20px                  | 16px       | 8px           |
+| sm   | 32px                        | 18px                  | 14px       | 6px           |
 
 Icon-only controls are square. Inline containers match the label line height. Lucide glyphs are stroked with currentColor at a 1.75 stroke width on their 24px grid (`--icon-stroke`) and stay centered; the local filled glyphs use a currentColor fill. Within Button, the parent control's size determines the icon dimensions.
 
@@ -69,6 +69,7 @@ Memory, plan, session, and skill detail pages share one shell (`apps/mac/src/com
 
 - `SkillDetail`: title card from SKILL.md frontmatter, status pill, Formatted/Markdown segmented control for Markdown files, and the Skill info actions as separate `IconButton`s with accessible labels and `SkillActionTooltip` hover/focus descriptions.
 - `SourceCard` and `FileDiffCard` (`file-diff.tsx`): read-only source with line numbers and Markdown tinting. Text comparisons use the actual `@pierre/diffs` React `FileDiff` through `pierre-diff.tsx`, with an Orka header, unified rows, green additions, red deletions, syntax highlighting, word emphasis, and expandable unchanged regions. Shadow-root styles consume Orka semantic tokens and IBM Plex Mono; rendering is read-only and all editing remains external. The bundled Shiki JavaScript engine requires no remote service, worker, or relaxed CSP. Older WebViews that lack Pierre’s CSS/JavaScript capabilities show a clear preview-unavailable message and retain Open in editor; the app’s macOS 12 minimum stays unchanged. Binary files keep their existing summary cards.
+- `RequestReview` (`request-review.tsx`): the Reviews tab's page for one change request, on the same shell with no item menu. Its info card is “Request details” with an icon on each fact row, a `StatusPill` (`review-status.tsx`) for the request's one status, and Approve and Reject. Changes shows one `FileDiffCard`, Full file one `SourceCard`, for the file chosen in Files. Decisions in flight live in `review-decisions.ts`, above the page, so leaving it cannot send one twice.
 - `ReaderState` (`skill-state.tsx`): illustrated empty, error, and comparison states; the PNGs live in `apps/mac/public/skill-states`.
 - `SkillReviewOverlay` (`skill-review-overlay.tsx`): the 640px right drawer for Review local edits (`submit-draft` publishes for Can edit, sends for approval for Suggest changes, and has no submit action for View only) and Review local update (`preview-install` → `apply-install` with the reviewed token). Both outgoing actions guard the reviewed files and shared revision; publication uses `publishIfAllowed`. Visibility rules are in `skill-review-state.ts`.
 
@@ -98,13 +99,13 @@ stay usable.
 
 Sessions, Memories, and Plans use `CollectionSkeleton` on first discovery, with
 title and metadata shapes aligned to the collection rows, without visible loading
-copy. Skills cards and Home updates show placeholders only for pending metadata,
+copy. The Skills description peek and Home updates show placeholders only for pending metadata,
 keeping known content and navigation available. Decorative shapes stay out of the
 accessibility tree; one status announces the pending collection. Background refresh
 keeps existing rows visible. Empty and error states appear after the request
 settles, with existing retry actions intact.
 
-Local catalogs and project skill usage reuse fresh results and pending requests
+Local catalogs reuse fresh results and pending requests
 across navigation for the configured sync interval. Changing that setting updates
 freshness and the visible collection's refresh schedule without clearing loaded
 rows or counts. Explicit refresh bypasses freshness. Account, service, profile,

@@ -66,11 +66,16 @@ import {
   ProjectSetupDialog,
 } from "./components/project-setup.js";
 import { ResourceIndex } from "./components/resource-index.js";
+import {
+  ReviewsPage,
+  type ReviewSelection,
+  type ReviewsView,
+} from "./components/reviews-page.js";
+import { ReviewStepper } from "./components/review-stepper.js";
 import { RepositoryConnections } from "./components/repository-connections.js";
 import { useBackgroundRepositoryAccess } from "./components/use-repositories.js";
 import { RepositoryFilter } from "./components/repository-filter.js";
 import { GlobalSkillImport } from "./components/global-skill-import.js";
-import { useProjectSkillUsage } from "./components/skill-usage.js";
 import {
   resourceDisplayTitle,
   displayText,
@@ -97,6 +102,7 @@ import {
   type SyncReviewItem,
 } from "./components/sync-attention.js";
 import { skillReviewState } from "./components/skill-review-state.js";
+import { skillStatus, type SkillStatus } from "./components/skill-status.js";
 import { useDeepLinks } from "./components/use-deep-links.js";
 import { PluginAuthorization } from "./components/plugin-authorization.js";
 import { parseProjectInvite } from "./components/project-invite.js";
@@ -148,6 +154,7 @@ const pageLabels: Record<ProjectPage, string> = {
   home: "home",
   env: "ENVs",
   members: "Manage",
+  reviews: "reviews",
   memory: "memories",
   skill: "skills",
   session: "sessions",
@@ -365,48 +372,57 @@ function WorkspaceApp({
   const [syncOpen, setSyncOpen] = useState(false);
   const syncStatusTrigger = useRef<HTMLButtonElement>(null);
   const projectScope = JSON.stringify([workspaceScope, project]);
-  const [management, setManagement] = useState<{
-    section: Exclude<ManagementSection, "members">;
-    history?: { scope: string; request: symbol };
-  }>({ section: "requests" });
+  const [reviewsDestination, setReviewsDestination] = useState<{
+    scope: string;
+    view: ReviewsView;
+    request: symbol;
+  } | null>(null);
   useEffect(() => {
-    setManagement((current) =>
-      current.history && current.history.scope !== projectScope
-        ? { section: current.section }
-        : current,
+    setReviewsDestination((current) =>
+      current && current.scope !== projectScope ? null : current,
     );
   }, [projectScope]);
-  const consumeHistoryRequest = useCallback((request: symbol) => {
-    setManagement((current) =>
-      current.history?.request === request
-        ? { section: current.section }
-        : current,
+  const consumeReviewsDestination = useCallback((request: symbol) => {
+    setReviewsDestination((current) =>
+      current?.request === request ? null : current,
     );
   }, []);
+  const [reviewState, setReview] = useState<{
+    scope: string;
+    selection: ReviewSelection;
+  } | null>(null);
   const [governance, setGovernance] = useState<{
     resource: string;
     mode?: "incoming" | "outgoing";
     env?: { title: string };
   } | null>(null);
   const openManagement = useCallback(
-    (section: ManagementSection = "members", historyScope?: string) => {
+    (
+      section: ManagementSection = "members",
+      view: ReviewsView = "open",
+      targetProject = project,
+    ) => {
       if (section === "members") {
         if (settingsNavigation.current)
           settingsNavigation.current.requestSection("members");
         else setSettings("members");
         return;
       }
-      setManagement({
-        section,
-        history: historyScope
-          ? { scope: historyScope, request: Symbol() }
-          : undefined,
-      });
+      setReviewsDestination(
+        section === "requests"
+          ? {
+              scope: JSON.stringify([workspaceScope, targetProject]),
+              view,
+              request: Symbol(),
+            }
+          : null,
+      );
       setSettings(null);
-      setTab("members");
+      setTab(section === "requests" ? "reviews" : "members");
+      setReview(null);
       setResource("");
     },
-    [],
+    [project, workspaceScope],
   );
   useToastNavigation(
     useCallback(
@@ -434,6 +450,14 @@ function WorkspaceApp({
   const inactiveProject = state.inactive?.find((item) => item.id === project);
   const selectedProject =
     state.projects.find((p) => p.id === project) ?? inactiveProject;
+  // A review belongs to the project and tab it was opened in.
+  const review =
+    !settings &&
+    !inactiveProject &&
+    tab === "reviews" &&
+    reviewState?.scope === projectScope
+      ? reviewState.selection
+      : null;
   const repositorySetupProject = state.projects.find(
     (item) => item.id === repositorySetup,
   );
@@ -458,12 +482,17 @@ function WorkspaceApp({
     ? index.repository
     : "all";
   const collectionFilters =
-    tab === "home" || tab === "env" || tab === "members"
+    tab === "home" || tab === "env" || tab === "members" || tab === "reviews"
       ? undefined
       : index.filters[tab];
+  const collectionRepository = tab === "skill" ? "all" : repository;
   const filters = useMemo(
-    () => ({ ...defaultIndexFilters, ...collectionFilters, repository }),
-    [collectionFilters, repository],
+    () => ({
+      ...defaultIndexFilters,
+      ...collectionFilters,
+      repository: collectionRepository,
+    }),
+    [collectionFilters, collectionRepository],
   );
   const projectPath = selectedProject?.path;
   const localCatalog = useLocalResources({
@@ -508,16 +537,6 @@ function WorkspaceApp({
     titleCache,
   );
   const skillSummaries = useSkillSummaries(resources, workspaceScope);
-  const skillUsage = useProjectSkillUsage(
-    project,
-    workspaceScope,
-    resources,
-    tab === "skill" &&
-      Boolean(state.user && selectedProject) &&
-      resources.length > 0,
-    JSON.stringify([selectedProject?.path, selectedProject?.sources]),
-    state.config?.syncMinutes,
-  );
   const displayTitle = useCallback(
     (item: Resource) =>
       displayText(
@@ -620,7 +639,15 @@ function WorkspaceApp({
       }
       if (link.hostname === "project") {
         const [id, resourceId] = link.pathname.split("/").filter(Boolean);
-        index.setRepository("all");
+        const sameProjectSkill =
+          id === project &&
+          catalogResources.some(
+            (item) =>
+              item.projectId === id &&
+              item.resourceId === resourceId &&
+              item.kind === "skill",
+          );
+        if (!sameProjectSkill) index.setRepository("all");
         setProject(id);
         if (resourceId) setResource(resourceId);
         else {
@@ -659,6 +686,27 @@ function WorkspaceApp({
     () => projectAttention(state, project),
     [state, project],
   );
+  const skillStatusOf = useMemo(() => {
+    const items = new Map(
+      attention.items.map((item) => [item.resourceId ?? item.key, item]),
+    );
+    const cache = new Map<string, SkillStatus | null>();
+    return (skill: ProjectResource) => {
+      if (!cache.has(skill.resourceId))
+        cache.set(
+          skill.resourceId,
+          skillStatus({
+            resource: skill,
+            conflicted: conflicted.has(skill.resourceId),
+            attention: items.get(skill.resourceId),
+            review: skillReviewState(skill, state, {
+              governed: selectedProject?.governed,
+            }),
+          }),
+        );
+      return cache.get(skill.resourceId) ?? null;
+    };
+  }, [attention, conflicted, state, selectedProject?.governed]);
   const syncReviews = useMemo(
     () => syncReviewItems(state, project, attention),
     [state, project, attention],
@@ -733,10 +781,11 @@ function WorkspaceApp({
       </>
     );
   const openResource = (id: string) => {
+    const target = catalogResources.find((item) => item.resourceId === id);
     if (
+      target?.kind !== "skill" &&
       repository !== "all" &&
-      catalogResources.find((item) => item.resourceId === id)?.sourceId !==
-        repository
+      target?.sourceId !== repository
     )
       index.setRepository("all");
     setResource(id);
@@ -760,7 +809,7 @@ function WorkspaceApp({
       setTab(target.kind);
       openResource(target.resourceId);
     } else {
-      openManagement("requests");
+      openManagement("requests", "open", projectId);
     }
   };
   const closeDetail = () => {
@@ -854,10 +903,19 @@ function WorkspaceApp({
             activeKind={settings ? null : tab}
             resources={catalogResources}
             pendingCounts={localCatalog.pendingCounts}
+            reviewCount={
+              selectedProject?.governed && !inactiveProject
+                ? attention.items.reduce(
+                    (count, item) => count + item.requests.length,
+                    0,
+                  )
+                : undefined
+            }
             onNavigate={(kind) =>
               leaveSettings(() => {
                 setEnvSet("");
                 setTab(kind);
+                setReview(null);
                 setResource("");
                 if (kind === "members") openManagement();
               })
@@ -993,6 +1051,7 @@ function WorkspaceApp({
                   setEnvSet("");
                   setProject(id);
                   setResource("");
+                  setReview(null);
                   setGovernance(null);
                 };
                 if (settings && settingsNavigation.current)
@@ -1005,7 +1064,15 @@ function WorkspaceApp({
         <main>
           <WorkspaceHeader
             leading={
-              !settings && selected ? (
+              review ? (
+                <Button
+                  size="sm"
+                  variant="tertiary"
+                  onClick={() => setReview(null)}
+                >
+                  <Icon icon={ArrowLeftIcon} /> Back to Reviews
+                </Button>
+              ) : !settings && selected ? (
                 <Button size="sm" variant="tertiary" onClick={closeDetail}>
                   <Icon icon={ArrowLeftIcon} /> Back to {collectionLabel}
                 </Button>
@@ -1026,12 +1093,25 @@ function WorkspaceApp({
               setSidebarInstant(instant);
               setSidebarCollapsed((current) => !current);
             }}
+            navigation={
+              review && (
+                <ReviewStepper
+                  selection={review}
+                  onChange={(selection) =>
+                    setReview({ scope: projectScope, selection })
+                  }
+                />
+              )
+            }
             repositoryFilter={
               !settings &&
               selectedProject &&
               !inactiveProject &&
               repositories.length > 1 &&
               tab !== "home" &&
+              // Skills filter by repository inside their own Filter menu.
+              tab !== "skill" &&
+              tab !== "reviews" &&
               tab !== "members" ? (
                 <RepositoryFilter
                   key={`${workspaceScope}:${project}`}
@@ -1076,7 +1156,7 @@ function WorkspaceApp({
                 onReview={() => leaveSettings(() => openManagement("requests"))}
                 onOpenRequestHistory={() =>
                   leaveSettings(
-                    () => openManagement("requests", projectScope),
+                    () => openManagement("requests", "history"),
                     (accepted) => {
                       if (!accepted) syncStatusTrigger.current?.focus();
                     },
@@ -1085,7 +1165,6 @@ function WorkspaceApp({
                 busy={busy}
                 actionError={error || refreshError}
                 onDismissError={error ? () => setError("") : undefined}
-                skillUsagePartial={skillUsage.usage?.partial}
                 onSync={() =>
                   void act(() => invoke("sync_now"), {
                     successTitle: "Sync requested",
@@ -1140,8 +1219,7 @@ function WorkspaceApp({
               onSectionChange={setSettings}
               onManage={(id, section) => {
                 setProject(id);
-                setSettings(null);
-                openManagement(section);
+                openManagement(section, "open", id);
               }}
               busy={busy}
               run={run}
@@ -1208,21 +1286,33 @@ function WorkspaceApp({
                   </p>
                 }
               >
-                {tab === "members" ? (
+                {tab === "reviews" ? (
+                  <ReviewsPage
+                    key={projectScope}
+                    project={selectedProject}
+                    scope={projectScope}
+                    state={state}
+                    review={review}
+                    onReview={(selection) =>
+                      setReview(selection && { scope: projectScope, selection })
+                    }
+                    destination={
+                      reviewsDestination?.scope === projectScope
+                        ? reviewsDestination
+                        : undefined
+                    }
+                    onDestinationShown={consumeReviewsDestination}
+                    onRefresh={refresh}
+                    onReviewFile={(resource) => setGovernance({ resource })}
+                  />
+                ) : tab === "members" ? (
                   <MembersPage
                     key={project}
                     project={selectedProject}
                     state={state}
-                    section={management.section}
-                    historyRequest={
-                      management.history?.scope === projectScope
-                        ? management.history.request
-                        : undefined
-                    }
-                    onHistoryShown={consumeHistoryRequest}
+                    section="logs"
                     onSection={openManagement}
                     onRefresh={refresh}
-                    onReviewFile={(resource) => setGovernance({ resource })}
                   />
                 ) : tab === "env" ? (
                   <EnvPage
@@ -1245,7 +1335,7 @@ function WorkspaceApp({
                     resources={catalogResources}
                     pendingCounts={localCatalog.pendingCounts}
                     onNavigate={(kind) => {
-                      index.setRepository("all");
+                      if (kind !== "skill") index.setRepository("all");
                       setEnvSet("");
                       setTab(kind);
                       setResource("");
@@ -1299,7 +1389,6 @@ function WorkspaceApp({
                     }
                     accessRequest={accessRequest}
                     skillSummaries={skillSummaries}
-                    skillUsage={tab === "skill" ? skillUsage : undefined}
                     kind={tab}
                     resources={resources}
                     filters={filters}
@@ -1308,6 +1397,7 @@ function WorkspaceApp({
                     displayTitle={displayTitle}
                     duplicateTitles={duplicateTitles}
                     conflicted={conflicted}
+                    skillStatus={skillStatusOf}
                     connected={hasConnectedSource(selectedProject)}
                     noAccess={Boolean(
                       selectedProject.governed &&

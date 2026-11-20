@@ -341,7 +341,7 @@ test("incoming up to date", async ({ page }) => {
 });
 
 test("approved removal", async ({ page }) => {
-  // Removed skills leave the index; Requests keeps the review reachable.
+  // Removed skills leave the index; Reviews keeps the review reachable.
   await open(page, wide, { installation: "removal", open: false });
   await page.getByRole("button", { name: "Settings", exact: true }).click();
   await page.getByRole("button", { name: "Members", exact: true }).click();
@@ -349,7 +349,9 @@ test("approved removal", async ({ page }) => {
     .getByRole("button", { name: "View requests and history", exact: true })
     .click();
   await page
-    .getByRole("button", { name: "Review update", exact: true })
+    .getByRole("region", { name: "Reviews", exact: true })
+    .getByRole("region", { name: /^On this Mac \d+$/ })
+    .getByRole("button", { name: "issue-investigate-followup", exact: true })
     .click();
   const dialog = page.getByRole("dialog", {
     name: "Review skill removal",

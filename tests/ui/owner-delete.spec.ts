@@ -314,6 +314,26 @@ for (const kind of ["archived", "deleted"] as const) {
   });
 }
 
+test("deletion support retry remains visible in project settings", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 900, height: 640 });
+  const settings = await settingsFixture(page, {
+    failDeletionCapabilities: true,
+  });
+  const feedback = settings
+    .getByRole("alert")
+    .filter({ hasText: "Could not check project deletion support." });
+  await expect(feedback).toHaveCSS("background-color", "rgb(18, 18, 18)");
+  const retry = feedback.getByRole("button", { name: "Retry", exact: true });
+  await expect(retry).toHaveCSS("background-color", "rgb(28, 28, 28)");
+  await page.evaluate(() => {
+    (window as any).settingsControls.failDeletionCapabilities = false;
+  });
+  await retry.press("Enter");
+  await expect(feedback).toHaveCount(0);
+});
+
 test("deletion support failure and retry remain visible above a long recovery list", async ({
   page,
 }) => {
