@@ -762,19 +762,20 @@ export function SyncMenu({
                           </li>
                         ))}
                       </ul>
-                      {onOpenRequestHistory && requestHistoryCount > 0 && (
-                        <Button
-                          className="sync-history-action"
-                          size="sm"
-                          variant="secondary"
-                          onClick={() => {
-                            openingRequestHistory.current = true;
-                            leave(onOpenRequestHistory);
-                          }}
-                        >
-                          Open request history
-                        </Button>
-                      )}
+                      {onOpenRequestHistory &&
+                        attention.historyRequests.length > 0 && (
+                          <Button
+                            className="sync-history-action"
+                            size="sm"
+                            variant="secondary"
+                            onClick={() => {
+                              openingRequestHistory.current = true;
+                              leave(onOpenRequestHistory);
+                            }}
+                          >
+                            Open request history
+                          </Button>
+                        )}
                     </div>
                   </details>
                 </section>
