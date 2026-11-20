@@ -102,6 +102,7 @@ export function SettingsFolder({
   onDisconnect,
   onDisconnectSource,
   onRemoveSource,
+  onResetSourceRemote,
   onSyncActivity,
   run,
 }: {
@@ -113,6 +114,7 @@ export function SettingsFolder({
   onDisconnect: () => void;
   onDisconnectSource: (sourceId: string) => void;
   onRemoveSource: (sourceId: string) => void;
+  onResetSourceRemote: (sourceId: string) => void;
   onSyncActivity: () => void;
   run: (action: () => Promise<unknown>) => Promise<unknown>;
 }) {
@@ -120,21 +122,22 @@ export function SettingsFolder({
     service = state.config?.apiUrl;
   const notice = useToastNotice();
   const loadCapabilities = useCallback(async () => {
-    const capabilities = await invoke<{ sourcesRemoval?: number }>(
-      "settings_command",
-      {
-        action: "capabilities",
-        context: { user, service },
-      },
-    );
-    return { user, service, supported: capabilities.sourcesRemoval === 1 };
+    const capabilities = await invoke<{
+      sourcesRemoval?: number;
+      sourceRemoteKey?: number;
+    }>("settings_command", {
+      action: "capabilities",
+      context: { user, service },
+    });
+    return { user, service, capabilities };
   }, [user, service]);
-  const capabilities = useSettingsQuery(loadCapabilities);
-  const canRemove =
-    project.role === "owner" &&
-    capabilities.data?.user === user &&
-    capabilities.data?.service === service &&
-    capabilities.data.supported;
+  const { data } = useSettingsQuery(loadCapabilities);
+  const ownerCapabilities =
+    project.role === "owner" && data?.user === user && data?.service === service
+      ? data?.capabilities
+      : undefined;
+  const canRemove = ownerCapabilities?.sourcesRemoval === 1;
+  const canReset = ownerCapabilities?.sourceRemoteKey === 1;
   const sources: NonNullable<Project["sources"]> = project.sources
     ? activeSources(project.sources)
     : [
@@ -155,6 +158,7 @@ export function SettingsFolder({
         queued={queued}
         onDisconnectSource={onDisconnectSource}
         onRemoveSource={canRemove ? onRemoveSource : undefined}
+        onResetSourceRemote={canReset ? onResetSourceRemote : undefined}
         onLocalFolder={async () => {
           let connected = false;
           await run(async () => {
@@ -189,7 +193,9 @@ export function SettingsFolder({
                       )
                     : onConnect();
                 const actions: ItemMenuAction[] = [];
-                if (folderState !== "connected")
+                const canLocate =
+                  folderState === "locate" || folderState === "reconnect";
+                if (canLocate)
                   actions.push({
                     id: "connect",
                     icon: FolderSearchIcon,
@@ -263,6 +269,14 @@ export function SettingsFolder({
                   onSelect: () =>
                     source.id ? onDisconnectSource(source.id) : onDisconnect(),
                 });
+                if (canReset && source.remoteKey)
+                  actions.push({
+                    id: "reset-repository",
+                    label: "Reset Git repository",
+                    icon: LinkIcon,
+                    disabled: busy,
+                    onSelect: () => onResetSourceRemote(source.id),
+                  });
                 if (canRemove && source.id)
                   actions.push({
                     id: "remove",
@@ -294,6 +308,14 @@ export function SettingsFolder({
                         >
                           {source.name}
                         </span>
+                        {folderState === "repository-conflict" && (
+                          <span
+                            className="settings-folder-hint"
+                            title="This folder does not match the project's saved Git repository. A project owner can use Reset Git repository."
+                          >
+                            Sync paused · Git repository mismatch
+                          </span>
+                        )}
                         {source.path && source.gitRepository === false && (
                           <span
                             className="settings-folder-hint"
@@ -326,7 +348,7 @@ export function SettingsFolder({
                               {`${firstSyncLabel(new Date(source.syncStartsAt).getTime())} · Sync now`}
                             </Button>
                           )}
-                        {folderState !== "connected" && (
+                        {canLocate && (
                           <Button
                             variant={
                               folderState === "locate" ? "primary" : "secondary"

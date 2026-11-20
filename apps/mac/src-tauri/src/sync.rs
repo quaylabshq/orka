@@ -1867,6 +1867,7 @@ impl<'a> SyncPass<'a> {
         register_device(owner, &origin, &device).await?;
         let projects = api_as(owner, "GET", crate::projects::CATALOG_PATH, None).await?;
         crate::projects::merge_catalog(db, &projects)?;
+        crate::sources::backfill_remote_pins(db, owner, &origin).await?;
         Ok(Continue(()))
     }
 

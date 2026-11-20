@@ -56,13 +56,15 @@ impl Context {
 }
 
 pub(crate) fn verify_remote(root: &Path, expected: &str) -> Result<()> {
-    let normalized =
-        crate::onboarding::discovery::normalize_remote(expected).ok_or("Invalid repository URL")?;
-    let key = db::digest(format!("orka-remote-v1:{normalized}").as_bytes());
-    match crate::onboarding::discovery::remote_key(root.to_str().ok_or("Invalid checkout path")?)? {
-        Some(found) if found == key => Ok(()),
-        Some(_) => Err("This folder's Git remote does not match the linked repository. Choose the correct checkout in Source folders.".into()),
-        None => Err("This folder has no Git remote, so Orka can't confirm it is the linked repository. Choose the checkout cloned from GitHub, or add its remote.".into()),
+    use crate::onboarding::discovery::{key_for_remote, remote_keys};
+    let key = key_for_remote(expected).ok_or("Invalid repository URL")?;
+    let keys = remote_keys(root)?;
+    if keys.contains(&key) {
+        Ok(())
+    } else if keys.is_empty() {
+        Err("This folder has no Git remote, so Orka can't confirm it is the linked repository. Choose the checkout cloned from GitHub, or add its remote.".into())
+    } else {
+        Err("This folder's Git remote does not match the linked repository. Choose the correct checkout in Source folders.".into())
     }
 }
 fn matching_source(project: &Value, clone_url: &str) -> Result<Value> {

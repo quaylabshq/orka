@@ -620,6 +620,46 @@ pub async fn project_command(action: String, input: Value) -> Result<Value> {
     }
     let _lock = lock()?;
     match action.as_str() {
+        "reset-source-remote" => {
+            active(&db, id)?;
+            let mut project = crate::governance::project(&db, id)?;
+            if project["role"] != "owner" {
+                return Err("Only project owners can reset a source's Git repository".into());
+            }
+            let source_id = input["sourceId"].as_str().ok_or("Choose a source folder")?;
+            uuid::Uuid::parse_str(source_id).map_err(|_| "Invalid source folder")?;
+            let source = project["sources"]
+                .as_array_mut()
+                .and_then(|items| {
+                    items
+                        .iter_mut()
+                        .find(|source| source["id"] == source_id && source["removedAt"].is_null())
+                })
+                .ok_or("Source folder not found")?;
+            if sync::api_as(&owner, "GET", "/v2/projects/capabilities", None).await?
+                ["sourceRemoteKey"]
+                != 1
+            {
+                return Err(
+                    "This service does not support resetting a source's Git repository".into(),
+                );
+            }
+            sync::api_as(
+                &owner,
+                "POST",
+                "/v2/projects/action",
+                Some(&json!({"action":action,"projectId":id,"sourceId":source_id})),
+            )
+            .await?;
+            source["remoteKey"] = Value::Null;
+            db::upsert(&db, "projects", id, id, &project)?;
+            SyncQueue::request(
+                &db,
+                crate::sync_queue::WORKSPACE,
+                Priority::User,
+                "repository reset",
+            )?;
+        }
         "remove-source" => {
             active(&db, id)?;
             let mut project = crate::governance::project(&db, id)?;

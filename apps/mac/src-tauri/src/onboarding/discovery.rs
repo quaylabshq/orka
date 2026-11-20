@@ -1058,11 +1058,24 @@ pub fn normalize_remote(raw: &str) -> Option<String> {
     }
     Some(format!("{host}/{path}"))
 }
+pub(crate) fn key_for_remote(url: &str) -> Option<String> {
+    normalize_remote(url).map(|value| db::digest(format!("orka-remote-v1:{value}").as_bytes()))
+}
+
 pub fn remote_key(path: &str) -> Result<Option<String>> {
-    let root = fs::canonicalize(path).map_err(|_| "Project folder is unavailable")?;
+    Ok(remote_keys(Path::new(path))?.into_iter().next())
+}
+
+/// Origin first, then other remotes in config order. Never use remote names as
+/// evidence of identity: a GitHub link or shared pin can match any of them.
+pub(crate) fn remote_keys(path: &Path) -> Result<Vec<String>> {
+    let path = fs::canonicalize(path).map_err(|_| "Project folder is unavailable")?;
+    let Some(root) = path.ancestors().find(|root| root.join(".git").exists()) else {
+        return Ok(Vec::new());
+    };
     let git = root.join(".git");
     let directory = if git.is_file() {
-        git_dirs(&root)
+        git_dirs(root)
             .map(|(directory, _)| directory)
             .ok_or("Invalid Git directory")?
     } else {
@@ -1073,37 +1086,33 @@ pub fn remote_key(path: &str) -> Result<Option<String>> {
     } else if let Ok(common) = fs::read_to_string(directory.join("commondir")) {
         directory.join(common.trim()).join("config")
     } else {
-        return Ok(None);
+        return Ok(Vec::new());
     };
     let file = fs::File::open(config).map_err(|e| e.to_string())?;
-    let mut remote = None;
-    let mut origin = None;
+    let mut other = Vec::new();
+    let mut origin = Vec::new();
     let mut current = String::new();
-    for line in BufReader::new(file.take(1_000_000))
-        .lines()
-        .map_while(std::result::Result::ok)
-    {
+    for line in BufReader::new(file.take(1_000_000)).lines() {
+        let line = line.map_err(|e| e.to_string())?;
         let line = line.trim();
         if line.starts_with('[') {
             current = line.to_string();
         } else if current.starts_with("[remote ") {
             if let Some((key, value)) = line.split_once('=') {
                 if key.trim() == "url" {
-                    let value = value.trim().trim_matches('"').to_string();
-                    if remote.is_none() {
-                        remote = Some(value.clone());
-                    }
-                    if current == "[remote \"origin\"]" {
-                        origin = Some(value);
+                    if let Some(key) = key_for_remote(value.trim().trim_matches('"')) {
+                        if current == "[remote \"origin\"]" {
+                            origin.push(key);
+                        } else {
+                            other.push(key);
+                        }
                     }
                 }
             }
         }
     }
-    Ok(origin
-        .or(remote)
-        .and_then(|v| normalize_remote(&v))
-        .map(|v| db::digest(format!("orka-remote-v1:{v}").as_bytes())))
+    origin.extend(other);
+    Ok(origin)
 }
 #[cfg(test)]
 mod tests {

@@ -52,6 +52,7 @@ export function RepositoryConnections({
   onLocalFolder,
   onDisconnectSource,
   onRemoveSource,
+  onResetSourceRemote,
   folderBusy = false,
   queued = 0,
   initiallyOpen = false,
@@ -70,6 +71,7 @@ export function RepositoryConnections({
   onLocalFolder?: () => Promise<unknown>;
   onDisconnectSource?: (sourceId: string) => void;
   onRemoveSource?: (sourceId: string) => void;
+  onResetSourceRemote?: (sourceId: string) => void;
   folderBusy?: boolean;
   queued?: number;
   initiallyOpen?: boolean;
@@ -281,8 +283,9 @@ export function RepositoryConnections({
             value && ["not_connected", "reconnect"].includes(value.state);
           const denied = value?.state === "access_unavailable";
           const failed = value?.state === "unavailable";
+          const conflict = source.folderState === "repository-conflict";
           const connected = Boolean(
-            source.path && source.folderState !== "reconnect",
+            source.path && source.folderState !== "reconnect" && !conflict,
           );
           const label = !value
             ? "Checking GitHub access"
@@ -349,7 +352,7 @@ export function RepositoryConnections({
                     }),
                 },
               );
-            } else
+            } else if (!conflict)
               actions.push({
                 id: "locate",
                 label: "Use existing folder",
@@ -418,6 +421,18 @@ export function RepositoryConnections({
                     await refresh();
                   }),
               });
+            if (
+              project.role === "owner" &&
+              source.remoteKey &&
+              onResetSourceRemote
+            )
+              actions.push({
+                id: "reset-repository",
+                label: "Reset Git repository",
+                icon: RefreshCwIcon,
+                disabled,
+                onSelect: () => onResetSourceRemote(source.id),
+              });
             if (project.role === "owner" && onRemoveSource)
               actions.push({
                 id: "remove",
@@ -446,11 +461,13 @@ export function RepositoryConnections({
                     <span className="repository-card-meta">
                       {active
                         ? job.message
-                        : connected
-                          ? "Connected on this Mac"
-                          : source.folderState === "reconnect"
-                            ? "Folder needs reconnecting"
-                            : "Not connected on this Mac"}
+                        : conflict
+                          ? "Sync paused · Git repository mismatch"
+                          : connected
+                            ? "Connected on this Mac"
+                            : source.folderState === "reconnect"
+                              ? "Folder needs reconnecting"
+                              : "Not connected on this Mac"}
                     </span>
                   </div>
                   <span

@@ -46,7 +46,8 @@ export interface Project {
     name: string;
     removedAt?: string | null;
     path?: string | null;
-    folderState?: "connected" | "reconnect" | "locate";
+    folderState?: "connected" | "reconnect" | "locate" | "repository-conflict";
+    remoteKey?: string;
     /** Unsent changes that block disconnecting this folder on this Mac. */
     queuedChanges?: number;
     /** False when the connected folder is not inside a Git repository. */

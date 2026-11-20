@@ -638,19 +638,15 @@ fn a_pinned_source_accepts_any_checkout_of_its_repository_and_nothing_else() {
         &["remote", "add", "origin", "git@github.com:team/api.git"],
     );
     git(&main, &["commit", "-q", "--allow-empty", "-m", "fixture"]);
-    let sources::FolderRemote::Key(pin) = sources::folder_remote(&main) else {
-        panic!("a checkout with a remote has a key");
-    };
+    use crate::onboarding::discovery::remote_keys;
+    let pin = remote_keys(&main).unwrap().remove(0);
     // A linked worktree shares the repository's remote.
     let worktree = temp.path().join("api-feature");
     git(
         &main,
         &["worktree", "add", "-q", worktree.to_str().unwrap()],
     );
-    assert_eq!(
-        sources::folder_remote(&worktree),
-        sources::FolderRemote::Key(pin.clone())
-    );
+    assert_eq!(remote_keys(&worktree).unwrap(), vec![pin.clone()]);
     // HTTPS and a different case name the same GitHub repository.
     let https = temp.path().join("https");
     fs::create_dir(&https).unwrap();
@@ -659,10 +655,7 @@ fn a_pinned_source_accepts_any_checkout_of_its_repository_and_nothing_else() {
         &https,
         &["remote", "add", "origin", "https://github.com/Team/API.git"],
     );
-    assert_eq!(
-        sources::folder_remote(&https),
-        sources::FolderRemote::Key(pin.clone())
-    );
+    assert_eq!(remote_keys(&https).unwrap(), vec![pin.clone()]);
     // Another repository, a repository without a remote and a plain folder differ.
     let other = temp.path().join("other");
     fs::create_dir(&other).unwrap();
@@ -671,22 +664,14 @@ fn a_pinned_source_accepts_any_checkout_of_its_repository_and_nothing_else() {
         &other,
         &["remote", "add", "origin", "git@github.com:someone/api.git"],
     );
-    assert!(
-        matches!(sources::folder_remote(&other), sources::FolderRemote::Key(key) if key != pin)
-    );
+    assert_ne!(remote_keys(&other).unwrap(), vec![pin.clone()]);
     let bare = temp.path().join("no-remote");
     fs::create_dir(&bare).unwrap();
     git(&bare, &["init", "-q"]);
-    assert_eq!(
-        sources::folder_remote(&bare),
-        sources::FolderRemote::Missing
-    );
+    assert!(remote_keys(&bare).unwrap().is_empty());
     let plain = temp.path().join("plain");
     fs::create_dir(&plain).unwrap();
-    assert_eq!(
-        sources::folder_remote(&plain),
-        sources::FolderRemote::Missing
-    );
+    assert!(remote_keys(&plain).unwrap().is_empty());
 
     // A connected folder whose remote now names another repository pauses.
     let view = |root: &std::path::Path| json!({"path":root,"folderIdentity":indexer::folder_identity(root).unwrap(),"sourceRemoteKey":pin});
@@ -700,4 +685,17 @@ fn a_pinned_source_accepts_any_checkout_of_its_repository_and_nothing_else() {
     legacy["sourceRemoteKey"] = Value::Null;
     legacy["remoteKey"] = json!(pin);
     assert!(sources::validate(&legacy).is_ok());
+    assert_eq!(sources::folder_state(&view(&other)), "repository-conflict");
+    git(
+        &other,
+        &["remote", "add", "upstream", "git@github.com:team/api.git"],
+    );
+    let subfolder = other.join("packages/frontend");
+    fs::create_dir_all(&subfolder).unwrap();
+    assert!(sources::validate(&view(&subfolder)).is_ok());
+    let mut renamed = view(&subfolder);
+    renamed["repository"] = json!({"cloneUrl":"https://github.com/team/new-name.git", "previousCloneUrls":["https://github.com/team/api.git"]});
+    assert!(sources::validate(&renamed).is_ok());
+    renamed["sourceRemoteKey"] = json!(remote_keys(&other).unwrap()[0]);
+    assert!(sources::validate(&renamed).is_err());
 }

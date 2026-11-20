@@ -135,7 +135,7 @@ export const SettingsModal = forwardRef<
   );
   const guardCloseAutoFocus = useRef<(() => void) | undefined>(undefined);
   const [confirmation, setConfirmation] = useState<{
-    action: "disconnect" | "remove-source" | "signout";
+    action: "disconnect" | "remove-source" | "reset-source-remote" | "signout";
     sourceId?: string;
   } | null>(null);
   const [saving, setSaving] = useState(false),
@@ -526,16 +526,20 @@ export const SettingsModal = forwardRef<
     if (confirmation?.action === "signout") {
       if (await run(() => invoke("sign_out"))) onSignedOut();
     } else if (confirmation) {
-      if (!project || queued) {
+      if (
+        !project ||
+        (queued && confirmation.action !== "reset-source-remote")
+      ) {
         setFolderError(
           "Finish syncing queued changes before changing source folders.",
         );
         return;
       }
       const saved = await folderRun(() =>
-        confirmation.action === "remove-source"
+        confirmation.action === "remove-source" ||
+        confirmation.action === "reset-source-remote"
           ? invoke("project_command", {
-              action: "remove-source",
+              action: confirmation.action,
               input: { projectId, sourceId: confirmation.sourceId },
             })
           : confirmation.sourceId
@@ -550,11 +554,21 @@ export const SettingsModal = forwardRef<
         setNotice(
           confirmation.action === "remove-source"
             ? "Source folder removed. Local files and previously shared content are kept."
-            : "Folder disconnected. Local files and shared content are kept.",
+            : confirmation.action === "reset-source-remote"
+              ? "Saved Git repository cleared."
+              : "Folder disconnected. Local files and shared content are kept.",
         );
       }
     }
   }
+  const confirmationLabel =
+    confirmation &&
+    {
+      disconnect: "Disconnect folder",
+      "remove-source": "Remove source folder",
+      "reset-source-remote": "Reset Git repository",
+      signout: "Sign out",
+    }[confirmation.action];
   return (
     <>
       <section className="settings-workspace" aria-label="Settings">
@@ -746,6 +760,12 @@ export const SettingsModal = forwardRef<
                         }
                         onRemoveSource={(sourceId) =>
                           setConfirmation({ action: "remove-source", sourceId })
+                        }
+                        onResetSourceRemote={(sourceId) =>
+                          setConfirmation({
+                            action: "reset-source-remote",
+                            sourceId,
+                          })
                         }
                         onSyncActivity={() =>
                           request(() => onSyncActivity(projectId))
@@ -1011,31 +1031,21 @@ export const SettingsModal = forwardRef<
       {confirmation && (
         <Overlay
           open
-          title={
-            confirmation.action === "disconnect"
-              ? "Disconnect folder?"
-              : confirmation.action === "remove-source"
-                ? "Remove source folder?"
-                : "Sign out?"
-          }
+          title={`${confirmationLabel}?`}
           className="settings-confirm"
           onClose={() => {
             if (!busy && !folderBusy) setConfirmation(null);
           }}
         >
-          <h2>
-            {confirmation.action === "disconnect"
-              ? "Disconnect folder?"
-              : confirmation.action === "remove-source"
-                ? "Remove source folder?"
-                : "Sign out?"}
-          </h2>
+          <h2>{confirmationLabel}?</h2>
           <p>
             {confirmation.action === "disconnect"
               ? "Disconnect this folder on this Mac? Local files and shared content are kept."
               : confirmation.action === "remove-source"
                 ? `Remove ${project?.sources?.find((source) => source.id === confirmation.sourceId)?.name ?? "this source folder"} from the project? It will stop syncing on all Macs. Local files and previously shared content are kept.`
-                : "Projects and queued changes are kept. Sign in to this account again to resume sync."}
+                : confirmation.action === "reset-source-remote"
+                  ? "Clear the saved Git repository on all Macs? Disconnect any unwanted checkouts first. The next validated folder that syncs or connects can set the repository again. Local files and GitHub links are kept."
+                  : "Projects and queued changes are kept. Sign in to this account again to resume sync."}
           </p>
           {confirmation.action !== "signout"
             ? folderError && <p role="alert">{folderError}</p>
@@ -1052,16 +1062,15 @@ export const SettingsModal = forwardRef<
               disabled={
                 busy ||
                 folderBusy ||
-                (confirmation.action !== "signout" && (!project || queued > 0))
+                (confirmation.action !== "signout" &&
+                  (!project ||
+                    (queued > 0 &&
+                      confirmation.action !== "reset-source-remote")))
               }
               onClick={() => void confirm()}
             >
               {(saving || folderBusy) && <ActivityIndicator />}
-              {confirmation.action === "disconnect"
-                ? "Disconnect folder"
-                : confirmation.action === "remove-source"
-                  ? "Remove source folder"
-                  : "Sign out"}
+              {confirmationLabel}
             </Button>
           </div>
         </Overlay>

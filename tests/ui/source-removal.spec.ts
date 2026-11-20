@@ -1,6 +1,77 @@
 import { test, expect } from "@playwright/test";
 import { settingsFixture, settingsCalls } from "./fixtures/settings.js";
 
+const mismatchedFolder = {
+  id: "source",
+  name: "desktop",
+  path: "/Projects/desktop",
+  folderState: "repository-conflict",
+  remoteKey: "a".repeat(64),
+} satisfies NonNullable<
+  NonNullable<Parameters<typeof settingsFixture>[1]>["sourceRows"]
+>[number];
+
+test("an owner can reset a conflicting Git repository even with queued work", async ({
+  page,
+}) => {
+  const settings = await settingsFixture(page, {
+    sourceRows: [mismatchedFolder],
+    queued: true,
+  });
+  const options = settings.getByRole("button", { name: "Options for desktop" });
+  const reset = page.getByRole("menuitem", { name: "Reset Git repository" });
+  const confirmation = page.getByRole("dialog", {
+    name: "Reset Git repository?",
+  });
+  await expect(
+    settings.getByText("Sync paused · Git repository mismatch"),
+  ).toBeVisible();
+  await expect(
+    settings.getByRole("button", { name: "Reconnect desktop folder" }),
+  ).toHaveCount(0);
+  await options.click();
+  await reset.click();
+  await expect(confirmation).toContainText(
+    "Local files and GitHub links are kept.",
+  );
+  await confirmation.getByRole("button", { name: "Stay" }).click();
+  expect(
+    (await settingsCalls(page)).filter(
+      (call) => call.args.action === "reset-source-remote",
+    ),
+  ).toHaveLength(0);
+  await options.click();
+  await reset.click();
+  await confirmation
+    .getByRole("button", { name: "Reset Git repository" })
+    .click();
+  await expect(confirmation).toHaveCount(0);
+  await expect(
+    settings.getByText("Sync paused · Git repository mismatch"),
+  ).toHaveCount(0);
+  const call = (await settingsCalls(page)).find(
+    (call) => call.args.action === "reset-source-remote",
+  );
+  expect(call?.args.input).toEqual({ projectId: "one", sourceId: "source" });
+});
+
+for (const [label, scenario] of [
+  ["members", { role: "member" }],
+  ["older services", { olderService: true }],
+] as const) {
+  test(`reset is not offered to ${label}`, async ({ page }) => {
+    const settings = await settingsFixture(page, {
+      ...scenario,
+      sourceRows: [mismatchedFolder],
+    });
+    await settings.getByRole("button", { name: "Options for desktop" }).click();
+    await expect(page.getByRole("menu")).toBeVisible();
+    await expect(
+      page.getByRole("menuitem", { name: "Reset Git repository" }),
+    ).toHaveCount(0);
+  });
+}
+
 test("owner removes a source after review while retaining its historical metadata", async ({
   page,
 }, info) => {
