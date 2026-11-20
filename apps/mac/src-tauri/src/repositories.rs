@@ -312,24 +312,52 @@ async fn run_git(
     Ok(())
 }
 
+pub(crate) fn binding_matches(source: &Value, repository_id: &str, revision: u64) -> bool {
+    source["repository"]["id"] == repository_id
+        && source["repository"]["revision"] == revision
+        && source["repositoryRevision"]
+            .as_u64()
+            .is_none_or(|cached| cached == revision)
+}
+
 async fn attach(context: &Context, job: &Value) -> Result<()> {
     let project = job["projectId"].as_str().ok_or("Missing project")?;
     let source_id = job["sourceId"].as_str().ok_or("Missing source")?;
+    let repository_id = job["repositoryId"]
+        .as_str()
+        .ok_or("Missing clone repository")?;
+    let revision = job["bindingRevision"]
+        .as_u64()
+        .filter(|revision| *revision > 0)
+        .ok_or("Missing clone repository link revision")?;
+    let lock = projects::wait_for_lock_async(projects::FOREGROUND_LOCK_WAIT).await?;
+    context.check()?;
     let current = context
         .api("access", json!({"projectId":project,"sourceId":source_id}))
         .await?;
+    let changed = "Repository link or GitHub access changed. Review this source before connecting.";
     if current["state"] != "ready"
-        || current["repository"]["id"] != job["repositoryId"]
-        || current["bindingRevision"] != job["bindingRevision"]
+        || current["repository"]["id"] != repository_id
+        || current["bindingRevision"] != revision
     {
-        return Err(
-            "Repository link or GitHub access changed. Review this source before connecting."
-                .into(),
-        );
+        return Err(changed.into());
     }
-    {
-        let _lock = projects::wait_for_lock_async(projects::FOREGROUND_LOCK_WAIT).await?;
-        refresh_catalog(context).await?;
+    if let Err(error) = refresh_catalog(context).await {
+        let temporary = error == "Cloud unavailable; local work stays queued"
+            || matches!(
+                error.split_once(':').map(|(status, _)| status),
+                Some("408" | "429" | "502" | "503" | "504")
+            );
+        if !temporary {
+            return Err(error);
+        }
+        // A catalog outage may leave a valid link cached. Live source access
+        // still has to confirm that exact binding before attaching the checkout.
+        eprintln!("clone catalog refresh unavailable: {error}");
+    }
+    let cached = source(context, project, source_id)?;
+    if !binding_matches(&cached, repository_id, revision) {
+        return Err(changed.into());
     }
     let path = job["destination"]
         .as_str()
@@ -342,12 +370,14 @@ async fn attach(context: &Context, job: &Value) -> Result<()> {
     )? {
         return Err("Cloned folder was replaced; locate and verify it again".into());
     }
-    sources::connect_sources(
+    sources::connect_sources_locked(
         project.into(),
         vec![path.into()],
         Some(source_id.into()),
         Some((&context.user, &context.service)),
         None,
+        Some((repository_id, revision)),
+        lock,
     )
     .await
 }

@@ -692,11 +692,25 @@ pub(crate) async fn connect_sources(
     }
     // Connecting is a foreground action, often right after creating the project
     // whose first sync is already queued; ask sync to pause instead of failing.
-    let _lock = tauri::async_runtime::spawn_blocking(|| {
+    let lock = tauri::async_runtime::spawn_blocking(|| {
         projects::wait_for_lock(std::time::Duration::from_secs(30))
     })
     .await
     .map_err(|error| error.to_string())??;
+    connect_sources_locked(id, paths, source_id, context, sharing, None, lock).await
+}
+
+/// Keep the clone's verified repository binding and the attachment under one
+/// workspace lock. Cloning supplies exactly one finished checkout and source.
+pub(crate) async fn connect_sources_locked(
+    id: String,
+    paths: Vec<String>,
+    source_id: Option<String>,
+    context: Option<(&str, &str)>,
+    sharing: Option<projects::Sharing>,
+    binding: Option<(&str, u64)>,
+    _lock: fs::File,
+) -> Result<()> {
     let mut db = db::open()?;
     if let Some((user, service)) = context {
         if db::get(&db, "user")? != user || db::get(&db, "config")?["apiUrl"] != service {
@@ -730,6 +744,15 @@ pub(crate) async fn connect_sources(
             .any(|source| source["id"] == *id && !source["removedAt"].is_null())
     }) {
         return Err("This source folder was removed from the project".into());
+    }
+    if let Some((repository_id, revision)) = binding {
+        let same_link = sources.iter().any(|source| {
+            source["id"].as_str() == source_id.as_deref()
+                && crate::repositories::binding_matches(source, repository_id, revision)
+        });
+        if !same_link {
+            return Err("Repository link changed. Review this source before connecting.".into());
+        }
     }
     let mut used = BTreeSet::new();
     for root in &roots {
