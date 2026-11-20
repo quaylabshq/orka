@@ -1,19 +1,39 @@
-import { FileIcon } from "lucide-react";
-import React, { useEffect, useState } from "react";
+import {
+  CopyIcon,
+  FileIcon,
+  GlobeIcon,
+  MessagesSquareIcon,
+  ScrollTextIcon,
+  XIcon,
+} from "lucide-react";
+import React, { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { ProjectResource } from "../types.js";
 import { Button } from "./button.js";
 import { Icon } from "./icon.js";
+import { IconButton } from "./icon-button.js";
 import { Overlay } from "./overlay.js";
 import { TextField } from "./text-field.js";
 
 type LinkStatus = { active: boolean; linkVersion: string | null; url?: string };
 
-const description = {
-  skill: "The page includes the skill title and SKILL.md.",
-  plan: "The page includes the plan title and its text.",
-  session: "The page includes the session title and readable conversation.",
-  memory: "",
+const artifact = {
+  skill: {
+    icon: FileIcon,
+    label: "Skill",
+    contents: "the skill title and SKILL.md",
+  },
+  plan: {
+    icon: ScrollTextIcon,
+    label: "Plan",
+    contents: "the plan title and its text",
+  },
+  session: {
+    icon: MessagesSquareIcon,
+    label: "Session",
+    contents: "the session title and readable conversation",
+  },
+  memory: { icon: FileIcon, label: "Memory", contents: "the selected item" },
 };
 
 export function ArtifactLinkDialog({
@@ -39,6 +59,12 @@ export function ArtifactLinkDialog({
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [attempt, setAttempt] = useState(0);
+  const copyButton = useRef<HTMLButtonElement>(null);
+  const item = artifact[resource.kind];
+  const url = stale ? undefined : link?.url;
+  useEffect(() => {
+    if (url) copyButton.current?.focus();
+  }, [url]);
   useEffect(() => {
     if (stale) return;
     let current = true;
@@ -123,104 +149,126 @@ export function ArtifactLinkDialog({
     <Overlay
       open
       title="Manage public link"
-      className="resource-command-dialog artifact-link-dialog"
+      className="artifact-link-dialog"
       onClose={() => {
         if (!busy) onClose();
       }}
       onCloseAutoFocus={onCloseAutoFocus}
     >
-      <h2>Manage public link</h2>
-      <section className="resource-command-item" aria-label="Shared snapshot">
-        <Icon icon={FileIcon} size="sm" variant="secondary" />
-        <div>
-          <span className="resource-command-kind">{resource.kind}</span>
+      <div className="artifact-link-heading">
+        <h2>Manage public link</h2>
+        <IconButton
+          icon={XIcon}
+          size="sm"
+          variant="tertiary"
+          aria-label="Close"
+          disabled={busy}
+          onClick={onClose}
+        />
+      </div>
+      <section className="artifact-link-item" aria-label="Shared snapshot">
+        <span className="artifact-link-item-icon">
+          <Icon icon={item.icon} size="md" variant="secondary" />
+        </span>
+        <div className="artifact-link-item-name">
           <p title={resource.title}>{resource.title}</p>
+          <span>{item.label}</span>
         </div>
       </section>
-      <div className="resource-command-workspace">
-        <p className="command-copy">
-          Anyone with the link can read this shared revision without signing in.
-          {!link?.url && (
-            <>
-              {" "}
-              {description[resource.kind]} Publishing an update ends access
-              through this link.
-            </>
-          )}
-        </p>
-        {stale ? (
-          <p role="alert">
-            This snapshot changed. Reopen the item to manage its public link.
-          </p>
-        ) : (
-          <>
-            {link?.url && (
-              <TextField
-                label="Public link"
-                value={link.url}
-                readOnly
-                spellCheck={false}
-                hint="Copy this link before closing."
-              />
-            )}
-            {link?.active && !link.url && (
-              <p className="command-copy">
-                A public link is active. Replacing or revoking it ends access
-                through the current link.
-              </p>
-            )}
-            {error && <p role="alert">{error}</p>}
-            <p role="status">
-              {busy
-                ? "Updating public link…"
-                : !link && !error
-                  ? "Checking public link…"
-                  : notice}
-            </p>
-          </>
-        )}
-      </div>
-      <div className="actions">
-        <Button disabled={busy} onClick={onClose}>
-          Close
-        </Button>
-        <div className="resource-command-main-actions">
-          {!stale && link?.active && (
+      <div className="artifact-link-details">
+        {url ? (
+          <div className="artifact-link-address">
+            <TextField
+              label="Public link"
+              value={url}
+              readOnly
+              spellCheck={false}
+              onFocus={(event) => event.currentTarget.select()}
+            />
             <Button
-              disabled={busy}
-              onClick={() => void changeLink("revoke-public-link")}
-            >
-              Revoke link
-            </Button>
-          )}
-          {!stale && link && (
-            <Button
+              ref={copyButton}
               variant="primary"
               disabled={busy}
-              onClick={() =>
-                link.url
-                  ? void copyLink()
-                  : void changeLink("create-public-link")
-              }
+              onClick={() => void copyLink()}
             >
-              {link.url
-                ? "Copy link"
-                : link.active
-                  ? "Replace link"
-                  : "Create public link"}
+              <Icon icon={CopyIcon} size="sm" />
+              Copy link
             </Button>
-          )}
-          {!stale && !link && error && (
-            <Button
-              onClick={() => {
-                setError("");
-                setAttempt((value) => value + 1);
-              }}
-            >
-              Check link status
-            </Button>
-          )}
-        </div>
+          </div>
+        ) : (
+          <div className="artifact-link-access">
+            <strong>
+              <Icon icon={GlobeIcon} size="sm" variant="secondary" /> Anyone
+              with the link
+            </strong>
+            <p>They can read {item.contents} without signing in.</p>
+            <p>
+              {link?.active
+                ? "Replacing or revoking the link ends access through it."
+                : "Publishing an update ends access through this link."}
+            </p>
+          </div>
+        )}
+        {(stale || error) && (
+          <p role="alert">
+            {stale
+              ? "This snapshot changed. Reopen the item to manage its public link."
+              : error}
+          </p>
+        )}
+        <p className="artifact-link-status" role="status">
+          {stale
+            ? ""
+            : busy
+              ? "Updating public link…"
+              : !link && !error
+                ? "Checking public link…"
+                : notice ||
+                  (url && !error ? "Copy this link before closing." : "")}
+        </p>
+      </div>
+      <div className="artifact-link-actions">
+        {!stale && link?.active && (
+          <Button
+            variant={url ? "tertiary" : "secondary"}
+            disabled={busy}
+            onClick={() => void changeLink("revoke-public-link")}
+          >
+            Revoke link
+          </Button>
+        )}
+        {url ? (
+          <Button disabled={busy} onClick={onClose}>
+            Done
+          </Button>
+        ) : (
+          <>
+            {(stale || !link?.active) && (
+              <Button variant="tertiary" disabled={busy} onClick={onClose}>
+                Cancel
+              </Button>
+            )}
+            {!stale && link && (
+              <Button
+                variant="primary"
+                disabled={busy}
+                onClick={() => void changeLink("create-public-link")}
+              >
+                {link.active ? "Replace link" : "Create public link"}
+              </Button>
+            )}
+            {!stale && !link && error && (
+              <Button
+                onClick={() => {
+                  setError("");
+                  setAttempt((value) => value + 1);
+                }}
+              >
+                Check link status
+              </Button>
+            )}
+          </>
+        )}
       </div>
     </Overlay>
   );

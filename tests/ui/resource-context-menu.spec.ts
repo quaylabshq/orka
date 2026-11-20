@@ -596,14 +596,41 @@ test("public links use the saved shared revision and can be revoked after reopen
   const dialog = page.getByRole("dialog", { name: "Manage public link" });
   await expect(dialog.getByText(/Anyone with the link/)).toBeVisible();
   await expect(dialog.getByText(/readable conversation/)).toBeVisible();
-  expect(await resourceCalls(page, "create-public-link")).toHaveLength(0);
-  await dialog.getByRole("button", { name: "Create public link" }).click();
   await expect(
-    dialog.getByRole("textbox", { name: "Public link" }),
-  ).toHaveValue("https://dashboard.example/share/" + "a".repeat(64));
+    dialog.getByRole("button", { name: "Create public link" }),
+  ).toBeVisible();
+  const before = (await dialog.boundingBox())!;
+  expect(before.height).toBeLessThan(330);
+  expect(await resourceCalls(page, "create-public-link")).toHaveLength(0);
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async (text: string) => {
+          document.documentElement.dataset.copiedLink = text;
+        },
+      },
+    });
+  });
+  await dialog.getByRole("button", { name: "Create public link" }).click();
+  const link = "https://dashboard.example/share/" + "a".repeat(64);
+  const address = dialog.getByRole("textbox", { name: "Public link" });
+  const copy = dialog.getByRole("button", { name: "Copy link" });
+  await expect(address).toHaveValue(link);
+  await expect(copy).toBeFocused();
+  const after = (await dialog.boundingBox())!;
+  expect(Math.abs(before.y - after.y)).toBeLessThan(2);
+  const inputBox = (await address.boundingBox())!;
+  const copyBox = (await copy.boundingBox())!;
+  expect(
+    Math.abs(inputBox.y + inputBox.height / 2 - copyBox.y - copyBox.height / 2),
+  ).toBeLessThan(2);
   await expect(
     dialog.getByText("Copy this link before closing."),
   ).toBeInViewport();
+  await copy.press("Enter");
+  await expect(dialog.getByRole("status")).toHaveText("Link copied.");
+  await expect(page.locator("html")).toHaveAttribute("data-copied-link", link);
   expect(await resourceCalls(page, "create-public-link")).toMatchObject([
     {
       args: {
