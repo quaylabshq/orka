@@ -30,6 +30,8 @@ interface MenuControls {
   resourceVersion: number;
   deleted: string[];
   finishLaunchOptions?: () => void;
+  publicLinkVersion?: string;
+  publicLinkFailure?: boolean;
 }
 type MenuWindow = LibraryWindow & {
   resourceMenu: MenuControls;
@@ -70,6 +72,27 @@ async function menuFixture(
           previewToken?: string;
         };
         const action = String(args.action);
+        if (action === "public-link-status")
+          return {
+            active: Boolean(controls.publicLinkVersion),
+            linkVersion: controls.publicLinkVersion ?? null,
+          };
+        if (action === "create-public-link") {
+          controls.publicLinkVersion = crypto.randomUUID();
+          if (controls.publicLinkFailure) {
+            controls.publicLinkFailure = false;
+            throw new Error("Couldn’t confirm the public link status.");
+          }
+          return {
+            active: true,
+            linkVersion: controls.publicLinkVersion,
+            url: "https://dashboard.example/share/" + "a".repeat(64),
+          };
+        }
+        if (action === "revoke-public-link") {
+          controls.publicLinkVersion = undefined;
+          return { active: false, linkVersion: null };
+        }
         const onProgress = args.onProgress as
           { onmessage: (value: SyncProgress) => void } | undefined;
         if (action.startsWith("preview-")) {
@@ -556,6 +579,87 @@ test("local and teammate sessions expose useful actions without mutation of anot
   await expect(
     page.getByRole("menuitem", { name: /Share snapshot|Remove from history/ }),
   ).toHaveCount(0);
+});
+
+test("public links use the saved shared revision and can be revoked after reopening", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 900, height: 640 });
+  await menuFixture(page, { publicLinks: true });
+  await collection(page, "Sessions");
+  await resourceMenu(page, "Private session notes");
+  await expect(
+    page.getByRole("menuitem", { name: "Manage public link…" }),
+  ).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await resourceMenu(page, "My shared session", "Manage public link…");
+  const dialog = page.getByRole("dialog", { name: "Manage public link" });
+  await expect(dialog.getByText(/Anyone with the link/)).toBeVisible();
+  await expect(dialog.getByText(/readable conversation/)).toBeVisible();
+  expect(await resourceCalls(page, "create-public-link")).toHaveLength(0);
+  await dialog.getByRole("button", { name: "Create public link" }).click();
+  await expect(
+    dialog.getByRole("textbox", { name: "Public link" }),
+  ).toHaveValue("https://dashboard.example/share/" + "a".repeat(64));
+  expect(await resourceCalls(page, "create-public-link")).toMatchObject([
+    {
+      args: {
+        input: {
+          accountId: "user",
+          projectId: "project",
+          resourceId: "session-own",
+          revision: 3,
+          linkVersion: null,
+        },
+      },
+    },
+  ]);
+  await dialog.getByRole("button", { name: "Close" }).click();
+  await expect(
+    resourceRow(page, "My shared session").getByRole("button", {
+      name: "My shared session",
+      exact: true,
+    }),
+  ).toBeFocused();
+  await resourceMenu(page, "My shared session", "Manage public link…");
+  await expect(
+    dialog.getByRole("button", { name: "Replace link" }),
+  ).toBeVisible();
+  await dialog.getByRole("button", { name: "Revoke link" }).click();
+  await expect(dialog.getByRole("status")).toHaveText("Public link revoked.");
+  expect(await resourceCalls(page, "revoke-public-link")).toMatchObject([
+    { args: { input: { linkVersion: expect.any(String) } } },
+  ]);
+  await expect(
+    dialog.getByRole("button", { name: "Create public link" }),
+  ).toBeVisible();
+  await dialog.getByRole("button", { name: "Close" }).click();
+  await collection(page, "Memories");
+  await resourceMenu(page, "My shared memory");
+  await expect(
+    page.getByRole("menuitem", { name: "Manage public link…" }),
+  ).toHaveCount(0);
+});
+
+test("an uncertain public-link change can be checked before another attempt", async ({
+  page,
+}) => {
+  await menuFixture(page, { publicLinks: true });
+  await page.evaluate(() => {
+    (window as unknown as MenuWindow).resourceMenu.publicLinkFailure = true;
+  });
+  await collection(page, "Plans");
+  await resourceMenu(page, "My shared plan", "Manage public link…");
+  const dialog = page.getByRole("dialog", { name: "Manage public link" });
+  await dialog.getByRole("button", { name: "Create public link" }).click();
+  await expect(dialog.getByRole("alert")).toHaveText(
+    "Couldn’t confirm the public link status.",
+  );
+  await dialog.getByRole("button", { name: "Check link status" }).click();
+  await expect(
+    dialog.getByRole("button", { name: "Replace link" }),
+  ).toBeVisible();
+  expect(await resourceCalls(page, "create-public-link")).toHaveLength(1);
 });
 
 test("snapshot sharing requires review and submits the exact frozen token without changing category sharing", async ({

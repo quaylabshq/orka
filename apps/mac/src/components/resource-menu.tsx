@@ -22,6 +22,7 @@ import React, {
   useContext,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -48,13 +49,16 @@ import { sourcePath } from "./project-sources.js";
 import { skillReviewState } from "./skill-review-state.js";
 import { useResourceActions, type Run } from "./use-resource-actions.js";
 import { QueuedUploadReview } from "./queued-upload-review.js";
+import { ArtifactLinkDialog } from "./artifact-link-dialog.js";
 
-type ResourceRequest = "share" | "delete" | "launch" | "retry-upload";
+type ResourceRequest =
+  "share" | "delete" | "launch" | "retry-upload" | "public-link";
 
 interface ResourceMenuContextValue {
   scope: string;
   state: Snapshot;
   busy: boolean;
+  sharedArtifact: (resource: ProjectResource) => ProjectResource | undefined;
   act: Run;
   onOpen: (resource: ProjectResource, compare?: boolean) => void;
   onReview: (resource: ProjectResource, mode: "incoming" | "outgoing") => void;
@@ -81,6 +85,9 @@ const identity = (resource: ProjectResource) =>
     resource.hash,
     resource.files,
   ]);
+
+const resourceKey = (resource: ProjectResource) =>
+  `${resource.projectId}/${resource.resourceId}`;
 
 export function canDeleteSharedResource(
   resource: ProjectResource,
@@ -122,7 +129,10 @@ export function ResourceMenuProvider({
   resources,
   children,
   ...props
-}: Omit<ResourceMenuContextValue, "isCurrent" | "request" | "reviewUpload"> & {
+}: Omit<
+  ResourceMenuContextValue,
+  "isCurrent" | "request" | "reviewUpload" | "sharedArtifact"
+> & {
   resources: ProjectResource[];
   children: React.ReactNode;
 }) {
@@ -137,6 +147,62 @@ export function ResourceMenuProvider({
       active.current = false;
     };
   }, []);
+  const account = props.state.user;
+  const service = props.state.config?.apiUrl;
+  const cloud = props.state.config?.mode !== "self-hosted";
+  const online = props.state.sync?.online;
+  const [linkCapability, setLinkCapability] = useState<{
+    account: string;
+    service: string;
+    origin: string;
+  } | null>(null);
+  useEffect(() => {
+    if (!account || !service || !cloud) return;
+    let active = true;
+    void invoke<{
+      artifactLibrary?: number;
+      auth?: { browserOrigin?: string };
+    }>("auth_capabilities", { apiUrl: service })
+      .then((instance) => {
+        if (!active) return;
+        const origin = instance?.auth?.browserOrigin;
+        setLinkCapability(
+          instance?.artifactLibrary === 1 && typeof origin === "string"
+            ? { account, service, origin }
+            : null,
+        );
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [account, service, cloud, online]);
+  const publicLinkOrigin =
+    cloud &&
+    linkCapability?.account === account &&
+    linkCapability?.service === service
+      ? linkCapability.origin
+      : null;
+  const sharedArtifacts = useMemo(
+    () =>
+      new Map(
+        publicLinkOrigin
+          ? props.state.resources
+              .filter(
+                (item) =>
+                  item.kind !== "memory" && !item.deleted && item.revision > 0,
+              )
+              .map((item) => [resourceKey(item), item])
+          : [],
+      ),
+    [publicLinkOrigin, props.state.resources],
+  );
+  const sharedArtifact = (resource: ProjectResource) => {
+    if (resource.local || resource.deleted) return;
+    const item = sharedArtifacts.get(resourceKey(resource));
+    if (item?.revision === (resource.sharedRevision ?? resource.revision))
+      return item;
+  };
   const [request, setRequest] = useState<
     | {
         kind: "retry-upload";
@@ -153,6 +219,10 @@ export function ResourceMenuProvider({
   useEffect(() => {
     setRequest(null);
   }, [props.scope]);
+  const requestedArtifact =
+    request?.kind === "public-link"
+      ? sharedArtifact(request.resource)
+      : undefined;
   const isCurrent = (resource: ProjectResource) =>
     active.current &&
     scope.current === props.scope &&
@@ -162,6 +232,7 @@ export function ResourceMenuProvider({
   const context: ResourceMenuContextValue = {
     ...props,
     isCurrent,
+    sharedArtifact,
     request: (kind, resource, uploadId) => {
       if (!isCurrent(resource)) return;
       const upload = props.state.outbox.find(
@@ -173,6 +244,10 @@ export function ResourceMenuProvider({
       );
       if (kind === "retry-upload") {
         if (upload) setRequest({ kind, upload, scope: props.scope });
+      } else if (kind === "public-link") {
+        const artifact = sharedArtifact(resource);
+        if (artifact)
+          setRequest({ kind, resource: artifact, scope: props.scope });
       } else setRequest({ kind, resource, scope: props.scope });
     },
     reviewUpload: (uploadId) => {
@@ -218,6 +293,22 @@ export function ResourceMenuProvider({
             context={context}
             onClose={() => setRequest(null)}
           />
+        ) : request.kind === "public-link" ? (
+          <ArtifactLinkDialog
+            key={identity(request.resource)}
+            resource={request.resource}
+            accountId={account}
+            serviceOrigin={service}
+            linkOrigin={publicLinkOrigin}
+            stale={
+              !requestedArtifact ||
+              identity(requestedArtifact) !== identity(request.resource)
+            }
+            onClose={() => setRequest(null)}
+            onCloseAutoFocus={(event) =>
+              restoreResourceFocus(event, request.resource.resourceId)
+            }
+          />
         ) : (
           <ResourceCommandDialog
             key={`${props.scope}:${request.kind}:${identity(request.resource)}`}
@@ -260,6 +351,7 @@ export function resourceViewMenuActions(
 /** Actions not listed here open, copy or locate the item. */
 const actionGroups: Record<string, string> = {
   share: "share",
+  "public-link": "share",
   "review-incoming": "review",
   "review-outgoing": "review",
   "review-instructions": "review",
@@ -399,6 +491,18 @@ function ResourceMenuTarget({
           "Link copied",
         ),
     });
+  const artifact = context.sharedArtifact(resource);
+  if (
+    artifact &&
+    (project.role === "owner" || artifact.owner === context.state.user)
+  )
+    items.push({
+      id: "public-link",
+      icon: LinkIcon,
+      label: "Manage public link…",
+      disabled: context.busy,
+      onSelect: () => context.request("public-link", resource),
+    });
   const secondary: ItemMenuAction[] = [];
   if (connected) {
     secondary.push({
@@ -500,6 +604,7 @@ function ResourceMenuTarget({
       "compare",
       "launch",
       "share",
+      "public-link",
       "delete",
       "review-incoming",
       "review-upload",

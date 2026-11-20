@@ -165,6 +165,17 @@ authorized work. Plans can be shared without full sessions: the scanner reads
 relevant history locally, without queuing those transcripts. Selecting Sessions
 shares complete conversations, including any plans or context in the transcript.
 
+In Orka Cloud, open **Library** in the web Dashboard to browse the skills, plans,
+and sessions shared with your active projects. Search by title and filter by
+project or repository. Open an item to read it in the browser.
+
+Project owners and eligible artifact authors can choose **Manage public link**
+from a shared item’s actions in Orka for Mac or in the Dashboard. Review the
+shared revision before creating the link. Anyone with it can read the title
+and the skill’s `SKILL.md`, plan text, or readable session conversation without
+signing in. Copy the link when you create it. Replace or revoke it from the
+same action. Publishing a newer revision ends access through the older link.
+
 ENVs remain a separate encrypted, manual workflow. Checking ENVs allows the project’s ENV tools; it does not scan dotenv files, publish a set, choose recipients, or approve a device. Review keys and recipients in the ENVs tab before publishing. Turning ENVs off also blocks native publication retries. Rebuild the native app and restart its background agent to apply these checks; no cloud migration is required.
 
 A single launchd agent runs at login and after the window closes. The UI communicates through SQLite commands/status; it never starts its own sync loop. A file lock prevents a second daemon.

@@ -92,6 +92,10 @@
   padding: 24px;
 }
 
+.modal.toast-host-modal.artifact-link-dialog {
+  height: min(386px, calc(100vh - 48px));
+}
+
 .modal.resource-command-dialog h2 {
   flex-shrink: 0;
   overflow: hidden;

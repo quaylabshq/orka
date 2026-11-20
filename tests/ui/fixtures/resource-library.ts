@@ -35,6 +35,7 @@ export async function resourceLibraryFixture(
     boundaryFork?: boolean;
     nativeForkAfterRefresh?: boolean;
     deferredTitleId?: string;
+    publicLinks?: boolean;
   } = {},
 ) {
   await page.emulateMedia({ reducedMotion: "reduce" });
@@ -244,6 +245,11 @@ export async function resourceLibraryFixture(
               devices: [],
               deviceId: "mac",
               background: true,
+            };
+          if (command === "auth_capabilities" && options.publicLinks)
+            return {
+              artifactLibrary: 1,
+              auth: { browserOrigin: "https://dashboard.example" },
             };
           if (command === "sync_progress")
             return { user: library.user, progress: null };
