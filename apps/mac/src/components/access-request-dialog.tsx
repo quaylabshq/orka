@@ -17,7 +17,7 @@ import {
   unsentStatus,
 } from "./review-presentation.js";
 import { StatusPill } from "./review-status.js";
-import type { Decision } from "./request-review.js";
+import type { Decision } from "./review-decisions.js";
 
 /** An access request has nothing to read, so it is decided in a small dialog. */
 export function AccessRequestDialog({
@@ -26,6 +26,7 @@ export function AccessRequestDialog({
   title,
   author,
   sending,
+  unsent,
   onDecide,
   onClose,
   onCloseAutoFocus,
@@ -37,6 +38,8 @@ export function AccessRequestDialog({
   author: string;
   /** A decision already on its way, started before the dialog was reopened. */
   sending?: Decision;
+  /** The last decision on this request did not reach the service. */
+  unsent: boolean;
   /** Resolves with the request as the service left it; rejects when unsent. */
   onDecide: (
     request: ReviewRequest,
@@ -48,7 +51,6 @@ export function AccessRequestDialog({
   const [request, setRequest] = useState(listed);
   const [local, setDeciding] = useState<Decision | null>(null);
   const deciding = local ?? sending ?? null;
-  const [unsent, setUnsent] = useState(false);
   const pending = request.status === "pending";
   const canDecide = pending && Boolean(request.canReview);
   const current = request.requestedClass
@@ -74,12 +76,11 @@ export function AccessRequestDialog({
   const decide = (decision: Decision) => {
     if (deciding) return;
     setDeciding(decision);
-    setUnsent(false);
     void onDecide(request, decision)
       .then((result) => {
         if (result.status === "stale") setRequest(result);
       })
-      .catch(() => setUnsent(true))
+      .catch(() => {})
       .finally(() => setDeciding(null));
   };
   return (

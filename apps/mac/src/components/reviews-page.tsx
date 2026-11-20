@@ -37,7 +37,12 @@ import {
 } from "./project-permissions.js";
 import { repositoryLabel } from "./project-sources.js";
 import { displayText } from "./resource-presentation.js";
-import { RequestReview, type Decision } from "./request-review.js";
+import { RequestReview } from "./request-review.js";
+import {
+  reviewDecisions,
+  useReviewDecisions,
+  type Decision,
+} from "./review-decisions.js";
 import {
   localStatus,
   relativeSent,
@@ -54,6 +59,7 @@ import { useToastNotice } from "./toasts.js";
 import "./reviews-page.css";
 
 type ReviewsView = "open" | "history";
+const rememberedViews = new Map<string, ReviewsView>();
 
 const kindIcons: Record<ReviewKind | "change", IconGlyph> = {
   access: KeyRoundIcon,
@@ -290,13 +296,25 @@ export function ReviewsPage({
   const [loadFailed, setLoadFailed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [view, setView] = useState<ReviewsView>("open");
+  // The view survives a trip through Settings, which unmounts this page.
+  const [view, setView] = useState<ReviewsView>(
+    () => rememberedViews.get(project.id) ?? "open",
+  );
+  useEffect(() => {
+    rememberedViews.set(project.id, view);
+  }, [project.id, view]);
   const setMessage = useToastNotice();
   const root = useRef<HTMLElement>(null);
   const [access, setAccess] = useState<ReviewRequest | null>(null);
-  // Decisions on their way to the service, so a request cannot be decided
-  // twice by leaving its page and coming back.
-  const [sending, setSending] = useState<Record<string, Decision>>({});
+  const settled = useReviewDecisions();
+  const decision = (id: string) => reviewDecisions.get(project.id, id);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   const [suggestion, setSuggestion] = useState<SuggestionDetail | null>(null);
   const call = useCallback(
     <T,>(action: string, input: Record<string, unknown> = {}) =>
@@ -384,24 +402,29 @@ export function ReviewsPage({
   const titleOf = (item: ReviewRequest) =>
     requestTitle(item, resources.get(item.resourceId));
   /** Sends one decision. The lists refresh behind it; a failed refresh is not a failed decision. */
-  const decide = async (item: ReviewRequest, decision: Decision) => {
-    if (sending[item.id]) throw new Error("Decision already sending");
-    setSending((current) => ({ ...current, [item.id]: decision }));
-    const settle = () =>
-      setSending((current) => {
-        const rest = { ...current };
-        delete rest[item.id];
-        return rest;
+  const decide = async (item: ReviewRequest, choice: Decision) => {
+    if (decision(item.id).sending) throw new Error("Decision already sending");
+    reviewDecisions.start(project.id, item.id, choice);
+    let result: ReviewRequest;
+    try {
+      result = await call<ReviewRequest>("decide", {
+        id: item.id,
+        decision: choice,
+        previewHash: item.previewHash,
+        expectedPolicyRevision: catalog!.policyRevision,
       });
-    const result = await call<ReviewRequest>("decide", {
-      id: item.id,
-      decision,
-      previewHash: item.previewHash,
-      expectedPolicyRevision: catalog!.policyRevision,
-    }).finally(settle);
+    } catch (error) {
+      reviewDecisions.fail(project.id, item.id);
+      // Whoever sent it may be on another page by now.
+      if (!mounted.current || viewing.current?.id !== item.id)
+        setMessage(`Couldn’t send your decision on ${titleOf(item)}`);
+      throw error;
+    }
+    // The request stays locked until the lists show its new status.
     await load()
       .then(onRefresh)
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => reviewDecisions.settle(project.id, item.id));
     setMessage(
       result.status === "stale"
         ? "The resource or permissions changed. A refreshed suggestion is needed."
@@ -413,6 +436,21 @@ export function ReviewsPage({
     setAccess(item);
     void call("read-notification", { id: item.id }).catch(() => {});
   };
+  // A decision can land after the reviewer has moved on. It must not pull them back.
+  const viewing = useRef(review);
+  useEffect(() => {
+    viewing.current = review;
+    return () => {
+      viewing.current = null;
+    };
+  });
+  // A page mounted after a decision was sent reloads once it settles.
+  const seenSettled = useRef(settled);
+  useEffect(() => {
+    if (seenSettled.current === settled) return;
+    seenSettled.current = settled;
+    void load().catch(() => {});
+  }, [settled, load]);
   const newest = (a: ReviewRequest, b: ReviewRequest) =>
     b.createdAt.localeCompare(a.createdAt);
   const requestRows = (
@@ -502,7 +540,7 @@ export function ReviewsPage({
   });
   const scroll = useScrollFade(
     [view, toDecide.length, sentByYou.length, onThisMac.length, history.length]
-      .concat(catalog ? 1 : 0, review ? 1 : 0)
+      .concat(catalog ? 1 : 0, review ? 1 : 0, error ? 1 : 0)
       .join(),
   );
   const reviewed = review
@@ -513,11 +551,7 @@ export function ReviewsPage({
     // The request left the project while its page was open.
     if (lostReview) onReview(null);
   }, [lostReview, onReview]);
-  // A decision can land after the reviewer has moved on. It must not pull them back.
-  const viewing = useRef(review);
-  useEffect(() => {
-    viewing.current = review;
-  });
+
   const openedId = reviewed?.id;
   const returnTo = useRef<string | null>(null);
   const advanced = useRef(false);
@@ -556,7 +590,8 @@ export function ReviewsPage({
           repository={repositoryName(resources.get(reviewed.resourceId))}
           title={titleOf(reviewed)}
           call={call}
-          sending={sending[reviewed.id]}
+          sending={decision(reviewed.id).sending}
+          unsent={Boolean(decision(reviewed.id).unsent)}
           onDecide={async (item, decision) => {
             const result = await decide(item, decision);
             if (result.status !== "stale" && viewing.current?.id === item.id) {
@@ -723,7 +758,8 @@ export function ReviewsPage({
           catalog={catalog}
           title={titleOf(access)}
           author={personName(access.author, state.user, members)}
-          sending={sending[access.id]}
+          sending={decision(access.id).sending}
+          unsent={Boolean(decision(access.id).unsent)}
           onDecide={async (item, decision) => {
             const result = await decide(item, decision);
             if (result.status !== "stale") setAccess(null);

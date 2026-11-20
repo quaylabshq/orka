@@ -133,6 +133,12 @@ test("07 member, sent by you", async ({ page }) => {
     drafts: [draft("d1", "Saved learning", "local")],
   });
   await toReviews(page);
+  await expect(
+    reviews(page).getByRole("region", { name: "Sent by you 2" }),
+  ).toContainText("Awaiting approval");
+  await expect(
+    reviews(page).getByRole("region", { name: /^To decide/ }),
+  ).toHaveCount(0);
   await shot(
     page,
     "07-open-member",
@@ -177,6 +183,7 @@ test("14 history, empty", async ({ page }) => {
   await start(page, { requests: mixed });
   await toReviews(page);
   await reviews(page).getByRole("button", { name: "History" }).click();
+  await expect(reviews(page).getByText("No decisions yet")).toBeVisible();
   await shot(page, "14-history-empty", "Nothing decided yet.");
 });
 test("15 loading", async ({ page }) => {
@@ -354,6 +361,9 @@ test("R06 several files, one without a preview", async ({ page }) => {
     "One file at a time, chosen from Files.",
   );
   await info(page).getByRole("listitem").nth(1).getByRole("button").click();
+  await expect(
+    detail(page).getByText("No text preview for this file."),
+  ).toBeVisible();
   await shot(
     page,
     "R06-file-no-preview",
@@ -398,6 +408,9 @@ test("R09 deciding", async ({ page }) => {
   await expect(
     detail(page).getByRole("button", { name: "Reject" }),
   ).toBeDisabled();
+  await expect(
+    detail(page).getByRole("button", { name: "Approve" }),
+  ).toHaveAttribute("aria-busy", "true");
   await shot(page, "R09-deciding", "Approve shows progress. Reject is locked.");
 });
 test("R10 decision failed", async ({ page }) => {
@@ -472,6 +485,10 @@ test("R14 smallest window", async ({ page }) => {
   await expect(
     detail(page).getByRole("button", { name: "Approve" }),
   ).toBeEnabled();
+  await expect(detail(page)).toHaveAttribute("data-layout", "compact");
+  await expect(
+    detail(page).getByRole("button", { name: /^Files, 3$/ }),
+  ).toBeVisible();
   await shot(
     page,
     "R14-900",
@@ -989,6 +1006,13 @@ test("a decision cannot be sent twice by leaving the page and coming back", asyn
       () => (window as unknown as { decisions: number }).decisions,
     ),
   ).toBe(1);
+  // Reopened on the same request, so it moves on as any decision does.
+  await expect(
+    detail(page).getByRole("heading", { level: 2 }).first(),
+  ).toHaveText("Desktop interaction guidelines");
+  await expect(
+    reviews(page).getByRole("button", { name: "release-checklist" }),
+  ).toHaveCount(0);
 });
 test("opening an access request marks its notification read", async ({
   page,
@@ -1036,4 +1060,102 @@ test("after a decision the keyboard is on the page that opened next", async ({
     detail(page).getByRole("heading", { level: 2 }).first(),
   ).toContainText("Desktop interaction guidelines");
   await expect(reviews(page)).toBeFocused();
+});
+
+test("a decision stays locked through Settings and another tab", async ({
+  page,
+}) => {
+  await start(page, { ...owner, detail: "skill" });
+  await toReviews(page);
+  await openRow(page, /release-checklist/);
+  await flag(page, { holdRequestDecision: true });
+  await detail(page).getByRole("button", { name: "Approve" }).click();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await page.keyboard.press("Escape");
+  await expect(
+    detail(page).getByRole("button", { name: "Approve" }),
+  ).toBeDisabled();
+  await page
+    .getByRole("button", { name: /^Skills/ })
+    .first()
+    .click();
+  await toReviews(page);
+  await openRow(page, /release-checklist/);
+  await expect(
+    detail(page).getByRole("button", { name: "Reject" }),
+  ).toBeDisabled();
+  await page.evaluate(() =>
+    (
+      window as unknown as { finishRequestDecision: () => void }
+    ).finishRequestDecision(),
+  );
+  await expect(page.getByText("Approved release-checklist")).toBeVisible();
+  // Nobody is pulled into the next review by a decision sent from an earlier page.
+  await expect(
+    detail(page).getByRole("heading", { level: 2 }).first(),
+  ).toHaveText("release-checklist");
+  await expect(info(page)).toContainText("Approved");
+});
+test("a decision that fails after leaving the page says so", async ({
+  page,
+}) => {
+  await start(page, { ...owner, detail: "skill" });
+  await toReviews(page);
+  await openRow(page, /release-checklist/);
+  await flag(page, { decideFail: true });
+  await page.evaluate(() => {
+    // Hold the failing call until the reviewer has left the page.
+    const w = window as unknown as {
+      releaseDecision: () => void;
+      __TAURI_INTERNALS__: {
+        invoke: (
+          command: string,
+          args: { action?: string },
+        ) => Promise<unknown>;
+      };
+    };
+    const invoke = w.__TAURI_INTERNALS__.invoke;
+    w.__TAURI_INTERNALS__.invoke = async (command, args) => {
+      if (args?.action === "decide")
+        await new Promise<void>((resolve) => {
+          w.releaseDecision = resolve;
+        });
+      return invoke(command, args);
+    };
+  });
+  await detail(page).getByRole("button", { name: "Approve" }).click();
+  await page.getByRole("button", { name: "Back to Reviews" }).click();
+  await page.evaluate(() =>
+    (window as unknown as { releaseDecision: () => void }).releaseDecision(),
+  );
+  await expect(
+    page.getByText("Couldn’t send your decision on release-checklist"),
+  ).toBeVisible();
+  await openRow(page, /release-checklist/);
+  await expect(info(page).getByRole("alert")).toContainText("Not sent");
+  await expect(
+    detail(page).getByRole("button", { name: "Approve" }),
+  ).toBeEnabled();
+});
+test("Not sent is announced at the smallest window too", async ({ page }) => {
+  await start(page, { ...owner, detail: "skill" }, compact);
+  await toReviews(page);
+  await openRow(page, /release-checklist/);
+  await flag(page, { decideFail: true });
+  await detail(page).getByRole("button", { name: "Approve" }).click();
+  await expect(
+    detail(page).locator(".detail-meta").getByRole("alert"),
+  ).toContainText("Not sent");
+});
+test("History stays selected after a trip through Settings", async ({
+  page,
+}) => {
+  await start(page, owner);
+  await toReviews(page);
+  await reviews(page).getByRole("button", { name: "History" }).click();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await page.keyboard.press("Escape");
+  await expect(
+    reviews(page).getByRole("button", { name: "History" }),
+  ).toHaveAttribute("aria-pressed", "true");
 });

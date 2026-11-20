@@ -277,7 +277,10 @@ export async function open(page: Page, scene: Scene = {}, viewport = wide) {
                   if (scene.holdCatalog) await new Promise(() => {});
                   if (scene.failCatalog || w.failCatalog)
                     throw new Error("Network unavailable");
-                  return catalog;
+                  return {
+                    ...catalog,
+                    requests: requests.map((item) => ({ ...item })),
+                  };
                 case "request": {
                   if (w.holdRequestLoad)
                     await new Promise<void>((resolve) => {
@@ -285,9 +288,10 @@ export async function open(page: Page, scene: Scene = {}, viewport = wide) {
                     });
                   if (w.requestLoadFailure)
                     throw new Error("Could not load this request");
-                  const request =
-                    requests.find((item) => item.id === args.input?.id) ??
-                    requests[0];
+                  const request = {
+                    ...(requests.find((item) => item.id === args.input?.id) ??
+                      requests[0]),
+                  };
                   const kind = scene.detail ?? "skill";
                   if (kind === "access") return { request };
                   if ((kind as string) === "longpath")
@@ -489,7 +493,7 @@ export async function open(page: Page, scene: Scene = {}, viewport = wide) {
                     : args.input?.decision === "approve"
                       ? "approved"
                       : "rejected";
-                  return request;
+                  return { ...request };
                 }
                 case "draft": {
                   const found = (scene.drafts ?? []).find(

@@ -140,7 +140,7 @@ export function MembersPage({
         <div className="management-heading">
           <div>
             <h2>{projectLabel(project)}</h2>
-            <p>Review shared content and existing requests.</p>
+            <p>Project activity.</p>
           </div>
           <Button
             size="sm"

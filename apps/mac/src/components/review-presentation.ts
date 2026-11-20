@@ -180,7 +180,12 @@ export function accessSentence({
   requested?: string;
   current?: string;
 }) {
-  const when = sent ? ` ${sent.charAt(0).toLowerCase()}${sent.slice(1)}` : "";
+  // "1 day ago" and "just now" read as they are; a date needs "on".
+  const when = !sent
+    ? ""
+    : /ago$|^Just now$/.test(sent)
+      ? ` ${sent.charAt(0).toLowerCase()}${sent.slice(1)}`
+      : ` on ${sent}`;
   const ask = (requested && accessAsk[requested]) || "for access to";
   const now =
     current && current !== requested ? (accessNow[current] ?? "") : "";

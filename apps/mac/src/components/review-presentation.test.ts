@@ -129,5 +129,8 @@ describe("review details", () => {
     expect(
       accessSentence({ name: "Ana Souza", sent: "Just now", target: "Skills" }),
     ).toBe("Ana Souza asked just now for access to Skills.");
+    expect(
+      accessSentence({ name: "Ana Souza", sent: "Nov 12", target: "Skills" }),
+    ).toBe("Ana Souza asked on Nov 12 for access to Skills.");
   });
 });

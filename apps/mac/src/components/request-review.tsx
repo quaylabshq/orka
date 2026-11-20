@@ -25,11 +25,16 @@ import {
   useDetailLayout,
   type DetailFact,
 } from "./detail-layout.js";
-import { changedFiles, type FileManifestEntry } from "./diff-model.js";
+import {
+  changedFiles,
+  type FileChange,
+  type FileManifestEntry,
+} from "./diff-model.js";
 import { FileDiffCard, SourceCard, fileKind } from "./file-diff.js";
 import { Icon } from "./icon.js";
 import { LoadingRegion } from "./loading-region.js";
 import type { GovernanceCatalog, ProjectCall } from "./project-permissions.js";
+import type { Decision } from "./review-decisions.js";
 import { ResourceContent } from "./resource-content.js";
 import {
   audienceLabel,
@@ -45,6 +50,10 @@ import { SegmentedControl } from "./segmented-control.js";
 import { readSkillMarkdown } from "./skill-markdown.js";
 import { ReaderState } from "./skill-state.js";
 
+/** Full file has something to show: text that still exists after the change. */
+const readable = (change: FileChange) =>
+  change.status !== "removed" && !change.binary;
+
 export interface RequestDetail {
   request: ReviewRequest;
   files?: Record<string, string>;
@@ -54,7 +63,6 @@ export interface RequestDetail {
   manifest?: FileManifestEntry[];
   beforeManifest?: FileManifestEntry[];
 }
-export type Decision = "approve" | "reject";
 
 /**
  * One request on the shared detail layout: the change beside who asked, what
@@ -69,6 +77,7 @@ export function RequestReview({
   title: listedTitle,
   call,
   sending,
+  unsent,
   onDecide,
 }: {
   /** The request as the list knows it; the page fills in the rest. */
@@ -80,6 +89,8 @@ export function RequestReview({
   call: ProjectCall;
   /** A decision already on its way, started before this page was reopened. */
   sending?: Decision;
+  /** The last decision on this request did not reach the service. */
+  unsent: boolean;
   /** Resolves with the request as the service left it; rejects when unsent. */
   onDecide: (
     detail: ReviewRequest,
@@ -92,7 +103,6 @@ export function RequestReview({
   const [loading, setLoading] = useState(true);
   const [local, setDeciding] = useState<Decision | null>(null);
   const deciding = local ?? sending ?? null;
-  const [unsent, setUnsent] = useState(false);
   const [mode, setMode] = useState<"changes" | "file">("changes");
   const [path, setPath] = useState("");
   const load = useCallback(async () => {
@@ -110,7 +120,10 @@ export function RequestReview({
   useEffect(() => {
     void load();
   }, [load]);
-  const request = detail?.request ?? listed;
+  // The list is reloaded after every decision, so once it shows an outcome
+  // that outcome wins over what this page read earlier.
+  const request =
+    listed.status !== "pending" ? listed : (detail?.request ?? listed);
   const resource = detail?.content?.resource;
   const removed = Boolean(resource?.deleted);
   const changes = useMemo(
@@ -201,7 +214,14 @@ export function RequestReview({
           {
             label: "Seen by",
             icon: EyeIcon,
-            value: <span title={audienceNames}>{seenBy}</span>,
+            value: (
+              <span title={audienceNames}>
+                {seenBy}
+                {seenBy !== audienceNames && (
+                  <span className="sr-only">: {audienceNames}</span>
+                )}
+              </span>
+            ),
           },
         ]
       : []),
@@ -209,7 +229,6 @@ export function RequestReview({
   const decide = (decision: Decision) => {
     if (deciding || !detail) return;
     setDeciding(decision);
-    setUnsent(false);
     void onDecide(detail.request, decision)
       .then((result) => {
         // A stale result stays on this page with its new status.
@@ -217,7 +236,7 @@ export function RequestReview({
           current ? { ...current, request: result } : current,
         );
       })
-      .catch(() => setUnsent(true))
+      .catch(() => {})
       .finally(() => setDeciding(null));
   };
   const actions = canDecide ? (
@@ -270,7 +289,11 @@ export function RequestReview({
       }
       meta={
         <>
-          {status && <StatusPill status={status} />}
+          {status && (
+            <span role={unsent ? "alert" : undefined}>
+              <StatusPill status={status} />
+            </span>
+          )}
           {[
             `From ${name(request.author)}`,
             sent,
@@ -280,6 +303,7 @@ export function RequestReview({
             repository,
             detail ? version : undefined,
             memory ? `Topic ${memory.topic}` : undefined,
+            memory ? `Scope ${memory.scope || "Project"}` : undefined,
             memory ? `Provider ${memory.provider}` : undefined,
             memory?.supersedes?.length
               ? `Replaces ${memory.supersedes.join(", ")}`
@@ -298,7 +322,7 @@ export function RequestReview({
       }
       primaryActions={actions}
       toolbar={
-        detail && changes.length > 0 ? (
+        detail && changes.some(readable) ? (
           <SegmentedControl
             label="Review view"
             value={mode}
@@ -385,11 +409,8 @@ export function RequestReview({
         </LoadingRegion>
       ) : !change ? (
         <p className="detail-context">No file changes.</p>
-      ) : mode === "file" && change.status !== "removed" ? (
-        <SourceCard
-          path={change.path}
-          content={change.binary ? null : change.after}
-        />
+      ) : mode === "file" && readable(change) ? (
+        <SourceCard path={change.path} content={change.after} />
       ) : (
         <FileDiffCard
           {...change}
