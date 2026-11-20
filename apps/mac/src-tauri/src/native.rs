@@ -331,12 +331,16 @@ impl Rpc {
         ))
     }
     fn send(&mut self, value: Value) -> Result<()> {
+        let remaining = self.remaining();
+        if remaining.is_zero() {
+            return Err("Codex app server request timed out".into());
+        }
         let (complete, result) = mpsc::channel();
         self.input
             .send((value, complete))
             .map_err(|_| "Codex app server closed stdin")?;
         result
-            .recv_timeout(self.remaining())
+            .recv_timeout(remaining)
             .map_err(|_| "Codex app server did not accept the request")?
     }
     fn remaining(&self) -> Duration {

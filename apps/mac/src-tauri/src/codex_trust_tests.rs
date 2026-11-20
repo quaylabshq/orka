@@ -75,6 +75,20 @@ fn a_folder_codex_skips_reports_why() {
 }
 
 #[test]
+fn a_symlink_to_a_nested_source_does_not_hide_its_real_parent() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("repo").join("nested");
+    let folder = repo.join("source");
+    std::fs::create_dir_all(&folder).unwrap();
+    let alias = tmp.path().join("alias");
+    std::os::unix::fs::symlink(&folder, &alias).unwrap();
+    let repo_key = format!("{}/", repo.display());
+    let config = json!({"projects":{repo_key:{"trust_level":"untrusted"}}});
+    let listed = json!({"data":[{"cwd":folder,"hooks":[]}]});
+    assert_eq!(classify(&alias, &listed, &config), Trust::FolderUntrusted);
+}
+
+#[test]
 fn hooks_turned_off_in_codex_are_reported_as_disabled() {
     let off = json!({"features":{"hooks":false}});
     assert_eq!(check(orka("trusted"), off), Trust::HooksDisabled);
