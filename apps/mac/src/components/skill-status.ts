@@ -15,7 +15,11 @@ import {
 import type { ProjectResource } from "../types.js";
 import type { IconGlyph } from "./icons.js";
 import type { SkillReviewState } from "./skill-review-state.js";
-import type { AttentionItem } from "./sync-attention.js";
+import {
+  isSkillConflictMessage,
+  type AttentionItem,
+} from "./sync-attention.js";
+import { isTerminalUploadError } from "./sync-issues.js";
 
 /** Red: something failed. Amber: blocked or waiting. Blue: new from the team. */
 export type SkillStatusTone = "red" | "amber" | "blue" | "neutral";
@@ -81,18 +85,25 @@ export interface SkillStatusInput {
   review: SkillReviewState;
 }
 
-/** Native wording for a skill folder or file that could not be read. */
-const unreadable = /^(Cannot|Could not|Couldn’t|Couldn't) (read|scan)\b/i;
+const unreadable =
+  /^(Cannot|Could not|Couldn’t|Couldn't) (read|scan)\b|^Cannot inspect skill folder$/i;
 
-/**
- * The one status a skill row shows. A skill can be in several states at once;
- * the most urgent wins, in the same order the sort uses.
- *
- * Sharing and review states come first because native reports some of them as
- * errors on the same skill too: a blocked update or a blocked share is that
- * state, not an unreadable file. A removed skill never reaches the index, so
- * a removal has no status here.
- */
+// Previously recorded skill scan failures may only have the native OS error.
+const legacyReadError =
+  /^(?:IO error for operation on .+: )?(?:Operation not permitted|No such file or directory|Input\/output error|Permission denied|Not a directory|Is a directory) \(os error (?:1|2|5|13|20|21)\)$/;
+
+function couldNotRead(
+  resource: ProjectResource,
+  { source, error }: AttentionItem["errors"][number],
+) {
+  return (
+    unreadable.test(error) ||
+    (source.endsWith(`:scan:skills/${resource.logicalPath}`) &&
+      legacyReadError.test(error))
+  );
+}
+
+/** Show the most urgent issue, then sharing and review progress. */
 export function skillStatus({
   resource,
   conflicted,
@@ -100,25 +111,36 @@ export function skillStatus({
   review,
 }: SkillStatusInput): SkillStatus | null {
   const pick = (key: SkillStatusKey) => byKey.get(key) ?? null;
-  const issue = () =>
-    attention?.messages.length
-      ? pick(
-          attention.messages.every((message) => unreadable.test(message))
-            ? "could-not-read"
-            : "sync-issue",
-        )
-      : null;
   if (conflicted) return pick("conflict");
+
+  const sharingBlocked = resource.local && resource.sharing === "blocked";
+  const uploads = attention?.uploads ?? [];
+  // Native marks a local share blocked from its terminal upload error.
+  const blockedUpload =
+    sharingBlocked &&
+    uploads.length === 1 &&
+    isTerminalUploadError(uploads[0].error);
+  if (uploads.length && !blockedUpload) return pick("upload-failed");
+
+  // Mirror and local-edit diagnostics already explain an update's blocked state.
+  const errors = attention?.errors.filter(
+    ({ error }) => !review.incomingBlocked || !isSkillConflictMessage(error),
+  );
+  if (errors?.length)
+    return pick(
+      errors.every((error) => couldNotRead(resource, error))
+        ? "could-not-read"
+        : "sync-issue",
+    );
+
   if (resource.local) {
-    if (resource.sharing === "blocked") return pick("sharing-blocked");
+    if (sharingBlocked) return pick("sharing-blocked");
     if (resource.sharing === "approval") return pick("awaiting-approval");
     if (resource.sharing === "queued") return pick("sharing-queued");
     if (resource.sharing === "paused") return pick("sharing-paused");
-    if (attention?.uploads.length) return pick("upload-failed");
-    return issue();
+    return null;
   }
   if (review.incomingBlocked) return pick("update-blocked");
-  if (attention?.uploads.length) return pick("upload-failed");
   if (review.pending) return pick("awaiting-approval");
   if (review.incoming)
     return pick(
@@ -128,8 +150,5 @@ export function skillStatus({
     );
   if (attention?.requests.some((request) => request.canReview))
     return pick("suggestion");
-  return (
-    issue() ??
-    (review.outgoing || resource.localChanges ? pick("local-edits") : null)
-  );
+  return review.outgoing || resource.localChanges ? pick("local-edits") : null;
 }

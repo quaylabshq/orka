@@ -174,11 +174,13 @@ export const effectiveSkillFilters = (
 
 /** Search, Filter, Sort, then whatever the page adds on the right. */
 export function SkillToolbar({
+  showTools,
   categories,
   filters,
   onChange,
   actions,
 }: {
+  showTools: boolean;
   categories: FilterCategory[];
   filters: IndexFilters;
   onChange: (filters: IndexFilters) => void;
@@ -199,42 +201,62 @@ export function SkillToolbar({
     ? filters.sort
     : "title";
   return (
-    <div className="skill-index-head">
+    <div className={showTools ? "skill-index-head" : undefined}>
       <div
-        className="index-toolbar skill-toolbar"
-        role="group"
-        aria-label="skills tools"
+        className={showTools ? "index-toolbar skill-toolbar" : undefined}
+        role={showTools ? "group" : undefined}
+        aria-label={showTools ? "skills tools" : undefined}
       >
-        <SearchField
-          size="sm"
-          value={filters.query}
-          onValueChange={(query) => onChange({ ...filters, query })}
-          placeholder="Search skills…"
-          aria-label="Search skills"
-        />
-        <FilterMenu categories={categories} onToggle={toggle} onClear={clear} />
-        <SortButton
-          value={sort}
-          direction={sortDirection({ ...filters, sort })}
-          options={sorts}
-          onChange={(next, direction) =>
-            onChange({
-              ...filters,
-              sort: next,
-              // A new sort starts in its natural order; picking the current
-              // one again keeps the direction it has.
-              direction:
-                next === sort ? (direction ?? filters.direction) : undefined,
-            })
-          }
-        />
-        {actions && <div className="index-toolbar-actions">{actions}</div>}
+        {showTools && (
+          <>
+            <SearchField
+              size="sm"
+              value={filters.query}
+              onValueChange={(query) => onChange({ ...filters, query })}
+              placeholder="Search skills…"
+              aria-label="Search skills"
+            />
+            <FilterMenu
+              categories={categories}
+              onToggle={toggle}
+              onClear={clear}
+            />
+            <SortButton
+              value={sort}
+              direction={sortDirection({ ...filters, sort })}
+              options={sorts}
+              onChange={(next, direction) =>
+                onChange({
+                  ...filters,
+                  sort: next,
+                  // A new sort starts in its natural order; picking the current
+                  // one again keeps the direction it has.
+                  direction:
+                    next === sort
+                      ? (direction ?? filters.direction)
+                      : undefined,
+                })
+              }
+            />
+          </>
+        )}
+        {actions && (
+          <div
+            className={
+              showTools ? "index-toolbar-actions" : "resource-index-action"
+            }
+          >
+            {actions}
+          </div>
+        )}
       </div>
-      <ActiveFilters
-        categories={categories}
-        onRemove={(category) => onChange({ ...filters, [category]: [] })}
-        onClear={clear}
-      />
+      {showTools && (
+        <ActiveFilters
+          categories={categories}
+          onRemove={(category) => onChange({ ...filters, [category]: [] })}
+          onClear={clear}
+        />
+      )}
     </div>
   );
 }

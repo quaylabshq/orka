@@ -14,10 +14,12 @@ import React, {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import * as Popover from "@radix-ui/react-popover";
 import { invoke } from "@tauri-apps/api/core";
@@ -107,6 +109,10 @@ export function GlobalSkillImport({
 }) {
   const [open, setOpen] = useState(false);
   const [adding, setAdding] = useState(false);
+  const content = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (adding) content.current?.focus({ preventScroll: true });
+  }, [adding]);
   return (
     <Popover.Root
       open={open}
@@ -131,11 +137,36 @@ export function GlobalSkillImport({
           )}
         </Button>
       </Popover.Trigger>
+      {adding &&
+        createPortal(
+          <div
+            className="add-skills-add-backdrop"
+            aria-hidden="true"
+            onPointerDown={(event) => event.preventDefault()}
+          />,
+          document.body,
+        )}
       <Popover.Portal>
         <Popover.Content
+          ref={content}
           className="add-skills-popover"
           role="dialog"
           aria-label="Add global skills"
+          aria-modal={adding || undefined}
+          onFocusOutside={(event) => {
+            if (!adding) return;
+            event.preventDefault();
+            content.current?.focus({ preventScroll: true });
+          }}
+          onPointerDownOutside={(event) => {
+            if (adding) event.preventDefault();
+          }}
+          onEscapeKeyDown={(event) => {
+            if (adding) event.preventDefault();
+          }}
+          onKeyDown={(event) => {
+            if (adding && event.key === "Tab") event.preventDefault();
+          }}
           align="end"
           sideOffset={8}
           collisionPadding={12}
@@ -175,20 +206,20 @@ function AddSkills({
     () => activeSources(project.sources ?? []).filter((source) => source.path),
     [project.sources],
   );
-  const [picked, setPicked] = useState("");
-  // Falls back to the first connected repository, including one connected
-  // while the popover is open.
-  const sourceId = repositories.some((source) => source.id === picked)
-    ? picked
-    : (repositories[0]?.id ?? "");
+  const [picked, setPicked] = useState(repositories[0]?.id);
+  const sourceId = picked ?? repositories[0]?.id;
+  // The first connected repository is the default only before a destination exists.
+  if (picked === undefined && sourceId) setPicked(sourceId);
+  const repository = repositories.find((source) => source.id === sourceId);
+  const path = project.sources ? repository?.path : project.path;
+  const needsDestination = Boolean(
+    project.sources && !repository && repositories.length,
+  );
+  const destination = repository
+    ? (repositoryLabel(project.sources ?? [], repository.id) ?? repository.name)
+    : project.name;
   const peekId = useId();
   const [connectError, setConnectError] = useState("");
-  const connected = project.sources
-    ? repositories.some((source) => source.id === sourceId)
-    : Boolean(project.path);
-  const destination =
-    (project.sources && repositoryLabel(project.sources, sourceId)) ||
-    project.name;
   const [scan, setScan] = useState<Scan | null>(null);
   const [scanError, setScanError] = useState("");
   const [query, setQuery] = useState("");
@@ -203,6 +234,18 @@ function AddSkills({
   const generation = useRef(0);
   const peekTimer = useRef(0);
   const list = useRef<HTMLUListElement>(null);
+
+  const target = path ? JSON.stringify([sourceId, path]) : null;
+  const [previousTarget, setPreviousTarget] = useState(target);
+  if (previousTarget !== target) {
+    setPreviousTarget(target);
+    setScan(null);
+    setScanError("");
+    setSelected(new Set());
+    setFailed({});
+    setRetry("");
+    setPeek(undefined);
+  }
 
   const rescan = useCallback(async () => {
     const current = ++generation.current;
@@ -221,13 +264,13 @@ function AddSkills({
   }, [project.id, sourceId]);
   useEffect(() => {
     active.current = true;
-    if (connected) void rescan();
+    if (target) void rescan();
     return () => {
       active.current = false;
       generation.current += 1;
       window.clearTimeout(peekTimer.current);
     };
-  }, [rescan, connected]);
+  }, [rescan, target]);
 
   const skills = useMemo(
     () =>
@@ -316,7 +359,7 @@ function AddSkills({
       sourceId: sourceId || undefined,
     });
   const add = async () => {
-    if (pending || !chosen.length) return;
+    if (locked || !target || !chosen.length) return;
     setPending(true);
     onAdding(true);
     setRetry("");
@@ -327,7 +370,7 @@ function AddSkills({
       attempted.find((skill) => skill.id === id)?.name ?? "A skill";
     // Set once native has answered: a later refresh failure is not a failed add.
     let answered = false;
-    let retryable = 0;
+    let closeOnSuccess = false;
     try {
       await run(async () => {
         const { results } = await invoke<{ results: ImportResult[] }>(
@@ -341,7 +384,7 @@ function AddSkills({
         answered = true;
         const added = results.filter((item) => item.result);
         let stale = results.filter((item) => item.error === STALE_SKILL);
-        let dead = results.filter(
+        const dead = results.filter(
           (item) => item.error && item.error !== STALE_SKILL,
         );
         const current = ++generation.current;
@@ -354,22 +397,36 @@ function AddSkills({
           }
         }
         if (next) {
-          // A stale skill that is gone from the fresh list cannot be retried.
-          const present = new Set(next.skills.map((skill) => skill.id));
-          const gone = stale.filter((item) => !present.has(item.skillId));
-          stale = stale.filter((item) => present.has(item.skillId));
-          dead = [
-            ...dead,
-            ...gone.map((item) => ({
-              ...item,
-              error: "It is no longer in your global skills.",
-            })),
-          ];
+          const fresh = new Map(next.skills.map((skill) => [skill.id, skill]));
+          const retryable: ImportResult[] = [];
+          for (const item of stale) {
+            const skill = fresh.get(item.skillId);
+            if (skill && !skill.exists && !skill.error) retryable.push(item);
+            else
+              dead.push({
+                ...item,
+                error: skill?.exists
+                  ? "It is already in this project."
+                  : (skill?.error ?? "It is no longer in your global skills."),
+              });
+          }
+          stale = retryable;
         }
-        retryable = stale.length;
         report(added, dead, name);
         if (!active.current) return;
         if (next && current === generation.current) setScan(next);
+        else if (added.length && current === generation.current) {
+          const addedIds = new Set(added.map((item) => item.skillId));
+          setScan(
+            (current) =>
+              current && {
+                ...current,
+                skills: current.skills.map((skill) =>
+                  addedIds.has(skill.id) ? { ...skill, exists: true } : skill,
+                ),
+              },
+          );
+        }
         const done = new Set([...added, ...dead].map((item) => item.skillId));
         setSelected(
           (current) => new Set([...current].filter((id) => !done.has(id))),
@@ -389,7 +446,7 @@ function AddSkills({
               : `Couldn’t add ${stale.length} ${plural(stale.length)}.`,
           );
         }
-        if (!stale.length && !dead.length) onClose();
+        closeOnSuccess = !stale.length && !dead.length;
       });
     } catch (error) {
       if (active.current && !answered)
@@ -398,18 +455,12 @@ function AddSkills({
         );
     } finally {
       window.clearTimeout(timer);
-      // Adding a project's first skill moves the button into the toolbar and
-      // replaces this popover, so a skill left to retry is reported here.
-      if (!active.current && retryable)
-        notify({
-          kind: "error",
-          title: `${retryable} ${plural(retryable)} couldn’t be added. Open Add skills to try again.`,
-        });
       if (active.current) {
         setPending(false);
         setWaiting(false);
       }
       onAdding(false);
+      if (closeOnSuccess) onClose();
     }
   };
 
@@ -448,7 +499,7 @@ function AddSkills({
     boxes[next].focus();
   };
 
-  if (!connected)
+  if (!target && !needsDestination)
     return (
       <div className="add-skills-message">
         <Icon icon={FolderIcon} size="lg" variant="secondary" />
@@ -508,7 +559,7 @@ function AddSkills({
           placeholder="Search your global skills…"
           value={query}
           autoFocus
-          disabled={locked}
+          disabled={locked || needsDestination}
           onChange={(event) => setQuery(event.target.value)}
         />
         {query && (
@@ -516,13 +567,14 @@ function AddSkills({
             type="button"
             className="add-skills-clear"
             aria-label="Clear search"
+            disabled={locked || needsDestination}
             onClick={() => setQuery("")}
           >
             <XIcon size={12} aria-hidden="true" />
           </button>
         )}
       </label>
-      {repositories.length > 1 && (
+      {(repositories.length > 1 || needsDestination) && (
         <div className="add-skills-repository">
           <FolderIcon size={16} aria-hidden="true" />
           <span>Add to repository</span>
@@ -532,10 +584,12 @@ function AddSkills({
                 type="button"
                 className="add-skills-repository-select"
                 aria-label="Add to repository"
-                title={destination}
+                title={needsDestination ? undefined : destination}
                 disabled={locked}
               >
-                <span>{destination}</span>
+                <span>
+                  {needsDestination ? "Choose repository" : destination}
+                </span>
                 <ChevronDownIcon size={14} aria-hidden="true" />
               </button>
             </DropdownMenu.Trigger>
@@ -548,14 +602,8 @@ function AddSkills({
                 collisionPadding={10}
               >
                 <DropdownMenu.RadioGroup
-                  value={sourceId}
-                  onValueChange={(next) => {
-                    // What can be added depends on the repository.
-                    setPicked(next);
-                    setSelected(new Set());
-                    setFailed({});
-                    setRetry("");
-                  }}
+                  value={repository?.id ?? ""}
+                  onValueChange={setPicked}
                 >
                   {repositories.map((source) => (
                     <DropdownMenu.RadioItem
@@ -582,7 +630,13 @@ function AddSkills({
           </DropdownMenu.Root>
         </div>
       )}
-      {scanError ? (
+      {needsDestination ? (
+        <div className="add-skills-message" role="status">
+          <Icon icon={FolderIcon} size="lg" variant="secondary" />
+          <h2>Repository unavailable</h2>
+          <p>Choose a connected repository to continue adding skills.</p>
+        </div>
+      ) : scanError ? (
         <div className="add-skills-message">
           <Icon icon={TriangleAlertIcon} size="lg" variant="secondary" />
           <h2>Couldn’t read your global skills</h2>
@@ -604,11 +658,13 @@ function AddSkills({
           <Icon icon={CheckIcon} size="lg" variant="secondary" />
           <h2>Nothing to add</h2>
           <p>
-            {skills.length
-              ? "Every global skill on this Mac is already in this project."
-              : scan.errors.length
-                ? "No global skills could be read on this Mac."
-                : "No global skills were found in Codex or Claude on this Mac."}
+            {skills.some((skill) => !skill.exists)
+              ? "Search to see why individual skills can’t be added."
+              : skills.length
+                ? "Every global skill on this Mac is already in this project."
+                : scan.errors.length
+                  ? "No global skills could be read on this Mac."
+                  : "No global skills were found in Codex or Claude on this Mac."}
           </p>
           {scan.errors.map((error, index) => (
             <p key={index} className="add-skills-note" role="status">
@@ -706,6 +762,7 @@ function AddSkills({
               <Button
                 size="sm"
                 variant="secondary"
+                disabled={locked}
                 onClick={() => setQuery("")}
               >
                 Clear search

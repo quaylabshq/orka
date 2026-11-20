@@ -20,7 +20,7 @@ import {
   queueStateLabel,
   retryTime,
 } from "./sync-queue.js";
-import { syncIssueRecovery } from "./sync-issues.js";
+import { isTerminalUploadError, syncIssueRecovery } from "./sync-issues.js";
 import type {
   AttentionItem,
   ProjectAttention,
@@ -338,11 +338,7 @@ export function SyncMenu({
           </Button>
         )
       ) : item.uploads.length > 0 ? (
-        item.uploads.every(
-          (upload) =>
-            !/^4\d\d:/.test(upload.error ?? "") ||
-            /^(401|408|429):/.test(upload.error ?? ""),
-        ) ? (
+        item.uploads.every((upload) => !isTerminalUploadError(upload.error)) ? (
           <Button
             variant="secondary"
             size="sm"

@@ -10,7 +10,7 @@ const initial: Record<Kind, IndexFilters> = {
   plan: defaultIndexFilters,
 };
 
-/** Collection tools stay independent; repository selection spans the project. */
+/** The header repository selection is shared by the collections that use it. */
 export function useIndexFilters(scope: string) {
   const [stored, setStored] = useState({
     scope,
@@ -29,7 +29,10 @@ export function useIndexFilters(scope: string) {
       const { repository = "all", ...collection } = next;
       setStored((stored) => ({
         scope,
-        repository,
+        repository:
+          kind === "skill" && stored.scope === scope
+            ? stored.repository
+            : repository,
         filters: {
           ...(stored.scope === scope ? stored.filters : initial),
           [kind]: collection,

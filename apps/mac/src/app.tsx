@@ -461,9 +461,14 @@ function WorkspaceApp({
     tab === "home" || tab === "env" || tab === "members"
       ? undefined
       : index.filters[tab];
+  const collectionRepository = tab === "skill" ? "all" : repository;
   const filters = useMemo(
-    () => ({ ...defaultIndexFilters, ...collectionFilters, repository }),
-    [collectionFilters, repository],
+    () => ({
+      ...defaultIndexFilters,
+      ...collectionFilters,
+      repository: collectionRepository,
+    }),
+    [collectionFilters, collectionRepository],
   );
   const projectPath = selectedProject?.path;
   const localCatalog = useLocalResources({
@@ -610,7 +615,15 @@ function WorkspaceApp({
       }
       if (link.hostname === "project") {
         const [id, resourceId] = link.pathname.split("/").filter(Boolean);
-        index.setRepository("all");
+        const sameProjectSkill =
+          id === project &&
+          catalogResources.some(
+            (item) =>
+              item.projectId === id &&
+              item.resourceId === resourceId &&
+              item.kind === "skill",
+          );
+        if (!sameProjectSkill) index.setRepository("all");
         setProject(id);
         if (resourceId) setResource(resourceId);
         else {
@@ -744,10 +757,11 @@ function WorkspaceApp({
       </>
     );
   const openResource = (id: string) => {
+    const target = catalogResources.find((item) => item.resourceId === id);
     if (
+      target?.kind !== "skill" &&
       repository !== "all" &&
-      catalogResources.find((item) => item.resourceId === id)?.sourceId !==
-        repository
+      target?.sourceId !== repository
     )
       index.setRepository("all");
     setResource(id);
@@ -1257,7 +1271,7 @@ function WorkspaceApp({
                     resources={catalogResources}
                     pendingCounts={localCatalog.pendingCounts}
                     onNavigate={(kind) => {
-                      index.setRepository("all");
+                      if (kind !== "skill") index.setRepository("all");
                       setEnvSet("");
                       setTab(kind);
                       setResource("");

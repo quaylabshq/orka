@@ -1,3 +1,9 @@
+.add-skills-add-backdrop {
+  position: fixed;
+  z-index: 109;
+  inset: 0;
+}
+
 .add-skills-popover {
   z-index: 110;
   width: 380px;

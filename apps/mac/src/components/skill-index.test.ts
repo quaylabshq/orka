@@ -34,6 +34,7 @@ const attention = (extra: Partial<AttentionItem>): AttentionItem => ({
   key: "a",
   title: "a",
   messages: [],
+  errors: [],
   paths: [],
   requests: [],
   conflicts: [],
@@ -106,66 +107,140 @@ describe("skillStatus", () => {
 });
 
 describe("skillStatus with sync attention", () => {
-  const upload = { error: "503" } as AttentionItem["uploads"][number];
+  const upload = (
+    id: string,
+    error: string,
+  ): AttentionItem["uploads"][number] => ({
+    id,
+    project: "p",
+    resourceId: "a",
+    error,
+  });
+  const errorAt = (source: string, error: string) => ({ source, error });
+  const blockedUpdate = errorAt(
+    "a",
+    "Local skill edits preserved; resolve them before applying the shared update",
+  );
+  const readFailure = errorAt(
+    "p:repo:scan:skills/a",
+    "Permission denied (os error 13)",
+  );
   const of = (
     extra: Partial<ProjectResource>,
     item: Partial<AttentionItem>,
     review: Partial<SkillReviewState> = {},
   ) =>
     skillStatus({
-      resource: skill("a", extra),
+      resource: skill("a", { sourceId: "repo", logicalPath: "a", ...extra }),
       conflicted: false,
       attention: attention(item),
       review: { ...quiet, ...review },
     })?.key;
 
-  it("keeps the native sharing state of a local skill over its upload error", () => {
-    expect(of({ local: true, sharing: "blocked" }, { uploads: [upload] })).toBe(
-      "sharing-blocked",
+  it("keeps a sharing block for its own terminal upload and surfaces independent failures", () => {
+    const blocked: Partial<ProjectResource> = {
+      local: true,
+      sharing: "blocked",
+    };
+    const rejected = upload("share", "403: Skill sharing is disabled");
+    const unavailable = upload("other", "503: Service unavailable");
+    expect(of(blocked, { uploads: [rejected] })).toBe("sharing-blocked");
+    expect(of(blocked, { uploads: [rejected], errors: [readFailure] })).toBe(
+      "could-not-read",
     );
-    expect(of({ local: true, sharing: "queued" }, { uploads: [upload] })).toBe(
-      "sharing-queued",
+    expect(of(blocked, { uploads: [rejected, unavailable] })).toBe(
+      "upload-failed",
     );
-    expect(of({ local: true }, { uploads: [upload] })).toBe("upload-failed");
+    for (const sharing of ["queued", "paused", "approval"] as const)
+      expect(of({ local: true, sharing }, { uploads: [unavailable] })).toBe(
+        "upload-failed",
+      );
   });
 
-  it("shows a blocked update as blocked, not as an unreadable skill", () => {
+  it("keeps an update block for its own local edits and surfaces independent failures", () => {
+    const review = { incoming: true, incomingBlocked: true };
+    expect(of({}, { errors: [blockedUpdate] }, review)).toBe("update-blocked");
+    expect(of({}, { errors: [blockedUpdate, readFailure] }, review)).toBe(
+      "could-not-read",
+    );
     expect(
       of(
         {},
         {
-          messages: [
-            "Local skill edits preserved; resolve them before applying the shared update",
+          errors: [blockedUpdate],
+          uploads: [upload("share", "503: Service unavailable")],
+        },
+        review,
+      ),
+    ).toBe("upload-failed");
+  });
+
+  it("names explicit and native scan read failures without mislabeling install and package failures", () => {
+    expect(of({}, { errors: [readFailure] })).toBe("could-not-read");
+    expect(
+      of(
+        {},
+        {
+          errors: [
+            errorAt(
+              readFailure.source,
+              `IO error for operation on /test/a/scripts: ${readFailure.error}`,
+            ),
           ],
         },
-        { incoming: true, incomingBlocked: true },
       ),
-    ).toBe("update-blocked");
-  });
-
-  it("names read failures and leaves other errors as a sync issue", () => {
-    expect(of({}, { messages: ["Cannot read /test/skills/a/SKILL.md"] })).toBe(
-      "could-not-read",
-    );
-    expect(of({}, { messages: ["409: Resource changed"] })).toBe("sync-issue");
-    expect(
-      of({ local: true }, { messages: ["Cannot scan /test/skills"] }),
     ).toBe("could-not-read");
+    expect(
+      of(
+        {},
+        {
+          errors: [
+            errorAt(
+              readFailure.source,
+              `Cannot cache SKILL.md: ${readFailure.error}`,
+            ),
+          ],
+        },
+      ),
+    ).toBe("sync-issue");
+    expect(
+      of({}, { errors: [errorAt("a", "Cannot read /test/skills/a/SKILL.md")] }),
+    ).toBe("could-not-read");
+    expect(
+      of(
+        { local: true },
+        {
+          errors: [
+            errorAt("p:repo:scan:skills/a", "Cannot inspect skill folder"),
+          ],
+        },
+      ),
+    ).toBe("could-not-read");
+    expect(
+      of({}, { errors: [errorAt("p:installation:a", readFailure.error)] }),
+    ).toBe("sync-issue");
+    expect(
+      of(
+        {},
+        { errors: [errorAt(readFailure.source, "Package contains symlink")] },
+      ),
+    ).toBe("sync-issue");
   });
 
-  it("puts an error ahead of quiet local edits, and a suggestion ahead of both", () => {
-    expect(of({ localChanges: true }, { messages: ["500"] })).toBe(
+  it("puts failures ahead of edits, pending approval, an available update, and suggestions", () => {
+    const failure = errorAt("a", "500: Sync service unavailable");
+    expect(of({ localChanges: true }, { errors: [failure] })).toBe(
       "sync-issue",
     );
     expect(
-      of(
-        { localChanges: true },
-        {
-          messages: ["500"],
-          requests: [{ canReview: true } as AttentionItem["requests"][number]],
-        },
-      ),
-    ).toBe("suggestion");
+      of({}, { errors: [readFailure] }, { incoming: true, pending: true }),
+    ).toBe("could-not-read");
+    expect(of({}, { errors: [readFailure] }, { incoming: true })).toBe(
+      "could-not-read",
+    );
+    const requests = [{ canReview: true } as AttentionItem["requests"][number]];
+    expect(of({}, { requests })).toBe("suggestion");
+    expect(of({}, { errors: [failure], requests })).toBe("sync-issue");
   });
 
   it("offers every status it can produce, and no other", () => {

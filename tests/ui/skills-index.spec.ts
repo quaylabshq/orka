@@ -338,13 +338,15 @@ test("a row menu is one flat list, and after dismissing it Enter still opens the
   await expect(rows(page).first()).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(menu).toBeHidden();
-  await row.getByRole("button", { name: `Actions for ${title}` }).click();
+  const actions = row.getByRole("button", { name: `Actions for ${title}` });
+  await actions.click();
   await expect(page.getByRole("menu")).toBeVisible();
   // An open menu keeps the description out of its way.
   await expect(page.locator(".skill-table").getByRole("tooltip")).toHaveCount(
     0,
   );
   await page.keyboard.press("Escape");
+  await expect(actions).toBeFocused();
   await name.focus();
   await page.keyboard.press("Enter");
   await expect(
@@ -532,4 +534,96 @@ test("a description near the bottom of the window opens upward and names its row
     "aria-describedby",
     (await peek.getAttribute("id"))!,
   );
+});
+
+test("clearing Skills search and filters preserves the Plans repository", async ({
+  page,
+}) => {
+  await skillsIndexFixture(page, { repositories: true });
+  const plans = page.getByRole("button", { name: /^Plans/ });
+  const skills = page.getByRole("button", { name: /^Skills/ });
+  const repository = page.getByRole("combobox", {
+    name: "Filter by repository",
+  });
+  await plans.click();
+  await repository.click();
+  await page.getByRole("option", { name: "desktop", exact: true }).click();
+  await skills.click();
+  const empty = page.locator(".empty-state");
+  await page
+    .getByRole("searchbox", { name: "Search skills" })
+    .fill("no such skill");
+  await empty
+    .getByRole("button", { name: "Clear search", exact: true })
+    .click();
+  await plans.click();
+  await expect(repository).toHaveText("desktop");
+
+  await skills.click();
+  await pick(page, "Status", "Upload failed");
+  await empty
+    .getByRole("button", { name: "Clear filters", exact: true })
+    .click();
+  await plans.click();
+  await expect(repository).toHaveText("desktop");
+});
+
+test("navigation to Skills and its readers preserves the Plans repository", async ({
+  page,
+}) => {
+  await skillsIndexFixture(page, { repositories: true, count: 3 });
+  const plans = page.getByRole("button", { name: /^Plans/ });
+  const repository = page.getByRole("combobox", {
+    name: "Filter by repository",
+  });
+  await plans.click();
+  await repository.click();
+  await page.getByRole("option", { name: "desktop", exact: true }).click();
+  await page.getByRole("button", { name: /^Skills/ }).click();
+  await page.getByRole("button", { name: "pr-polish", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Back to Skills" }),
+  ).toBeVisible();
+  await plans.click();
+  await expect(repository).toHaveText("desktop");
+});
+
+test("a long description preview and its origin fit the minimum window", async ({
+  page,
+}) => {
+  await page.setViewportSize(compact);
+  await skillsIndexFixture(page, { count: 8, longDescription: true });
+  const name = page.getByRole("button", { name: "code-review", exact: true });
+  await name.hover();
+  const peek = page.getByRole("tooltip");
+  await expect(peek).toContainText("Review changes with supporting scripts");
+  await expect(peek).toContainText("Imported from your global skills");
+  const view = (await page.locator(".resource-index-body").boundingBox())!;
+  const box = (await peek.boundingBox())!;
+  expect(box.y).toBeGreaterThanOrEqual(view.y);
+  expect(box.y + box.height).toBeLessThanOrEqual(view.y + view.height);
+  expect(box.height).toBeLessThan(144);
+  await name.click();
+  await expect(page.locator(".skill-description")).toContainText(
+    "Review changes with supporting scripts",
+  );
+});
+
+test("a read failure outranks an available update and appears in the status filter", async ({
+  page,
+}) => {
+  await skillsIndexFixture(page, {
+    count: 8,
+    repositories: true,
+    governed: true,
+    review: true,
+    skillReadFailure: true,
+  });
+  const row = rows(page).filter({
+    has: page.getByRole("button", { name: "code-review", exact: true }),
+  });
+  await expect(row.locator(".skill-status-pill")).toHaveText("Could not read");
+  await pick(page, "Status", "Could not read");
+  await expect(rows(page)).toHaveCount(1);
+  await expect(row).toBeVisible();
 });

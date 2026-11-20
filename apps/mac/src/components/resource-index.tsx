@@ -186,6 +186,22 @@ export function ResourceIndex({
     !noAccess &&
     connected,
   );
+  // Keep the popover mounted when the first import moves its trigger into the toolbar.
+  const skillToolbar =
+    kind === "skill" ? (
+      <SkillToolbar
+        key="skill-toolbar"
+        showTools={toolbarShown}
+        categories={skillCategories}
+        filters={filters}
+        onChange={onFilters}
+        actions={
+          React.isValidElement<{ compact?: boolean }>(floatingAction)
+            ? React.cloneElement(floatingAction, { compact: toolbarAction })
+            : floatingAction
+        }
+      />
+    ) : null;
   const clearFilters = () => {
     onFilters({
       ...defaultIndexFilters,
@@ -293,19 +309,7 @@ export function ResourceIndex({
             )}
           </div>
         )}
-        {toolbarShown && kind === "skill" && (
-          <SkillToolbar
-            categories={skillCategories}
-            filters={filters}
-            onChange={onFilters}
-            actions={
-              // In the toolbar the action takes the toolbar's control size.
-              React.isValidElement<{ compact?: boolean }>(floatingAction)
-                ? React.cloneElement(floatingAction, { compact: true })
-                : floatingAction
-            }
-          />
-        )}
+        {toolbarShown && skillToolbar}
         {toolbarShown && kind !== "skill" && (
           <IndexToolbar
             kind={kind}
@@ -413,7 +417,8 @@ export function ResourceIndex({
             onOpen={onOpen}
           />
         )}
-        {floatingAction && !toolbarAction && (
+        {!toolbarShown && skillToolbar}
+        {kind !== "skill" && floatingAction && (
           <div className="resource-index-action">{floatingAction}</div>
         )}
       </div>

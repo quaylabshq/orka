@@ -22,7 +22,7 @@ import "./skill-table.css";
 /** How long the pointer rests on a row before its description opens. */
 const PEEK_DELAY = 400;
 /** Room a description needs under its row before it opens upward instead. */
-const PEEK_ROOM = 132;
+const PEEK_ROOM = 144;
 
 function SharedBy({ id, name }: { id: string; name: string }) {
   const photo = useMemberPhoto(id);

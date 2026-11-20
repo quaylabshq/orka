@@ -5,6 +5,8 @@ async function fixture(page: Page, mode = "normal") {
   await page.addInitScript((mode) => {
     const calls: { name: string; args?: Record<string, unknown> }[] = [];
     let scanCount = 0;
+    let addCount = 0;
+    let removedDestination = false;
     let usageCount = 0;
     let projectUsageCount = 0;
     let added = false;
@@ -75,6 +77,9 @@ async function fixture(page: Page, mode = "normal") {
     Object.assign(window, {
       invokeCalls: calls,
       isTauri: true,
+      removeSkillDestination: () => {
+        removedDestination = true;
+      },
       publishSkill: () => {
         published = true;
       },
@@ -106,6 +111,9 @@ async function fixture(page: Page, mode = "normal") {
                             id: "backend",
                             name: "orka-platform-infrastructure",
                             path: "/test/backend",
+                            removedAt: removedDestination
+                              ? "2026-11-20T00:00:00Z"
+                              : undefined,
                           },
                           { id: "other", name: "Disconnected repository" },
                           {
@@ -171,7 +179,7 @@ async function fixture(page: Page, mode = "normal") {
                       ? [{ ...imported, revision: 1 }]
                       : [],
               localSkills:
-                (mode === "governed" && added) ||
+                ((mode === "governed" || mode === "bulk-partial") && added) ||
                 mode === "local" ||
                 mode === "local-deleted" ||
                 ["approval", "paused", "blocked"].includes(mode)
@@ -234,13 +242,19 @@ async function fixture(page: Page, mode = "normal") {
                         (skill) =>
                           !(
                             mode === "bulk-gone" &&
-                            added &&
+                            addCount > 0 &&
                             skill.id === "claude"
                           ),
                       )
                       .map((skill) => ({
                         ...skill,
                         exists: skill.exists || (added && skill.id === "codex"),
+                        error:
+                          mode === "bulk-invalid" &&
+                          addCount &&
+                          skill.id === "claude"
+                            ? "Package contains symlink"
+                            : skill.error,
                       })),
               errors:
                 mode === "partial"
@@ -317,21 +331,24 @@ async function fixture(page: Page, mode = "normal") {
               await new Promise<void>((resolve) => {
                 (window as any).finishSkillImport = resolve;
               });
-            added = true;
-            return {
-              results: (args?.skillIds as string[]).map((skillId) =>
-                (mode === "bulk-partial" || mode === "bulk-gone") &&
-                skillId === "claude"
-                  ? { skillId, error: "Global skill unavailable. Scan again." }
-                  : mode === "bulk-dead" && skillId === "claude"
-                    ? {
-                        skillId,
-                        error:
-                          "A skill with this folder name is already in the project. Existing files were preserved.",
-                      }
-                    : { skillId, result: { status: "queued" } },
-              ),
-            };
+            addCount += 1;
+            const results = (args?.skillIds as string[]).map((skillId) =>
+              ["bulk-partial", "bulk-gone", "bulk-invalid"].includes(mode) &&
+              addCount === 1 &&
+              skillId === "claude"
+                ? { skillId, error: "Global skill unavailable. Scan again." }
+                : mode === "bulk-dead" && skillId === "claude"
+                  ? {
+                      skillId,
+                      error:
+                        "A skill with this folder name is already in the project. Existing files were preserved.",
+                    }
+                  : { skillId, result: { status: "queued" } },
+            );
+            added ||= results.some(
+              (result) => result.skillId === "codex" && result.result,
+            );
+            return { results };
           }
           if (name === "inspect_resource")
             return {
@@ -652,6 +669,8 @@ test("adding locks the popover until the one request finishes", async ({
   page,
 }) => {
   await fixture(page, "add-wait");
+  const plans = page.getByRole("button", { name: /^Plans/ });
+  const plansBounds = (await plans.boundingBox())!;
   await trigger(page).click();
   const dialog = popover(page);
   await pick(page, "Code review").check();
@@ -666,16 +685,24 @@ test("adding locks the popover until the one request finishes", async ({
   await expect(
     dialog.getByRole("searchbox", { name: "Search global skills" }),
   ).toBeDisabled();
-  // Neither Escape nor a click outside closes it mid-add.
+  // Keyboard and pointer interaction keep the user in the picker mid-add.
   await page.keyboard.press("Escape");
-  await expect(dialog).toBeVisible();
-  await page.mouse.click(20, 400);
+  await page.keyboard.press("Tab");
+  await expect(dialog).toBeFocused();
+  await page.mouse.click(
+    plansBounds.x + plansBounds.width / 2,
+    plansBounds.y + plansBounds.height / 2,
+  );
   await expect(dialog).toBeVisible();
   await page.evaluate(() => (window as any).finishSkillImport());
   await expect(dialog).toBeHidden();
   await expect(page.getByText("2 skills added to Orka")).toBeVisible();
   expect(await calls(page, "add_global_skills")).toHaveLength(1);
   expect(await calls(page, "add_global_skill")).toHaveLength(0);
+  await plans.click();
+  await expect(
+    page.getByRole("heading", { name: "Plans", exact: true }),
+  ).toBeVisible();
 });
 
 test("Add skills stays in the toolbar while the Skills list scrolls", async ({
@@ -829,6 +856,7 @@ test("a stale skill stays ticked for another try while the rest are added", asyn
   page,
 }) => {
   await fixture(page, "bulk-partial");
+  await expect(rows(page)).toHaveCount(0);
   await trigger(page).click();
   const dialog = popover(page);
   await pick(page, "Code review").check();
@@ -836,6 +864,8 @@ test("a stale skill stays ticked for another try while the rest are added", asyn
   await dialog
     .getByRole("button", { name: "Add 2 skills", exact: true })
     .click();
+  await expect(rows(page)).toHaveCount(1);
+  await expect(trigger(page)).toHaveText("Add skills");
   await expect(dialog.getByRole("alert")).toContainText(
     "1 added. 1 couldn’t be added.",
   );
@@ -847,9 +877,13 @@ test("a stale skill stays ticked for another try while the rest are added", asyn
   ).toBeVisible();
   // The one that went in has left the list.
   await expect(pick(page, "Code review")).toHaveCount(0);
-  await expect(
-    dialog.getByRole("button", { name: "Try again", exact: true }),
-  ).toBeEnabled();
+  await dialog.getByRole("button", { name: "Try again", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  expect(
+    (await calls(page, "add_global_skills")).map(
+      (call: any) => call.args.skillIds,
+    ),
+  ).toEqual([["codex", "claude"], ["claude"]]);
 });
 
 test("a stale skill that has since disappeared is explained instead of offered for retry", async ({
@@ -961,4 +995,74 @@ test("changing repositories clears the selection and scopes the add to the chose
     sourceId: "backend",
     skillIds: ["codex", "claude"],
   });
+});
+
+test("a stale skill that has become unreadable is cleared with its error", async ({
+  page,
+}) => {
+  await fixture(page, "bulk-invalid");
+  await trigger(page).click();
+  const dialog = popover(page);
+  await pick(page, "Writing guide").check();
+  await dialog
+    .getByRole("button", { name: "Add 1 skill", exact: true })
+    .click();
+  await expect(
+    page.getByText("Writing guide wasn’t added. Package contains symlink"),
+  ).toBeVisible();
+  await expect(
+    dialog.getByRole("button", { name: "Try again", exact: true }),
+  ).toHaveCount(0);
+
+  await dialog
+    .getByRole("searchbox", { name: "Search global skills" })
+    .fill("Writing guide");
+  const invalid = pick(page, "Writing guide");
+  await expect(invalid).toBeDisabled();
+  await expect(invalid).not.toBeChecked();
+});
+
+test("removing the chosen repository clears selection and requires choosing a replacement", async ({
+  page,
+}) => {
+  await fixture(page, "repositories");
+  await trigger(page).click();
+  const dialog = popover(page);
+  const destination = dialog.getByRole("button", {
+    name: "Add to repository",
+    exact: true,
+  });
+  await destination.click();
+  await page.getByRole("menuitemradio", { name: /backen$/ }).click();
+  await pick(page, "Code review").check();
+  await page.evaluate(() => (window as any).removeSkillDestination());
+  await expect(
+    dialog.getByRole("heading", { name: "Repository unavailable" }),
+  ).toBeVisible();
+  await expect(destination).toHaveText("Choose repository");
+  await expect(pick(page, "Code review")).toHaveCount(0);
+  await page.keyboard.press("Enter");
+  expect(await calls(page, "add_global_skills")).toHaveLength(0);
+  expect(
+    (await calls(page, "scan_global_skills")).map(
+      (call: any) => call.args.sourceId,
+    ),
+  ).toEqual(["desktop", "backend"]);
+
+  await destination.click();
+  await page.getByRole("menuitemradio", { name: /deskto$/ }).click();
+  await expect(pick(page, "Code review")).not.toBeChecked();
+  await expect(
+    dialog.getByRole("button", { name: "Add skills", exact: true }),
+  ).toBeDisabled();
+  await pick(page, "Code review").check();
+  await dialog
+    .getByRole("button", { name: "Add 1 skill", exact: true })
+    .click();
+  expect(await calls(page, "add_global_skills")).toEqual([
+    {
+      name: "add_global_skills",
+      args: { projectId: "one", sourceId: "desktop", skillIds: ["codex"] },
+    },
+  ]);
 });

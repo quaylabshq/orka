@@ -25,6 +25,8 @@ export type SkillsScene = {
   usage?: "ok" | "hold" | "error" | "partial";
   summaries?: "ok" | "hold";
   extremes?: boolean;
+  longDescription?: boolean;
+  skillReadFailure?: boolean;
   scan?: "ok" | "hold" | "error" | "partial" | "empty";
   globalUsage?: "ok" | "hold" | "error";
   add?: "ok" | "hold" | "error" | "partial";
@@ -313,6 +315,14 @@ export async function skillsIndexFixture(page: Page, scene: SkillsScene = {}) {
       shared[1] = { ...shared[1], description: "" };
       shared[2] = { ...shared[2], description: null };
     }
+    if (scene.longDescription) {
+      shared[0].global = true;
+      shared[0].description =
+        "Review changes with supporting scripts and references. "
+          .repeat(28)
+          .trim();
+    }
+    if (scene.skillReadFailure) shared[0].logicalPath = "code-review";
     const sharings = [undefined, "queued", "approval", "paused", "blocked"];
     const locals = scene.locals
       ? sharings.map((sharing, index) => ({
@@ -555,7 +565,21 @@ export async function skillsIndexFixture(page: Page, scene: SkillsScene = {}) {
                         },
                       ]
                     : [],
-              errors: [],
+              errors: scene.skillReadFailure
+                ? [
+                    {
+                      source: [
+                        "one",
+                        shared[0].sourceId,
+                        "scan",
+                        "skills/code-review",
+                      ]
+                        .filter(Boolean)
+                        .join(":"),
+                      error: "Permission denied (os error 13)",
+                    },
+                  ]
+                : [],
               syncProgress:
                 scene.sync === "progress"
                   ? {
