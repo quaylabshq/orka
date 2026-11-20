@@ -1,0 +1,132 @@
+.index-menu-trigger {
+  --control-padding-x: 10px;
+  flex-shrink: 0;
+}
+
+.index-menu-trigger[data-state="open"] {
+  background: var(--state-pressed);
+}
+
+.index-menu-value {
+  color: var(--text-tertiary);
+  font-weight: var(--font-weight-regular);
+}
+
+.index-menu-count {
+  display: inline-flex;
+  min-width: 16px;
+  height: 16px;
+  align-items: center;
+  justify-content: center;
+  padding-inline: 4px;
+  border-radius: var(--radius-detail);
+  background: var(--action-solid);
+  color: var(--text-on-solid);
+  font-size: 10px;
+  font-weight: var(--font-weight-medium);
+  line-height: 16px;
+  font-variant-numeric: tabular-nums;
+}
+
+.index-menu-content {
+  min-width: 200px;
+}
+
+.index-menu-options {
+  min-width: 200px;
+  max-width: min(360px, calc(100vw - 20px));
+}
+
+.index-menu-options .item-menu-label {
+  white-space: nowrap;
+}
+
+.index-active-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.index-filter-chip {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 100%;
+  height: 28px;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 4px 4px 8px;
+  border-radius: var(--radius-control);
+  background: var(--surface-tertiary);
+  color: var(--text-tertiary);
+  font-size: 12px;
+  line-height: 20px;
+}
+
+.index-filter-chip > svg {
+  flex-shrink: 0;
+}
+
+.index-filter-chip-value {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-weight: var(--font-weight-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.index-filter-chip-remove {
+  display: inline-flex;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: var(--radius-detail);
+  background: transparent;
+  color: var(--text-tertiary);
+}
+
+.index-filter-chip-remove:hover {
+  background: var(--state-hover);
+  color: var(--text-primary);
+}
+
+.index-filter-clear {
+  padding: 0 6px;
+  border: 0;
+  border-radius: var(--radius-detail);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 20px;
+}
+
+.index-filter-clear:hover {
+  color: var(--text-primary);
+}
+
+/* Below about 1000 wide the Sort button drops its current value. */
+@media (max-width: 1000px) {
+  .index-menu-value {
+    display: none;
+  }
+}
+
+/* Search, Filter, Sort and the chips stay put while the list scrolls under. */
+.skill-index-head {
+  position: sticky;
+  z-index: 10;
+  top: 0;
+  background: var(--surface-secondary);
+}
+
+/* First in the page, it also covers the page's top padding as rows pass. */
+.skill-index-head:first-child {
+  top: -20px;
+  margin-top: -20px;
+  padding-top: 20px;
+}

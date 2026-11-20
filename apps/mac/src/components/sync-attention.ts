@@ -42,6 +42,7 @@ export interface AttentionItem {
   resourceId?: string;
   kind?: ProjectResource["kind"];
   messages: string[];
+  errors: Snapshot["errors"];
   paths: string[];
   requests: ReviewRequest[];
   conflicts: SessionConflict[];
@@ -65,6 +66,9 @@ const skillConflictMessages = new Set([
   "Local skill edits preserved; resolve them before applying the shared update",
   "Skill copies differ between .agents/skills and .claude/skills. Review and align them to resume this skill's sync; both local copies are preserved.",
 ]);
+export const isSkillConflictMessage = (message: string) =>
+  skillConflictMessages.has(message);
+
 const staleVersionMessage =
   "409: Resource changed; refresh and review the exact version again";
 const needsPlanReview = (upload: Snapshot["outbox"][number]) =>
@@ -89,7 +93,7 @@ export function syncReviewItems(
 ): SyncReviewItem[] {
   const skillSources = new Set(
     state.errors
-      .filter(({ error }) => skillConflictMessages.has(error))
+      .filter(({ error }) => isSkillConflictMessage(error))
       .map(({ source }) => source),
   );
   const candidates = new Set([
@@ -117,7 +121,7 @@ export function syncReviewItems(
         item.kind === "skill" &&
         item.binding?.installationState !== "kept_local" &&
         (item.binding?.skillReviewFingerprint ||
-          item.messages.some((m) => skillConflictMessages.has(m)))
+          item.messages.some(isSkillConflictMessage))
       )
         return [
           {
@@ -127,7 +131,7 @@ export function syncReviewItems(
             showDetails:
               hasOtherReview ||
               item.uploads.length > 0 ||
-              item.messages.some((m) => !skillConflictMessages.has(m)),
+              item.messages.some((m) => !isSkillConflictMessage(m)),
           },
         ];
       const upload = item.uploads.find(needsPlanReview);
@@ -278,6 +282,7 @@ export function projectAttention(
       title: resource?.title ?? title ?? "Sync issue",
       kind: resource?.kind,
       messages: [],
+      errors: [],
       paths: [],
       requests: [],
       conflicts: [],
@@ -347,6 +352,7 @@ export function projectAttention(
           ? "Project sync"
           : error.source.slice(projectId.length + 1),
     );
+    entry.errors.push(error);
     entry.messages.push(error.error);
   }
   for (const entry of items.values()) {

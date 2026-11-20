@@ -65,20 +65,18 @@ for (const width of [1160, 900]) {
     ).toContainText("Review the actual project context.");
   });
 
-  test(`Skills fade pending descriptions without hiding known cards or controls at ${width}px`, async ({
+  test(`Skills list known names while descriptions load, and the description peek fades until its own arrives at ${width}px`, async ({
     page,
   }, info) => {
     await page.setViewportSize({ width, height: width === 900 ? 640 : 800 });
     await metadataLoadingFixture(page);
     await page.getByRole("button", { name: /^Skills/ }).click();
-    const grid = page.locator(".skill-grid");
-    await expect(grid.locator(".skill-card-description-skeleton")).toHaveCount(
-      3,
-    );
-    await expect(grid.getByRole("status")).toHaveText(
-      "Loading skill descriptions…",
-    );
-    await expect(grid.locator(".skill-card strong")).toHaveText([
+    const table = page.locator(".skill-table");
+    const row = (id: string) =>
+      table.locator("tbody tr", {
+        has: page.locator(`[data-resource-id="${id}"]`),
+      });
+    await expect(table.locator(".skill-table-open")).toHaveText([
       "Review skill 1",
       "Review skill 2",
       "Review skill 3",
@@ -87,30 +85,27 @@ for (const width of [1160, 900]) {
       page.getByRole("searchbox", { name: "Search skills" }),
     ).toBeEnabled();
     await expect(
-      page.getByRole("button", { name: "Add global skills", exact: true }),
+      page.getByRole("button", { name: "Add skills", exact: true }),
     ).toBeEnabled();
-    await expect(grid.locator("time")).toHaveCount(3);
-    await expectFadingPlaceholder(grid.locator(".loading-fade").first());
+    // Rows carry no description; it is read into the peek.
+    await row("skill-1").hover();
+    const peek = table.getByRole("tooltip");
+    await expectFadingPlaceholder(peek.locator(".loading-fade"));
     await page.screenshot({
       path: info.outputPath(`skills-loading-${width}.png`),
     });
-    await grid.locator('[data-resource-id="skill-2"]').click();
+    await table.locator('[data-resource-id="skill-2"]').click();
     await expect(
       page.getByRole("button", { name: "Back to Skills", exact: true }),
     ).toBeEnabled();
     await page
       .getByRole("button", { name: "Back to Skills", exact: true })
       .click();
-    await expect(grid.locator(".skill-card-description-skeleton")).toHaveCount(
-      3,
-    );
     await page.evaluate(() =>
       (window as unknown as MetadataWindow).metadata.finishes["skill-1"](),
     );
-    await expect(grid.locator(".skill-card-description-skeleton")).toHaveCount(
-      2,
-    );
-    await expect(grid.locator('[data-resource-id="skill-1"]')).toContainText(
+    await row("skill-1").hover();
+    await expect(peek).toContainText(
       "Review spacing, typography, and interaction states.",
     );
     await page.evaluate(() => {
@@ -119,24 +114,14 @@ for (const width of [1160, 900]) {
       state.finishes["skill-2"]();
       state.finishes["skill-3"]();
     });
-    await expect(grid.locator(".skill-card-description-skeleton")).toHaveCount(
-      0,
-    );
-    await expect(grid.getByRole("status")).toHaveCount(0);
-    await expect(
-      grid.locator('[data-resource-id="skill-2"] .skill-card-description'),
-    ).toHaveCount(0);
-    await expect(
-      grid.locator('[data-resource-id="skill-3"] .skill-card-description'),
-    ).toHaveCount(0);
     expect(
       (await new AxeBuilder({ page }).include(".resource-index").analyze())
         .violations,
     ).toEqual([]);
-    await grid.locator('[data-resource-id="skill-3"]').click();
-    await expect(
-      page.getByRole("button", { name: "Back to Skills", exact: true }),
-    ).toBeEnabled();
+    // A description that could not be read says so quietly.
+    await row("skill-2").hover();
+    await expect(peek).toHaveText("No description");
+    await expect(table.locator(".loading-fade")).toHaveCount(0);
   });
 }
 
@@ -183,8 +168,11 @@ test("Home and Skills placeholders stop breathing when reduced motion changes", 
 }) => {
   await metadataLoadingFixture(page);
   for (const pageName of ["Home", "Skills"]) {
-    if (pageName === "Skills")
+    if (pageName === "Skills") {
       await page.getByRole("button", { name: /^Skills/ }).click();
+      // On Skills the only placeholder is inside a row's description peek.
+      await page.locator(".skill-table tbody tr").first().hover();
+    }
     const placeholder = page.locator(".loading-fade").first();
     await expectFadingPlaceholder(placeholder);
     await page.emulateMedia({ reducedMotion: "no-preference" });

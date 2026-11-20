@@ -1,13 +1,12 @@
 import {
   ArrowDownAZIcon,
-  ChartNoAxesColumnIncreasingIcon,
+  CircleCheckIcon,
   ClockIcon,
-  RefreshCwIcon,
+  FolderIcon,
   UserRoundIcon,
 } from "lucide-react";
 import React from "react";
 import type { Resource } from "@portable/protocol";
-import { IconButton } from "./icon-button.js";
 import { SearchField } from "./search-field.js";
 import { SegmentedControl } from "./segmented-control.js";
 import { SourceLabel } from "./source-label.js";
@@ -15,7 +14,10 @@ import { SortMenu } from "./sort-menu.js";
 import type { IconGlyph } from "./icons.js";
 import { memberLabel } from "./project-permissions.js";
 
-export type IndexSort = "updated" | "title" | "author" | "usage";
+export type IndexSort =
+  "updated" | "title" | "author" | "status" | "repository";
+export type IndexSortDirection = "asc" | "desc";
+export type SkillLocation = "mac" | "shared";
 export type OwnershipFilter = "all" | "mine" | "shared";
 export type SourceFilter = Resource["source"] | "all";
 
@@ -26,6 +28,13 @@ export interface IndexFilters {
   sort: IndexSort;
   repository?: string;
   ownership?: OwnershipFilter;
+  /** Unset means the sort's natural order: newest first, or A to Z. */
+  direction?: IndexSortDirection;
+  /** Skills index filters; an empty or missing list filters nothing. */
+  statuses?: string[];
+  sharedBy?: string[];
+  repositories?: string[];
+  locations?: SkillLocation[];
 }
 
 export const defaultIndexFilters: IndexFilters = {
@@ -36,11 +45,13 @@ export const defaultIndexFilters: IndexFilters = {
 };
 
 const sortOptions: Record<IndexSort, { label: string; icon: IconGlyph }> = {
-  usage: { label: "Most used", icon: ChartNoAxesColumnIncreasingIcon },
   updated: { label: "Recently updated", icon: ClockIcon },
   title: { label: "Title", icon: ArrowDownAZIcon },
   author: { label: "Author", icon: UserRoundIcon },
+  status: { label: "Status", icon: CircleCheckIcon },
+  repository: { label: "Repository", icon: FolderIcon },
 };
+const skillOnlySorts: IndexSort[] = ["status", "repository"];
 
 const nouns: Record<Resource["kind"], [string, string]> = {
   memory: ["memory", "memories"],
@@ -61,7 +72,6 @@ interface IndexContext {
   displayTitle: (resource: Resource) => string;
   user: string | null;
   memberName?: (id: string) => string;
-  usageCounts?: Record<string, number>;
 }
 
 /** Filters loaded titles, paths, and sources, then orders by the chosen sort. */
@@ -72,7 +82,6 @@ export function applyIndexFilters(
     displayTitle,
     user,
     memberName = (id) => memberLabel(id, user),
-    usageCounts,
   }: IndexContext,
 ): Resource[] {
   const query = filters.query.trim().toLocaleLowerCase();
@@ -101,15 +110,6 @@ export function applyIndexFilters(
   const byUpdated = (a: Resource, b: Resource) =>
     Date.parse(b.updatedAt) - Date.parse(a.updatedAt);
   return [...matches].sort((a, b) => {
-    if (filters.sort === "usage")
-      return (
-        (usageCounts?.[b.resourceId] ?? 0) -
-          (usageCounts?.[a.resourceId] ?? 0) ||
-        displayTitle(a).localeCompare(displayTitle(b), undefined, {
-          sensitivity: "base",
-        }) ||
-        byUpdated(a, b)
-      );
     if (filters.sort === "title")
       return (
         displayTitle(a).localeCompare(displayTitle(b), undefined, {
@@ -142,8 +142,6 @@ export interface IndexToolbarProps {
   sources: Resource["source"][];
   filters: IndexFilters;
   onChange: (filters: IndexFilters) => void;
-  onRefreshUsage?: () => void;
-  usageLoading?: boolean;
 }
 
 /** The shared 32px toolbar above every index: search, source filter, count, sort. */
@@ -153,8 +151,6 @@ export function IndexToolbar({
   sources,
   filters,
   onChange,
-  onRefreshUsage,
-  usageLoading,
 }: IndexToolbarProps) {
   const plural = collectionNoun(kind);
   const present = sourceOrder.filter(
@@ -197,22 +193,13 @@ export function IndexToolbar({
         )}
         <SortMenu
           options={(Object.keys(sortOptions) as IndexSort[])
-            .filter((sort) => sort !== "usage" || kind === "skill")
+            .filter(
+              (sort) => kind === "skill" || !skillOnlySorts.includes(sort),
+            )
             .map((sort) => ({ value: sort, ...sortOptions[sort] }))}
           value={filters.sort}
           onChange={(sort) => onChange({ ...filters, sort })}
         />
-        {kind === "skill" && onRefreshUsage && (
-          <IconButton
-            icon={RefreshCwIcon}
-            size="sm"
-            variant="tertiary"
-            aria-label="Refresh skill usage"
-            title="Refresh skill usage"
-            disabled={usageLoading}
-            onClick={onRefreshUsage}
-          />
-        )}
       </div>
     </div>
   );

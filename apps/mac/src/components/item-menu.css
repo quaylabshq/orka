@@ -63,22 +63,6 @@
   background: var(--border-default);
 }
 
-.resource-item-shell {
-  position: relative;
-  min-width: 0;
-}
-
-.resource-item-more {
-  position: absolute;
-  top: 12px;
-  right: 10px;
-}
-
-.resource-item-shell > .skill-card {
-  width: 100%;
-  height: 100%;
-}
-
 .resource-table-actions {
   text-align: right;
 }
