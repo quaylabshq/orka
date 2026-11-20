@@ -6,7 +6,7 @@
   "author": {
     "name": "Orka"
   },
-  "license": "MIT",
+  "license": "GPL-3.0-only",
   "keywords": ["project-context", "memory", "team-sessions", "claude-code"],
   "extensions": {
     "com.openai": {

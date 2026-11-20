@@ -241,8 +241,9 @@ See [memory consolidation](docs/memory-consolidation.md).
 
 ## Source updates
 
-The canonical backend owns the server schema and implementation. Maintainers
-export reviewed source into the public repository with:
+The canonical backend owns the server schema and implementation. For public
+exports, apply the GPLv3 licensing commit to the selected backend revision.
+Export the reviewed commit into the public repository with:
 
 ```sh
 node scripts/export-public-server.mjs <public-checkout>/server
@@ -292,8 +293,10 @@ delivery, public DNS/TLS for your domain, or signed macOS/two-Mac handoff.
 
 `source-manifest.json` records the canonical backend commit, candidate status
 and per-file hashes. Public builds need no access to that repository.
-Preserve the [MIT license](LICENSE), [third-party notices](THIRD_PARTY_NOTICES.md)
-and [dependency inventory](docs/dependency-licenses.md).
+The server is licensed under the [GNU GPL version 3 only](LICENSE). Preserve the
+[license notices](THIRD_PARTY_NOTICES.md) and
+[dependency inventory](docs/dependency-licenses.md). When distributing server
+images, make the complete corresponding source for that build available.
 
 ## Contributor layout
 

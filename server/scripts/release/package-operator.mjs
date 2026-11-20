@@ -63,6 +63,7 @@ try {
     "LICENSE",
     "THIRD_PARTY_NOTICES.md",
     "GO_THIRD_PARTY_NOTICES.md",
+    "licenses/Orka-MIT.txt",
     "deploy/local/compose.yml",
     "deploy/self-hosted/.env.example",
     "deploy/self-hosted/restore.sh",

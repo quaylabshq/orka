@@ -1,6 +1,6 @@
 # Third-party notices
 
-Orka's own source is offered under the [MIT license](LICENSE). Third-party dependencies and assets retain their own licenses; the project license does not replace them or grant rights to third-party trademarks.
+Orka's own source is licensed under the [GNU General Public License, version 3 only](LICENSE), except where a separate license is identified below. The [original MIT notice](licenses/Orka-MIT.txt) applies to code previously released under MIT. Third-party dependencies and assets retain their own licenses and trademarks.
 
 ## Included visual assets
 

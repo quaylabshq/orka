@@ -12,6 +12,7 @@
 
 ## Stable binary release
 
+- [ ] Make the complete corresponding source for each distributed GPLv3 binary available using the exact release revision and its build scripts.
 - [ ] Collect and distribute upstream license notices and applicable corresponding-source information for the dependencies actually shipped.
 - [ ] Verify Apple signing/notarization and signing-environment access. Keep signing secrets unavailable to pull-request code.
 

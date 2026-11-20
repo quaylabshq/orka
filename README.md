@@ -10,7 +10,7 @@
   <a href="https://github.com/whysosaket/orka/releases"><img src="https://img.shields.io/github/v/release/whysosaket/orka?include_prereleases&amp;filter=v*&amp;sort=semver&amp;label=desktop&amp;color=5266b8" alt="Latest desktop release, including alphas"></a>
   <a href="https://github.com/whysosaket/orka/actions/workflows/ci.yml"><img src="https://github.com/whysosaket/orka/actions/workflows/ci.yml/badge.svg?branch=main" alt="Checks on main"></a>
   <a href="https://github.com/whysosaket/orka/releases"><img src="https://img.shields.io/badge/macOS-12%2B-555555" alt="macOS 12 or later"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-555555" alt="MIT license"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPLv3-555555" alt="GPLv3 license"></a>
 </p>
 
 <p align="center">
@@ -78,4 +78,4 @@ npm run dev:profile
 
 ---
 
-[MIT license](LICENSE) · [Contributors](AUTHORS.md) · [Third-party notices](THIRD_PARTY_NOTICES.md) · [Report a vulnerability](SECURITY.md)
+[GNU GPL version 3 only](LICENSE) · [Contributors](AUTHORS.md) · [License notices](THIRD_PARTY_NOTICES.md) · [Report a vulnerability](SECURITY.md)

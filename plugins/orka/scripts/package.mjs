@@ -42,6 +42,11 @@ try {
       recursive: true,
       dereference: false,
     });
+  await cp(join(root, "../../LICENSE"), join(staged, "LICENSE"));
+  await cp(
+    join(root, "../../licenses/Orka-MIT.txt"),
+    join(staged, "Orka-MIT.txt"),
+  );
   // Both supported hosts load the same single stdio bridge. There is no remote
   // endpoint, browser auth configuration or second server to select an identity.
   await writeFile(
