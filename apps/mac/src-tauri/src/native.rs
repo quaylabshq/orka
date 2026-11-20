@@ -596,7 +596,7 @@ pub struct HookStatus {
 }
 pub struct Hooks;
 impl Hooks {
-    const FILES: [(&'static str, &'static str); 2] = [
+    pub(crate) const FILES: [(&'static str, &'static str); 2] = [
         ("claude", ".claude/settings.local.json"),
         ("codex", ".codex/hooks.json"),
     ];
@@ -626,54 +626,180 @@ impl Hooks {
         let literal = executable.strip_prefix("'/")?.strip_suffix('\'')?;
         (!literal.replace("'\\''", "").contains('\'')).then_some((executable, profile))
     }
+    fn configure(cfg: &mut Value, executable: &Path, tool: &str) {
+        if cfg["hooks"].is_null() {
+            cfg["hooks"] = json!({});
+        }
+        for event in Self::EVENTS {
+            if cfg["hooks"][event].is_null() {
+                cfg["hooks"][event] = json!([]);
+            }
+            cfg["hooks"][event].as_array_mut().expect("validated hook event").push(json!({"hooks":[{"type":"command","command":Self::command(executable, tool),"timeout":3}]}));
+        }
+    }
+    fn strip_orka(cfg: &mut Value, tool: &str) -> Result<bool> {
+        if !cfg.is_object() || (!cfg["hooks"].is_null() && !cfg["hooks"].is_object()) {
+            return Err("Hook config must be an object".into());
+        }
+        let Some(events) = cfg.get_mut("hooks").and_then(Value::as_object_mut) else {
+            return Ok(false);
+        };
+        let mut owned = false;
+        for event in Self::EVENTS {
+            let Some(value) = events.get_mut(event).filter(|value| !value.is_null()) else {
+                continue;
+            };
+            let groups = value.as_array_mut().ok_or("Hook event must be an array")?;
+            let mut stripped = false;
+            groups.retain_mut(|group| {
+                let Some(hooks) = group.get_mut("hooks").and_then(Value::as_array_mut) else {
+                    return true;
+                };
+                let before = hooks.len();
+                hooks.retain(|hook| Self::parts(hook, tool).is_none());
+                stripped |= hooks.len() != before;
+                hooks.len() == before || !hooks.is_empty()
+            });
+            if stripped && groups.is_empty() {
+                events.remove(event);
+            }
+            owned |= stripped;
+        }
+        if owned && events.is_empty() {
+            cfg.as_object_mut()
+                .expect("validated config")
+                .remove("hooks");
+        }
+        Ok(owned)
+    }
+
+    pub(crate) fn worktree_config(
+        old: Option<&[u8]>,
+        executable: &Path,
+        tool: &str,
+    ) -> Result<(Vec<u8>, Option<Vec<u8>>)> {
+        let mut cfg: Value = old
+            .map(serde_json::from_slice)
+            .transpose()
+            .map_err(|e| format!("Existing hook config conflict: {e}"))?
+            .unwrap_or_else(|| json!({}));
+        if !Self::strip_orka(&mut cfg, tool)? && old.is_some() {
+            return Err("Existing hook config has no recognized Orka command".into());
+        }
+        let restore = (!cfg.as_object().expect("validated config").is_empty())
+            .then(|| serde_json::to_vec_pretty(&cfg))
+            .transpose()
+            .map_err(|e| e.to_string())?;
+        Self::configure(&mut cfg, executable, tool);
+        Ok((
+            serde_json::to_vec_pretty(&cfg).map_err(|e| e.to_string())?,
+            restore,
+        ))
+    }
     pub fn install(root: &Path) -> Result<()> {
         let base = root.canonicalize().map_err(|e| e.to_string())?;
         let executable = crate::updates::executable().map_err(|e| e.to_string())?;
-        for HookFileStatus {
-            tool,
-            file: path,
-            state,
-        } in Self::inspect(&base)?.files
-        {
-            packages::safe_directory(&base, path.parent().ok_or("Missing parent")?)?;
-            if state == HookState::Configured {
-                continue;
-            }
-            let mut cfg: Value = if path.exists() {
-                serde_json::from_slice(&fs::read(&path).map_err(|e| e.to_string())?)
+        use crate::{
+            git_artifacts::{self, Excludes},
+            onboarding::discovery,
+        };
+        let home = crate::worktrees::home()?;
+        let mut git = discovery::enclosing_checkout(&base, &home)
+            .map(|checkout| {
+                let common = discovery::registered_worktree(&checkout)
+                    .map(|(_, common)| common)
+                    .or_else(|| discovery::primary_common_dir(&checkout))
+                    .ok_or("Cannot validate hook destination's Git checkout")?;
+                Ok::<_, String>((checkout, Excludes::open(&common)?))
+            })
+            .transpose()?;
+        let mut failures = Vec::new();
+        for (tool, relative) in Self::FILES {
+            let path = base.join(relative);
+            let result = (|| -> Result<()> {
+                packages::safe_directory(&base, path.parent().ok_or("Missing parent")?)?;
+                let old = match fs::symlink_metadata(&path) {
+                    Ok(metadata) if metadata.is_file() => {
+                        Some(fs::read(&path).map_err(|e| e.to_string())?)
+                    }
+                    Ok(_) => return Err("Hook destination is not a regular file".into()),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(error) => return Err(error.to_string()),
+                };
+                let mut cfg: Value = old
+                    .as_deref()
+                    .map(serde_json::from_slice)
+                    .transpose()
                     .map_err(|e| e.to_string())?
-            } else {
-                json!({})
-            };
-            if !cfg.is_object() || (!cfg["hooks"].is_null() && !cfg["hooks"].is_object()) {
-                return Err("Hook config must be an object".into());
-            }
-            if cfg["hooks"].is_null() {
-                cfg["hooks"] = json!({});
-            }
-            for event in Self::EVENTS {
-                let mut list = cfg["hooks"][event].as_array().cloned().unwrap_or_default();
-                list.retain_mut(|group| {
-                    let Some(hooks) = group.get_mut("hooks").and_then(Value::as_array_mut) else {
-                        return true;
+                    .unwrap_or_else(|| json!({}));
+                let configured = Self::state(&cfg, &executable, tool) == HookState::Configured;
+                if !configured {
+                    // The explicit source installer has always repaired malformed event values.
+                    if let Some(events) = cfg.get_mut("hooks").and_then(Value::as_object_mut) {
+                        for event in Self::EVENTS {
+                            if events.get(event).is_some_and(|value| !value.is_array()) {
+                                events.remove(event);
+                            }
+                        }
+                    }
+                    Self::strip_orka(&mut cfg, tool)?;
+                    Self::configure(&mut cfg, &executable, tool);
+                }
+                if let Some((checkout, excludes)) = &mut git {
+                    excludes.protect(
+                        checkout,
+                        path.strip_prefix(checkout.as_path())
+                            .map_err(|e| e.to_string())?,
+                        true,
+                    )?;
+                }
+                if configured {
+                    return Ok(());
+                }
+                let mut save = |path: &Path, bytes: &[u8], replacing| {
+                    let Some((checkout, excludes)) = &mut git else {
+                        return db::atomic(path, bytes);
                     };
-                    let before = hooks.len();
-                    hooks.retain(|hook| Self::parts(hook, tool).is_none());
-                    hooks.len() == before || !hooks.is_empty()
-                });
-                list.push(json!({"hooks":[{"type":"command","command":Self::command(&executable, tool),"timeout":3}]}));
-                cfg["hooks"][event] = json!(list);
+                    let relative = path
+                        .strip_prefix(checkout.as_path())
+                        .map_err(|e| e.to_string())?;
+                    let scratch = git_artifacts::scratch(relative);
+                    excludes.protect(checkout, relative, true)?;
+                    excludes.protect(checkout, &scratch, false)?;
+                    let scratch_path = checkout.join(&scratch);
+                    let result =
+                        git_artifacts::publish(path, &scratch_path, bytes, 0o600, replacing);
+                    if matches!(fs::symlink_metadata(scratch_path), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
+                    {
+                        excludes.release(&scratch)?;
+                    }
+                    result
+                };
+                let backup = path.with_extension("json.orka-backup");
+                if let Some(old) = &old {
+                    match fs::symlink_metadata(&backup) {
+                        Ok(_) => (),
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                            save(&backup, old, false)?
+                        }
+                        Err(error) => return Err(error.to_string()),
+                    }
+                }
+                save(
+                    &path,
+                    &serde_json::to_vec_pretty(&cfg).map_err(|e| e.to_string())?,
+                    old.is_some(),
+                )
+            })();
+            if let Err(error) = result {
+                failures.push(format!("{}: {error}", path.display()));
             }
-            let backup = path.with_extension("json.orka-backup");
-            if path.exists() && !backup.exists() {
-                fs::copy(&path, backup).map_err(|e| e.to_string())?;
-            }
-            db::atomic(
-                &path,
-                &serde_json::to_vec_pretty(&cfg).map_err(|e| e.to_string())?,
-            )?;
         }
-        Ok(())
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(failures.join("; "))
+        }
     }
     pub fn inspect(root: &Path) -> Result<HookStatus> {
         let executable = crate::updates::executable().map_err(|e| e.to_string())?;
