@@ -232,7 +232,7 @@ pub(crate) fn too_broad(root: &Path, home: Option<&Path>) -> Option<&'static str
         }
     }
     let depth = root.components().count();
-    if root.starts_with("/Volumes") && depth <= 3 {
+    if (root.starts_with("/Volumes") && depth <= 3) || is_mount_root(root) {
         return Some("It is the top of a drive.");
     }
     if root.starts_with("/System")
@@ -241,6 +241,8 @@ pub(crate) fn too_broad(root: &Path, home: Option<&Path>) -> Option<&'static str
             "/Applications",
             "/Users",
             "/private",
+            "/private/var",
+            "/private/etc",
             "/var",
             "/usr",
             "/opt",
@@ -252,6 +254,46 @@ pub(crate) fn too_broad(root: &Path, home: Option<&Path>) -> Option<&'static str
         return Some("It is a system folder.");
     }
     None
+}
+
+#[cfg(target_os = "macos")]
+fn is_mount_root(path: &Path) -> bool {
+    use std::{
+        ffi::{CString, OsStr},
+        mem::MaybeUninit,
+        os::unix::ffi::OsStrExt,
+    };
+
+    let Ok(name) = CString::new(path.as_os_str().as_bytes()) else {
+        return false;
+    };
+    let mut stats = MaybeUninit::<libc::statfs>::uninit();
+    // statfs initializes the structure on success and reports the mount point
+    // even when it is outside /Volumes or shares a device with its parent.
+    if unsafe { libc::statfs(name.as_ptr(), stats.as_mut_ptr()) } != 0 {
+        return false;
+    }
+    let stats = unsafe { stats.assume_init() };
+    let mount: Vec<u8> = stats
+        .f_mntonname
+        .iter()
+        .take_while(|&&byte| byte != 0)
+        .map(|&byte| byte as u8)
+        .collect();
+    let mount = Path::new(OsStr::from_bytes(&mount));
+    mount == path || mount.canonicalize().is_ok_and(|resolved| resolved == path)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn is_mount_root(path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    let Some(parent) = path.parent() else {
+        return true;
+    };
+    fs::metadata(path)
+        .and_then(|metadata| Ok(metadata.dev() != fs::metadata(parent)?.dev()))
+        .unwrap_or(false)
 }
 
 fn home_folder() -> Option<PathBuf> {
@@ -646,6 +688,8 @@ mod folder_state_tests {
             "/Library",
             "/Applications",
             "/private",
+            "/private/etc",
+            "/private/var",
         ] {
             assert!(too_broad(Path::new(broad), Some(home)).is_some(), "{broad}");
         }
@@ -658,6 +702,18 @@ mod folder_state_tests {
         ] {
             assert_eq!(too_broad(Path::new(project), Some(home)), None, "{project}");
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn canonical_system_aliases_and_mounts_outside_volumes_are_refused() {
+        for alias in ["/etc", "/var", "/dev"] {
+            let root = canonical(alias).unwrap();
+            assert!(too_broad(&root, None).is_some(), "{alias}: {root:?}");
+        }
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path().canonicalize().unwrap();
+        assert_eq!(too_broad(&root, None), None);
     }
 
     #[test]
