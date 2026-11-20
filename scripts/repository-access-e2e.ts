@@ -16,6 +16,7 @@ const binary =
 let state = "ready",
   checks = 0,
   credentials = 0;
+let catalogUnavailable = false;
 let removalCatalog:
   | {
       id: string;
@@ -27,6 +28,13 @@ let removalCatalog:
     }[]
   | null = null;
 const catalogRequests: string[] = [];
+const repository = {
+  id: "4242",
+  fullName: "fixtures/private-repo",
+  cloneUrl: "https://github.com/fixtures/private-repo.git",
+  defaultBranch: "main",
+  private: true,
+};
 const server = createServer((req, res) => {
   void (async () => {
     const chunks: Buffer[] = [];
@@ -35,6 +43,11 @@ const server = createServer((req, res) => {
       action: string;
     };
     res.setHeader("Content-Type", "application/json");
+    if (catalogUnavailable && req.url?.startsWith("/v2/projects?")) {
+      res.statusCode = 503;
+      res.end(JSON.stringify({ error: "Project catalog is unavailable" }));
+      return;
+    }
     if (removalCatalog && req.url === "/v2/projects/capabilities") {
       res.end(JSON.stringify({ sourcesRemoval: 1 }));
       return;
@@ -66,6 +79,21 @@ const server = createServer((req, res) => {
         return;
       }
       res.end(JSON.stringify({ state }));
+    } else if (input.action === "bind") {
+      res.end(JSON.stringify({ repository, revision: revision + 1 }));
+    } else if (input.action === "add-source") {
+      res.end(
+        JSON.stringify({
+          sourceId: addedSourceId,
+          repository: {
+            ...repository,
+            id: "8484",
+            fullName: "fixtures/new-repo",
+            cloneUrl: "https://github.com/fixtures/new-repo.git",
+          },
+          revision: 1,
+        }),
+      );
     } else if (input.action === "clone-credentials") {
       credentials++;
       res.statusCode = 403;
@@ -82,7 +110,8 @@ assert.ok(address && typeof address !== "string");
 const service = `http://127.0.0.1:${address.port}`;
 const user = randomUUID(),
   projectId = randomUUID(),
-  sourceId = randomUUID();
+  sourceId = randomUUID(),
+  addedSourceId = randomUUID();
 let revision = 1;
 function native() {
   const child = spawn(binary, ["--orka-env-test"], {
@@ -145,14 +174,7 @@ async function setup(account = user, origin = service) {
         id: sourceId,
         name: "private-repo",
         path: null,
-        repository: {
-          id: "4242",
-          fullName: "fixtures/private-repo",
-          cloneUrl: "https://github.com/fixtures/private-repo.git",
-          defaultBranch: "main",
-          private: true,
-          revision,
-        },
+        repository: { ...repository, revision },
       },
     ],
   });
@@ -171,7 +193,7 @@ const command = <T>(
   });
 const input = { projectId, sourceId };
 const check = (force = false, account = user, origin = service) =>
-  command<{ state: string }>(
+  command<{ state: string; bindingRevision: number }>(
     "access-status",
     { ...input, force },
     account,
@@ -242,7 +264,9 @@ try {
     Date.now() - waited >= 500,
     "Linking a repository waits for a running sync instead of failing",
   );
-  assert.equal((await check(true)).state, "access_unavailable");
+  const afterBind = await check(true);
+  assert.equal(afterBind.state, "access_unavailable");
+  assert.equal(afterBind.bindingRevision, revision + 1);
   assert.equal(checks, 2);
   state = "ready";
   const db = database();
@@ -269,7 +293,7 @@ try {
     4,
     "Changing GitHub authorization must invalidate the saved status",
   );
-  revision = 2;
+  revision = 3;
   await setup();
   await check();
   assert.equal(
@@ -314,6 +338,34 @@ try {
     "ready",
     "A failed refresh must never revive an older green status",
   );
+  await setup();
+  catalogUnavailable = true;
+  const added = await command<{ sourceId: string }>("add-source", {
+    projectId,
+    repositoryId: "8484",
+  });
+  assert.equal(added.sourceId, addedSourceId);
+  const clone = await command<{ sourceId: string; repositoryId: string }>(
+    "clone",
+    {
+      projectId,
+      sourceId: added.sourceId,
+      directory: join(home, "checkouts"),
+      folderName: "new-repo",
+    },
+  );
+  assert.equal(clone.sourceId, addedSourceId);
+  assert.equal(clone.repositoryId, "8484");
+  for (let i = 0; i < 50 && credentials < 2; i++) {
+    await new Promise((done) => setTimeout(done, 50));
+  }
+  assert.equal(
+    credentials,
+    2,
+    "A new source can start cloning when the catalog GET is unavailable",
+  );
+  catalogUnavailable = false;
+
   await setup();
   const archivedId = randomUUID(),
     archivedSourceId = randomUUID(),
@@ -418,7 +470,7 @@ try {
   );
   connection.close();
   console.log(
-    "Passed native repository access: daily cache, launch refresh, authorization/binding invalidation, account/service isolation, live clone authorization and archived project preservation during source removal.",
+    "Passed native repository access: daily cache, launch refresh, authorization/binding invalidation, account/service isolation, live clone authorization, new-source clone during a catalog outage and archived project preservation during source removal.",
   );
 } finally {
   await mac.close();
