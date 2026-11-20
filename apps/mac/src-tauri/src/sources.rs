@@ -288,11 +288,24 @@ pub(crate) async fn connect_sources(
     }
     // Connecting is a foreground action, often right after creating the project
     // whose first sync is already queued; ask sync to pause instead of failing.
-    let _lock = tauri::async_runtime::spawn_blocking(|| {
+    let lock = tauri::async_runtime::spawn_blocking(|| {
         projects::wait_for_lock(std::time::Duration::from_secs(30))
     })
     .await
     .map_err(|error| error.to_string())??;
+    connect_sources_locked(id, paths, source_id, context, sharing, lock).await
+}
+
+/// Keep the clone's verified repository binding and the attachment under one
+/// workspace lock. Cloning supplies exactly one finished checkout and source.
+pub(crate) async fn connect_sources_locked(
+    id: String,
+    paths: Vec<String>,
+    source_id: Option<String>,
+    context: Option<(&str, &str)>,
+    sharing: Option<projects::Sharing>,
+    _lock: fs::File,
+) -> Result<()> {
     let db = db::open()?;
     if let Some((user, service)) = context {
         if db::get(&db, "user")? != user || db::get(&db, "config")?["apiUrl"] != service {

@@ -1,9 +1,17 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { createServer } from "node:http";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  realpath,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
@@ -16,7 +24,7 @@ const binary =
 let state = "ready",
   checks = 0,
   credentials = 0;
-let catalogUnavailable = false;
+let catalogFailure = 0;
 let removalCatalog:
   | {
       id: string;
@@ -35,16 +43,23 @@ const repository = {
   defaultBranch: "main",
   private: true,
 };
+const addedRepository = {
+  ...repository,
+  id: "8484",
+  fullName: "fixtures/new-repo",
+  cloneUrl: "https://github.com/fixtures/new-repo.git",
+};
 const server = createServer((req, res) => {
   void (async () => {
     const chunks: Buffer[] = [];
     for await (const chunk of req) chunks.push(Buffer.from(chunk));
     const input = JSON.parse(Buffer.concat(chunks).toString() || "{}") as {
       action: string;
+      input?: { sourceId?: string };
     };
     res.setHeader("Content-Type", "application/json");
-    if (catalogUnavailable && req.url?.startsWith("/v2/projects?")) {
-      res.statusCode = 503;
+    if (catalogFailure && req.url?.startsWith("/v2/projects?")) {
+      res.statusCode = catalogFailure;
       res.end(JSON.stringify({ error: "Project catalog is unavailable" }));
       return;
     }
@@ -78,19 +93,21 @@ const server = createServer((req, res) => {
         res.end(JSON.stringify({ error: "Service unavailable" }));
         return;
       }
-      res.end(JSON.stringify({ state }));
+      const added = input.input?.sourceId === addedSourceId;
+      res.end(
+        JSON.stringify({
+          state,
+          repository: added ? addedRepository : repository,
+          bindingRevision: added ? 1 : revision,
+        }),
+      );
     } else if (input.action === "bind") {
       res.end(JSON.stringify({ repository, revision: revision + 1 }));
     } else if (input.action === "add-source") {
       res.end(
         JSON.stringify({
           sourceId: addedSourceId,
-          repository: {
-            ...repository,
-            id: "8484",
-            fullName: "fixtures/new-repo",
-            cloneUrl: "https://github.com/fixtures/new-repo.git",
-          },
+          repository: addedRepository,
           revision: 1,
         }),
       );
@@ -339,7 +356,7 @@ try {
     "A failed refresh must never revive an older green status",
   );
   await setup();
-  catalogUnavailable = true;
+  catalogFailure = 503;
   const added = await command<{ sourceId: string }>("add-source", {
     projectId,
     repositoryId: "8484",
@@ -364,7 +381,73 @@ try {
     2,
     "A new source can start cloning when the catalog GET is unavailable",
   );
-  catalogUnavailable = false;
+  const checkout = join(home, "checkouts", "completed-new-repo");
+  execFileSync("/usr/bin/git", ["init", "--quiet", checkout]);
+  execFileSync("/usr/bin/git", [
+    "-C",
+    checkout,
+    "remote",
+    "add",
+    "origin",
+    addedRepository.cloneUrl,
+  ]);
+  const destination = await realpath(checkout);
+  const identity = await stat(destination, { bigint: true });
+  const jobId = randomUUID();
+  const checkoutDb = database();
+  checkoutDb.prepare("INSERT INTO meta (key,value) VALUES (?,?)").run(
+    `repository-job:${jobId}`,
+    JSON.stringify({
+      id: jobId,
+      projectId,
+      sourceId: addedSourceId,
+      repositoryId: addedRepository.id,
+      bindingRevision: 1,
+      destination,
+      folderIdentity: `${identity.dev}:${identity.ino}`,
+      state: "interrupted",
+    }),
+  );
+  const readProject = () =>
+    String(
+      checkoutDb.prepare("SELECT value FROM projects WHERE id=?").get(projectId)
+        ?.value,
+    );
+  const readSource = () =>
+    (
+      JSON.parse(readProject()) as { sources: { id: string; path?: string }[] }
+    ).sources.find((source) => source.id === addedSourceId);
+  const finish = () =>
+    command<{ state: string }>("retry-connect", { id: jobId });
+  try {
+    catalogFailure = 403;
+    await assert.rejects(finish(), /403: Project catalog is unavailable/);
+    catalogFailure = 503;
+    state = "access_unavailable";
+    await assert.rejects(finish(), /GitHub access changed/);
+    state = "ready";
+
+    const unchanged = readProject();
+    const changed = JSON.parse(unchanged) as {
+      sources: { id: string; repositoryRevision?: number }[];
+    };
+    changed.sources.find(
+      (source) => source.id === addedSourceId,
+    )!.repositoryRevision = 2;
+    const saveProject = checkoutDb.prepare(
+      "UPDATE projects SET value=? WHERE id=?",
+    );
+    saveProject.run(JSON.stringify(changed), projectId);
+    await assert.rejects(finish(), /Repository link or GitHub access changed/);
+    saveProject.run(unchanged, projectId);
+    assert.equal(readSource()?.path, undefined);
+
+    assert.equal((await finish()).state, "connected");
+    assert.equal(readSource()?.path, destination);
+  } finally {
+    checkoutDb.close();
+  }
+  catalogFailure = 0;
 
   await setup();
   const archivedId = randomUUID(),
@@ -470,7 +553,7 @@ try {
   );
   connection.close();
   console.log(
-    "Passed native repository access: daily cache, launch refresh, authorization/binding invalidation, account/service isolation, live clone authorization, new-source clone during a catalog outage and archived project preservation during source removal.",
+    "Passed native repository access: daily cache, launch refresh, authorization/binding invalidation, account/service isolation, live clone authorization, new-source clone and checkout attachment during a catalog outage, and archived project preservation during source removal.",
   );
 } finally {
   await mac.close();
