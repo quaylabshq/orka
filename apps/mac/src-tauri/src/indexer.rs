@@ -1655,7 +1655,10 @@ fn scan_source(
     if crate::projects::sharing_allowed(project, "session")
         || crate::projects::sharing_allowed(project, "plan")
     {
-        let session_scope = crate::worktrees::SessionScope::new(db, project, &root)?;
+        let sources = crate::worktrees::session_sources(db, project)?;
+        let home = crate::worktrees::home()?;
+        let session_scope =
+            crate::worktrees::SessionScope::new(db, project, &root, &sources, &home)?;
         let topology = session_scope.cache_scope()?;
         let mut last_history_progress = None;
         for (tool, directory) in [
@@ -1696,11 +1699,18 @@ fn scan_source(
                     .unwrap_or(false);
                 // Codex's first record identifies its project. Avoid loading unrelated
                 // histories in full; uncertain attribution keeps the existing scan path.
-                if cached_unrelated
-                    || (tool == "codex"
-                        && history::session_cwd_prefix(e.path(), tool)
-                            .is_some_and(|cwd| session_scope.checkout_scope(&cwd).is_none()))
-                {
+                let unrelated_prefix = if !cached_unrelated && tool == "codex" {
+                    match history::session_route_prefix(e.path(), tool) {
+                        Some((Some(id), cwd)) => {
+                            session_scope.for_session(tool, &id, &cwd)?.is_none()
+                        }
+                        Some((None, cwd)) => session_scope.checkout_scope(&cwd).is_none(),
+                        None => false,
+                    }
+                } else {
+                    false
+                };
+                if cached_unrelated || unrelated_prefix {
                     if !cached_unrelated {
                         if let Some(cache) = &negative {
                             cache.remember(db, e.path())?;
@@ -1757,39 +1767,41 @@ fn scan_source(
                         continue;
                     }
                 };
-                let attributable = native::session_cwd(tool, &records).map_or_else(
-                    |_| {
-                        records.iter().any(|r| {
-                            r["cwd"]
-                                .as_str()
-                                .or(r["payload"]["cwd"].as_str())
-                                .is_some_and(|p| {
-                                    session_scope.checkout_scope(Path::new(p)).is_some()
-                                })
-                        })
-                    },
-                    |cwd| session_scope.checkout_scope(&cwd).is_some(),
-                );
-                if !attributable {
-                    if native::session_cwd(tool, &records).is_ok() {
-                        if let Some(cache) = &negative {
-                            cache.remember(db, e.path())?;
-                        }
-                    }
-                    continue;
-                }
-                report_file(e.path())?;
                 let (id, cwd, title) = match native::session_info(tool, &records) {
                     Ok(v) => v,
                     Err(err) => {
-                        error(db, &format!("{scan_id}:scan:{}", e.path().display()), &err)?;
-                        sessions_complete = false;
+                        let attributable = native::session_cwd(tool, &records).map_or_else(
+                            |_| {
+                                records.iter().any(|r| {
+                                    r["cwd"]
+                                        .as_str()
+                                        .or(r["payload"]["cwd"].as_str())
+                                        .is_some_and(|p| {
+                                            session_scope.checkout_scope(Path::new(p)).is_some()
+                                        })
+                                })
+                            },
+                            |cwd| session_scope.checkout_scope(&cwd).is_some(),
+                        );
+                        if attributable {
+                            report_file(e.path())?;
+                            error(db, &format!("{scan_id}:scan:{}", e.path().display()), &err)?;
+                            sessions_complete = false;
+                        } else if native::session_cwd(tool, &records).is_ok() {
+                            if let Some(cache) = &negative {
+                                cache.remember(db, e.path())?;
+                            }
+                        }
                         continue;
                     }
                 };
-                let Some(checkout_scope) = session_scope.checkout_scope(&cwd) else {
+                let Some(checkout) = session_scope.for_session(tool, &id, &cwd)? else {
+                    if let Some(cache) = &negative {
+                        cache.remember(db, e.path())?;
+                    }
                     continue;
                 };
+                report_file(e.path())?;
                 if tool == "codex" {
                     match crate::history::current_path(e.path(), &id) {
                         Ok(latest) if latest != e.path() => continue,
@@ -1821,33 +1833,38 @@ fn scan_source(
                 {
                     continue;
                 }
-                let files =
-                    match crate::history::session_files(tool, e.path(), Some(&checkout_scope)) {
-                        Ok(files) => files,
-                        Err(err) => {
-                            error(db, &format!("{scan_id}:scan:{}", e.path().display()), &err)?;
-                            sessions_complete = false;
-                            continue;
-                        }
-                    };
+                session_scope.pin(&checkout, tool, &id)?;
+                let checkout_scope = &checkout.scope;
+                let files = match crate::history::session_files(
+                    tool,
+                    e.path(),
+                    (!checkout.historical).then_some(checkout_scope.as_path()),
+                ) {
+                    Ok(files) => files,
+                    Err(err) => {
+                        error(db, &format!("{scan_id}:scan:{}", e.path().display()), &err)?;
+                        sessions_complete = false;
+                        continue;
+                    }
+                };
                 if project["governed"] == true && project["catalogOnly"] != true {
                     let records =
                         crate::history::resource_records(&json!({"source":tool,"files":files}))?;
                     native::bind_handoff(db, project_id, &id, &records)?;
                 }
-                if crate::projects::sharing_allowed(project, "plan") {
+                if !checkout.historical && crate::projects::sharing_allowed(project, "plan") {
                     let plan_records =
                         crate::history::resource_records(&json!({"source":tool,"files":files}))?;
                     let mut has_plan_file = false;
-                    match plans::references(tool, &checkout_scope, &plan_records) {
+                    match plans::references(tool, checkout_scope, &plan_records) {
                         Ok(paths) => {
                             for path in paths {
                                 if !path.try_exists().map_err(|e| e.to_string())? {
                                     continue;
                                 }
-                                let local = plans::project_directory(&checkout_scope, tool)?;
+                                let local = plans::project_directory(checkout_scope, tool)?;
                                 let logical = if let Ok(relative) = path.strip_prefix(&local) {
-                                    format!("{tool}/files/{}", relative.to_string_lossy())
+                                    checkout.plan_key(tool, relative)
                                 } else {
                                     format!(
                                         "{tool}/native/{}",

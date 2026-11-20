@@ -744,16 +744,28 @@ mod hook_tests;
 /// deleted project that can still be restored is returned to track the
 /// session, flagged as capture-only. An active parent folder still wins over
 /// a deleted nested project.
-fn hook_project(db: &rusqlite::Connection, cwd: &str) -> Result<Option<(Value, PathBuf, bool)>> {
+fn hook_project(
+    db: &rusqlite::Connection,
+    cwd: &str,
+    tool: &str,
+    id: &str,
+) -> Result<Option<(Value, PathBuf, bool)>> {
     let home = crate::worktrees::home()?;
-    let location = crate::worktrees::Location::new(Path::new(cwd), &home);
+    if crate::worktrees::is_stale(db, Path::new(cwd), &home)? {
+        return Ok(None);
+    }
     for (predicate, capture_only) in [
         (crate::projects::ACTIVE, false),
         (crate::projects::CAPTURE_ONLY, true),
     ] {
         let views = crate::worktrees::source_views(db, predicate)?;
-        if let Some((source, equivalent)) = location.resolve(&views, &home) {
-            return Ok(Some((source.clone(), equivalent, capture_only)));
+        let resolver = crate::worktrees::Resolver::new(&views, &home);
+        if let Some(route) = resolver.resolve(Path::new(cwd)) {
+            if let Some(observed) = route.observed {
+                observed.remember(db)?;
+                observed.pin(db, tool, id)?;
+            }
+            return Ok(Some((route.source.clone(), route.equivalent, capture_only)));
         }
     }
     Ok(None)
@@ -764,14 +776,14 @@ pub fn hook(tool: &str, input: Value) -> Result<Value> {
     let Some(cwd) = input["cwd"].as_str() else {
         return Ok(json!({}));
     };
-    let Some((project, equivalent_cwd, capture_only)) = hook_project(&db, cwd)? else {
+    let id = input["session_id"].as_str().unwrap_or("unknown");
+    let Some((project, equivalent_cwd, capture_only)) = hook_project(&db, cwd, tool, id)? else {
         return Ok(json!({}));
     };
     let project = &project;
     if matches!(tool, "claude" | "codex") {
         db::set(&db, &format!("hookSeen:{tool}"), &json!(db::now()))?;
     }
-    let id = input["session_id"].as_str().unwrap_or("unknown");
     let project_id = project["id"].as_str().ok_or("Missing project")?;
     let event = input["hook_event_name"].as_str().unwrap_or("SessionStart");
     if event == "SessionEnd" {
