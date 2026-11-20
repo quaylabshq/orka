@@ -66,6 +66,11 @@ import {
   ProjectSetupDialog,
 } from "./components/project-setup.js";
 import { ResourceIndex } from "./components/resource-index.js";
+import {
+  ReviewsPage,
+  type ReviewSelection,
+} from "./components/reviews-page.js";
+import { ReviewStepper } from "./components/review-stepper.js";
 import { RepositoryConnections } from "./components/repository-connections.js";
 import { useBackgroundRepositoryAccess } from "./components/use-repositories.js";
 import { RepositoryFilter } from "./components/repository-filter.js";
@@ -148,6 +153,7 @@ const pageLabels: Record<ProjectPage, string> = {
   home: "home",
   env: "ENVs",
   members: "Manage",
+  reviews: "reviews",
   memory: "memories",
   skill: "skills",
   session: "sessions",
@@ -365,24 +371,25 @@ function WorkspaceApp({
   const [syncOpen, setSyncOpen] = useState(false);
   const syncStatusTrigger = useRef<HTMLButtonElement>(null);
   const projectScope = JSON.stringify([workspaceScope, project]);
-  const [management, setManagement] = useState<{
-    section: Exclude<ManagementSection, "members">;
-    history?: { scope: string; request: symbol };
-  }>({ section: "requests" });
+  // A request to show History, addressed to the project it was made in.
+  const [historyRequest, setHistoryRequest] = useState<{
+    scope: string;
+    request: symbol;
+  } | null>(null);
   useEffect(() => {
-    setManagement((current) =>
-      current.history && current.history.scope !== projectScope
-        ? { section: current.section }
-        : current,
+    setHistoryRequest((current) =>
+      current && current.scope !== projectScope ? null : current,
     );
   }, [projectScope]);
   const consumeHistoryRequest = useCallback((request: symbol) => {
-    setManagement((current) =>
-      current.history?.request === request
-        ? { section: current.section }
-        : current,
+    setHistoryRequest((current) =>
+      current?.request === request ? null : current,
     );
   }, []);
+  const [reviewState, setReview] = useState<{
+    scope: string;
+    selection: ReviewSelection;
+  } | null>(null);
   const [governance, setGovernance] = useState<{
     resource: string;
     mode?: "incoming" | "outgoing";
@@ -396,14 +403,12 @@ function WorkspaceApp({
         else setSettings("members");
         return;
       }
-      setManagement({
-        section,
-        history: historyScope
-          ? { scope: historyScope, request: Symbol() }
-          : undefined,
-      });
+      setHistoryRequest(
+        historyScope ? { scope: historyScope, request: Symbol() } : null,
+      );
       setSettings(null);
-      setTab("members");
+      setTab(section === "requests" ? "reviews" : "members");
+      setReview(null);
       setResource("");
     },
     [],
@@ -434,6 +439,14 @@ function WorkspaceApp({
   const inactiveProject = state.inactive?.find((item) => item.id === project);
   const selectedProject =
     state.projects.find((p) => p.id === project) ?? inactiveProject;
+  // A review belongs to the project and tab it was opened in.
+  const review =
+    !settings &&
+    !inactiveProject &&
+    tab === "reviews" &&
+    reviewState?.scope === projectScope
+      ? reviewState.selection
+      : null;
   const repositorySetupProject = state.projects.find(
     (item) => item.id === repositorySetup,
   );
@@ -458,7 +471,7 @@ function WorkspaceApp({
     ? index.repository
     : "all";
   const collectionFilters =
-    tab === "home" || tab === "env" || tab === "members"
+    tab === "home" || tab === "env" || tab === "members" || tab === "reviews"
       ? undefined
       : index.filters[tab];
   const filters = useMemo(
@@ -854,10 +867,19 @@ function WorkspaceApp({
             activeKind={settings ? null : tab}
             resources={catalogResources}
             pendingCounts={localCatalog.pendingCounts}
+            reviewCount={
+              selectedProject?.governed && !inactiveProject
+                ? attention.items.reduce(
+                    (count, item) => count + item.requests.length,
+                    0,
+                  )
+                : undefined
+            }
             onNavigate={(kind) =>
               leaveSettings(() => {
                 setEnvSet("");
                 setTab(kind);
+                setReview(null);
                 setResource("");
                 if (kind === "members") openManagement();
               })
@@ -993,6 +1015,7 @@ function WorkspaceApp({
                   setEnvSet("");
                   setProject(id);
                   setResource("");
+                  setReview(null);
                   setGovernance(null);
                 };
                 if (settings && settingsNavigation.current)
@@ -1005,7 +1028,15 @@ function WorkspaceApp({
         <main>
           <WorkspaceHeader
             leading={
-              !settings && selected ? (
+              review ? (
+                <Button
+                  size="sm"
+                  variant="tertiary"
+                  onClick={() => setReview(null)}
+                >
+                  <Icon icon={ArrowLeftIcon} /> Back to Reviews
+                </Button>
+              ) : !settings && selected ? (
                 <Button size="sm" variant="tertiary" onClick={closeDetail}>
                   <Icon icon={ArrowLeftIcon} /> Back to {collectionLabel}
                 </Button>
@@ -1026,12 +1057,23 @@ function WorkspaceApp({
               setSidebarInstant(instant);
               setSidebarCollapsed((current) => !current);
             }}
+            navigation={
+              review && (
+                <ReviewStepper
+                  selection={review}
+                  onChange={(selection) =>
+                    setReview({ scope: projectScope, selection })
+                  }
+                />
+              )
+            }
             repositoryFilter={
               !settings &&
               selectedProject &&
               !inactiveProject &&
               repositories.length > 1 &&
               tab !== "home" &&
+              tab !== "reviews" &&
               tab !== "members" ? (
                 <RepositoryFilter
                   key={`${workspaceScope}:${project}`}
@@ -1208,21 +1250,32 @@ function WorkspaceApp({
                   </p>
                 }
               >
-                {tab === "members" ? (
+                {tab === "reviews" ? (
+                  <ReviewsPage
+                    key={project}
+                    project={selectedProject}
+                    state={state}
+                    review={review}
+                    onReview={(selection) =>
+                      setReview(selection && { scope: projectScope, selection })
+                    }
+                    historyRequest={
+                      historyRequest?.scope === projectScope
+                        ? historyRequest.request
+                        : undefined
+                    }
+                    onHistoryShown={consumeHistoryRequest}
+                    onRefresh={refresh}
+                    onReviewFile={(resource) => setGovernance({ resource })}
+                  />
+                ) : tab === "members" ? (
                   <MembersPage
                     key={project}
                     project={selectedProject}
                     state={state}
-                    section={management.section}
-                    historyRequest={
-                      management.history?.scope === projectScope
-                        ? management.history.request
-                        : undefined
-                    }
-                    onHistoryShown={consumeHistoryRequest}
+                    section="logs"
                     onSection={openManagement}
                     onRefresh={refresh}
-                    onReviewFile={(resource) => setGovernance({ resource })}
                   />
                 ) : tab === "env" ? (
                   <EnvPage

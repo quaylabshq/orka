@@ -17,7 +17,7 @@ import {
 import { ProjectLogs } from "./project-logs.js";
 import { Button } from "./button.js";
 import { MemberPermissions } from "./member-permissions.js";
-import { ProjectRequests } from "./project-requests.js";
+import { PermissionSetup } from "./permission-setup.js";
 import {
   governanceCall,
   accessNames,
@@ -77,20 +77,14 @@ export function MembersPage({
   project,
   state,
   section,
-  historyRequest,
-  onHistoryShown,
   onSection,
   onRefresh,
-  onReviewFile,
 }: {
   project: Project;
   state: Snapshot;
-  section: ManagementSection;
-  historyRequest?: symbol;
-  onHistoryShown: (request: symbol) => void;
+  section: Exclude<ManagementSection, "requests">;
   onSection: (section: ManagementSection) => void;
   onRefresh: () => Promise<void>;
-  onReviewFile: (id: string) => void;
 }) {
   const [catalog, setCatalog] = useState<GovernanceCatalog | null>(null);
   const [member, setMember] = useState<string | null>(null);
@@ -145,11 +139,7 @@ export function MembersPage({
       <div className="management-content">
         <div className="management-heading">
           <div>
-            <h2>
-              {section === "requests"
-                ? "Pending reviews"
-                : projectLabel(project)}
-            </h2>
+            <h2>{projectLabel(project)}</h2>
             <p>Review shared content and existing requests.</p>
           </div>
           <Button
@@ -162,11 +152,6 @@ export function MembersPage({
           </Button>
         </div>
         <div className="management-toolbar">
-          {section === "requests" && (
-            <Button size="sm" onClick={() => onSection("members")}>
-              Back to Members
-            </Button>
-          )}
           {(section === "logs" ||
             (section === "members" && member !== null)) && (
             <Button
@@ -249,59 +234,22 @@ export function MembersPage({
           ) : (
             <>
               {!catalog.governed && (
-                <section
-                  className="permission-card"
-                  aria-label="Enable project permissions"
-                >
-                  <h3>Set up permissions for this project</h3>
-                  <p>
-                    Enable access and change requests. Shared memory and skill
-                    changes will need approval unless you allow editing.
-                    Existing shared content and personal memory stay as they
-                    are.
-                  </p>
-                  <details className="permission-activation-details">
-                    <summary>What happens to existing work?</summary>
-                    <p>
-                      {catalog.resourceCount} shared items and{" "}
-                      {
-                        state.outbox.filter(
-                          (item) => item.project === project.id,
-                        ).length
-                      }{" "}
-                      queued changes on this Mac keep their content. Queued
-                      changes are checked against permissions on reconnect.
-                      Personal memory stays local and writable. Existing Macs
-                      need an updated app.
-                    </p>
-                    <p>
-                      Authorized skills install automatically when Skills
-                      sharing is enabled on this Mac. Local edits are preserved.
-                      Project instructions need local review before
-                      installation.
-                      {ENV_ENABLED &&
-                        " ENV sets keep their encrypted recipient and trusted device requirements."}
-                    </p>
-                  </details>
-                  {catalog.owner ? (
-                    <Button
-                      variant="primary"
-                      disabled={busy}
-                      onClick={() =>
-                        void run(async () => {
-                          await call("activate", {
-                            expectedPolicyRevision: catalog.policyRevision,
-                            rules: defaultProjectRules,
-                          });
-                        })
-                      }
-                    >
-                      Enable project permissions
-                    </Button>
-                  ) : (
-                    <p>A project owner can enable these controls.</p>
-                  )}
-                </section>
+                <PermissionSetup
+                  catalog={catalog}
+                  queuedChanges={
+                    state.outbox.filter((item) => item.project === project.id)
+                      .length
+                  }
+                  busy={busy}
+                  onEnable={() =>
+                    void run(async () => {
+                      await call("activate", {
+                        expectedPolicyRevision: catalog.policyRevision,
+                        rules: defaultProjectRules,
+                      });
+                    })
+                  }
+                />
               )}
               {section === "logs" ? (
                 <ProjectLogs call={call} />
@@ -462,25 +410,7 @@ export function MembersPage({
                     </section>
                   )}
                 </>
-              ) : catalog.governed ? (
-                <ProjectRequests
-                  project={project}
-                  state={state}
-                  catalog={catalog}
-                  historyRequest={historyRequest}
-                  onHistoryShown={onHistoryShown}
-                  call={call}
-                  run={run}
-                  busy={busy}
-                  error={error}
-                  setMessage={setMessage}
-                  onReviewFile={onReviewFile}
-                />
-              ) : (
-                <p>
-                  Enable project permissions to use access and change requests.
-                </p>
-              )}
+              ) : null}
             </>
           )}
         </LoadingRegion>
