@@ -98,13 +98,13 @@ stay usable.
 
 Sessions, Memories, and Plans use `CollectionSkeleton` on first discovery, with
 title and metadata shapes aligned to the collection rows, without visible loading
-copy. Skills cards and Home updates show placeholders only for pending metadata,
+copy. The Skills description peek and Home updates show placeholders only for pending metadata,
 keeping known content and navigation available. Decorative shapes stay out of the
 accessibility tree; one status announces the pending collection. Background refresh
 keeps existing rows visible. Empty and error states appear after the request
 settles, with existing retry actions intact.
 
-Local catalogs and project skill usage reuse fresh results and pending requests
+Local catalogs reuse fresh results and pending requests
 across navigation for the configured sync interval. Changing that setting updates
 freshness and the visible collection's refresh schedule without clearing loaded
 rows or counts. Explicit refresh bypasses freshness. Account, service, profile,

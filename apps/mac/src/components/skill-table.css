@@ -1,0 +1,332 @@
+.skill-table {
+  --skill-cell-padding: 16px;
+  width: 100%;
+  table-layout: fixed;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-surface);
+  border-collapse: separate;
+  border-spacing: 0;
+  text-align: left;
+}
+
+.skill-table-col-repository {
+  width: 26%;
+}
+
+.skill-table-col-person {
+  width: 156px;
+}
+
+.skill-table-col-status {
+  width: 180px;
+}
+
+.skill-table-col-actions {
+  width: 52px;
+}
+
+.skill-table th,
+.skill-table td {
+  height: 44px;
+  padding-block: 0;
+  padding-inline: var(--skill-cell-padding);
+  border-bottom: 1px solid var(--border-default);
+  vertical-align: middle;
+  font-size: 12px;
+  font-weight: var(--font-weight-regular);
+  line-height: 20px;
+  color: var(--text-secondary);
+}
+
+.skill-table thead th {
+  height: 36px;
+  color: var(--text-tertiary);
+}
+
+.skill-table tbody tr:last-child > * {
+  border-bottom: 0;
+}
+
+.skill-table tbody tr {
+  cursor: pointer;
+}
+
+.skill-table tbody tr:hover > *,
+.skill-table tbody tr:focus-within > * {
+  background: var(--state-hover);
+}
+
+.skill-table tbody tr:last-child > :first-child {
+  border-bottom-left-radius: calc(var(--radius-surface) - 1px);
+}
+
+.skill-table tbody tr:last-child > :last-child {
+  border-bottom-right-radius: calc(var(--radius-surface) - 1px);
+}
+
+.skill-table-heading {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.skill-table-heading > svg {
+  flex-shrink: 0;
+}
+
+.skill-table-heading-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skill-table-name {
+  position: relative;
+}
+
+.skill-table-name-content {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.skill-table-leading {
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+}
+
+.skill-table-open {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: var(--font-weight-medium);
+  line-height: 20px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skill-table-open:focus-visible {
+  outline-offset: 2px;
+}
+
+.skill-table-repository-label {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+}
+
+.skill-table-repository-label > svg {
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+}
+
+.skill-table-repository-label > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skill-table-person {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.skill-table-avatar {
+  position: relative;
+  display: inline-flex;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: var(--radius-full);
+  background: var(--surface-tertiary);
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: var(--font-weight-medium);
+  line-height: 1;
+}
+
+.skill-table-avatar > img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.skill-table-person-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skill-status-pill {
+  display: inline-flex;
+  max-width: 100%;
+  height: 22px;
+  align-items: center;
+  gap: 5px;
+  padding-inline: 8px;
+  border-radius: var(--radius-full);
+  background: var(--surface-tertiary);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: var(--font-weight-medium);
+  line-height: 20px;
+  white-space: nowrap;
+}
+
+.skill-status-pill > svg {
+  flex-shrink: 0;
+}
+
+.skill-status-pill[data-tone="red"] {
+  background: var(--red-surface);
+  color: var(--red-text);
+}
+
+.skill-status-pill[data-tone="amber"] {
+  background: var(--amber-surface);
+  color: var(--amber-text);
+}
+
+.skill-status-pill[data-tone="blue"] {
+  background: var(--blue-surface);
+  color: var(--blue-text);
+}
+
+.skill-table-actions {
+  padding-inline: 0 2px !important;
+  text-align: right;
+}
+
+.skill-table-actions .ui-icon-button {
+  color: var(--text-tertiary);
+}
+
+.skill-table tbody tr:hover .skill-table-actions .ui-icon-button,
+.skill-table-actions .ui-icon-button[data-state="open"] {
+  color: var(--text-primary);
+}
+
+.skill-table-peek {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% - 4px);
+  left: calc(var(--skill-cell-padding) + 22px);
+  display: flex;
+  width: min(340px, calc(100vw - 320px));
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-default);
+  border-radius: 10px;
+  background: var(--surface-tertiary);
+  box-shadow: var(--shadow-tooltip);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: var(--font-weight-regular);
+  line-height: 18px;
+  white-space: normal;
+  pointer-events: none;
+}
+
+.skill-table-peek[data-side="above"] {
+  top: auto;
+  bottom: calc(100% - 4px);
+}
+
+.skill-table-peek-empty {
+  color: var(--text-tertiary);
+}
+
+.skill-table-peek-origin {
+  color: var(--text-tertiary);
+}
+
+.skill-table-peek-origin > strong {
+  margin-right: 6px;
+  color: var(--text-secondary);
+  font-weight: var(--font-weight-medium);
+}
+
+.skill-table-peek-loading {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-block: 4px;
+}
+
+.skill-table-peek-loading > span {
+  display: block;
+  height: 8px;
+  border-radius: var(--radius-detail);
+  background: var(--border-default);
+}
+
+.skill-table-peek-loading > span:nth-child(2) {
+  width: 70%;
+}
+
+/* Default window: the repository column gives width back to skill names. */
+@media (max-width: 1280px) {
+  .skill-table-col-repository {
+    width: 22%;
+  }
+}
+
+/* Minimum window: Shared by becomes an avatar, and the repository narrows. */
+@media (max-width: 1000px) {
+  .skill-table-col-repository {
+    width: 134px;
+  }
+
+  .skill-table-col-person {
+    width: 52px;
+  }
+
+  .skill-table-col-status {
+    width: 168px;
+  }
+
+  /* Hidden from sight only: the name still labels the avatar and the column. */
+  .skill-table-person-name,
+  .skill-table-person-heading .skill-table-heading-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .skill-table-peek {
+    animation: skill-table-peek-in var(--motion-control-duration)
+      var(--motion-control-ease);
+  }
+}
+
+@keyframes skill-table-peek-in {
+  from {
+    opacity: 0;
+  }
+}

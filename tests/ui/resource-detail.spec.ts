@@ -567,7 +567,7 @@ test("skeleton shapes never persist resource URLs or paths", async ({
   });
   await page.getByRole("button", { name: /^Skills/ }).click();
   await page
-    .locator(".skill-card")
+    .locator(".skill-table tbody tr")
     .filter({ hasText: "Review checklist" })
     .click();
   await expect(
@@ -1037,7 +1037,7 @@ test("ZIP export sits in Skill info for skills and moves into the session launch
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: /^Skills/ }).click();
   await page
-    .locator(".skill-card")
+    .locator(".skill-table tbody tr")
     .filter({ hasText: "Review checklist" })
     .click();
   const skillInfo = page.getByRole("complementary", {
@@ -1102,7 +1102,8 @@ for (const size of [
   }) => {
     await page.setViewportSize(size);
     await detailFixture(page);
-    await page.getByRole("button", { name: /^Skills/ }).click();
+    // Memories still sorts from an action popover; Skills uses a menu.
+    await page.getByRole("button", { name: /^Memories/ }).click();
     await page.evaluate(() => {
       (window as any).popoverExits = 0;
       document.addEventListener("animationend", (event) => {
@@ -1120,8 +1121,9 @@ for (const size of [
     await expect(sort).toBeFocused();
     expect(await page.evaluate(() => (window as any).popoverExits)).toBe(1);
 
+    await page.getByRole("button", { name: /^Skills/ }).click();
     await page
-      .locator(".skill-card")
+      .locator(".skill-table tbody tr")
       .filter({ hasText: "Review checklist" })
       .click();
     if (size.width === 900) {
@@ -1299,7 +1301,7 @@ test("the skill reader keeps the document heading order beside its rail", async 
   await detailFixture(page);
   await page.getByRole("button", { name: /^Skills/ }).click();
   await page
-    .locator(".skill-card")
+    .locator(".skill-table tbody tr")
     .filter({ hasText: "Review checklist" })
     .click();
   const view = page.locator(".resource-detail--skill");
@@ -1362,7 +1364,9 @@ for (const failure of ["error", "null content"] as const) {
     await page.getByRole("button", { name: /^Skills/ }).click();
     await page.waitForTimeout(200);
     expect(await page.evaluate(() => (window as any).failedSkillReads)).toBe(1);
-    await expect(page.locator(".skill-card")).toContainText("Review checklist");
+    await expect(page.locator(".skill-table tbody tr")).toContainText(
+      "Review checklist",
+    );
   });
 }
 
@@ -1375,7 +1379,9 @@ for (const dimension of ["profile", "user", "service"] as const) {
       skillContent: "---\nname: Original scope\n---\nOriginal instructions\n",
     });
     await page.getByRole("button", { name: /^Skills/ }).click();
-    await expect(page.locator(".skill-card")).toContainText("Original scope");
+    await expect(page.locator(".skill-table tbody tr")).toContainText(
+      "Original scope",
+    );
     await page.evaluate((dimension) => {
       const w = window as any;
       const original = w.__TAURI_INTERNALS__.invoke;
@@ -1451,14 +1457,18 @@ for (const dimension of ["profile", "user", "service"] as const) {
       (window as any).summaryStage = 2;
     });
     await page.clock.runFor(3100);
-    await expect(page.locator(".skill-card")).toContainText("New scope");
+    await expect(page.locator(".skill-table tbody tr")).toContainText(
+      "New scope",
+    );
     expect(
       await page.evaluate(() => (window as any).nextScopeSummaryReads),
     ).toBe(1);
     await page.evaluate(() => (window as any).finishOldSummary());
     await page.clock.runFor(100);
-    await expect(page.locator(".skill-card")).toContainText("New scope");
-    await expect(page.locator(".skill-card")).not.toContainText(
+    await expect(page.locator(".skill-table tbody tr")).toContainText(
+      "New scope",
+    );
+    await expect(page.locator(".skill-table tbody tr")).not.toContainText(
       "Late previous scope",
     );
   });
@@ -1524,10 +1534,14 @@ test("skill search and sorting use the displayed frontmatter name", async ({
       "---\nname: Code audit\ndescription: How we review.\n---\n# Code audit",
   });
   await page.getByRole("button", { name: /^Skills/ }).click();
-  await expect(page.locator(".skill-card")).toContainText("Code audit");
+  await expect(page.locator(".skill-table tbody tr")).toContainText(
+    "Code audit",
+  );
   await page.getByRole("searchbox").fill("Code audit");
-  await expect(page.locator(".skill-card")).toHaveCount(1);
-  await expect(page.locator(".skill-card")).toContainText("Code audit");
+  await expect(page.locator(".skill-table tbody tr")).toHaveCount(1);
+  await expect(page.locator(".skill-table tbody tr")).toContainText(
+    "Code audit",
+  );
 });
 
 test("resuming a shared session uses the floating toast and keeps the reader layout in place", async ({

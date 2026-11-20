@@ -1,0 +1,437 @@
+.add-skills-popover {
+  z-index: 110;
+  width: 380px;
+  max-width: calc(100vw - 24px);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-surface);
+  background: var(--surface-tertiary);
+  box-shadow: var(--shadow-workspace);
+  color: var(--text-primary);
+  font-size: 14px;
+  line-height: 20px;
+  outline: none;
+}
+
+.add-skills {
+  position: relative;
+  display: flex;
+  max-height: min(
+    600px,
+    var(--radix-popover-content-available-height, calc(100vh - 140px))
+  );
+  flex-direction: column;
+}
+
+/* The app's base label style stacks its children; these labels are rows. */
+.add-skills-search,
+.add-skills-select-all,
+.add-skills-row {
+  flex-direction: row;
+  margin: 0;
+  font-weight: var(--font-weight-regular);
+  letter-spacing: 0;
+}
+
+.add-skills-search {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border-default);
+  color: var(--text-tertiary);
+}
+
+.add-skills-search > input {
+  min-width: 0;
+  min-height: 0;
+  height: 20px;
+  flex: 1;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  outline: none;
+}
+
+.add-skills-search > input::placeholder {
+  color: var(--text-tertiary);
+}
+
+.add-skills-search > input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.add-skills-clear {
+  display: inline-flex;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: var(--radius-detail);
+  background: transparent;
+  color: var(--text-tertiary);
+}
+
+.add-skills-clear:hover {
+  background: var(--state-hover);
+  color: var(--text-primary);
+}
+
+.add-skills-repository {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 12px;
+  margin-inline: 16px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border-default);
+}
+
+.add-skills-repository > svg {
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+}
+
+.add-skills-repository > span {
+  flex: 1;
+  white-space: nowrap;
+}
+
+.add-skills-repository-select {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 190px;
+  height: 32px;
+  align-items: center;
+  gap: 6px;
+  margin-right: -4px;
+  padding: 6px 6px 6px 10px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: var(--state-pressed);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: var(--font-weight-medium);
+  line-height: 20px;
+}
+
+.add-skills-repository-select > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.add-skills-repository-select > svg {
+  flex-shrink: 0;
+  color: var(--text-secondary);
+}
+
+.add-skills-repository-menu {
+  z-index: 130;
+}
+
+.add-skills-select-all {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px 6px;
+  font-size: 12px;
+}
+
+.add-skills-select-all > span {
+  flex: 1;
+}
+
+.add-skills-select-all > small {
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.add-skills-checkbox {
+  position: relative;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  margin: 0;
+  border: 1px solid var(--border-focus);
+  border-radius: 5px;
+  background: transparent;
+  appearance: none;
+}
+
+.add-skills-checkbox:checked,
+.add-skills-checkbox:indeterminate {
+  border-color: var(--action-solid);
+  background: var(--action-solid);
+}
+
+.add-skills-checkbox:checked::after {
+  position: absolute;
+  top: 2px;
+  left: 5px;
+  width: 5px;
+  height: 9px;
+  border: solid var(--text-on-solid);
+  border-width: 0 1.5px 1.5px 0;
+  content: "";
+  transform: rotate(45deg);
+}
+
+.add-skills-checkbox:indeterminate::after {
+  position: absolute;
+  top: 7px;
+  left: 4px;
+  width: 8px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--text-on-solid);
+  content: "";
+}
+
+.add-skills-checkbox:disabled {
+  opacity: 0.4;
+}
+
+.add-skills-checkbox:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
+
+.add-skills-list {
+  min-height: 0;
+  flex: 1;
+  margin: 0;
+  padding: 0 6px 6px;
+  overflow-y: auto;
+  list-style: none;
+  /* Rows fade out at the bottom edge, so it is clear the list goes on. */
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 32px), transparent);
+}
+
+.add-skills-row {
+  display: flex;
+  min-height: 38px;
+  font-size: 14px;
+  line-height: 20px;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 10px;
+  border-radius: 8px;
+}
+
+.add-skills-row:hover,
+.add-skills-row:focus-within {
+  background: var(--state-hover);
+}
+
+.add-skills-name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.add-skills-row[data-unavailable] .add-skills-name {
+  color: var(--text-disabled);
+}
+
+.add-skills-row[data-unavailable] .add-skills-agents {
+  opacity: 0.5;
+}
+
+.add-skills-reason {
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.add-skills-failed {
+  flex-shrink: 0;
+  color: var(--red-text);
+}
+
+.add-skills-agents {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.add-skills-agents > img {
+  display: block;
+  width: 14px;
+  height: 14px;
+}
+
+.add-skills-footer {
+  display: flex;
+  flex-shrink: 0;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border-top: 1px solid var(--border-default);
+}
+
+.add-skills-submit {
+  width: 100%;
+}
+
+.add-skills-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 20px;
+  white-space: pre-line;
+}
+
+/* The icon sits in a slot one text line high, so it centers on the first line. */
+.add-skills-note-icon {
+  display: inline-flex;
+  height: 20px;
+  flex-shrink: 0;
+  align-items: center;
+  color: var(--amber-text);
+}
+
+.add-skills-note[data-tone="error"] .add-skills-note-icon {
+  color: var(--red-text);
+}
+
+.add-skills-message {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 28px 32px 32px;
+  text-align: center;
+}
+
+.add-skills-message > h2 {
+  margin: 4px 0 0;
+  font-size: 14px;
+  font-weight: var(--font-weight-medium);
+  line-height: 20px;
+}
+
+.add-skills-message > p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 20px;
+}
+
+.add-skills-message > .ui-button {
+  margin-top: 8px;
+}
+
+.add-skills-loading {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  padding: 24px 16px 28px;
+}
+
+.add-skills-loading > span {
+  display: block;
+  width: 62%;
+  height: 8px;
+  border-radius: var(--radius-detail);
+  background: var(--border-default);
+}
+
+.add-skills-loading > span:nth-child(even) {
+  width: 44%;
+}
+
+.add-skills-peek {
+  position: absolute;
+  right: calc(100% + 9px);
+  display: flex;
+  width: 300px;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-default);
+  border-radius: 10px;
+  background: var(--surface-tertiary);
+  box-shadow: var(--shadow-tooltip);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 20px;
+  pointer-events: none;
+}
+
+.add-skills-peek > p {
+  margin: 0;
+}
+
+.add-skills-peek-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  color: var(--text-primary);
+}
+
+.add-skills-peek-heading > strong {
+  min-width: 0;
+  flex: 1;
+  font-weight: var(--font-weight-medium);
+  overflow-wrap: anywhere;
+}
+
+.add-skills-peek-heading > .add-skills-agents {
+  height: 20px;
+}
+
+.add-skills-peek-meta,
+.add-skills-peek-error {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-tertiary);
+}
+
+.add-skills-peek-meta > svg,
+.add-skills-peek-error > svg {
+  flex-shrink: 0;
+}
+
+.add-skills-peek-meta > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.add-skills-peek-error {
+  align-items: flex-start;
+  color: var(--red-text);
+}
+
+.add-skills-peek-error > svg {
+  margin-top: 4px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .add-skills-peek {
+    animation: add-skills-peek-in var(--motion-control-duration)
+      var(--motion-control-ease);
+  }
+}
+
+@keyframes add-skills-peek-in {
+  from {
+    opacity: 0;
+  }
+}

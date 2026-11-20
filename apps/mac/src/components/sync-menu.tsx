@@ -50,7 +50,6 @@ export function SyncMenu({
   actionError = "",
   onDismissError,
   onResumeSetup,
-  skillUsagePartial = false,
   queue = [],
   onCancel,
 }: {
@@ -60,7 +59,6 @@ export function SyncMenu({
   onCancel?: (projectId: string) => void;
   onDismissError?: () => void;
   onResumeSetup?: () => void;
-  skillUsagePartial?: boolean;
   state: Snapshot;
   attention: ProjectAttention;
   projectId?: string;
@@ -222,7 +220,6 @@ export function SyncMenu({
     historyCount ||
     attention.waitingRequests.length ||
     attention.accountIssues.length ||
-    skillUsagePartial ||
     needsReconnect,
   );
   const cancelButton = (entry: SyncQueueEntry) =>
@@ -784,18 +781,6 @@ export function SyncMenu({
                       )}
                     </div>
                   </details>
-                </section>
-              )}
-              {skillUsagePartial && (
-                <section
-                  className="sync-menu-notification"
-                  aria-label="Skill usage details"
-                >
-                  <h3>Skill usage</h3>
-                  <p>
-                    Usage covers available local history; some records could not
-                    be read.
-                  </p>
                 </section>
               )}
               {attention.accountIssues.length > 0 && (

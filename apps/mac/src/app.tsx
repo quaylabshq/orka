@@ -70,7 +70,6 @@ import { RepositoryConnections } from "./components/repository-connections.js";
 import { useBackgroundRepositoryAccess } from "./components/use-repositories.js";
 import { RepositoryFilter } from "./components/repository-filter.js";
 import { GlobalSkillImport } from "./components/global-skill-import.js";
-import { useProjectSkillUsage } from "./components/skill-usage.js";
 import {
   resourceDisplayTitle,
   displayText,
@@ -97,6 +96,7 @@ import {
   type SyncReviewItem,
 } from "./components/sync-attention.js";
 import { skillReviewState } from "./components/skill-review-state.js";
+import { skillStatus, type SkillStatus } from "./components/skill-status.js";
 import { useDeepLinks } from "./components/use-deep-links.js";
 import { PluginAuthorization } from "./components/plugin-authorization.js";
 import { parseProjectInvite } from "./components/project-invite.js";
@@ -508,16 +508,6 @@ function WorkspaceApp({
     titleCache,
   );
   const skillSummaries = useSkillSummaries(resources, workspaceScope);
-  const skillUsage = useProjectSkillUsage(
-    project,
-    workspaceScope,
-    resources,
-    tab === "skill" &&
-      Boolean(state.user && selectedProject) &&
-      resources.length > 0,
-    JSON.stringify([selectedProject?.path, selectedProject?.sources]),
-    state.config?.syncMinutes,
-  );
   const displayTitle = useCallback(
     (item: Resource) =>
       displayText(
@@ -659,6 +649,27 @@ function WorkspaceApp({
     () => projectAttention(state, project),
     [state, project],
   );
+  const skillStatusOf = useMemo(() => {
+    const items = new Map(
+      attention.items.map((item) => [item.resourceId ?? item.key, item]),
+    );
+    const cache = new Map<string, SkillStatus | null>();
+    return (skill: ProjectResource) => {
+      if (!cache.has(skill.resourceId))
+        cache.set(
+          skill.resourceId,
+          skillStatus({
+            resource: skill,
+            conflicted: conflicted.has(skill.resourceId),
+            attention: items.get(skill.resourceId),
+            review: skillReviewState(skill, state, {
+              governed: selectedProject?.governed,
+            }),
+          }),
+        );
+      return cache.get(skill.resourceId) ?? null;
+    };
+  }, [attention, conflicted, state, selectedProject?.governed]);
   const syncReviews = useMemo(
     () => syncReviewItems(state, project, attention),
     [state, project, attention],
@@ -1032,6 +1043,8 @@ function WorkspaceApp({
               !inactiveProject &&
               repositories.length > 1 &&
               tab !== "home" &&
+              // Skills filter by repository inside their own Filter menu.
+              tab !== "skill" &&
               tab !== "members" ? (
                 <RepositoryFilter
                   key={`${workspaceScope}:${project}`}
@@ -1085,7 +1098,6 @@ function WorkspaceApp({
                 busy={busy}
                 actionError={error || refreshError}
                 onDismissError={error ? () => setError("") : undefined}
-                skillUsagePartial={skillUsage.usage?.partial}
                 onSync={() =>
                   void act(() => invoke("sync_now"), {
                     successTitle: "Sync requested",
@@ -1299,7 +1311,6 @@ function WorkspaceApp({
                     }
                     accessRequest={accessRequest}
                     skillSummaries={skillSummaries}
-                    skillUsage={tab === "skill" ? skillUsage : undefined}
                     kind={tab}
                     resources={resources}
                     filters={filters}
@@ -1308,6 +1319,7 @@ function WorkspaceApp({
                     displayTitle={displayTitle}
                     duplicateTitles={duplicateTitles}
                     conflicted={conflicted}
+                    skillStatus={skillStatusOf}
                     connected={hasConnectedSource(selectedProject)}
                     noAccess={Boolean(
                       selectedProject.governed &&

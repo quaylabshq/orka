@@ -245,22 +245,28 @@ for (const viewport of [
       ...(ENV_ENABLED ? [["ENVs", "env"]] : []),
     ]) {
       await page.getByRole("button", { name: new RegExp(`^${tab}`) }).click();
-      await expect(filter).toBeVisible();
+      // Skills filter by repository inside their own Filter menu.
       await expect(
         page.getByRole("combobox", { name: /Filter.*repository/ }),
-      ).toHaveCount(1);
+      ).toHaveCount(kind === "skill" ? 0 : 1);
       if (kind === "env") {
         await expect(page.locator(".env-list-item")).toHaveCount(2);
       } else if (kind === "skill") {
-        const card = page.locator('[data-resource-id="skill-desktop"]');
-        await expect(card.locator(".resource-repository")).toHaveAttribute(
-          "title",
-          longName,
-        );
-        await expect(card.locator(".skill-card-meta")).not.toContainText(
-          longName,
-        );
-        await expect(card.locator(".skill-origin-badge")).toHaveText("Global");
+        const row = page.locator(".skill-table tbody tr", {
+          has: page.locator('[data-resource-id="skill-desktop"]'),
+        });
+        await expect(
+          row.locator(".skill-table-repository-label"),
+        ).toHaveAttribute("title", longName);
+        await page.getByRole("button", { name: "Filter", exact: true }).click();
+        await page.getByRole("menuitem", { name: "Repository" }).click();
+        await expect(
+          page.getByRole("menuitemcheckbox", { name: longName, exact: true }),
+        ).toBeVisible();
+        await page.keyboard.press("Escape");
+        await page.keyboard.press("Escape");
+        await row.hover();
+        await expect(row.getByRole("tooltip")).toContainText("Global");
       } else {
         await expect(
           page.getByRole("columnheader", { name: "Repository", exact: true }),
@@ -310,15 +316,19 @@ for (const viewport of [
       await page.screenshot({
         path: testInfo.outputPath(`${kind}-${viewport.width}.png`),
       });
-      const overflowing = await page
-        .locator(".resource-repository")
-        .filter({ hasText: longName })
-        .first()
-        .evaluate((el) => ({
-          text: el.lastElementChild!.scrollWidth,
-          width: el.lastElementChild!.clientWidth,
-        }));
-      expect(overflowing.text).toBeGreaterThan(overflowing.width);
+      // The Skills table gives repository names more room; its own test
+      // covers the label and its title above.
+      if (kind !== "skill") {
+        const overflowing = await page
+          .locator(".resource-repository")
+          .filter({ hasText: longName })
+          .first()
+          .evaluate((el) => ({
+            text: el.lastElementChild!.scrollWidth,
+            width: el.lastElementChild!.clientWidth,
+          }));
+        expect(overflowing.text).toBeGreaterThan(overflowing.width);
+      }
       expect(
         await page.evaluate(
           () => document.documentElement.scrollWidth > innerWidth,
@@ -409,12 +419,18 @@ test("one repository selection follows tabs, supports the keyboard, and resets o
   await expect(filter).toHaveText("backend");
   for (const [tab, selector] of [
     ["Memories", "tbody tr"],
-    ["Skills", ".skill-card"],
+    ["Skills", ".skill-table tbody tr"],
     ["Sessions", "tbody tr"],
     ["Plans", "tbody tr"],
     ...(ENV_ENABLED ? [["ENVs", ".env-list-item"]] : []),
   ]) {
     await page.getByRole("button", { name: new RegExp(`^${tab}`) }).click();
+    if (tab === "Skills") {
+      // Skills keep their own filters; the header selection does not reach them.
+      await expect(filter).toHaveCount(0);
+      await expect(page.locator(selector)).toHaveCount(2);
+      continue;
+    }
     await expect(filter).toHaveText("backend");
     await expect(page.locator(selector)).toHaveCount(1);
     await expect(page.locator(selector)).toContainText("backend");

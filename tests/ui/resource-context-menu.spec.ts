@@ -1379,7 +1379,7 @@ test("read-only shared skills retain copy and export but omit sharing and deleti
   page,
 }) => {
   await skillFixture(page, { role: "member", access: "read", open: false });
-  await page.locator(".skill-card").click({
+  await page.locator(".skill-table tbody tr").click({
     button: "right",
     position: { x: 8, y: 8 },
   });
@@ -1390,16 +1390,11 @@ test("read-only shared skills retain copy and export but omit sharing and deleti
   await expect(
     menu.getByRole("menuitem", { name: /Delete shared skill|Share snapshot/ }),
   ).toHaveCount(0);
-  await menu
-    .getByRole("menuitem", { name: "More actions", exact: true })
-    .hover();
-  const submenu = page.getByRole("menu", { name: "More actions" });
+  // The Skills index shows every action in one list, with no submenu.
   await expect(
-    submenu.getByRole("menuitem", { name: "Export ZIP…", exact: true }),
-  ).toBeVisible();
-  await expect(
-    submenu.getByRole("menuitem", {
-      name: /Delete shared skill|Share snapshot/,
-    }),
+    menu.getByRole("menuitem", { name: "More actions", exact: true }),
   ).toHaveCount(0);
+  await expect(
+    menu.getByRole("menuitem", { name: "Export ZIP…", exact: true }),
+  ).toBeVisible();
 });

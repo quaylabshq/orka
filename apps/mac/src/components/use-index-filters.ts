@@ -5,7 +5,7 @@ import { defaultIndexFilters, type IndexFilters } from "./index-toolbar.js";
 type Kind = Resource["kind"];
 const initial: Record<Kind, IndexFilters> = {
   memory: defaultIndexFilters,
-  skill: { ...defaultIndexFilters, sort: "usage" },
+  skill: { ...defaultIndexFilters, sort: "title" },
   session: defaultIndexFilters,
   plan: defaultIndexFilters,
 };

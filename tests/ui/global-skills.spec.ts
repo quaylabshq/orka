@@ -228,10 +228,20 @@ async function fixture(page: Page, mode = "normal") {
               skills:
                 mode === "empty"
                   ? []
-                  : skills.map((skill) => ({
-                      ...skill,
-                      exists: skill.exists || (added && skill.id === "codex"),
-                    })),
+                  : skills
+                      // Its folder was removed after the first scan.
+                      .filter(
+                        (skill) =>
+                          !(
+                            mode === "bulk-gone" &&
+                            added &&
+                            skill.id === "claude"
+                          ),
+                      )
+                      .map((skill) => ({
+                        ...skill,
+                        exists: skill.exists || (added && skill.id === "codex"),
+                      })),
               errors:
                 mode === "partial"
                   ? [
@@ -302,6 +312,7 @@ async function fixture(page: Page, mode = "normal") {
             };
           }
           if (name === "add_global_skills") {
+            if (mode === "add-error") throw "Project folder is unavailable";
             if (mode === "add-wait")
               await new Promise<void>((resolve) => {
                 (window as any).finishSkillImport = resolve;
@@ -309,9 +320,16 @@ async function fixture(page: Page, mode = "normal") {
             added = true;
             return {
               results: (args?.skillIds as string[]).map((skillId) =>
-                mode === "bulk-partial" && skillId === "claude"
-                  ? { skillId, error: "Folder changed; scan again" }
-                  : { skillId, result: { status: "queued" } },
+                (mode === "bulk-partial" || mode === "bulk-gone") &&
+                skillId === "claude"
+                  ? { skillId, error: "Global skill unavailable. Scan again." }
+                  : mode === "bulk-dead" && skillId === "claude"
+                    ? {
+                        skillId,
+                        error:
+                          "A skill with this folder name is already in the project. Existing files were preserved.",
+                      }
+                    : { skillId, result: { status: "queued" } },
               ),
             };
           }
@@ -345,197 +363,149 @@ async function fixture(page: Page, mode = "normal") {
   await page.getByRole("button", { name: /^Skills/ }).click();
 }
 
+const trigger = (page: Page) =>
+  page.getByRole("button", { name: /^Add (global )?skills$/i });
+const popover = (page: Page) =>
+  page.getByRole("dialog", { name: "Add global skills", exact: true });
+const pick = (page: Page, name: string) =>
+  popover(page).getByRole("checkbox", {
+    name: `Select skill: ${name}`,
+    exact: true,
+  });
+const rows = (page: Page) => page.locator(".skill-table tbody tr");
+const calls = (page: Page, name: string) =>
+  page.evaluate(
+    (name) =>
+      (window as any).invokeCalls.filter((call: any) => call.name === name),
+    name,
+  );
+
 for (const viewport of [
   { width: 1160, height: 800 },
   { width: 900, height: 640 },
 ]) {
-  test(`floating skill import and accessible picker at ${viewport.width}`, async ({
+  test(`the Add skills popover lists only what can be added at ${viewport.width}`, async ({
     page,
   }) => {
     await page.setViewportSize(viewport);
-    await fixture(page);
-    const trigger = page.getByRole("button", {
-      name: "Add global skills",
-      exact: true,
-    });
-    await expect(trigger).toBeVisible();
-    await expect(trigger).toHaveText("Add Global Skills");
-    const before = await trigger.boundingBox();
-    expect(before!.height).toBe(40);
-    expect(before!.width).toBeGreaterThan(before!.height * 2);
-    await trigger.click();
-    const dialog = page.getByRole("dialog", { name: "Add global skills" });
+    await fixture(page, "populated");
+    await trigger(page).click();
+    const dialog = popover(page);
+    await expect(pick(page, "Code review")).toBeVisible();
+    await expect(pick(page, "Writing guide")).toBeVisible();
+    // Skills already in the project, or that cannot be read, stay hidden.
+    await expect(pick(page, "existing")).toHaveCount(0);
+    await expect(pick(page, "unsafe")).toHaveCount(0);
+    await expect(dialog.getByText("22 global skills")).toBeVisible();
+    const add = dialog.getByRole("button", { name: "Add skills", exact: true });
+    await expect(add).toBeDisabled();
+    await pick(page, "Code review").check();
     await expect(
-      dialog.getByRole("heading", { name: "Code review" }),
-    ).toBeVisible();
-    await expect(dialog).toHaveCSS("opacity", "1");
-    await expect(
-      dialog
-        .getByRole("list", { name: "Global skills", exact: true })
-        .getByText("3 files", { exact: true }),
-    ).toBeVisible();
-    await expect(
-      dialog.getByRole("button", { name: "Already in project: existing" }),
-    ).toBeDisabled();
-    await expect(
-      dialog.getByRole("button", { name: "Add to project: unsafe" }),
-    ).toBeDisabled();
-    const box = await dialog.boundingBox();
-    expect(box!.x).toBeGreaterThanOrEqual(0);
-    expect(box!.y + box!.height).toBeLessThanOrEqual(viewport.height);
-    const sort = dialog.getByRole("button", {
-      name: "Sort global skills Most used",
-      exact: true,
-    });
-    const refresh = dialog.getByRole("button", {
-      name: "Scan again",
-      exact: true,
-    });
-    const search = dialog.locator(".ui-field__control");
-    const [sortBox, refreshBox, searchBox] = await Promise.all([
-      sort.boundingBox(),
-      refresh.boundingBox(),
-      search.boundingBox(),
-    ]);
-    expect(sortBox!.height).toBe(40);
-    expect(sortBox!.height).toBe(refreshBox!.height);
-    expect(sortBox!.height).toBe(searchBox!.height);
-    expect(sortBox!.y).toBe(refreshBox!.y);
-    expect(sortBox!.y).toBe(searchBox!.y);
-    await sort.click();
-    const menu = page.getByRole("menu", {
-      name: "Sort global skills",
-      exact: true,
-    });
-    await expect(menu).toBeVisible();
-    await expect(
-      menu.locator('[role="menuitemradio"] > .ui-icon:first-child > svg'),
-    ).toHaveCount(2);
-    await expect(page.locator(".index-sort-menu")).toHaveCSS("opacity", "1");
-    await expect(
-      menu.getByRole("menuitemradio", { name: "Most used", exact: true }),
-    ).toHaveAttribute("aria-checked", "true");
-    await expect(
-      menu.getByRole("menuitemradio", { name: "Name", exact: true }),
-    ).toBeVisible();
-    expect(
-      (await new AxeBuilder({ page }).include(".index-sort-menu").analyze())
-        .violations,
-    ).toEqual([]);
+      dialog.getByRole("button", { name: "Add 1 skill", exact: true }),
+    ).toBeEnabled();
+    const box = (await dialog.boundingBox())!;
+    expect(box.width).toBe(380);
+    expect(box.y + box.height).toBeLessThanOrEqual(viewport.height);
+    expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
     await page.screenshot({
-      path: `artifacts/global-skills-sort-${viewport.width}.png`,
+      path: `artifacts/add-skills-${viewport.width}.png`,
     });
-    await page.keyboard.press("Escape");
-    await expect(menu).toHaveCount(0);
-    await expect(dialog).toBeVisible();
-    await expect(sort).toBeFocused();
-    expect(
-      (await new AxeBuilder({ page }).include('[role="dialog"]').analyze())
-        .violations,
-    ).toEqual([]);
-    await dialog.getByRole("searchbox").fill("claude");
-    await expect(
-      dialog.getByRole("heading", { name: "Writing guide" }),
-    ).toBeVisible();
-    await expect(
-      dialog.getByRole("heading", { name: "Code review" }),
-    ).toHaveCount(0);
-    await dialog.getByRole("searchbox").fill("scripts");
-    await expect(
-      dialog.getByRole("heading", { name: "Code review" }),
-    ).toBeVisible();
-    await dialog
-      .getByRole("button", { name: "Add to project: Code review" })
-      .click();
-    await expect(
-      dialog.getByRole("button", { name: "Added: Code review" }),
-    ).toBeDisabled();
-    await expect(
-      dialog.getByText(
-        "Code review added. Sharing queued; approval is requested only if permissions require it.",
-      ),
-    ).toBeVisible();
-    expect(
-      await page.evaluate(() =>
-        (window as any).invokeCalls.filter(
-          (c: any) => c.name === "add_global_skill",
-        ),
-      ),
-    ).toEqual([
-      {
-        name: "add_global_skill",
-        args: { projectId: "one", skillId: "codex" },
-      },
-    ]);
-    await dialog.getByRole("button", { name: "Done", exact: true }).click();
-    await expect(trigger).toBeFocused();
-    expect(await trigger.boundingBox()).toEqual(before);
-    await page.screenshot({
-      path: `artifacts/global-skills-index-${viewport.width}.png`,
-    });
-    await trigger.click();
-    await expect(
-      dialog.getByRole("heading", { name: "Code review" }),
-    ).toBeVisible();
-    await expect(dialog).toHaveCSS("opacity", "1");
-    await page.screenshot({
-      path: `artifacts/global-skills-picker-${viewport.width}.png`,
-    });
-    await page.keyboard.press("Escape");
-    await expect(dialog).toHaveCount(0);
-    await expect(trigger).toBeFocused();
   });
 }
+
+test("search matches names and reveals skills that cannot be added", async ({
+  page,
+}) => {
+  await fixture(page);
+  await trigger(page).click();
+  const dialog = popover(page);
+  const search = dialog.getByRole("searchbox", {
+    name: "Search global skills",
+  });
+  await expect(search).toBeFocused();
+  // Descriptions are not searched.
+  await search.fill("supporting scripts");
+  await expect(dialog.getByText("No global skills match")).toBeVisible();
+  await dialog.getByRole("button", { name: "Clear search" }).last().click();
+  await search.fill("exist");
+  const hidden = pick(page, "existing");
+  await expect(hidden).toBeDisabled();
+  await expect(dialog.getByText("Already in project")).toBeVisible();
+  await search.fill("unsafe");
+  await expect(pick(page, "unsafe")).toBeDisabled();
+  await expect(dialog.getByText("Can’t be added")).toBeVisible();
+  await search.fill("guide");
+  await expect(dialog.getByText("1 of 22 match")).toBeVisible();
+});
+
+test("hover and focus open a skill's details beside the popover", async ({
+  page,
+}) => {
+  await fixture(page);
+  await trigger(page).click();
+  const dialog = popover(page);
+  await dialog.locator(".add-skills-row", { hasText: "Code review" }).hover();
+  const peek = dialog.getByRole("tooltip");
+  await expect(peek).toContainText("Code review");
+  await expect(peek).toContainText(
+    "Review changes with supporting scripts and references.",
+  );
+  await expect(peek).toContainText("3 files");
+  const [peekBox, dialogBox] = [
+    (await peek.boundingBox())!,
+    (await dialog.boundingBox())!,
+  ];
+  expect(peekBox.x + peekBox.width).toBeLessThan(dialogBox.x);
+  await page.mouse.move(0, 0);
+  await expect(peek).toHaveCount(0);
+});
 
 test("scan errors can be retried and partial results keep healthy skills usable", async ({
   page,
 }) => {
   await fixture(page, "retry");
-  await page
-    .getByRole("button", { name: "Add global skills", exact: true })
-    .click();
-  await expect(page.getByRole("alert")).toContainText(
-    "Couldn’t scan global skills",
-  );
-  await page.getByRole("button", { name: "Scan again" }).click();
+  await trigger(page).click();
+  const dialog = popover(page);
   await expect(
-    page.getByRole("heading", { name: "Code review" }),
+    dialog.getByRole("heading", { name: "Couldn’t read your global skills" }),
   ).toBeVisible();
+  await expect(dialog.getByText("Folder access failed")).toBeVisible();
+  await dialog.getByRole("button", { name: "Try again" }).click();
+  await expect(pick(page, "Code review")).toBeVisible();
   await fixture(page, "partial");
-  await page
-    .getByRole("button", { name: "Add global skills", exact: true })
-    .click();
-  await expect(page.getByText(/Cannot scan.*permission denied/)).toBeVisible();
+  await trigger(page).click();
   await expect(
-    page.getByRole("button", { name: "Add to project: Code review" }),
-  ).toBeEnabled();
+    popover(page).getByText(/Cannot scan.*permission denied/),
+  ).toBeVisible();
+  await expect(pick(page, "Code review")).toBeEnabled();
 });
 
 for (const viewport of [
   { width: 1160, height: 800 },
   { width: 900, height: 640 },
 ]) {
-  test(`local skill imports appear immediately and open before sharing at ${viewport.width}`, async ({
+  test(`added skills appear in the table and open before sharing at ${viewport.width}`, async ({
     page,
   }) => {
     await page.setViewportSize(viewport);
     await fixture(page, "governed");
-    await page
-      .getByRole("button", { name: "Add global skills", exact: true })
+    await trigger(page).click();
+    await pick(page, "Code review").check();
+    await popover(page)
+      .getByRole("button", { name: "Add 1 skill", exact: true })
       .click();
-    await page
-      .getByRole("button", { name: "Add to project: Code review", exact: true })
-      .click();
+    // The popover closes and a toast says where the skill went.
+    await expect(popover(page)).toBeHidden();
+    await expect(page.getByText("Code review added to Orka")).toBeVisible();
+    await expect(rows(page)).toHaveCount(1);
+    const row = rows(page).first();
+    await expect(row).toContainText("Code review");
+    await expect(row).toContainText("Sharing queued");
+    await expect(row.getByLabel("On this Mac")).toBeVisible();
+    // Everything here is yours, so there is nobody to credit.
     await expect(
-      page.getByText(/Code review added. Sharing queued/),
-    ).toBeVisible();
-    await page.getByRole("button", { name: "Done", exact: true }).click();
-    const card = page.locator(".skill-card");
-    await expect(card).toHaveCount(1);
-    await expect(card).toContainText("Code review");
-    await expect(card).toContainText("Sharing queued");
-    await expect(card.locator(".skill-origin-badge")).toHaveText("Global");
-    await expect(card).toContainText("Detected in 8 chats");
+      page.getByRole("columnheader", { name: "Shared by" }),
+    ).toHaveCount(0);
     await expect(page.getByRole("button", { name: /^Skills/ })).toContainText(
       "1",
     );
@@ -546,7 +516,7 @@ for (const viewport of [
     await page.screenshot({
       path: `artifacts/local-skills-${viewport.width}.png`,
     });
-    await card.click();
+    await row.getByRole("button", { name: "Code review", exact: true }).click();
     await expect(
       page.getByRole("heading", { name: "Code review", exact: true }),
     ).toBeVisible();
@@ -564,172 +534,156 @@ for (const viewport of [
     await expect(
       page.getByRole("button", { name: "Open in editor", exact: true }),
     ).toBeEnabled();
-    await expect(
-      page.getByRole("button", { name: "Review changes", exact: true }),
-    ).toHaveCount(0);
     await page.evaluate(() => (window as any).publishSkill());
-    await expect(
-      page.getByText(
-        "This skill will share automatically when permissions allow. Sync retries while offline.",
-      ),
-    ).toHaveCount(0);
     await page
       .getByRole("button", { name: "Back to Skills", exact: true })
       .click();
-    await expect(card).toHaveCount(1);
-    await expect(card).not.toContainText("Sharing queued");
-    await expect(card.locator(".skill-origin-badge")).toHaveText("Global");
+    await expect(rows(page)).toHaveCount(1);
+    await expect(rows(page).first()).not.toContainText("Sharing queued");
     expect(
-      await page.evaluate(() =>
-        (window as any).invokeCalls.filter(
-          (call: any) =>
-            call.name === "governance_command" &&
-            ["submit-draft", "decide"].includes(call.args?.action),
-        ),
+      (await calls(page, "governance_command")).filter((call: any) =>
+        ["submit-draft", "decide"].includes(call.args?.action),
       ),
     ).toHaveLength(0);
   });
 }
 
-test("local-only skills stay visible and a shared revision replaces the local card", async ({
+test("a skill's description opens on hover and marks global imports", async ({
   page,
 }) => {
   await fixture(page, "local");
-  const cards = page.locator(".skill-card");
-  await expect(cards).toHaveCount(1);
-  await expect(cards).toContainText("On this Mac");
-  await cards.click();
+  const row = rows(page).first();
+  await row.hover();
+  const peek = row.getByRole("tooltip");
+  await expect(peek).toContainText("Imported from your global skills");
+});
+
+test("local-only skills stay visible and a shared revision replaces the local row", async ({
+  page,
+}) => {
+  await fixture(page, "local");
+  await expect(rows(page)).toHaveCount(1);
+  await expect(rows(page).getByLabel("On this Mac")).toBeVisible();
+  await rows(page)
+    .getByRole("button", { name: "Code review", exact: true })
+    .click();
   await expect(
     page.getByText("This skill is on this Mac and hasn’t been shared."),
   ).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: "Review changes", exact: true }),
-  ).toHaveCount(0);
   await page
     .getByRole("button", { name: "Back to Skills", exact: true })
     .click();
   await page.evaluate(() => (window as any).publishSkill());
-  await expect(cards).toHaveCount(1);
-  await expect(cards).not.toContainText("On this Mac");
-  await expect(cards.locator(".skill-origin-badge")).toHaveText("Global");
+  await expect(rows(page)).toHaveCount(1);
+  await expect(rows(page).getByLabel("On this Mac")).toHaveCount(0);
+  await expect(rows(page).getByLabel("Shared with the project")).toBeVisible();
 });
 
 test("a new local import remains visible over an older shared deletion", async ({
   page,
 }) => {
   await fixture(page, "local-deleted");
-  const card = page.locator(".skill-card");
-  await expect(card).toHaveCount(1);
-  await expect(card).toContainText("Code review");
-  await expect(card).toContainText("On this Mac");
-  await expect(card.locator(".skill-origin-badge")).toHaveText("Global");
-  await card.click();
+  await expect(rows(page)).toHaveCount(1);
+  await expect(rows(page)).toContainText("Code review");
+  await expect(rows(page).getByLabel("On this Mac")).toBeVisible();
+  await rows(page)
+    .getByRole("button", { name: "Code review", exact: true })
+    .click();
   await expect(
     page.getByRole("article", { name: "Rendered Markdown" }),
   ).toContainText("Review");
 });
 
-test("disconnected projects scan but cannot add; empty and filtered empty scans stay clear", async ({
+test("without a folder the popover offers to connect one; an empty scan says so", async ({
   page,
 }) => {
   await fixture(page, "disconnected");
-  await page
-    .getByRole("button", { name: "Add global skills", exact: true })
-    .click();
+  await trigger(page).click();
   await expect(
-    page.getByText("Connect a project folder to add skills."),
+    popover(page).getByRole("heading", { name: "Connect a folder first" }),
   ).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "Add to project: Code review" }),
-  ).toBeDisabled();
-  await page.getByRole("searchbox").fill("no such skill");
-  await expect(page.getByText("No skills match your search.")).toBeVisible();
-  await fixture(page, "empty");
-  await page
-    .getByRole("button", { name: "Add global skills", exact: true })
-    .click();
+    popover(page).getByRole("button", { name: "Connect folder" }),
+  ).toBeEnabled();
+  expect(await calls(page, "scan_global_skills")).toHaveLength(0);
+  // The button opens the macOS folder picker; cancelling it changes nothing.
+  await popover(page).getByRole("button", { name: "Connect folder" }).click();
+  await expect
+    .poll(async () => (await calls(page, "plugin:dialog|open")).length)
+    .toBe(1);
   await expect(
-    page.getByText("No global skills found in Codex or Claude."),
+    popover(page).getByRole("heading", { name: "Connect a folder first" }),
+  ).toBeVisible();
+  await fixture(page, "empty");
+  await trigger(page).click();
+  await expect(
+    popover(page).getByRole("heading", { name: "Nothing to add" }),
+  ).toBeVisible();
+  await expect(
+    popover(page).getByText(
+      "No global skills were found in Codex or Claude on this Mac.",
+    ),
   ).toBeVisible();
 });
 
-test("failed adds retain the picker and remain retryable", async ({ page }) => {
+test("a failed add keeps the selection and offers Try again", async ({
+  page,
+}) => {
   await fixture(page, "add-error");
-  await page
-    .getByRole("button", { name: "Add global skills", exact: true })
+  await trigger(page).click();
+  const dialog = popover(page);
+  await pick(page, "Code review").check();
+  await dialog
+    .getByRole("button", { name: "Add 1 skill", exact: true })
     .click();
-  const add = page.getByRole("button", { name: "Add to project: Code review" });
-  await add.click();
-  await expect(page.getByRole("alert")).toContainText(
+  await expect(dialog.getByRole("alert")).toContainText(
+    "Couldn’t add 1 skill.",
+  );
+  await expect(dialog.getByRole("alert")).toContainText(
     "Project folder is unavailable",
   );
-  await expect(add).toBeEnabled();
+  await expect(pick(page, "Code review")).toBeChecked();
   await expect(
-    page.getByRole("button", { name: "Added: Code review" }),
-  ).toHaveCount(0);
+    dialog.getByRole("button", { name: "Try again", exact: true }),
+  ).toBeEnabled();
 });
 
-test("skill imports explain the sync wait and finish the original request once", async ({
+test("adding locks the popover until the one request finishes", async ({
   page,
 }) => {
   await fixture(page, "add-wait");
-  await page
-    .getByRole("button", { name: "Add global skills", exact: true })
-    .click();
-  const dialog = page.getByRole("dialog", {
-    name: "Add global skills",
-    exact: true,
-  });
+  await trigger(page).click();
+  const dialog = popover(page);
+  await pick(page, "Code review").check();
+  await pick(page, "Writing guide").check();
   await dialog
-    .getByRole("button", { name: "Add to project: Code review", exact: true })
+    .getByRole("button", { name: "Add 2 skills", exact: true })
     .click();
   await expect(
-    dialog.getByText(
-      "Adding Code review… This can wait for an active sync to finish.",
-    ),
-  ).toBeVisible();
-  await expect(
-    dialog.getByRole("button", { name: "Close global skills", exact: true }),
+    dialog.getByRole("button", { name: "Adding…", exact: true }),
   ).toBeDisabled();
+  await expect(pick(page, "Code review")).toBeDisabled();
   await expect(
-    dialog.getByRole("button", {
-      name: "Add to project: Code review",
-      exact: true,
-    }),
+    dialog.getByRole("searchbox", { name: "Search global skills" }),
   ).toBeDisabled();
+  // Neither Escape nor a click outside closes it mid-add.
   await page.keyboard.press("Escape");
   await expect(dialog).toBeVisible();
+  await page.mouse.click(20, 400);
+  await expect(dialog).toBeVisible();
   await page.evaluate(() => (window as any).finishSkillImport());
-  await expect(
-    dialog.getByRole("button", { name: "Added: Code review", exact: true }),
-  ).toBeDisabled();
-  await expect(
-    dialog.getByText(
-      "Adding Code review… This can wait for an active sync to finish.",
-    ),
-  ).toHaveCount(0);
-  await expect(
-    dialog.getByRole("button", { name: "Close global skills", exact: true }),
-  ).toBeEnabled();
-  expect(
-    await page.evaluate(() =>
-      (window as any).invokeCalls.filter(
-        (call: any) => call.name === "add_global_skill",
-      ),
-    ),
-  ).toHaveLength(1);
+  await expect(dialog).toBeHidden();
+  await expect(page.getByText("2 skills added to Orka")).toBeVisible();
+  expect(await calls(page, "add_global_skills")).toHaveLength(1);
+  expect(await calls(page, "add_global_skill")).toHaveLength(0);
 });
 
-test("the floating action stays pinned while the Skills collection scrolls", async ({
+test("Add skills stays in the toolbar while the Skills list scrolls", async ({
   page,
 }) => {
   await fixture(page, "populated");
-  const trigger = page.getByRole("button", {
-    name: "Add global skills",
-    exact: true,
-  });
-  await expect(page.locator(".skill-card")).toHaveCount(24);
-  const before = await trigger.boundingBox();
+  await expect(rows(page)).toHaveCount(24);
+  const before = await trigger(page).boundingBox();
   const list = page.locator(".resource-index-body");
   await list.evaluate((element) => {
     element.scrollTop = element.scrollHeight;
@@ -737,94 +691,38 @@ test("the floating action stays pinned while the Skills collection scrolls", asy
   expect(await list.evaluate((element) => element.scrollTop)).toBeGreaterThan(
     0,
   );
-  expect(await trigger.boundingBox()).toEqual(before);
-  await trigger.click();
-  await expect(
-    page.getByRole("heading", { name: "Code review" }),
-  ).toBeVisible();
-  await page.getByRole("button", { name: "Done", exact: true }).click();
-  await page.getByRole("button", { name: /^Memories/ }).click();
-  await expect(trigger).toHaveCount(0);
-});
-
-test("a loading scan can be closed and reopening starts a fresh scan", async ({
-  page,
-}) => {
-  await fixture(page, "loading");
-  const trigger = page.getByRole("button", {
-    name: "Add global skills",
-    exact: true,
-  });
-  await trigger.click();
-  await expect(
-    page.getByText("Scanning Codex and Claude global skills…"),
-  ).toBeVisible();
+  expect(await trigger(page).boundingBox()).toEqual(before);
+  await trigger(page).click();
+  await expect(pick(page, "Code review")).toBeVisible();
   await page.keyboard.press("Escape");
-  await expect(trigger).toBeFocused();
-  await trigger.click();
-  await expect(
-    page.getByRole("heading", { name: "Code review" }),
-  ).toBeVisible();
-  await page.evaluate(() => (window as any).finishSkillScan());
-  expect(
-    await page.evaluate(() =>
-      (window as any).invokeCalls.filter(
-        (c: any) => c.name === "add_global_skill",
-      ),
-    ),
-  ).toHaveLength(0);
+  await page.getByRole("button", { name: /^Memories/ }).click();
+  await expect(trigger(page)).toHaveCount(0);
 });
 
 for (const reducedMotion of ["no-preference", "reduce"] as const) {
-  test(`initial skill skeletons are inert and rescans retain content with ${reducedMotion} motion`, async ({
+  test(`a held scan shows placeholders, can be closed, and every open scans again with ${reducedMotion} motion`, async ({
     page,
   }) => {
     await page.emulateMedia({ reducedMotion });
     await page.setViewportSize({ width: 900, height: 640 });
-    await fixture(page, "held-scan");
-    await page
-      .getByRole("button", { name: "Add global skills", exact: true })
-      .click();
-    const dialog = page.getByRole("dialog", { name: "Add global skills" });
-    const region = dialog.locator(".loading-region");
-    await expect(region).toHaveAttribute("aria-busy", "true");
+    await fixture(page, "loading");
+    await trigger(page).click();
+    const dialog = popover(page);
     await expect(
-      dialog.getByRole("heading", { name: "Project review" }),
-    ).toHaveCount(0);
+      dialog.getByText("Reading your global skills…"),
+    ).toBeAttached();
     await expect(
       dialog.getByRole("list", { name: "Global skills" }),
     ).toHaveCount(0);
-    await expect(
-      dialog.getByRole("button", { name: "Close global skills" }),
-    ).toBeEnabled();
-    expect((await region.boundingBox())!.height).toBeGreaterThan(200);
-    expect(
-      (await new AxeBuilder({ page }).include(".global-skills-modal").analyze())
-        .violations,
-    ).toEqual([]);
-    await page.screenshot({
-      path: `artifacts/skill-loading-${reducedMotion}.png`,
-    });
+    expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+    await page.keyboard.press("Escape");
+    await expect(dialog).toBeHidden();
+    await expect(trigger(page)).toBeFocused();
+    await trigger(page).click();
+    await expect(pick(page, "Code review")).toBeVisible();
     await page.evaluate(() => (window as any).finishSkillScan());
-    const heading = dialog.getByRole("heading", { name: "Code review" });
-    await expect(heading).toBeVisible();
-    await expect(region).not.toHaveAttribute("aria-busy", "true");
-    const before = await heading.boundingBox();
-    await dialog
-      .getByRole("button", { name: "Scan again", exact: true })
-      .click();
-    await expect(dialog.locator(".global-skills-list")).toHaveAttribute(
-      "aria-busy",
-      "true",
-    );
-    await expect(heading).toBeVisible();
-    expect(await heading.boundingBox()).toEqual(before);
-    await expect(region).not.toHaveAttribute("aria-busy", "true");
-    await page.evaluate(() => (window as any).finishSkillScan());
-    await expect(dialog.locator(".global-skills-list")).toHaveAttribute(
-      "aria-busy",
-      "false",
-    );
+    expect(await calls(page, "scan_global_skills")).toHaveLength(2);
+    expect(await calls(page, "add_global_skills")).toHaveLength(0);
   });
 }
 
@@ -832,54 +730,37 @@ test("first approval keeps one status pill and the local editor action", async (
   page,
 }) => {
   await fixture(page, "approval");
-  const card = page.locator(".skill-card");
-  await expect(card).toContainText("Awaiting approval");
-  await card.click();
+  await expect(rows(page).locator(".skill-status-pill")).toHaveText([
+    "Awaiting approval",
+  ]);
+  await rows(page)
+    .getByRole("button", { name: "Code review", exact: true })
+    .click();
   const detail = page.getByRole("region", { name: "Skill details" });
   const info = detail.getByRole("region", { name: "Skill info", exact: true });
   await expect(detail.locator(".detail-status")).toHaveText([
     "Awaiting approval",
   ]);
-  await expect(info.getByRole("term")).toHaveText(["Updated by", "Updated at"]);
-  await expect(info.locator(".detail-info-note")).toHaveCount(0);
   await expect(info.locator(".detail-actions").getByRole("button")).toHaveText([
     "Open in editor",
   ]);
-  await expect(
-    info.getByRole("button", { name: "More skill actions", exact: true }),
-  ).toBeVisible();
-  await expect(
-    detail.getByText(
-      "Project permissions require approval before this skill can be shared.",
-    ),
-  ).toHaveCount(0);
-  await expect(
-    detail.getByRole("button", {
-      name: /View changes|Review changes|Copy skill link|Export ZIP|Publish update|Send for approval/,
-    }),
-  ).toHaveCount(0);
-  await expect(
-    detail.getByRole("button", { name: "SKILL.md", exact: true }),
-  ).toBeVisible();
   await info
     .getByRole("button", { name: "Open in editor", exact: true })
     .click();
   expect(
-    await page.evaluate(() =>
-      (window as any).invokeCalls
-        .filter((call: any) => call.name === "open_editor")
-        .map((call: any) => call.args),
-    ),
+    (await calls(page, "open_editor")).map((call: any) => call.args),
   ).toEqual([{ id: "codex", file: "SKILL.md" }]);
 });
 
 for (const mode of ["paused", "blocked"]) {
   test(`import sharing ${mode} has clear status`, async ({ page }) => {
     await fixture(page, mode);
-    await expect(page.locator(".skill-card")).toContainText(
+    await expect(rows(page).locator(".skill-status-pill")).toHaveText([
       mode === "paused" ? "Sharing paused" : "Sharing blocked",
-    );
-    await page.locator(".skill-card").click();
+    ]);
+    await rows(page)
+      .getByRole("button", { name: "Code review", exact: true })
+      .click();
     await expect(
       page.getByText(
         mode === "paused"
@@ -890,439 +771,194 @@ for (const mode of ["paused", "blocked"]) {
   });
 }
 
-test("global skills rank by recorded usage and can be sorted by name", async ({
+test("Select all follows the search and only ticked skills are added", async ({
   page,
 }) => {
   await fixture(page);
-  await page
-    .getByRole("button", { name: "Add global skills", exact: true })
+  await trigger(page).click();
+  const dialog = popover(page);
+  const all = dialog.getByRole("checkbox", { name: "Select all" });
+  await pick(page, "Writing guide").check();
+  await expect(all).toHaveJSProperty("indeterminate", true);
+  await dialog
+    .getByRole("searchbox", { name: "Search global skills" })
+    .fill("review");
+  await all.check();
+  await dialog
+    .getByRole("searchbox", { name: "Search global skills" })
+    .fill("");
+  // The earlier pick survived the search, and nothing hidden was ticked.
+  await expect(pick(page, "Writing guide")).toBeChecked();
+  await expect(pick(page, "Code review")).toBeChecked();
+  await expect(pick(page, "Extra skill 0")).not.toBeChecked();
+  await dialog
+    .getByRole("button", { name: "Add 2 skills", exact: true })
     .click();
-  await expect(page.getByText("Detected in 12 chats")).toBeVisible();
-  const names = page.locator(".global-skill-row h3");
-  await expect(names.first()).toHaveText("Writing guide");
-  await page
-    .getByRole("button", { name: "Sort global skills Most used", exact: true })
-    .click();
-  const menu = page.getByRole("menu", {
-    name: "Sort global skills",
-    exact: true,
+  await expect(dialog).toBeHidden();
+  expect((await calls(page, "add_global_skills"))[0].args).toEqual({
+    projectId: "one",
+    sourceId: undefined,
+    skillIds: ["codex", "claude"],
   });
-  await expect(
-    menu.getByRole("menuitemradio", { name: "Most used", exact: true }),
-  ).toBeFocused();
+});
+
+test("the keyboard moves through rows, ticks with Space, and adds with Return", async ({
+  page,
+}) => {
+  await fixture(page);
+  await trigger(page).click();
+  const dialog = popover(page);
+  await pick(page, "Code review").focus();
+  await page.keyboard.press("Space");
+  await expect(pick(page, "Code review")).toBeChecked();
   await page.keyboard.press("ArrowDown");
   await expect(
-    menu.getByRole("menuitemradio", { name: "Name", exact: true }),
+    dialog
+      .getByRole("list", { name: "Global skills" })
+      .getByRole("checkbox")
+      .nth(1),
   ).toBeFocused();
   await page.keyboard.press("Enter");
-  await expect(menu).toHaveCount(0);
-  await expect(
-    page.getByRole("button", { name: "Sort global skills Name", exact: true }),
-  ).toBeFocused();
-  await expect(names.first()).toHaveText("Code review");
-  await page.getByRole("searchbox").fill("writing");
-  await expect(names).toHaveCount(1);
-  await expect(page.getByText("Detected in 12 chats")).toBeVisible();
+  await expect(dialog).toBeHidden();
+  expect((await calls(page, "add_global_skills"))[0].args.skillIds).toEqual([
+    "codex",
+  ]);
 });
 
-test("skill imports stay usable while usage loads and unavailable usage can be retried", async ({
-  page,
-}) => {
-  await fixture(page, "usage-loading");
-  await page
-    .getByRole("button", { name: "Add global skills", exact: true })
-    .click();
-  await expect(
-    page.getByText("Checking usage in local chat history…"),
-  ).toBeVisible();
-  await expect(page.getByText("Detected in 0 chats")).toHaveCount(0);
-  await page
-    .getByRole("button", { name: "Add to project: Code review" })
-    .click();
-  await expect(
-    page.getByRole("button", { name: "Added: Code review" }),
-  ).toBeDisabled();
-  await page.evaluate(() => (window as any).resolveSkillUsage());
-  await expect(page.getByText("Detected in 8 chats")).toBeVisible();
-  await fixture(page, "usage-error");
-  await page
-    .getByRole("button", { name: "Add global skills", exact: true })
-    .click();
-  await expect(
-    page.getByText("Usage unavailable. Skills can still be added."),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: "Add to project: Code review" }),
-  ).toBeEnabled();
-  await page.getByRole("button", { name: "Retry usage" }).click();
-  await expect(page.getByText("Detected in 8 chats")).toBeVisible();
-  await fixture(page, "usage-partial");
-  await page
-    .getByRole("button", { name: "Add global skills", exact: true })
-    .click();
-  await expect(page.getByText("Detected in 8 chats")).toBeVisible();
-  await expect(page.locator(".global-skills-usage-status")).toBeHidden();
-});
-
-for (const viewport of [
-  { width: 1160, height: 800 },
-  { width: 900, height: 640 },
-]) {
-  test(`main Skills show usage and preserve filters and sorting at ${viewport.width}`, async ({
-    page,
-  }) => {
-    await page.setViewportSize(viewport);
-    await fixture(page, "populated");
-    const cards = page.locator(".skill-card");
-    const names = cards.locator("strong");
-    await expect(names.first()).toHaveText("Writing guide");
-    await expect(cards.first()).toContainText("Detected in 12 chats");
-    await expect(cards.nth(1)).toContainText("Detected in 8 chats");
-    await expect(
-      page.getByRole("button", { name: "Sort by Most used", exact: true }),
-    ).toBeVisible();
-    await page.getByRole("searchbox", { name: "Search skills" }).fill("review");
-    await expect(names).toHaveText(["Code review"]);
-    await cards.first().click();
-    await page
-      .getByRole("button", { name: "Back to Skills", exact: true })
-      .click();
-    await expect(cards.first()).toBeFocused();
-    await expect(
-      page.getByRole("searchbox", { name: "Search skills" }),
-    ).toHaveValue("review");
-    await page
-      .getByRole("button", { name: "Clear search", exact: true })
-      .click();
-    await page
-      .getByRole("button", { name: "Sort by Most used", exact: true })
-      .click();
-    await page
-      .getByRole("menuitemradio", { name: "Title", exact: true })
-      .click();
-    await expect(names.first()).toHaveText("Code review");
-    await page
-      .getByRole("button", { name: "Sort by Title", exact: true })
-      .click();
-    await page
-      .getByRole("menuitemradio", { name: "Most used", exact: true })
-      .click();
-    const sources = page.getByRole("group", { name: "Filter by source" });
-    await sources.getByRole("button", { name: "Codex", exact: true }).click();
-    await expect(names.first()).toHaveText("Code review");
-    await expect(cards.first()).toContainText("Detected in 8 chats");
-    await sources.getByRole("button", { name: "All", exact: true }).click();
-    await expect(names.first()).toHaveText("Writing guide");
-    expect(
-      (await new AxeBuilder({ page }).include(".resource-index").analyze())
-        .violations,
-    ).toEqual([]);
-    expect(
-      await page.evaluate(
-        () => document.documentElement.scrollWidth > window.innerWidth,
-      ),
-    ).toBe(false);
-    await page.screenshot({
-      path: `artifacts/project-skill-usage-${viewport.width}.png`,
-    });
-    await page.getByRole("button", { name: /^Memories/ }).click();
-    await page.getByRole("button", { name: /^Sessions/ }).click();
-    await expect(
-      page.getByRole("button", { name: "Sort by Most used", exact: true }),
-    ).toHaveCount(0);
-  });
-}
-
-test("main Skills remain browsable during usage loading, failures, and partial history", async ({
-  page,
-}) => {
-  await fixture(page, "project-loading");
-  await expect(
-    page.getByRole("status").filter({ hasText: "Loading skill usage…" }),
-  ).toHaveText("Loading skill usage…");
-  await expect(page.locator(".skill-usage-count")).toHaveCount(0);
-  await page.getByRole("searchbox", { name: "Search skills" }).fill("review");
-  await expect(page.locator(".skill-card strong")).toHaveText(["Code review"]);
-  await page.evaluate(() => (window as any).resolveProjectUsage());
-  await expect(page.getByText("Detected in 8 chats")).toBeVisible();
-  await fixture(page, "project-error");
-  await expect(
-    page.getByText("Skill usage unavailable. History unreadable"),
-  ).toBeVisible();
-  await expect(page.locator(".skill-card")).toHaveCount(24);
-  await expect(page.locator(".skill-usage-count")).toHaveCount(0);
-  await page.getByRole("button", { name: "Retry usage", exact: true }).click();
-  await expect(page.locator(".skill-card").first()).toContainText(
-    "Detected in 12 chats",
-  );
-  await page
-    .getByRole("button", { name: "Refresh skill usage", exact: true })
-    .click();
-  await expect(
-    page.getByText("Skill usage unavailable. History unreadable"),
-  ).toHaveCount(0);
-  await fixture(page, "project-partial");
-  const historyMessage =
-    "Usage covers available local history; some records could not be read.";
-  const historyNotice = page.getByText(historyMessage);
-  await expect(historyNotice).toHaveCount(0);
-  await expect(page.locator(".skill-card").first()).toContainText(
-    "Detected in 12 chats",
-  );
-  await page.getByRole("button", { name: "Sync stopped", exact: true }).click();
-  await expect(
-    page.getByRole("region", { name: "Skill usage details" }),
-  ).toContainText(historyMessage);
-  expect(
-    (await new AxeBuilder({ page }).include(".sync-menu").analyze()).violations,
-  ).toEqual([]);
-  await page.getByRole("button", { name: "Close sync status" }).click();
-  await expect(historyNotice).toHaveCount(0);
-});
-
-test("late usage results cannot leak into another project's Skills", async ({
-  page,
-}) => {
-  await fixture(page, "project-scope");
-  await expect(
-    page.getByRole("status").filter({ hasText: "Loading skill usage…" }),
-  ).toHaveText("Loading skill usage…");
-  await page.getByRole("combobox", { name: "Select project" }).click();
-  await page.getByRole("option", { name: "Studio", exact: true }).click();
-  await expect(page.locator(".skill-usage-count").first()).toHaveText(
-    "Detected in 2 chats",
-  );
-  await page.evaluate(() => (window as any).resolveProjectUsage());
-  await expect(page.locator(".skill-usage-count").first()).toHaveText(
-    "Detected in 2 chats",
-  );
-  await expect(page.getByText("Detected in 12 chats")).toHaveCount(0);
-});
-
-test("bulk selection survives search and imports only eligible selected skills", async ({
-  page,
-}) => {
-  await fixture(page);
-  await page
-    .getByRole("button", { name: "Add global skills", exact: true })
-    .click();
-  const dialog = page.getByRole("dialog", {
-    name: "Add global skills",
-    exact: true,
-  });
-  await dialog
-    .getByRole("checkbox", { name: "Select skill: Code review", exact: true })
-    .check();
-  await dialog.getByRole("searchbox").fill("Writing guide");
-  await dialog
-    .getByRole("checkbox", { name: "Select all visible", exact: true })
-    .check();
-  await expect(dialog.getByText("2 selected", { exact: true })).toBeVisible();
-  await dialog.getByRole("searchbox").fill("");
-  await expect(
-    dialog.getByRole("checkbox", {
-      name: "Select skill: existing",
-      exact: true,
-    }),
-  ).toBeDisabled();
-  await expect(
-    dialog.getByRole("checkbox", { name: "Select skill: unsafe", exact: true }),
-  ).toBeDisabled();
-  expect(
-    (await new AxeBuilder({ page }).include('[role="dialog"]').analyze())
-      .violations,
-  ).toEqual([]);
-  await page.screenshot({ path: "artifacts/global-skills-bulk-selection.png" });
-  await dialog
-    .getByRole("button", { name: "Add selected (2)", exact: true })
-    .click();
-  await expect(
-    dialog.getByRole("button", { name: "Added: Code review", exact: true }),
-  ).toBeDisabled();
-  await expect(
-    dialog.getByRole("button", { name: "Added: Writing guide", exact: true }),
-  ).toBeDisabled();
-  await expect(dialog.getByText("0 selected", { exact: true })).toBeVisible();
-  const calls = await page.evaluate(() =>
-    (window as any).invokeCalls.filter(
-      (call: any) => call.name === "add_global_skills",
-    ),
-  );
-  expect(calls).toHaveLength(1);
-  expect(calls[0].args).toEqual({
-    projectId: "one",
-    skillIds: ["claude", "codex"],
-  });
-});
-
-test("partial bulk failures preserve successful imports and leave failed skills selected for retry", async ({
+test("a stale skill stays ticked for another try while the rest are added", async ({
   page,
 }) => {
   await fixture(page, "bulk-partial");
-  await page
-    .getByRole("button", { name: "Add global skills", exact: true })
-    .click();
-  const dialog = page.getByRole("dialog", {
-    name: "Add global skills",
-    exact: true,
-  });
-  for (const name of ["Code review", "Writing guide"])
-    await dialog
-      .getByRole("checkbox", { name: `Select skill: ${name}`, exact: true })
-      .check();
+  await trigger(page).click();
+  const dialog = popover(page);
+  await pick(page, "Code review").check();
+  await pick(page, "Writing guide").check();
   await dialog
-    .getByRole("button", { name: "Add selected (2)", exact: true })
+    .getByRole("button", { name: "Add 2 skills", exact: true })
     .click();
-  await expect(
-    dialog.getByRole("button", { name: "Added: Code review", exact: true }),
-  ).toBeDisabled();
   await expect(dialog.getByRole("alert")).toContainText(
-    "Writing guide: Folder changed",
+    "1 added. 1 couldn’t be added.",
   );
+  await expect(pick(page, "Writing guide")).toBeChecked();
   await expect(
-    dialog.getByRole("checkbox", {
-      name: "Select skill: Writing guide",
-      exact: true,
-    }),
-  ).toBeChecked();
-  await dialog
-    .getByRole("button", { name: "Add selected (1)", exact: true })
-    .click();
-  await expect(
-    dialog.getByRole("button", { name: "Added: Writing guide", exact: true }),
-  ).toBeDisabled();
-  await expect(dialog.getByRole("alert")).toHaveCount(0);
-});
-
-test("bulk import locks selection and dismissal until the one batch finishes", async ({
-  page,
-}) => {
-  await fixture(page, "add-wait");
-  await page
-    .getByRole("button", { name: "Add global skills", exact: true })
-    .click();
-  const dialog = page.getByRole("dialog", {
-    name: "Add global skills",
-    exact: true,
-  });
-  await dialog.getByRole("searchbox").fill("guide");
-  await dialog
-    .getByRole("checkbox", { name: "Select all visible", exact: true })
-    .check();
-  await dialog.getByRole("searchbox").fill("review");
-  await dialog
-    .getByRole("checkbox", { name: "Select all visible", exact: true })
-    .check();
-  await dialog
-    .getByRole("button", { name: "Add selected (2)", exact: true })
-    .click();
-  await expect(
-    dialog.getByText(
-      "Adding 2 skills… This can wait for an active sync to finish.",
-    ),
+    dialog
+      .locator(".add-skills-row", { hasText: "Writing guide" })
+      .getByLabel("Couldn’t be added"),
   ).toBeVisible();
+  // The one that went in has left the list.
+  await expect(pick(page, "Code review")).toHaveCount(0);
   await expect(
-    dialog.getByRole("checkbox", { name: "Select all visible", exact: true }),
-  ).toBeDisabled();
-  await expect(
-    dialog.getByRole("button", { name: "Done", exact: true }),
-  ).toBeDisabled();
-  await page.keyboard.press("Escape");
-  await expect(dialog).toBeVisible();
-  await page.evaluate(() => (window as any).finishSkillImport());
-  await expect(
-    dialog.getByRole("button", { name: "Done", exact: true }),
+    dialog.getByRole("button", { name: "Try again", exact: true }),
   ).toBeEnabled();
 });
 
-test("changing repositories clears bulk selection and scopes installation to the chosen repository", async ({
+test("a stale skill that has since disappeared is explained instead of offered for retry", async ({
+  page,
+}) => {
+  await fixture(page, "bulk-gone");
+  await trigger(page).click();
+  const dialog = popover(page);
+  await pick(page, "Writing guide").check();
+  await dialog
+    .getByRole("button", { name: "Add 1 skill", exact: true })
+    .click();
+  await expect(
+    page.getByText(
+      "Writing guide wasn’t added. It is no longer in your global skills.",
+    ),
+  ).toBeVisible();
+  await expect(pick(page, "Writing guide")).toHaveCount(0);
+  await expect(
+    dialog.getByRole("button", { name: "Try again", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    dialog.getByRole("button", { name: "Add skills", exact: true }),
+  ).toBeDisabled();
+});
+
+test("choosing a repository with the keyboard changes the destination without adding", async ({
+  page,
+}) => {
+  await fixture(page, "repositories");
+  await trigger(page).click();
+  const dialog = popover(page);
+  await pick(page, "Code review").check();
+  const destination = dialog.getByRole("button", {
+    name: "Add to repository",
+    exact: true,
+  });
+  await destination.focus();
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("ArrowDown");
+  await expect(page.getByRole("menuitemradio").nth(1)).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(destination).toContainText("backen");
+  // Enter chose the repository; it did not submit the earlier selection.
+  expect(await calls(page, "add_global_skills")).toHaveLength(0);
+  await expect(pick(page, "Code review")).not.toBeChecked();
+  await expect(dialog).toBeVisible();
+});
+
+test("a failure that a retry cannot fix unticks the skill and explains in a toast", async ({
+  page,
+}) => {
+  await fixture(page, "bulk-dead");
+  await trigger(page).click();
+  const dialog = popover(page);
+  await pick(page, "Writing guide").check();
+  await dialog
+    .getByRole("button", { name: "Add 1 skill", exact: true })
+    .click();
+  await expect(
+    page.getByText(
+      /Writing guide wasn’t added\. A skill with this folder name/,
+    ),
+  ).toBeVisible();
+  await expect(dialog).toBeVisible();
+  await expect(pick(page, "Writing guide")).not.toBeChecked();
+  await expect(
+    dialog.getByRole("button", { name: "Try again", exact: true }),
+  ).toHaveCount(0);
+});
+
+test("changing repositories clears the selection and scopes the add to the chosen repository", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 900, height: 640 });
   await fixture(page, "repositories");
-  await page
-    .getByRole("button", { name: "Add global skills", exact: true })
-    .click();
-  const dialog = page.getByRole("dialog", {
-    name: "Add global skills",
+  await trigger(page).click();
+  const dialog = popover(page);
+  await pick(page, "Code review").check();
+  const destination = dialog.getByRole("button", {
+    name: "Add to repository",
     exact: true,
   });
-  await dialog
-    .getByRole("checkbox", { name: "Select skill: Code review", exact: true })
-    .check();
-  const destination = dialog.getByRole("combobox", {
-    name: "Install into repository",
-    exact: true,
-  });
-  await expect(destination).toHaveText("orka-platform-infrastructure · deskto");
-  const refresh = dialog.getByRole("button", { name: "Scan again" });
-  const destinationBox = (await destination.boundingBox())!;
-  const refreshBox = (await refresh.boundingBox())!;
-  expect(destinationBox.height).toBe(refreshBox.height);
-  expect(destinationBox.y).toBe(refreshBox.y);
-
-  const expectUnclippedId = async (label: ReturnType<Page["getByText"]>) => {
-    const bounds = await label.evaluate((id) => {
-      const row = id.parentElement!;
-      const name = row.firstElementChild!;
-      return {
-        nameTruncated: name.scrollWidth > name.clientWidth,
-        idRight: id.getBoundingClientRect().right,
-        rowRight: row.getBoundingClientRect().right,
-      };
-    });
-    expect(bounds.nameTruncated).toBe(true);
-    expect(bounds.idRight).toBeLessThanOrEqual(bounds.rowRight);
-  };
-  await expectUnclippedId(destination.getByText("· deskto", { exact: true }));
-
+  await expect(destination).toContainText("orka-platform-infrastructure");
   await destination.click();
-  const menu = page.getByRole("listbox", { name: "Repositories" });
-  await expect(menu.getByRole("option")).toHaveText([
+  const options = page.getByRole("menuitemradio");
+  // Only repositories with a folder on this Mac are offered.
+  await expect(options).toHaveText([
     "orka-platform-infrastructure · deskto",
     "orka-platform-infrastructure · backen",
   ]);
-  await expectUnclippedId(menu.getByText("· deskto", { exact: true }));
-  await expectUnclippedId(menu.getByText("· backen", { exact: true }));
-  await page.keyboard.press("Escape");
-  await expect(menu).toBeHidden();
-  await expect(destination).toBeFocused();
-  await expect(dialog.getByText("1 selected", { exact: true })).toBeVisible();
-
-  await destination.press("ArrowDown");
-  await expect(menu.getByRole("option").first()).toBeFocused();
-  await page.keyboard.press("ArrowDown");
-  await expect(menu.getByRole("option").nth(1)).toBeFocused();
-  await page.keyboard.press("Enter");
-  await expect(destination).toHaveText("orka-platform-infrastructure · backen");
-  await expect(destination).toBeFocused();
-  await expect(dialog.getByText("0 selected", { exact: true })).toBeVisible();
+  await options.nth(1).click();
+  await expect(pick(page, "Code review")).not.toBeChecked();
   expect(
-    await page.evaluate(() =>
-      (window as any).invokeCalls
-        .filter((call: any) => call.name === "scan_global_skills")
-        .map((call: any) => call.args.sourceId),
+    (await calls(page, "scan_global_skills")).map(
+      (call: any) => call.args.sourceId,
     ),
   ).toEqual(["desktop", "backend"]);
   for (const name of ["Code review", "Writing guide"])
-    await dialog
-      .getByRole("checkbox", { name: `Select skill: ${name}`, exact: true })
-      .check();
+    await pick(page, name).check();
   await dialog
-    .getByRole("button", { name: "Add selected (2)", exact: true })
+    .getByRole("button", { name: "Add 2 skills", exact: true })
     .click();
-  await expect(
-    dialog.getByRole("button", { name: "Added: Code review", exact: true }),
-  ).toBeDisabled();
-  const calls = await page.evaluate(() =>
-    (window as any).invokeCalls.filter(
-      (call: any) => call.name === "add_global_skills",
-    ),
-  );
-  expect(calls).toHaveLength(1);
-  expect(calls[0].args).toEqual({
+  await expect(dialog).toBeHidden();
+  const added = await calls(page, "add_global_skills");
+  expect(added).toHaveLength(1);
+  expect(added[0].args).toEqual({
     projectId: "one",
     sourceId: "backend",
-    skillIds: ["claude", "codex"],
+    skillIds: ["codex", "claude"],
   });
 });
