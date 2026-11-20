@@ -391,10 +391,10 @@ export function RepositoryConnections({
                 label: "Disconnect folder on this Mac",
                 icon: UnplugIcon,
                 separator: true,
-                disabled: disabled || queued > 0,
+                disabled: disabled || (source.queuedChanges ?? queued) > 0,
                 reason:
-                  queued > 0
-                    ? "Sync queued changes before disconnecting"
+                  (source.queuedChanges ?? queued) > 0
+                    ? "Let this folder's changes sync before disconnecting"
                     : undefined,
                 onSelect: () => onDisconnectSource(source.id),
               });

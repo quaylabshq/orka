@@ -66,6 +66,7 @@ export async function settingsFixture(
       path: string | null;
       folderState: "connected" | "reconnect" | "locate";
       removedAt?: string | null;
+      queuedChanges?: number;
     }[];
     deletedProjects?: {
       id: string;

@@ -47,6 +47,8 @@ export interface Project {
     removedAt?: string | null;
     path?: string | null;
     folderState?: "connected" | "reconnect" | "locate";
+    /** Unsent changes that block disconnecting this folder on this Mac. */
+    queuedChanges?: number;
     repository?: RepositoryBinding | null;
     repositoryRevision?: number;
   }[];

@@ -513,3 +513,43 @@ fn permission_reset_never_reads_or_removes_files_in_a_replaced_checkout() {
         .unwrap()
         .is_empty());
 }
+
+#[test]
+fn only_a_folders_own_or_unattributed_uploads_block_disconnecting_it() {
+    let f = Fixture::new();
+    let project = multi_source(&f);
+    let id = project["id"].as_str().unwrap();
+    let desktop = project["sources"][0]["id"].as_str().unwrap();
+    let backend = project["sources"][1]["id"].as_str().unwrap();
+    db::upsert(&f.db, "projects", id, id, &project).unwrap();
+    let queue = |value: Value| {
+        f.db.execute(
+            "INSERT INTO outbox VALUES(?,?,?,?,NULL)",
+            rusqlite::params![
+                Uuid::new_v4().to_string(),
+                id,
+                "/v2/sync/push",
+                value.to_string()
+            ],
+        )
+        .unwrap();
+    };
+    assert_eq!(sources::queued_for_source(&f.db, id, desktop).unwrap(), 0);
+    // A change to the other folder never blocks this one.
+    queue(json!({"resource":{"sourceId":backend}}));
+    assert_eq!(sources::queued_for_source(&f.db, id, desktop).unwrap(), 0);
+    assert_eq!(sources::queued_for_source(&f.db, id, backend).unwrap(), 1);
+    // Ownership through the indexed resource counts.
+    let resource = Uuid::new_v4().to_string();
+    f.db.execute(
+        "INSERT INTO resources VALUES(?,?,?)",
+        rusqlite::params![resource, id, json!({"sourceId":desktop}).to_string()],
+    )
+    .unwrap();
+    queue(json!({"resourceId":resource}));
+    assert_eq!(sources::queued_for_source(&f.db, id, desktop).unwrap(), 1);
+    // A change whose folder is unknown blocks every folder rather than being stranded.
+    queue(json!({"kind":"memory"}));
+    assert_eq!(sources::queued_for_source(&f.db, id, desktop).unwrap(), 2);
+    assert_eq!(sources::queued_for_source(&f.db, id, backend).unwrap(), 2);
+}

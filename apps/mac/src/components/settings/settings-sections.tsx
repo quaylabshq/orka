@@ -175,6 +175,8 @@ export function SettingsFolder({
                 const folderState = source.path
                   ? (source.folderState ?? "connected")
                   : "locate";
+                // Legacy single-folder projects have no per-source count.
+                const pending = source.queuedChanges ?? queued;
                 const connect = () =>
                   source.id
                     ? void run(() =>
@@ -249,10 +251,10 @@ export function SettingsFolder({
                   id: "disconnect",
                   label: "Disconnect folder on this Mac",
                   icon: UnplugIcon,
-                  disabled: busy || queued > 0 || !source.path,
+                  disabled: busy || pending > 0 || !source.path,
                   reason:
-                    queued > 0
-                      ? "Sync queued changes before disconnecting"
+                    pending > 0
+                      ? "Let this folder's changes sync before disconnecting"
                       : !source.path
                         ? "Connect this folder before disconnecting"
                         : undefined,
@@ -328,11 +330,11 @@ export function SettingsFolder({
                             title={
                               !source.path
                                 ? "Connect this folder before disconnecting"
-                                : queued > 0
-                                  ? "Sync queued changes before disconnecting"
+                                : pending > 0
+                                  ? "Let this folder's changes sync before disconnecting"
                                   : "Disconnect folder on this Mac"
                             }
-                            disabled={busy || queued > 0 || !source.path}
+                            disabled={busy || pending > 0 || !source.path}
                             onClick={() =>
                               source.id
                                 ? onDisconnectSource(source.id)
@@ -366,9 +368,11 @@ export function SettingsFolder({
           </div>
         )}
       />
-      {queued > 0 && (
+      {sources.some(
+        (source) => source.path && (source.queuedChanges ?? queued) > 0,
+      ) && (
         <div className="settings-notice settings-folder-notice">
-          <p>Sync queued changes before disconnecting folders.</p>
+          <p>Folders with unsent changes can be disconnected once they sync.</p>
           <Button size="sm" onClick={onSyncActivity}>
             View sync activity
           </Button>

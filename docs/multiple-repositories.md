@@ -14,6 +14,8 @@ repositories. Ordinary folders can be added through the folder picker.
 Use **Settings → General → Source Folder** to attach more repositories, locate a shared
 source on this Mac, or disconnect one source. In the source’s options menu,
 **Disconnect folder on this Mac** preserves the checkout and shared source.
+It waits only for that folder's own unsent changes; changes queued for other
+folders do not block it.
 Owners can choose **Remove source folder** on updated services to stop syncing
 that source for everyone. Existing local files and previously shared content are
 retained; the removed source cannot be reconnected or accept new uploads. Adding
