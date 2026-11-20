@@ -173,6 +173,10 @@ export function ResourceTable({
     setPosition({ key: pageKey, page });
   }
   const rows = useMemo(() => {
+    const anchoredPath = new Set([
+      anchoredResource,
+      ...sessionAncestors(anchoredResource, tree.parents),
+    ]);
     const flattened: (
       | { resource: Resource; depth: number }
       | { parent: Resource; remaining: number; depth: number }
@@ -183,7 +187,11 @@ export function ResourceTable({
       const children = tree.children.get(resource.resourceId) ?? [];
       const limit = filtered
         ? children.length
-        : (limits[resource.resourceId] ?? 5);
+        : Math.max(
+            limits[resource.resourceId] ?? 5,
+            children.findIndex((child) => anchoredPath.has(child.resourceId)) +
+              1,
+          );
       children.slice(0, limit).forEach((child) => append(child, depth + 1));
       if (children.length > limit)
         flattened.push({
@@ -198,7 +206,7 @@ export function ResourceTable({
       .slice(start, start + rootsPerPage)
       .forEach((resource) => append(resource, 0));
     return flattened;
-  }, [tree, expanded, limits, filtered, page]);
+  }, [tree, expanded, limits, filtered, page, anchoredResource]);
   const table = useRef<HTMLTableElement>(null);
   const pageChanged = useRef(false);
   const goToPage = (page: number) => {
