@@ -95,8 +95,8 @@ export async function settingsFixture(
     codexTrust?: {
       state?: "ready" | "unsupported" | "unavailable";
       folders: { sourceId: string | null; path: string; state: string }[];
-      trustResult?: string;
-      trustError?: string;
+      approvalResult?: string;
+      approvalError?: string;
     };
   } = {},
 ) {
@@ -291,6 +291,7 @@ export async function settingsFixture(
       failedRename = false,
       policyFailed = false;
     const controls = {
+      codexTrust: options.codexTrust,
       restoreError: options.restoreError ?? "",
       failDeletionCapabilities: options.failDeletionCapabilities ?? false,
       failRefresh: options.failInitial ?? false,
@@ -458,20 +459,21 @@ export async function settingsFixture(
           }
           if (command === "settings_command") {
             if (args.action === "codex-trust")
-              return options.codexTrust
+              return controls.codexTrust
                 ? {
-                    state: options.codexTrust.state ?? "ready",
-                    folders: options.codexTrust.folders.map((folder) => ({
+                    state: controls.codexTrust.state ?? "ready",
+                    folders: controls.codexTrust.folders.map((folder) => ({
                       ...folder,
                       folderToken: `snapshot:${folder.sourceId}`,
                     })),
                   }
                 : { state: "unavailable", folders: [] };
-            if (args.action === "trust-codex") {
+            if (args.action === "open-codex-source") return null;
+            if (args.action === "approve-codex-hooks") {
               await wait(controls.delay);
-              const trust = options.codexTrust!;
-              if (trust.trustError) throw new Error(trust.trustError);
-              const state = trust.trustResult ?? "trusted";
+              const trust = controls.codexTrust!;
+              if (trust.approvalError) throw new Error(trust.approvalError);
+              const state = trust.approvalResult ?? "trusted";
               for (const folder of trust.folders)
                 if ((folder.sourceId ?? "") === args.input.sourceId)
                   folder.state = state;

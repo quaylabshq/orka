@@ -202,7 +202,7 @@ test("source picker cancellation and disconnect confirmation preserve unrelated 
   await expect(button(settings, "Save changes")).toBeEnabled();
 });
 
-test("folders Codex skips explain why and trust in Codex only on request", async ({
+test("Codex folder trust and Orka hook approval are separate actions", async ({
   page,
 }, info) => {
   const settings = await settingsFixture(page, {
@@ -246,11 +246,11 @@ test("folders Codex skips explain why and trust in Codex only on request", async
     settings.getByText(/docs is marked untrusted in Codex/),
   ).toBeVisible();
   await expect(settings.getByText(/in ok/)).toHaveCount(0);
-  // An explicit untrusted choice is the user's; there's no button for it.
-  await expect(button(settings, "Trust docs in Codex")).toHaveCount(0);
+  await expect(button(settings, "Open in Codex for docs")).toHaveCount(0);
+  await expect(button(settings, "Approve Orka hooks in app")).toHaveCount(0);
   expect(
     (await settingsCalls(page)).some(
-      (call) => call.args?.action === "trust-codex",
+      (call) => call.args?.action === "approve-codex-hooks",
     ),
   ).toBe(false);
   for (const width of [1160, 900]) {
@@ -267,28 +267,47 @@ test("folders Codex skips explain why and trust in Codex only on request", async
       (call) => call.args?.action === "codex-trust",
     ),
   ).toHaveLength(1);
-  await button(settings, "Trust app in Codex").click();
+  await button(settings, "Open in Codex for app").focus();
+  await page.keyboard.press("Enter");
+  await expect
+    .poll(async () =>
+      (await settingsCalls(page))
+        .filter((call) => call.args?.action === "open-codex-source")
+        .map((call) => call.args.input),
+    )
+    .toEqual([
+      { projectId: "one", sourceId: "app", folderToken: "snapshot:app" },
+    ]);
+  await expect(button(settings, "Open in Codex for app")).toBeEnabled();
+  await expect(button(settings, "Approve Orka hooks in app")).toHaveCount(0);
+  await page.evaluate(() => {
+    (window as any).settingsControls.codexTrust.folders[0].state =
+      "hooks-not-approved";
+    window.dispatchEvent(new Event("focus"));
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await button(settings, "Approve Orka hooks in app").click();
   await expect(
     page.getByText("Codex will load Orka in app from its next session"),
   ).toBeVisible();
   await expect(
     settings.getByText(/Codex isn’t loading Orka in app/),
   ).toHaveCount(0);
-  await expect(button(settings, "Trust api in Codex")).toBeEnabled();
-  const trusts = (await settingsCalls(page)).filter(
-    (call) => call.args?.action === "trust-codex",
+  await expect(button(settings, "Approve Orka hooks in api")).toBeEnabled();
+  const approvals = (await settingsCalls(page)).filter(
+    (call) => call.args?.action === "approve-codex-hooks",
   );
-  expect(trusts.map((call) => call.args.input)).toEqual([
+  expect(approvals.map((call) => call.args.input)).toEqual([
     { projectId: "one", sourceId: "app", folderToken: "snapshot:app" },
   ]);
   expect(
     (await settingsCalls(page)).filter(
       (call) => call.args?.action === "codex-trust",
     ),
-  ).toHaveLength(2);
+  ).toHaveLength(3);
 });
 
-test("a failed trust in Codex keeps the notice and shows the reason", async ({
+test("a stale Orka hook approval returns to the Codex folder trust step", async ({
   page,
 }) => {
   const settings = await settingsFixture(page, {
@@ -304,14 +323,39 @@ test("a failed trust in Codex keeps the notice and shows the reason", async ({
       folders: [
         { sourceId: "app", path: "/Projects/app", state: "hooks-not-approved" },
       ],
-      trustError: "Codex settings changed while Orka was saving. Try again.",
+      approvalResult: "folder-not-trusted",
     },
   });
-  await button(settings, "Trust app in Codex").click();
+  await button(settings, "Approve Orka hooks in app").click();
+  await expect(button(settings, "Open in Codex for app")).toBeEnabled();
+  await expect(settings.getByRole("alert")).toHaveCount(0);
+  await expect(page.getByText(/Codex will load Orka/)).toHaveCount(0);
+});
+
+test("a failed hook approval keeps the notice and shows the reason", async ({
+  page,
+}) => {
+  const settings = await settingsFixture(page, {
+    sourceRows: [
+      {
+        id: "app",
+        name: "app",
+        path: "/Projects/app",
+        folderState: "connected",
+      },
+    ],
+    codexTrust: {
+      folders: [
+        { sourceId: "app", path: "/Projects/app", state: "hooks-not-approved" },
+      ],
+      approvalError: "Codex settings changed while Orka was saving. Try again.",
+    },
+  });
+  await button(settings, "Approve Orka hooks in app").click();
   await expect(settings.getByRole("alert")).toContainText(
     "Codex settings changed while Orka was saving",
   );
-  await expect(button(settings, "Trust app in Codex")).toBeEnabled();
+  await expect(button(settings, "Approve Orka hooks in app")).toBeEnabled();
 });
 
 test("a Codex-wide hooks setting is explained once with no trust button", async ({
@@ -342,9 +386,11 @@ test("a Codex-wide hooks setting is explained once with no trust button", async 
   await expect(settings.getByText(/Hooks are turned off in Codex/)).toHaveCount(
     1,
   );
-  await expect(settings.getByRole("button", { name: /in Codex$/ })).toHaveCount(
-    0,
-  );
+  await expect(
+    settings.getByRole("button", {
+      name: /^(Open in Codex|Approve Orka hooks)/,
+    }),
+  ).toHaveCount(0);
 });
 
 test("queued writes block disconnect while reconnect remains usable", async ({

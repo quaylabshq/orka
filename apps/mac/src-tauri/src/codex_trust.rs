@@ -294,51 +294,60 @@ fn connected_sources(db: &rusqlite::Connection, project_id: &str) -> Result<Vec<
         .collect())
 }
 
-/// Lets Codex run Orka's hooks in one source folder, on the user's request.
-/// Trusts the folder if needed, then approves Orka's current hook commands in
-/// that folder only. Never overrides a folder the user marked untrusted, never
-/// turns hooks back on, and writes through Codex with a version check so a
-/// concurrent edit to config.toml is never overwritten.
-pub fn trust(
+fn source_folder(
     db: &rusqlite::Connection,
     project_id: &str,
     source_id: &str,
     token: &str,
-) -> Result<Value> {
+) -> Result<(PathBuf, PathBuf)> {
     let (source, root) = connected_sources(db, project_id)?
         .into_iter()
         .find(|(source, _)| {
             source["sourceId"].as_str().or(source["id"].as_str()) == Some(source_id)
         })
-        .ok_or("Reconnect this folder in Orka before trusting it in Codex")?;
-    let original = Path::new(source["path"].as_str().ok_or("Missing source folder")?);
+        .ok_or("Reconnect this folder in Orka before setting up its Codex hooks")?;
+    if folder_token(&root)? != token {
+        return Err(
+            "The connected folder changed. Review the folder in Settings and try again.".into(),
+        );
+    }
+    let original = PathBuf::from(source["path"].as_str().ok_or("Missing source folder")?);
+    Ok((original, root))
+}
+
+/// Open the same Codex CLI and configuration Orka inspects so the user can
+/// review the folder's trust in Codex.
+pub fn open_in_codex(
+    db: &rusqlite::Connection,
+    project_id: &str,
+    source_id: &str,
+    token: &str,
+) -> Result<()> {
+    let (_, root) = source_folder(db, project_id, source_id, token)?;
+    crate::session_launcher::open_codex_in_terminal(&root)
+}
+
+/// Approve only Orka's current hook commands after Codex has loaded the folder.
+pub fn approve_hooks(
+    db: &rusqlite::Connection,
+    project_id: &str,
+    source_id: &str,
+    token: &str,
+) -> Result<Value> {
+    let (original, root) = source_folder(db, project_id, source_id, token)?;
     let verify_folder = || {
-        let current = connected_sources(db, project_id)?
-            .into_iter()
-            .find(|(source, _)| {
-                source["sourceId"].as_str().or(source["id"].as_str()) == Some(source_id)
-            });
-        if current.as_ref().is_some_and(|(source, path)| {
-            path == &root
-                && source["path"]
-                    .as_str()
-                    .is_some_and(|path| Path::new(path) == original)
-        }) && folder_token(&root)? == token
-        {
+        let (current_path, current_root) = source_folder(db, project_id, source_id, token)?;
+        if current_path == original && current_root == root {
             Ok(())
         } else {
-            Err(
-                "The connected folder changed. Reopen Settings and review it before trusting it."
-                    .to_owned(),
-            )
+            Err("The connected folder changed. Review the folder in Settings and try again.".into())
         }
     };
-    verify_folder()?;
     let executable = crate::updates::executable().map_err(|e| e.to_string())?;
     let mut rpc = native::Rpc::connect_for_trust()?;
     // A concurrent edit makes Codex reject the write; read again and retry once.
     for attempt in 0..2 {
-        match approve(&mut rpc, &root, original, &executable, &verify_folder) {
+        match approve(&mut rpc, &root, &original, &executable, &verify_folder) {
             Err(Write::Conflict) if attempt == 0 => continue,
             Err(Write::Conflict) => {
                 return Err("Codex settings changed while Orka was saving. Try again.".into())
@@ -393,28 +402,10 @@ fn approve(
     executable: &Path,
     verify_folder: &impl Fn() -> Result<()>,
 ) -> std::result::Result<Trust, Write> {
-    let (mut listed, mut config, mut version) = read(rpc, root, original)?;
+    let (listed, config, version) = read(rpc, root, original)?;
     match classify(root, &listed, &config) {
-        Trust::Trusted => return Ok(Trust::Trusted),
-        Trust::FolderUntrusted => {
-            return Err("This folder is marked untrusted in Codex. Orka won't change that; edit its trust_level in your Codex config.toml if you want Orka memory there.".into())
-        }
-        Trust::HooksDisabled => {
-            return Err("Codex hooks are turned off. Turn them back on in Codex, then try again.".into())
-        }
-        Trust::FolderNotTrusted => {
-            let key = root.to_str().ok_or("Unsupported Codex folder path")?;
-            verify_folder()?;
-            write(rpc, json!({"keyPath":"projects","value":{key:{"trust_level":"trusted"}},"mergeStrategy":"upsert"}), &version)?;
-            // Hooks are visible only after Codex loads the newly trusted layer.
-            (listed, config, version) = read(rpc, root, original)?;
-        }
         Trust::HooksNotApproved | Trust::HooksChanged => {}
         Trust::Unknown(reason) => return Err(reason.into()),
-    }
-    match classify(root, &listed, &config) {
-        Trust::Trusted => return Ok(Trust::Trusted),
-        Trust::HooksNotApproved | Trust::HooksChanged => {}
         other => return Ok(other),
     }
     let expected = native::Hooks::current_command(executable, "codex");
@@ -447,11 +438,7 @@ fn approve(
         .collect();
     if !approvals.is_empty() {
         verify_folder()?;
-        write(
-            rpc,
-            json!({"keyPath":"hooks.state","value":approvals,"mergeStrategy":"upsert"}),
-            &version,
-        )?;
+        write_approvals(rpc, approvals, &version)?;
     }
     let (listed, config, _) = read(rpc, root, original)?;
     Ok(classify(root, &listed, &config))
@@ -503,8 +490,13 @@ fn user_layer(read: &Value) -> std::result::Result<&Value, Write> {
         .ok_or_else(|| MANUAL.into())
 }
 
-fn write(rpc: &mut native::Rpc, edit: Value, version: &str) -> std::result::Result<(), Write> {
+fn write_approvals(
+    rpc: &mut native::Rpc,
+    approvals: serde_json::Map<String, Value>,
+    version: &str,
+) -> std::result::Result<(), Write> {
     let method = "config/batchWrite";
+    let edit = json!({"keyPath":"hooks.state","value":approvals,"mergeStrategy":"upsert"});
     let response = rpc.request(method, json!({"edits":[edit],"expectedVersion":version}))?;
     let error = &response["error"];
     if native::unsupported_method(error, method) {

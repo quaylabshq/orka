@@ -40,14 +40,14 @@ while IFS= read -r line; do
       reads=$((reads+1)); version=version-1
       if [ "$mode" = changed-snapshot ]; then version=version-$reads; fi
       if [ "$mode" = no-version ]; then version=; fi
-      result='{"config":{},"layers":[{"name":{"type":"user"},"version":"'"$version"'","config":{}}]}' ;;
+      result='{"config":@CONFIG@,"layers":[{"name":{"type":"user"},"version":"'"$version"'","config":@CONFIG@}]}' ;;
     *'"method":"hooks/list"'*)
       if [ "$mode" = old-list ]; then
         printf '{"id":%s,"error":{"code":-32601}}\n' "$id"; continue
       fi
-      result='{"data":[{"cwd":@ROOT@,"hooks":[]}]}' ;;
+      result=@LIST@ ;;
     *'"method":"config/batchWrite"'*)
-      case "$line" in *'"expectedVersion":"version-1"'*) ;; *) exit 1 ;; esac
+      case "$line" in *'"keyPath":"hooks.state"'*'"expectedVersion":"version-1"'*) ;; *) exit 1 ;; esac
       echo write >> "$CODEX_HOME/writes"
       if [ "$mode" = old-write ]; then
         printf '{"id":%s,"error":{"code":-32601}}\n' "$id"
@@ -60,11 +60,26 @@ while IFS= read -r line; do
   printf '{"id":%s,"result":%s}\n' "$id" "$result"
 done
 "#;
+        let config = json!({"projects":{f.root.to_str().unwrap():{"trust_level":"trusted"}}});
+        let executable = crate::updates::executable().unwrap();
+        let command = native::Hooks::current_command(&executable, "codex");
+        let listed = json!({"data":[{
+            "cwd":f.root, "hooks":[{
+                "source":"project", "sourcePath":f.root.join(".codex/hooks.json"),
+                "command":command, "handlerType":"command", "enabled":true,
+                "trustStatus":"untrusted", "eventName":"Stop", "key":"orka",
+                "currentHash":"fixture"
+            }]
+        }]});
         fs::write(
             &binary,
             script
                 .replace("@MODE@", mode)
-                .replace("@ROOT@", &json!(f.root).to_string()),
+                .replace("@CONFIG@", &config.to_string())
+                .replace(
+                    "@LIST@",
+                    &crate::session_launcher::shell_quote(&listed.to_string()),
+                ),
         )
         .unwrap();
         fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
@@ -84,7 +99,7 @@ done
             let identity = crate::indexer::folder_identity(&f.root).unwrap();
             db::digest(json!([f.root, identity]).to_string().as_bytes())
         });
-        let error = codex_trust::trust(&f.db, project, project, &token).unwrap_err();
+        let error = codex_trust::approve_hooks(&f.db, project, project, &token).unwrap_err();
         assert!(error.contains(message), "{mode}: {error}");
         assert_eq!(
             fs::read_to_string(native::codex_home().unwrap().join("writes"))
@@ -179,7 +194,7 @@ fn codex_trust_live_matches_what_codex_will_run() {
 
 #[test]
 #[ignore = "requires installed Codex with hooks/list; isolated CODEX_HOME"]
-fn codex_trust_live_trust_action_approves_only_orka_and_keeps_user_config() {
+fn codex_trust_live_approval_requires_user_trust_and_only_approves_orka_hooks() {
     let f = Fixture::new();
     f.select_codex_binary();
     native::Hooks::install(&f.root).unwrap();
@@ -206,13 +221,36 @@ fn codex_trust_live_trust_action_approves_only_orka_and_keeps_user_config() {
     let mut changed = f.project.clone();
     changed["path"] = json!(replacement);
     db::upsert(&f.db, "projects", project, project, &changed).unwrap();
-    let error = codex_trust::trust(&f.db, project, project, token).unwrap_err();
+    let error = codex_trust::approve_hooks(&f.db, project, project, token).unwrap_err();
     assert!(error.contains("folder changed"), "{error}");
     assert_eq!(fs::read_to_string(&config).unwrap(), before);
     db::upsert(&f.db, "projects", project, project, &f.project).unwrap();
-    let result = codex_trust::trust(&f.db, project, project, token).unwrap();
+    let result = codex_trust::approve_hooks(&f.db, project, project, token).unwrap();
+    assert_eq!(result["state"], "folder-not-trusted", "{result}");
+    assert_eq!(fs::read_to_string(&config).unwrap(), before);
+
+    // The user trusts the folder in Codex before approving Orka's hooks.
+    let root_entry = format!("\n[projects.{:?}]\ntrust_level = \"trusted\"\n", f.root);
+    let manually_trusted = format!("{before}{root_entry}");
+    fs::write(&config, &manually_trusted).unwrap();
+    let approval_status = codex_trust::project_status(&f.db, project).unwrap();
+    assert_eq!(approval_status["folders"][0]["state"], "hooks-not-approved");
+    let token = approval_status["folders"][0]["folderToken"]
+        .as_str()
+        .unwrap();
+
+    // A click from the stale approval notice cannot restore revoked folder trust.
+    fs::write(&config, before).unwrap();
+    let result = codex_trust::approve_hooks(&f.db, project, project, token).unwrap();
+    assert_eq!(result["state"], "folder-not-trusted", "{result}");
+    assert_eq!(fs::read_to_string(&config).unwrap(), before);
+
+    fs::write(&config, &manually_trusted).unwrap();
+    let result = codex_trust::approve_hooks(&f.db, project, project, token).unwrap();
     assert_eq!(result["state"], "trusted", "{result}");
     let after = fs::read_to_string(&config).unwrap();
+    assert!(after.starts_with(manually_trusted.trim_end()), "{after}");
+    assert_eq!(after.matches("trust_level").count(), 2, "{after}");
     assert!(after.contains("# my settings") && after.contains("model = \"gpt-5\""));
     assert!(after.contains("\"/elsewhere\""));
     assert_eq!(after.matches("trusted_hash").count(), 4, "{after}");
@@ -228,7 +266,7 @@ fn codex_trust_live_trust_action_approves_only_orka_and_keeps_user_config() {
     assert_eq!(mine[0]["trustStatus"], "untrusted");
     // Running it again is a no-op.
     assert_eq!(
-        codex_trust::trust(&f.db, project, project, token).unwrap()["state"],
+        codex_trust::approve_hooks(&f.db, project, project, token).unwrap()["state"],
         "trusted"
     );
     assert_eq!(fs::read_to_string(&config).unwrap(), after);
@@ -245,18 +283,18 @@ fn codex_trust_live_trust_action_approves_only_orka_and_keeps_user_config() {
     );
     assert_ne!(untrusted, after);
     fs::write(&config, &untrusted).unwrap();
-    let error = codex_trust::trust(&f.db, project, project, token).unwrap_err();
+    let error = codex_trust::approve_hooks(&f.db, project, project, token).unwrap_err();
     assert!(error.contains("marked untrusted"), "{error}");
     assert_eq!(fs::read_to_string(&config).unwrap(), untrusted);
     // Unknown folders are refused before Codex is touched.
-    assert!(codex_trust::trust(&f.db, project, "other", token).is_err());
+    assert!(codex_trust::approve_hooks(&f.db, project, "other", token).is_err());
     let parent = f.root.canonicalize().unwrap();
     let conflicting = format!(
         "{after}\n[projects.{:?}]\ntrust_level = \"untrusted\"\n",
         parent.parent().unwrap()
     );
     fs::write(&config, &conflicting).unwrap();
-    let error = codex_trust::trust(&f.db, project, project, token).unwrap_err();
+    let error = codex_trust::approve_hooks(&f.db, project, project, token).unwrap_err();
     assert!(error.contains("marked untrusted"), "{error}");
     assert_eq!(fs::read_to_string(&config).unwrap(), conflicting);
 }
@@ -313,7 +351,7 @@ fn codex_trust_live_reapproves_moved_app_without_adding_a_nested_trust_entry() {
     assert_eq!(status["folders"][0]["state"], "hooks-changed");
     let token = status["folders"][0]["folderToken"].as_str().unwrap();
     assert_eq!(
-        codex_trust::trust(&f.db, project, project, token).unwrap()["state"],
+        codex_trust::approve_hooks(&f.db, project, project, token).unwrap()["state"],
         "trusted"
     );
     let after = fs::read_to_string(&config).unwrap();

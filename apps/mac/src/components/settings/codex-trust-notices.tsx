@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { Project } from "../../types.js";
 import { Button } from "../button.js";
@@ -24,11 +24,14 @@ type Status = {
   }[];
 };
 
-const fixable: TrustState[] = [
-  "folder-not-trusted",
-  "hooks-not-approved",
-  "hooks-changed",
-];
+function actionFor(state: TrustState) {
+  if (state === "folder-not-trusted") return "open-codex-source";
+  if (state === "hooks-not-approved" || state === "hooks-changed")
+    return "approve-codex-hooks";
+  return null;
+}
+
+type Action = NonNullable<ReturnType<typeof actionFor>>;
 
 function message(state: TrustState, name: string) {
   switch (state) {
@@ -47,7 +50,7 @@ function message(state: TrustState, name: string) {
   }
 }
 
-/** Shows folders where Codex skips Orka's hooks and, on request, fixes them. */
+/** Helps users trust the folder in Codex and approve Orka hooks in Settings. */
 export function CodexTrustNotices({
   project,
   user,
@@ -80,6 +83,30 @@ export function CodexTrustNotices({
     [project.id, user, service],
   );
   const status = useSettingsQuery(load, null, revision);
+  const { loading, refresh } = status;
+  const recheckOnReturn =
+    status.data?.state === "unavailable" ||
+    status.data?.folders?.some(
+      ({ state }) =>
+        state === "folder-not-trusted" || state === "folder-untrusted",
+    );
+  useEffect(() => {
+    if (!recheckOnReturn || loading) return;
+    let checking = false;
+    const onReturn = () => {
+      if (checking || document.hidden) return;
+      checking = true;
+      void refresh().finally(() => {
+        checking = false;
+      });
+    };
+    window.addEventListener("focus", onReturn);
+    document.addEventListener("visibilitychange", onReturn);
+    return () => {
+      window.removeEventListener("focus", onReturn);
+      document.removeEventListener("visibilitychange", onReturn);
+    };
+  }, [loading, recheckOnReturn, refresh]);
   const name = (sourceId: string | null, path: string) =>
     project.sources?.find((source) => source.id === sourceId)?.name ??
     path.split("/").filter(Boolean).at(-1) ??
@@ -94,7 +121,8 @@ export function CodexTrustNotices({
       folders.findIndex((other) => other.state === "hooks-disabled") === index,
   );
   if (shown.length === 0 && !error) return null;
-  const trust = async (
+  const run = async (
+    action: Action,
     sourceId: string,
     label: string,
     folderToken: string,
@@ -102,18 +130,24 @@ export function CodexTrustNotices({
     setPending(sourceId);
     setError("");
     try {
-      const result = await invoke<{ state: TrustState }>("settings_command", {
-        action: "trust-codex",
-        context: { user, service },
-        input: { projectId: project.id, sourceId, folderToken },
-      });
-      if (result.state === "trusted")
-        notice(`Codex will load Orka in ${label} from its next session`);
-      else setError(`Codex still isn’t loading Orka in ${label}.`);
+      const result = await invoke<{ state: TrustState } | null>(
+        "settings_command",
+        {
+          action,
+          context: { user, service },
+          input: { projectId: project.id, sourceId, folderToken },
+        },
+      );
+      if (action === "approve-codex-hooks") {
+        if (result?.state === "trusted")
+          notice(`Codex will load Orka in ${label} from its next session`);
+        else if (result?.state !== "folder-not-trusted")
+          setError(`Codex still isn’t loading Orka in ${label}.`);
+      }
     } catch (failure) {
       setError(String(failure));
     } finally {
-      await status.refresh();
+      if (action === "approve-codex-hooks") await refresh();
       setPending(null);
     }
   };
@@ -123,29 +157,41 @@ export function CodexTrustNotices({
         const label = name(folder.sourceId, folder.path);
         const sourceId = folder.sourceId ?? project.id;
         const folderToken = folder.folderToken;
+        const action = actionFor(folder.state);
+        const opensCodex = action === "open-codex-source";
         return (
           <div
-            key={`${folder.path}:${folder.state}`}
+            key={folder.path}
             className="settings-notice settings-folder-notice"
             title={folder.path}
           >
             <p>{message(folder.state, label)}</p>
-            {fixable.includes(folder.state) && folderToken && (
+            {action && folderToken && (
               <>
-                <p className="settings-codex-trust-detail">
-                  {folder.state === "folder-not-trusted"
-                    ? "Codex will load this folder’s project configuration and approve Orka’s hooks."
-                    : "This approves Orka’s hooks in your Codex settings."}
-                </p>
+                {opensCodex && (
+                  <p className="settings-codex-trust-detail">
+                    Trust this folder in Codex, then return to Orka.
+                  </p>
+                )}
                 <Button
                   size="sm"
                   disabled={
-                    busy || status.loading || !!status.error || pending !== null
+                    busy || loading || !!status.error || pending !== null
                   }
-                  aria-label={`Trust ${label} in Codex`}
-                  onClick={() => void trust(sourceId, label, folderToken)}
+                  aria-label={
+                    opensCodex
+                      ? `Open in Codex for ${label}`
+                      : `Approve Orka hooks in ${label}`
+                  }
+                  onClick={() => void run(action, sourceId, label, folderToken)}
                 >
-                  {pending === sourceId ? "Trusting…" : "Trust in Codex"}
+                  {opensCodex
+                    ? pending === sourceId
+                      ? "Opening…"
+                      : "Open in Codex"
+                    : pending === sourceId
+                      ? "Approving…"
+                      : "Approve Orka hooks"}
                 </Button>
               </>
             )}

@@ -17,7 +17,10 @@ pub async fn settings_command(
     if context["user"] != owner || context["service"] != service {
         return Err("Account or service changed. Reopen Settings.".into());
     }
-    if matches!(action.as_str(), "codex-trust" | "trust-codex") {
+    if matches!(
+        action.as_str(),
+        "codex-trust" | "open-codex-source" | "approve-codex-hooks"
+    ) {
         drop(db);
         let input = input.unwrap_or_default();
         return tauri::async_runtime::spawn_blocking(move || {
@@ -33,7 +36,11 @@ pub async fn settings_command(
             let token = input["folderToken"]
                 .as_str()
                 .ok_or("Refresh Codex trust status first")?;
-            codex_trust::trust(&db, project, source, token)
+            if action == "open-codex-source" {
+                codex_trust::open_in_codex(&db, project, source, token)?;
+                return Ok(Value::Null);
+            }
+            codex_trust::approve_hooks(&db, project, source, token)
         })
         .await
         .map_err(|e| e.to_string())?;
