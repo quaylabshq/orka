@@ -315,30 +315,46 @@ async fn run_git(
 async fn attach(context: &Context, job: &Value) -> Result<()> {
     let project = job["projectId"].as_str().ok_or("Missing project")?;
     let source_id = job["sourceId"].as_str().ok_or("Missing source")?;
+    let repository_id = job["repositoryId"]
+        .as_str()
+        .ok_or("Missing clone repository")?;
+    let revision = job["bindingRevision"]
+        .as_u64()
+        .filter(|revision| *revision > 0)
+        .ok_or("Missing clone repository link revision")?;
+    let lock = projects::wait_for_lock_async(projects::FOREGROUND_LOCK_WAIT).await?;
+    context.check()?;
     let current = context
         .api("access", json!({"projectId":project,"sourceId":source_id}))
         .await?;
+    let changed = "Repository link or GitHub access changed. Review this source before connecting.";
     if current["state"] != "ready"
-        || current["repository"]["id"] != job["repositoryId"]
-        || current["bindingRevision"] != job["bindingRevision"]
+        || current["repository"]["id"] != repository_id
+        || current["bindingRevision"] != revision
     {
-        return Err(
-            "Repository link or GitHub access changed. Review this source before connecting."
-                .into(),
-        );
+        return Err(changed.into());
     }
-    let catalog = sync::api_at(
-        &context.user,
-        &context.service,
-        "GET",
-        crate::projects::CATALOG_PATH,
-        None,
-    )
-    .await?;
+    if let Err(error) = refresh_catalog(context).await {
+        let temporary = error == "Cloud unavailable; local work stays queued"
+            || matches!(
+                error.split_once(':').map(|(status, _)| status),
+                Some("408" | "429" | "502" | "503" | "504")
+            );
+        if !temporary {
+            return Err(error);
+        }
+        // A catalog outage may leave a valid link cached. Live source access
+        // still has to confirm that exact binding before attaching the checkout.
+        eprintln!("clone catalog refresh unavailable: {error}");
+    }
+    let cached = source(context, project, source_id)?;
+    if cached["repository"]["id"] != repository_id
+        || cached["repository"]["revision"] != revision
+        || cached["repositoryRevision"]
+            .as_u64()
+            .is_some_and(|cached| cached != revision)
     {
-        let _lock = projects::lock()?;
-        context.check()?;
-        projects::merge_catalog(&context.database()?, &catalog)?;
+        return Err(changed.into());
     }
     let path = job["destination"]
         .as_str()
@@ -351,12 +367,13 @@ async fn attach(context: &Context, job: &Value) -> Result<()> {
     )? {
         return Err("Cloned folder was replaced; locate and verify it again".into());
     }
-    sources::connect_sources(
+    sources::connect_sources_locked(
         project.into(),
         vec![path.into()],
         Some(source_id.into()),
         Some((&context.user, &context.service)),
         None,
+        lock,
     )
     .await
 }
@@ -441,7 +458,7 @@ pub async fn repository_command(action: String, input: Value, context: Context) 
         let repository = context
             .api("repository", json!({"repositoryId":input["repositoryId"]}))
             .await?;
-        let _lock = projects::lock()?;
+        let _lock = projects::wait_for_lock_async(projects::FOREGROUND_LOCK_WAIT).await?;
         context.check()?;
         let project = crate::governance::project(&context.database()?, project_id)?;
         return matching_source(
@@ -576,20 +593,8 @@ pub async fn repository_command(action: String, input: Value, context: Context) 
         tokio::spawn(clone_job(context, job.clone(), canceled));
         return Ok(job);
     }
-    if action == "bind" {
-        let project = input["projectId"].as_str().ok_or("Missing project")?;
-        let source_id = input["sourceId"].as_str().ok_or("Missing source")?;
-        if let Some(path) = source(&context, project, source_id)?["path"].as_str() {
-            let repository = context
-                .api("repository", json!({"repositoryId":input["repositoryId"]}))
-                .await?;
-            verify_remote(
-                Path::new(path),
-                repository["cloneUrl"]
-                    .as_str()
-                    .ok_or("Invalid repository")?,
-            )?;
-        }
+    if matches!(action.as_str(), "bind" | "unlink" | "add-source") {
+        return change_link(&context, &action, input).await;
     }
     if ![
         "status",
@@ -599,9 +604,6 @@ pub async fn repository_command(action: String, input: Value, context: Context) 
         "disconnect",
         "installations",
         "repositories",
-        "add-source",
-        "bind",
-        "unlink",
         "access",
         "request-access",
         "requests",
@@ -613,7 +615,7 @@ pub async fn repository_command(action: String, input: Value, context: Context) 
     }
     let result = context.api(&action, input).await?;
     if action == "disconnect" || (action == "poll" && result["connected"] == true) {
-        let _lock = projects::lock()?;
+        let _lock = projects::wait_for_lock_async(projects::FOREGROUND_LOCK_WAIT).await?;
         context.check()?;
         let db = context.database()?;
         let revision = db::get(&db, "repository-auth-revision")?
@@ -621,20 +623,133 @@ pub async fn repository_command(action: String, input: Value, context: Context) 
             .unwrap_or(0);
         db::set(&db, "repository-auth-revision", &json!(revision + 1))?;
     }
-    if action == "bind" || action == "unlink" || action == "add-source" {
-        let catalog = sync::api_at(
-            &context.user,
-            &context.service,
-            "GET",
-            crate::projects::CATALOG_PATH,
-            None,
-        )
-        .await?;
-        let _lock = projects::lock()?;
-        context.check()?;
-        projects::merge_catalog(&context.database()?, &catalog)?;
-    }
     Ok(result)
+}
+
+async fn change_link(context: &Context, action: &str, input: Value) -> Result<Value> {
+    let project_id = input["projectId"].as_str().ok_or("Missing project")?;
+    // Wait before committing the link so a sync cannot block the local handoff afterwards.
+    let _lock = projects::wait_for_lock_async(projects::FOREGROUND_LOCK_WAIT).await?;
+    context.check()?;
+    if action == "bind" {
+        let source_id = input["sourceId"].as_str().ok_or("Missing source")?;
+        if let Some(path) = source(context, project_id, source_id)?["path"].as_str() {
+            let repository = context
+                .api("repository", json!({"repositoryId":input["repositoryId"]}))
+                .await?;
+            verify_remote(
+                Path::new(path),
+                repository["cloneUrl"]
+                    .as_str()
+                    .ok_or("Invalid repository")?,
+            )?;
+        }
+    }
+    let receipt = context.api(action, input.clone()).await?;
+    let saved = context
+        .database()
+        .and_then(|db| cache_link(&db, action, project_id, &input, &receipt));
+    if let Err(error) = saved {
+        // Some services may omit receipt details. Refresh their catalog while
+        // the lock still protects against applying a snapshot out of order.
+        eprintln!("repository link receipt could not be cached: {error}");
+        if let Err(error) = refresh_catalog(context).await {
+            eprintln!("repository catalog refresh deferred to sync: {error}");
+        }
+    }
+    if context.check().is_ok() {
+        let queued = context.database().and_then(|db| {
+            crate::sync_queue::SyncQueue::request(
+                &db,
+                crate::sync_queue::WORKSPACE,
+                crate::sync_queue::Priority::User,
+                "repository link",
+            )
+        });
+        if let Err(error) = queued {
+            eprintln!("repository catalog refresh could not be queued: {error}");
+        }
+    }
+    Ok(receipt)
+}
+
+fn cache_link(
+    db: &rusqlite::Connection,
+    action: &str,
+    project_id: &str,
+    input: &Value,
+    receipt: &Value,
+) -> Result<()> {
+    let adding = action == "add-source";
+    let source_id = if adding {
+        &receipt["sourceId"]
+    } else {
+        &input["sourceId"]
+    };
+    let id = source_id
+        .as_str()
+        .ok_or("Missing source ID in repository link")?;
+    Uuid::parse_str(id).map_err(|_| "Invalid source ID in repository link")?;
+    let revision = receipt["revision"]
+        .as_u64()
+        .filter(|revision| *revision > 0)
+        .ok_or("Missing repository link revision")?;
+    let mut repository = receipt
+        .get("repository")
+        .cloned()
+        .ok_or("Missing repository link")?;
+    if action == "unlink" {
+        if !repository.is_null() {
+            return Err("Invalid repository unlink response".into());
+        }
+    } else {
+        clone_url(repository["cloneUrl"].as_str().ok_or("Missing clone URL")?)?;
+        if repository["id"] != input["repositoryId"] {
+            return Err("Repository identity changed".into());
+        }
+        repository["revision"] = json!(revision);
+    }
+    let mut project = crate::governance::project(db, project_id)?;
+    let sources = project["sources"]
+        .as_array_mut()
+        .ok_or("Project sources are unavailable")?;
+    if let Some(source) = sources.iter_mut().find(|source| source["id"] == id) {
+        if !source["removedAt"].is_null()
+            || source["repositoryRevision"]
+                .as_u64()
+                .or_else(|| source["repository"]["revision"].as_u64())
+                .is_some_and(|current| current >= revision)
+        {
+            return Ok(());
+        }
+        source["repository"] = repository;
+        source["repositoryRevision"] = json!(revision);
+    } else if adding {
+        let name = repository["fullName"]
+            .as_str()
+            .and_then(|name| name.split_once('/'))
+            .map(|(_, name)| name)
+            .ok_or("Missing repository name")?;
+        sources.push(json!({
+            "id":id,"name":name,"repository":repository,"repositoryRevision":revision
+        }));
+    } else {
+        return Err("Source no longer belongs to this project".into());
+    }
+    db::upsert(db, "projects", project_id, project_id, &project)
+}
+
+async fn refresh_catalog(context: &Context) -> Result<()> {
+    let catalog = sync::api_at(
+        &context.user,
+        &context.service,
+        "GET",
+        crate::projects::CATALOG_PATH,
+        None,
+    )
+    .await?;
+    context.check()?;
+    projects::merge_catalog(&context.database()?, &catalog)
 }
 
 #[cfg(test)]
