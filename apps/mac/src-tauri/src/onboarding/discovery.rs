@@ -384,6 +384,13 @@ pub(crate) fn registered_checkout(directory: &Path) -> Option<PathBuf> {
 }
 
 pub(crate) fn registered_worktrees(common: &Path) -> std::io::Result<Vec<PathBuf>> {
+    Ok(worktree_admin_dirs(common)?
+        .into_iter()
+        .filter_map(|admin| registered_checkout(&admin))
+        .collect())
+}
+
+pub(crate) fn worktree_admin_dirs(common: &Path) -> std::io::Result<Vec<PathBuf>> {
     let entries = match fs::read_dir(common.join("worktrees")) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -395,9 +402,7 @@ pub(crate) fn registered_worktrees(common: &Path) -> std::io::Result<Vec<PathBuf
         if !entry.file_type()?.is_dir() {
             continue;
         }
-        if let Some(root) = registered_checkout(&entry.path()) {
-            roots.push(root);
-        }
+        roots.push(entry.path());
     }
     Ok(roots)
 }

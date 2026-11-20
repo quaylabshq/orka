@@ -141,10 +141,35 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    pub(crate) fn primary_sources(&self) -> impl Iterator<Item = (&'a Value, &Path, &Path, &Path)> {
+        self.sources.iter().filter_map(|source| {
+            let (main, common) = source.primary.as_ref()?;
+            Some((
+                source.value,
+                source.root.as_path(),
+                main.as_path(),
+                common.as_path(),
+            ))
+        })
+    }
+
     pub(crate) fn resolve(&self, cwd: &Path) -> Option<Route<'a>> {
         let location = Location::new(cwd, self.home)?;
         let registration = location.boundary.as_deref().and_then(registered_worktree);
         self.resolve_location(&location, registration.as_ref())
+    }
+
+    pub(crate) fn registered(
+        &self,
+        cwd: &Path,
+        checkout: &Path,
+        registration: &(PathBuf, PathBuf),
+    ) -> Option<Route<'a>> {
+        let location = Location::new(cwd, self.home)?;
+        if location.cwd != cwd || !cwd.is_dir() || location.boundary.as_deref() != Some(checkout) {
+            return None;
+        }
+        self.resolve_location(&location, Some(registration))
     }
 
     fn resolve_location(

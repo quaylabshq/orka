@@ -11,6 +11,7 @@ mod db;
 mod device_metadata;
 mod doctor;
 mod env;
+mod git_artifacts;
 mod global_skills;
 mod governance;
 mod history;
@@ -51,6 +52,7 @@ mod sync_schedule;
 mod tests;
 mod updates;
 mod upload_review;
+mod worktree_integration;
 mod worktrees;
 use serde_json::json;
 #[cfg(debug_assertions)]

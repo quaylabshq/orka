@@ -1,7 +1,7 @@
 use super::*;
-use crate::worktrees::Resolver;
+use crate::{worktree_integration, worktrees::Resolver};
 
-fn git(root: &Path, args: &[&str]) {
+fn git(root: &Path, args: &[&str]) -> String {
     let result = std::process::Command::new("/usr/bin/git")
         .current_dir(root)
         .env("GIT_CONFIG_NOSYSTEM", "1")
@@ -20,6 +20,7 @@ fn git(root: &Path, args: &[&str]) {
         "git {args:?}: {}",
         String::from_utf8_lossy(&result.stderr)
     );
+    String::from_utf8(result.stdout).unwrap()
 }
 
 fn init(root: &Path) {
@@ -28,7 +29,6 @@ fn init(root: &Path) {
         fs::create_dir(root.join(name)).unwrap();
         fs::write(root.join(name).join("README.md"), name).unwrap();
     }
-    fs::write(root.join(".gitignore"), ".claude/\n.codex/\n.agents/\n").unwrap();
     git(root, &["add", "."]);
     git(root, &["commit", "-qm", "fixture"]);
 }
@@ -120,13 +120,7 @@ fn removed_checkout_routes_capture_but_not_hooks_and_direct_root_wins_ties() {
     fs::create_dir(&nested).unwrap();
     init(&nested);
     assert!(Resolver::new(&sources, &home).resolve(&nested).is_none());
-    Resolver::new(&sources, &home)
-        .resolve(&cwd)
-        .unwrap()
-        .observed
-        .unwrap()
-        .remember(&f.db)
-        .unwrap();
+    worktree_integration::reconcile(&f.db, Path::new("/fixture/orka")).unwrap();
     fs::remove_dir_all(&tree).unwrap();
     let tool = "claude";
     let id = uuid::Uuid::new_v4().to_string();
@@ -221,6 +215,9 @@ fn bare_worktree_is_not_inherited_and_submodule_is_its_own_repository() {
     assert!(Resolver::new(std::slice::from_ref(&bare_source), &home)
         .resolve(&tree)
         .is_none());
+    set_project(&f, &bare_source);
+    worktree_integration::reconcile(&f.db, Path::new("/fixture/orka")).unwrap();
+    assert!(!tree.join(".codex/hooks.json").exists());
 
     let repo = home.join("submodule-repo");
     fs::create_dir(&repo).unwrap();
@@ -251,6 +248,290 @@ fn bare_worktree_is_not_inherited_and_submodule_is_its_own_repository() {
             .equivalent,
         submodule.join("app")
     );
+    worktree_integration::reconcile(&f.db, Path::new("/fixture/orka")).unwrap();
+    assert!(sub_tree.join(".codex/hooks.json").is_file());
+}
+
+#[test]
+fn delivery_preserves_user_files_and_only_removes_owned_artifacts() {
+    let f = Fixture::new();
+    init(&f.root);
+    let home = crate::worktrees::home().unwrap();
+    let first = f.root.join(".claude/worktrees/first");
+    let second = home.join(".t3/worktrees/second");
+    let moved = home.join("moved");
+    worktree(&f.root, &first);
+    let skill = ".claude/skills/example/SKILL.md";
+    let claude = ".claude/settings.local.json";
+    let codex = ".codex/hooks.json";
+    write(&f.root.join(skill), "before");
+    write(&f.root.join(claude), "source personal settings");
+    write(&first.join(claude), "{\"permissions\":{}}\n");
+    let reconcile = || worktree_integration::reconcile(&f.db, Path::new("/fixture/orka"));
+    assert!(reconcile()
+        .unwrap_err()
+        .contains("no recognized Orka command"));
+    assert_eq!(
+        fs::read_to_string(first.join(claude)).unwrap(),
+        "{\"permissions\":{}}\n"
+    );
+    assert!(first.join(codex).is_file());
+    assert!(first.join(skill).is_file());
+    assert!(!first.join(".claude/skills/example").is_symlink());
+    let supplemental = ".claude/skills/example/scripts/example.txt";
+    write(&f.root.join(supplemental), "supplemental");
+    assert!(reconcile().is_err());
+    fs::remove_file(first.join(supplemental)).unwrap();
+    assert!(f.root.join(supplemental).is_file());
+    assert!(reconcile().unwrap_err().contains("changed or removed"));
+    assert!(!first.join(supplemental).exists());
+    fs::write(first.join(skill), "edited in worktree").unwrap();
+    assert_eq!(fs::read_to_string(f.root.join(skill)).unwrap(), "before");
+
+    worktree(&f.root, &second);
+    assert!(reconcile().is_err());
+    assert!(second.join(claude).is_file());
+    assert_eq!(fs::read_to_string(second.join(skill)).unwrap(), "before");
+    fs::write(f.root.join(skill), "updated at source").unwrap();
+    assert!(reconcile().is_err());
+    assert_eq!(
+        fs::read_to_string(first.join(skill)).unwrap(),
+        "edited in worktree"
+    );
+    assert_eq!(
+        fs::read_to_string(second.join(skill)).unwrap(),
+        "updated at source"
+    );
+    git(&second, &["add", "-A"]);
+    assert!(git(&second, &["status", "--porcelain"]).is_empty());
+    let unrelated = ".claude/skills/user/SKILL.md";
+    write(&second.join(unrelated), "user skill");
+    git(&second, &["add", "-A"]);
+    assert_eq!(
+        git(&second, &["diff", "--cached", "--name-only"]).trim(),
+        unrelated
+    );
+    fs::write(second.join(claude), "user took ownership").unwrap();
+    git(
+        &f.root,
+        &[
+            "worktree",
+            "move",
+            second.to_str().unwrap(),
+            moved.to_str().unwrap(),
+        ],
+    );
+    fs::remove_dir_all(&first).unwrap(); // stale entry still on disk
+    assert!(reconcile().is_err());
+    assert!(!first.exists());
+    git(&f.root, &["worktree", "prune", "--expire=now"]);
+    assert!(moved.join(codex).is_file());
+    let mut disconnected = f.project.clone();
+    disconnected["path"] = Value::Null;
+    set_project(&f, &disconnected);
+    reconcile().unwrap();
+    assert_eq!(
+        fs::read_to_string(moved.join(claude)).unwrap(),
+        "user took ownership"
+    );
+    assert!(!moved.join(codex).exists());
+    assert!(!moved.join(skill).exists());
+    assert!(f.root.join(skill).exists());
+    assert!(db::rows(&f.db, "SELECT value FROM worktree_artifacts", &[])
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn repairs_older_hooks_and_leaves_foreign_hooks_after_disconnect() {
+    let f = Fixture::new();
+    init(&f.root);
+    let tree = crate::worktrees::home().unwrap().join("repair");
+    worktree(&f.root, &tree);
+    let stale =
+        json!({"type":"command","command":"'/missing/Portable Workspace' --workspace-hook claude"});
+    let foreign = json!({"type":"command","command":"echo hello"});
+    let claude = tree.join(".claude/settings.local.json");
+    let codex = tree.join(".codex/hooks.json");
+    write(&claude, json!({"permissions":{"allow":[]},"hooks":{"SessionStart":[{"matcher":"startup","hooks":[stale, foreign]}]}}).to_string());
+    write(&codex, json!({"hooks":{"Stop":[{"hooks":[{"type":"command","command":"'/old/orka' --orka-hook codex"}]}]}}).to_string());
+    let reconcile = || worktree_integration::reconcile(&f.db, Path::new("/fixture/orka")).unwrap();
+    reconcile();
+    let read = || serde_json::from_slice::<Value>(&fs::read(&claude).unwrap()).unwrap();
+    assert_eq!(
+        read()["hooks"]["SessionStart"][0]["hooks"],
+        json!([foreign])
+    );
+    assert!(read()["hooks"]["Stop"][0]["hooks"][0]["command"]
+        .as_str()
+        .unwrap()
+        .contains("/fixture/orka"));
+    assert!(git(&tree, &["status", "--porcelain"]).is_empty());
+    let mut disconnected = f.project.clone();
+    disconnected["path"] = Value::Null;
+    set_project(&f, &disconnected);
+    reconcile();
+    assert!(!codex.exists());
+    assert_eq!(
+        read(),
+        json!({"permissions":{"allow":[]},"hooks":{"SessionStart":[{"matcher":"startup","hooks":[foreign]}]}})
+    );
+    assert!(!fs::read_to_string(f.root.join(".git/info/exclude"))
+        .unwrap()
+        .contains("Orka integration"));
+}
+
+#[test]
+fn git_protection_rejects_tracked_paths_and_negations_for_both_installers() {
+    let f = Fixture::new();
+    init(&f.root);
+    let claude = ".claude/settings.local.json";
+    let codex = ".codex/hooks.json";
+    let old = r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"'/old/orka' --orka-hook claude"}]}]}}"#;
+    write(&f.root.join(claude), old);
+    write(&f.root.join(".gitignore"), "!.codex/hooks.json\n");
+    git(&f.root, &["add", "-A"]);
+    git(
+        &f.root,
+        &["commit", "-qm", "tracked user hook and negation"],
+    );
+    let tree = crate::worktrees::home().unwrap().join("tracked");
+    worktree(&f.root, &tree);
+    for error in [
+        native::Hooks::install(&f.root).unwrap_err(),
+        worktree_integration::reconcile(&f.db, Path::new("/fixture/orka")).unwrap_err(),
+    ] {
+        assert!(error.contains("tracked by Git"), "{error}");
+        assert!(error.contains("not ignored by Git"), "{error}");
+    }
+    for checkout in [&f.root, &tree] {
+        assert_eq!(fs::read_to_string(checkout.join(claude)).unwrap(), old);
+        assert!(!checkout.join(codex).exists());
+        git(checkout, &["add", "-A"]);
+        assert!(git(checkout, &["status", "--porcelain"]).is_empty());
+    }
+}
+
+#[test]
+fn source_installer_protects_generated_hooks_and_original_backup() {
+    let f = Fixture::new();
+    init(&f.root);
+    let claude = ".claude/settings.local.json";
+    write(&f.root.join(claude), r#"{"permissions":{}}"#);
+    native::Hooks::install(&f.root).unwrap();
+    assert!(f
+        .root
+        .join(".claude/settings.local.json.orka-backup")
+        .is_file());
+    assert!(f.root.join(".codex/hooks.json").is_file());
+    git(&f.root, &["add", "-A"]);
+    assert!(git(&f.root, &["status", "--porcelain"]).is_empty());
+}
+
+#[test]
+fn old_ledger_skill_links_are_replaced_with_managed_copies() {
+    use std::os::unix::fs::{symlink, MetadataExt};
+    let f = Fixture::new();
+    init(&f.root);
+    let tree = crate::worktrees::home().unwrap().join("legacy-link");
+    worktree(&f.root, &tree);
+    let relative = ".agents/skills/example";
+    let source = f.root.join(relative);
+    let link = tree.join(relative);
+    write(&source.join("SKILL.md"), "old source");
+    fs::create_dir_all(link.parent().unwrap()).unwrap();
+    symlink(&source, &link).unwrap();
+    let metadata = fs::symlink_metadata(&link).unwrap();
+    let (admin, _) = crate::onboarding::discovery::registered_worktree(&tree).unwrap();
+    let legacy = json!({"checkout":tree,"admin":admin,"relative":relative,"device":metadata.dev(),"inode":metadata.ino(),"fingerprint":format!("link:{}",source.display())});
+    db::set(&f.db, "worktreeIntegration", &json!([legacy])).unwrap();
+    worktree_integration::reconcile(&f.db, Path::new("/fixture/orka")).unwrap();
+    assert!(!link.is_symlink());
+    assert_eq!(
+        fs::read_to_string(link.join("SKILL.md")).unwrap(),
+        "old source"
+    );
+    assert_eq!(
+        fs::read_to_string(source.join("SKILL.md")).unwrap(),
+        "old source"
+    );
+    git(&tree, &["add", "-A"]);
+    assert!(git(&tree, &["status", "--porcelain"]).is_empty());
+}
+
+#[test]
+fn pending_ownership_recovers_after_publication() {
+    let f = Fixture::new();
+    init(&f.root);
+    let tree = crate::worktrees::home().unwrap().join("pending");
+    worktree(&f.root, &tree);
+    let hook = ".codex/hooks.json";
+    let content = b"complete Orka file";
+    write(&tree.join(hook), content);
+    write(&tree.join(".codex/.pending"), content);
+    let (admin, _) = crate::onboarding::discovery::registered_worktree(&tree).unwrap();
+    let pending = json!({"checkout":tree,"admin":admin,"relative":hook,"device":0,"inode":0,"fingerprint":"","pending":{"fingerprint":db::digest(content),"scratch":".codex/.pending"}});
+    db::set(&f.db, "worktreeIntegration", &json!([pending])).unwrap();
+    let mut disconnected = f.project.clone();
+    disconnected["path"] = Value::Null;
+    set_project(&f, &disconnected);
+    worktree_integration::reconcile(&f.db, Path::new("/fixture/orka")).unwrap();
+    assert!(!tree.join(hook).exists());
+    assert!(!tree.join(".codex/.pending").exists());
+    assert!(db::rows(&f.db, "SELECT value FROM worktree_artifacts", &[])
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn unavailable_checkout_keeps_ownership_without_blocking_another_repo() {
+    let f = Fixture::new();
+    init(&f.root);
+    let home = crate::worktrees::home().unwrap();
+    let parent = home.join("offline");
+    let relocated = home.join("offline-moved");
+    let tree = parent.join("tree");
+    worktree(&f.root, &tree);
+    let other = home.join("other");
+    let other_tree = home.join("other-tree");
+    fs::create_dir(&other).unwrap();
+    init(&other);
+    worktree(&other, &other_tree);
+    let mut project = f.project.clone();
+    project["sources"] = json!([{"id":"main","path":f.root},{"id":"other","path":other}]);
+    set_project(&f, &project);
+    let reconcile = || worktree_integration::reconcile(&f.db, Path::new("/fixture/orka"));
+    reconcile().unwrap();
+    let hook = ".codex/hooks.json";
+    assert!(tree.join(hook).is_file() && other_tree.join(hook).is_file());
+    fs::rename(&parent, &relocated).unwrap();
+    git(&f.root, &["worktree", "prune", "--expire=now"]);
+    project["sources"] = json!([]);
+    project["path"] = Value::Null;
+    set_project(&f, &project);
+    assert!(reconcile().unwrap_err().contains("unavailable"));
+    assert!(!other_tree.join(hook).exists());
+    assert!(relocated.join("tree").join(hook).is_file());
+    fs::rename(&relocated, &parent).unwrap();
+    reconcile().unwrap();
+    assert!(!tree.join(hook).exists());
+}
+
+#[test]
+fn pruning_a_registration_cleans_surviving_worktree_files() {
+    let f = Fixture::new();
+    init(&f.root);
+    let tree = crate::worktrees::home().unwrap().join("pruned");
+    worktree(&f.root, &tree);
+    let reconcile = || worktree_integration::reconcile(&f.db, Path::new("/fixture/orka")).unwrap();
+    reconcile();
+    assert!(tree.join(".codex/hooks.json").is_file());
+    fs::remove_file(tree.join(".git")).unwrap();
+    git(&f.root, &["worktree", "prune", "--expire=now"]);
+    reconcile();
+    assert!(tree.join("app/README.md").is_file());
+    assert!(!tree.join(".codex/hooks.json").exists());
+    assert!(!tree.join(".claude/settings.local.json").exists());
 }
 
 #[test]
