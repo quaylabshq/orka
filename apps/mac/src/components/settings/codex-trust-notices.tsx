@@ -39,7 +39,7 @@ function message(state: TrustState, name: string) {
     case "hooks-changed":
       return `Orka changed since Codex last approved it in ${name}. Shared memory may be incomplete there.`;
     case "folder-untrusted":
-      return `${name} is marked untrusted in Codex, directly or through a parent folder. Review the trust settings in Codex to enable Orka’s hooks.`;
+      return `${name} is marked untrusted in Codex. Review trust for this folder or its parent.`;
     case "hooks-disabled":
       return "Hooks are turned off in Codex for one or more source folders. Turn them back on in Codex to get shared memory there.";
     default:
