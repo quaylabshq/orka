@@ -41,6 +41,10 @@ pub enum Report {
 
 /// Asks the installed Codex about each folder. Read-only.
 pub fn inspect(roots: &[PathBuf]) -> Report {
+    inspect_with(roots, classify)
+}
+
+fn inspect_with(roots: &[PathBuf], classify: impl Fn(&Path, &Value, &Value) -> Trust) -> Report {
     if roots.is_empty() {
         return Report::Folders(Vec::new());
     }
@@ -57,14 +61,16 @@ pub fn inspect(roots: &[PathBuf]) -> Report {
         Ok(None) => return Report::Unsupported,
         Err(error) => return Report::Unavailable(error),
     };
-    let config = match rpc.call("config/read", json!({})) {
-        Ok(read) => read["config"].clone(),
-        Err(error) => return Report::Unavailable(error),
-    };
     Report::Folders(
         roots
             .iter()
-            .map(|root| (root.clone(), classify(root, &listed, &config)))
+            .map(|root| {
+                let trust = match rpc.call("config/read", json!({"cwd":root})) {
+                    Ok(read) => classify(root, &listed, &read["config"]),
+                    Err(error) => Trust::Unknown(error),
+                };
+                (root.clone(), trust)
+            })
             .collect(),
     )
 }
