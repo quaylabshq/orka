@@ -2,14 +2,23 @@ import type { ProjectResource } from "../types.js";
 
 /** Preserve collection sort order among siblings, while keeping forks beside
  * their source. A filtered-out or missing parent leaves a visible root. */
-export function sessionTree(resources: ProjectResource[]) {
+export function sessionTree(
+  resources: ProjectResource[],
+  heldParents?: ReadonlyMap<string, string | undefined>,
+) {
+  const parentId = (resource: ProjectResource) =>
+    resource.fork?.parentId ??
+    (heldParents?.has(resource.resourceId)
+      ? heldParents.get(resource.resourceId)
+      : resource.nativeForkParentId) ??
+    "";
   const byId = new Map(
     resources.map((resource) => [resource.resourceId, resource]),
   );
   const parents = new Map<string, string>();
   const children = new Map<string, ProjectResource[]>();
   for (const resource of resources) {
-    const parent = byId.get(resource.fork?.parentId ?? "");
+    const parent = byId.get(parentId(resource));
     if (
       resource.kind !== "session" ||
       parent?.kind !== "session" ||
@@ -21,7 +30,7 @@ export function sessionTree(resources: ProjectResource[]) {
     let ancestor: ProjectResource | undefined = parent;
     while (ancestor && !seen.has(ancestor.resourceId)) {
       seen.add(ancestor.resourceId);
-      ancestor = byId.get(ancestor.fork?.parentId ?? "");
+      ancestor = byId.get(parentId(ancestor));
     }
     if (ancestor) continue;
     parents.set(resource.resourceId, parent.resourceId);

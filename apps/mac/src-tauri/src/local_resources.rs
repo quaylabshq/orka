@@ -203,6 +203,8 @@ fn read_catalog(
         return Err("Choose memories, sessions, or plans".into());
     }
     let mut resources = BTreeMap::new();
+    let mut native_sessions = BTreeMap::new();
+    let mut native_forks = Vec::new();
     for mut entry in entries(db, project, kind)? {
         if let Some(mut resource) = normalize(db, project, &entry)? {
             if remember_origins && resource["revision"].as_u64().unwrap_or(0) > 0 {
@@ -248,6 +250,20 @@ fn read_catalog(
                         fork = json!({"parentId":parts[2],"nativeId":entry["nativeId"],"destination":parts[3],"createdAt":resource["updatedAt"]});
                     }
                 }
+                if let Some(native_id) = entry["nativeId"].as_str() {
+                    let scope = (
+                        resource["sourceId"].as_str().unwrap_or("").to_owned(),
+                        resource["source"].as_str().unwrap_or("").to_owned(),
+                        resource["owner"].as_str().unwrap_or("").to_owned(),
+                    );
+                    native_sessions
+                        .entry((scope.clone(), native_id.to_owned()))
+                        .and_modify(|known| *known = None)
+                        .or_insert(Some(id.to_owned()));
+                    if let Some(parent) = entry["nativeParentId"].as_str() {
+                        native_forks.push((id.to_owned(), (scope, parent.to_owned())));
+                    }
+                }
                 if !fork.is_null() {
                     resource["fork"] = fork;
                 }
@@ -263,6 +279,15 @@ fn read_catalog(
                     .to_owned(),
                 resource,
             );
+        }
+    }
+    for (child, parent_key) in native_forks {
+        if let Some(Some(parent)) = native_sessions.get(&parent_key) {
+            if child != *parent {
+                if let Some(resource) = resources.get_mut(&child) {
+                    resource["nativeForkParentId"] = json!(parent);
+                }
+            }
         }
     }
     let resources = resources.into_values().collect::<Vec<_>>();

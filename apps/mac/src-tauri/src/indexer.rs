@@ -448,6 +448,7 @@ struct Scanned<'a> {
     files: Vec<Value>,
     paths: Vec<PathBuf>,
     native_id: Option<&'a str>,
+    native_parent: Option<&'a str>,
 }
 fn collect(
     db: &rusqlite::Connection,
@@ -463,6 +464,7 @@ fn collect(
         files,
         paths,
         native_id,
+        native_parent,
     } = scanned;
     if !crate::projects::sharing_allowed(project, kind) {
         return Ok(());
@@ -547,7 +549,7 @@ fn collect(
             "local_resources",
             &id,
             project_id,
-            &json!({"resource":resource,"paths":paths,"nativeId":native_id,"discoveredAt":db::now(),"updatedAt":updated,"path":project["path"],"folderIdentity":project["folderIdentity"],"owner":owner,"generation":project["catalogGeneration"]}),
+            &json!({"resource":resource,"paths":paths,"nativeId":native_id,"nativeParentId":native_parent,"discoveredAt":db::now(),"updatedAt":updated,"path":project["path"],"folderIdentity":project["folderIdentity"],"owner":owner,"generation":project["catalogGeneration"]}),
         );
     }
     if kind == "session" {
@@ -789,6 +791,7 @@ fn collect_plan_file(
             files: vec![file],
             paths: vec![path.into()],
             native_id: None,
+            native_parent: None,
         },
         seen,
     )
@@ -817,6 +820,7 @@ fn collect_embedded_plan(
                 files: vec![plans::content(text.as_bytes())?],
                 paths: vec![],
                 native_id: None,
+                native_parent: None,
             },
             seen,
         );
@@ -856,6 +860,7 @@ fn collect_embedded_plan(
             files: vec![file],
             paths: vec![path],
             native_id: None,
+            native_parent: None,
         },
         seen,
     )?;
@@ -1220,6 +1225,7 @@ fn scan_source(
                             files: vec![packages::file(&path, "content.md")?],
                             paths: vec![path],
                             native_id: None,
+                            native_parent: None,
                         },
                         &mut seen,
                     )?;
@@ -1253,6 +1259,7 @@ fn scan_source(
                                     files: vec![packages::file(e.path(), "content.md")?],
                                     paths: vec![e.path().into()],
                                     native_id: None,
+                                    native_parent: None,
                                 },
                                 &mut seen,
                             )?;
@@ -1349,6 +1356,7 @@ fn scan_source(
                             ],
                             paths: vec![durable.clone()],
                             native_id: None,
+                            native_parent: None,
                         },
                         &mut seen,
                     )?;
@@ -1378,6 +1386,7 @@ fn scan_source(
                         files: vec![packages::file(&path, "content.md")?],
                         paths: vec![path],
                         native_id: None,
+                        native_parent: None,
                     },
                     &mut seen,
                 )?;
@@ -1435,6 +1444,7 @@ fn scan_source(
                             files: copies[0].1.as_array().ok_or("Missing skill files")?.clone(),
                             paths: paths.clone(),
                             native_id: None,
+                            native_parent: None,
                         },
                         &mut seen,
                     );
@@ -1459,6 +1469,7 @@ fn scan_source(
                             files: vec![],
                             paths: vec![],
                             native_id: None,
+                            native_parent: None,
                         },
                         &mut seen,
                     )?;
@@ -1563,6 +1574,7 @@ fn scan_source(
                             },
                         ],
                         native_id: None,
+                        native_parent: None,
                     },
                     &mut seen,
                 )?;
@@ -1924,6 +1936,11 @@ fn scan_source(
                         files,
                         paths: vec![e.path().into()],
                         native_id: Some(&id),
+                        native_parent: if project["catalogOnly"] == true {
+                            crate::session_forks::native_parent(tool, &id, &records)
+                        } else {
+                            None
+                        },
                     },
                     &mut seen,
                 );
@@ -2089,6 +2106,7 @@ fn scan_source(
                     files: vec![],
                     paths: vec![],
                     native_id: b["nativeId"].as_str(),
+                    native_parent: None,
                 },
                 &mut seen,
             )?;

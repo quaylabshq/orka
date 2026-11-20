@@ -21,6 +21,11 @@ import { SessionMessagesQuery } from "./use-session-messages.js";
 
 const rootsPerPage = 40;
 
+type RowAnchor = {
+  id: string;
+  parents?: ReadonlyMap<string, string | undefined>;
+};
+
 const shortDate = new Intl.DateTimeFormat(undefined, {
   month: "short",
   day: "numeric",
@@ -96,7 +101,13 @@ export function ResourceTable({
   const memberName = useMemberLabel(user);
   const sessions = resources[0]?.kind === "session";
   const showRepository = resources.some((resource) => resource.repositoryName);
-  const tree = useMemo(() => sessionTree(resources), [resources]);
+  const [focusedResource, setFocusedResource] = useState<RowAnchor>();
+  const [menuResource, setMenuResource] = useState<RowAnchor>();
+  const anchor = menuResource ?? focusedResource;
+  const tree = useMemo(
+    () => sessionTree(resources, anchor?.parents),
+    [resources, anchor?.parents],
+  );
   const [ancestors] = useState(() =>
     sessionAncestors(focusResource, tree.parents),
   );
@@ -127,9 +138,21 @@ export function ResourceTable({
       page: Math.floor(Math.max(0, index) / rootsPerPage),
     };
   });
-  const [focusedResource, setFocusedResource] = useState<string>();
-  const [menuResource, setMenuResource] = useState<string>();
-  const anchoredResource = menuResource ?? focusedResource;
+  const anchoredResource = anchor?.id;
+  const rowAnchor = (id: string): RowAnchor => {
+    if (!sessions) return { id };
+    // A local refresh can discover a parent for an existing row. Apply that
+    // grouping after focus and any open menu move away from the branch.
+    const branch = [id, ...sessionAncestors(id, tree.parents)];
+    return {
+      id,
+      parents: new Map(branch.map((id) => [id, tree.parents.get(id)])),
+    };
+  };
+  const focusRow = (id: string) =>
+    setFocusedResource((current) =>
+      current?.id === id ? current : rowAnchor(id),
+    );
   const focusedRoot =
     sessionAncestors(anchoredResource, tree.parents).at(-1) ?? anchoredResource;
   const focusedIndex = focusedRoot
@@ -150,6 +173,10 @@ export function ResourceTable({
     setPosition({ key: pageKey, page });
   }
   const rows = useMemo(() => {
+    const anchoredPath = new Set([
+      anchoredResource,
+      ...sessionAncestors(anchoredResource, tree.parents),
+    ]);
     const flattened: (
       | { resource: Resource; depth: number }
       | { parent: Resource; remaining: number; depth: number }
@@ -160,7 +187,11 @@ export function ResourceTable({
       const children = tree.children.get(resource.resourceId) ?? [];
       const limit = filtered
         ? children.length
-        : (limits[resource.resourceId] ?? 5);
+        : Math.max(
+            limits[resource.resourceId] ?? 5,
+            children.findIndex((child) => anchoredPath.has(child.resourceId)) +
+              1,
+          );
       children.slice(0, limit).forEach((child) => append(child, depth + 1));
       if (children.length > limit)
         flattened.push({
@@ -175,7 +206,7 @@ export function ResourceTable({
       .slice(start, start + rootsPerPage)
       .forEach((resource) => append(resource, 0));
     return flattened;
-  }, [tree, expanded, limits, filtered, page]);
+  }, [tree, expanded, limits, filtered, page, anchoredResource]);
   const table = useRef<HTMLTableElement>(null);
   const pageChanged = useRef(false);
   const goToPage = (page: number) => {
@@ -228,7 +259,7 @@ export function ResourceTable({
               <tr
                 key={`more:${row.parent.resourceId}`}
                 className="session-forks-more"
-                onFocus={() => setFocusedResource(row.parent.resourceId)}
+                onFocus={() => focusRow(row.parent.resourceId)}
               >
                 <td colSpan={showRepository ? 5 : 4}>
                   <Button
@@ -259,8 +290,10 @@ export function ResourceTable({
           const onMenuChange = (open: boolean) =>
             setMenuResource((current) =>
               open
-                ? resource.resourceId
-                : current === resource.resourceId
+                ? current?.id === resource.resourceId
+                  ? current
+                  : rowAnchor(resource.resourceId)
+                : current?.id === resource.resourceId
                   ? undefined
                   : current,
             );
@@ -278,7 +311,7 @@ export function ResourceTable({
                   }
                   onFocus={(event) => {
                     if (event.currentTarget.contains(event.target))
-                      setFocusedResource(resource.resourceId);
+                      focusRow(resource.resourceId);
                     void SessionMessagesQuery.prefetch(client, scope, resource);
                   }}
                   onClick={() => onOpen(resource.resourceId)}
@@ -318,7 +351,7 @@ export function ResourceTable({
                           )}
                         </span>
                       )}
-                      {resource.fork && (
+                      {(resource.fork || resource.nativeForkParentId) && (
                         <GitForkIcon
                           className="session-fork-icon"
                           size={16}

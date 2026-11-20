@@ -23,6 +23,7 @@ export type ProjectResource = Resource & {
     createdAt: string;
   };
   localForkId?: string;
+  nativeForkParentId?: string;
 };
 export type ProjectPage = "home" | "env" | "members" | Resource["kind"];
 export type ProjectSharing = Record<Resource["kind"] | "env", boolean>;
