@@ -1,6 +1,13 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import { AxeBuilder } from "@axe-core/playwright";
 import { syncAttentionFixture } from "./fixtures/sync-attention.js";
+
+const reviews = (page: Page) =>
+  page.getByRole("region", { name: "Reviews", exact: true });
+const viewButton = (page: Page, name: "Open" | "History") =>
+  reviews(page)
+    .getByRole("group", { name: "Reviews view", exact: true })
+    .getByRole("button", { name, exact: true });
 
 test.beforeEach(async ({ page }) => {
   await syncAttentionFixture(page);
@@ -83,7 +90,9 @@ test("modal counts unique project resources and preserves completed activity in 
   await expect(modal).not.toContainText("Release checklist");
 });
 
-test("saved history previews keep the original bytes and expose no publication controls", async ({
+// History lists decided requests only. The read-only preview of a saved local
+// change that this test also covered was removed with the Reviews tab.
+test("request history opens decided requests read-only and exposes no decision controls", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 900, height: 640 });
@@ -101,35 +110,33 @@ test("saved history previews keep the original bytes and expose no publication c
   await expect(openHistory).toHaveCSS("border-top-width", "1px");
   await expect(openHistory).toHaveCSS("height", "32px");
   await openHistory.press("Enter");
-  const management = page.getByRole("region", { name: "Manage", exact: true });
-  const history = management.getByRole("region", { name: "Request history" });
-  await expect(history.locator("details")).toHaveAttribute("open", "");
-  await expect(history.locator("summary")).toBeFocused();
-  await management
-    .getByRole("button", { name: "View saved change", exact: true })
+  await expect(viewButton(page, "History")).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  const history = reviews(page).getByRole("region", {
+    name: "Requests",
+    exact: true,
+  });
+  await expect(history.locator("tbody tr")).toHaveCount(1);
+  await expect(
+    history.getByRole("row", { name: /Project setup notes/ }),
+  ).toContainText("Approved");
+  await expect(reviews(page)).not.toContainText("Earlier writing guide");
+  await history
+    .getByRole("button", { name: "Project setup notes", exact: true })
     .click();
-  const saved = page.getByRole("dialog", { name: "Saved change", exact: true });
-  await expect(saved).toContainText("Preserved older instructions");
-  for (const name of [
-    "Publish update",
-    "Send for approval",
-    "Review latest and retry",
-  ])
-    await expect(saved.getByRole("button", { name, exact: true })).toHaveCount(
-      0,
-    );
-  await saved.getByRole("button", { name: "Close", exact: true }).click();
-  await management
-    .getByRole("button", { name: "View request", exact: true })
-    .filter({ hasText: "View request" })
-    .last()
-    .click();
-  const request = page.getByRole("dialog", {
-    name: "Request history",
+  const request = page.getByRole("region", {
+    name: "Review details",
     exact: true,
   });
   await expect(
-    request.getByRole("button", { name: "Approve request", exact: true }),
+    request.getByRole("heading", { name: "Project setup notes", exact: true }),
+  ).toBeVisible();
+  // The status sits in the details panel, or on the details line when narrow.
+  await expect(request).toContainText("Approved");
+  await expect(
+    request.getByRole("button", { name: "Approve", exact: true }),
   ).toHaveCount(0);
   await expect(
     request.getByRole("button", { name: "Reject", exact: true }),
@@ -144,6 +151,28 @@ test("saved history previews keep the original bytes and expose no publication c
     ),
   );
   expect(mutations).toEqual([]);
+});
+
+// Opening History from the sync menu also moves the keyboard there.
+test("opening request history moves focus to the History view", async ({
+  page,
+}) => {
+  await page.locator(".workspace-header .sync-status").click();
+  const modal = page.getByRole("dialog", {
+    name: "Sync status and notifications",
+  });
+  await modal
+    .locator("summary")
+    .filter({ hasText: "History (" })
+    .press("Enter");
+  await modal
+    .getByRole("button", { name: "Open request history", exact: true })
+    .press("Enter");
+  await expect(viewButton(page, "History")).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(viewButton(page, "History")).toBeFocused();
 });
 
 test("history navigation respects a Settings draft and does not replay after opening Settings again", async ({
@@ -185,16 +214,13 @@ test("history navigation respects a Settings draft and does not replay after ope
   await guard
     .getByRole("button", { name: "Discard", exact: true })
     .press("Enter");
-  const history = page.getByRole("region", { name: "Request history" });
-  const disclosure = history.locator("details");
-  const summary = disclosure.locator("summary");
-  await expect(disclosure).toHaveAttribute("open", "");
-  await expect(summary).toBeFocused();
-  await summary.press("Enter");
-  await expect(disclosure).not.toHaveAttribute("open", "");
+  const history = viewButton(page, "History");
+  await expect(history).toHaveAttribute("aria-pressed", "true");
+  await viewButton(page, "Open").press("Enter");
+  await expect(history).toHaveAttribute("aria-pressed", "false");
 
   await openSettings.click();
   await page.keyboard.press("Escape");
-  await expect(disclosure).toBeVisible();
-  await expect(disclosure).not.toHaveAttribute("open", "");
+  await expect(reviews(page)).toBeVisible();
+  await expect(history).toHaveAttribute("aria-pressed", "false");
 });

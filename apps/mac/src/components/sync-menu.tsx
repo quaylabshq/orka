@@ -21,7 +21,7 @@ import {
   queueStateLabel,
   retryTime,
 } from "./sync-queue.js";
-import { syncIssueRecovery } from "./sync-issues.js";
+import { isTerminalUploadError, syncIssueRecovery } from "./sync-issues.js";
 import type {
   AttentionItem,
   ProjectAttention,
@@ -51,7 +51,6 @@ export function SyncMenu({
   actionError = "",
   onDismissError,
   onResumeSetup,
-  skillUsagePartial = false,
   queue = [],
   onCancel,
 }: {
@@ -61,7 +60,6 @@ export function SyncMenu({
   onCancel?: (projectId: string) => void;
   onDismissError?: () => void;
   onResumeSetup?: () => void;
-  skillUsagePartial?: boolean;
   state: Snapshot;
   attention: ProjectAttention;
   projectId?: string;
@@ -225,7 +223,6 @@ export function SyncMenu({
     historyCount ||
     attention.waitingRequests.length ||
     attention.accountIssues.length ||
-    skillUsagePartial ||
     needsReconnect,
   );
   const cancelButton = (entry: SyncQueueEntry) =>
@@ -344,11 +341,7 @@ export function SyncMenu({
           </Button>
         )
       ) : item.uploads.length > 0 ? (
-        item.uploads.every(
-          (upload) =>
-            !/^4\d\d:/.test(upload.error ?? "") ||
-            /^(401|408|429):/.test(upload.error ?? ""),
-        ) ? (
+        item.uploads.every((upload) => !isTerminalUploadError(upload.error)) ? (
           <Button
             variant="secondary"
             size="sm"
@@ -774,33 +767,22 @@ export function SyncMenu({
                           </li>
                         ))}
                       </ul>
-                      {onOpenRequestHistory && requestHistoryCount > 0 && (
-                        <Button
-                          className="sync-history-action"
-                          size="sm"
-                          variant="secondary"
-                          onClick={() => {
-                            openingRequestHistory.current = true;
-                            leave(onOpenRequestHistory);
-                          }}
-                        >
-                          Open request history
-                        </Button>
-                      )}
+                      {onOpenRequestHistory &&
+                        attention.historyRequests.length > 0 && (
+                          <Button
+                            className="sync-history-action"
+                            size="sm"
+                            variant="secondary"
+                            onClick={() => {
+                              openingRequestHistory.current = true;
+                              leave(onOpenRequestHistory);
+                            }}
+                          >
+                            Open request history
+                          </Button>
+                        )}
                     </div>
                   </details>
-                </section>
-              )}
-              {skillUsagePartial && (
-                <section
-                  className="sync-menu-notification"
-                  aria-label="Skill usage details"
-                >
-                  <h3>Skill usage</h3>
-                  <p>
-                    Usage covers available local history; some records could not
-                    be read.
-                  </p>
                 </section>
               )}
               {attention.accountIssues.length > 0 && (

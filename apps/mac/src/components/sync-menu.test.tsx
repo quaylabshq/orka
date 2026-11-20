@@ -296,6 +296,7 @@ test("project activity precedes attention and technical diagnostics stay collaps
           key: "file",
           title: "A changed file",
           messages: ["Review this file"],
+          errors: [],
           paths: [],
           requests: [],
           conflicts: [],

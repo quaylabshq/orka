@@ -24,6 +24,8 @@ export interface WorkspaceHeaderProps {
   onToggle: (instant: boolean) => void;
   status?: React.ReactNode;
   repositoryFilter?: React.ReactNode;
+  /** Position controls beside the status, such as a review stepper. */
+  navigation?: React.ReactNode;
   /** A control shown in place of the visible title, such as Back to Skills. */
   leading?: React.ReactNode;
 }
@@ -36,6 +38,7 @@ export function WorkspaceHeader({
   onToggle,
   status,
   repositoryFilter,
+  navigation,
   leading,
 }: WorkspaceHeaderProps) {
   const reduced = useReducedMotion();
@@ -80,6 +83,7 @@ export function WorkspaceHeader({
       </div>
       <div className="workspace-header-actions" data-tauri-drag-region>
         {repositoryFilter}
+        {navigation}
         {status}
       </div>
     </header>

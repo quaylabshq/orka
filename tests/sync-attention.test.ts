@@ -7,7 +7,13 @@ import type {
   Snapshot,
 } from "../apps/mac/src/types.js";
 import { projectAttention } from "../apps/mac/src/components/sync-attention.js";
-import { skillBinding } from "../apps/mac/src/components/skill-review-state.js";
+import { defaultIndexFilters } from "../apps/mac/src/components/index-toolbar.js";
+import { applySkillFilters } from "../apps/mac/src/components/skill-index.js";
+import {
+  skillBinding,
+  skillReviewState,
+} from "../apps/mac/src/components/skill-review-state.js";
+import { skillStatus } from "../apps/mac/src/components/skill-status.js";
 
 const resource = {
   resourceId: "skill",
@@ -303,6 +309,60 @@ await test("native scanner, installation recovery and publication aliases share 
     assert.equal(selected.items[0].requests.length, 1);
     assert.equal(selected.items[0].draft?.id, "local");
   }
+});
+
+await test("a scoped native skill read error overrides an update and matches the read-failure filter", () => {
+  const unreadable = {
+    ...resource,
+    sourceId: "source-a",
+    logicalPath: "writing",
+  };
+  const sameName = {
+    ...unreadable,
+    resourceId: "other-skill",
+    sourceId: "source-b",
+  };
+  const state = snapshot({
+    resources: [unreadable, sameName],
+    bindings: [
+      {
+        resourceId: unreadable.resourceId,
+        projectId: unreadable.projectId,
+        installationState: "update_available",
+      },
+    ],
+    errors: [
+      {
+        source: "one:source-a:scan:skills/writing",
+        error: "Permission denied (os error 13)",
+      },
+    ],
+  });
+  const attention = projectAttention(state, "one");
+  const statusOf = (item: ProjectResource) =>
+    skillStatus({
+      resource: item,
+      conflicted: false,
+      attention: attention.items.find(
+        ({ resourceId }) => resourceId === item.resourceId,
+      ),
+      review: skillReviewState(item, state, { governed: true }),
+    });
+  assert.equal(statusOf(unreadable)?.key, "could-not-read");
+  assert.equal(statusOf(sameName), null);
+  assert.deepEqual(
+    applySkillFilters(
+      state.resources,
+      { ...defaultIndexFilters, statuses: ["could-not-read"] },
+      {
+        displayTitle: (item) => item.title,
+        memberName: (id) => id,
+        user: state.user,
+        statusOf,
+      },
+    ),
+    [unreadable],
+  );
 });
 
 await test("legacy unscoped scanner aliases match only the exact unscoped logical identity", () => {

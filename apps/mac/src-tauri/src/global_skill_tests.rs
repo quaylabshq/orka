@@ -165,6 +165,37 @@ fn global_skills_refresh_survives_restart_and_retries_without_reinstalling() {
 }
 
 #[test]
+fn skill_package_names_source_read_and_cache_write_failures_separately() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let f = Fixture::new();
+    let folder = global(&f, ".codex", "diagnostics");
+    let file = folder.join("SKILL.md");
+    let bytes = fs::read(&file).unwrap();
+    let original = fs::metadata(&file).unwrap().permissions();
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o000)).unwrap();
+    let read_failure = packages::directory(&folder);
+    fs::set_permissions(&file, original).unwrap();
+    let error = read_failure.unwrap_err();
+    assert!(error.starts_with("Cannot read SKILL.md:"), "{error}");
+
+    let nested = folder.join("scripts");
+    fs::create_dir(&nested).unwrap();
+    let original = fs::metadata(&nested).unwrap().permissions();
+    fs::set_permissions(&nested, fs::Permissions::from_mode(0o000)).unwrap();
+    let read_failure = packages::directory(&folder);
+    fs::set_permissions(&nested, original).unwrap();
+    let error = read_failure.unwrap_err();
+    assert!(error.starts_with("Cannot read skill folder:"), "{error}");
+
+    // A directory at the content hash leaves the source readable and prevents a cache write.
+    let cached = db::blob_path(&db::digest(&bytes)).unwrap();
+    fs::create_dir(cached).unwrap();
+    let error = packages::directory(&folder).unwrap_err();
+    assert!(error.starts_with("Cannot cache SKILL.md:"), "{error}");
+}
+
+#[test]
 fn global_skills_scan_nested_roots_deduplicate_links_and_report_unsafe_packages_without_caching() {
     let f = Fixture::new();
     let path = global(&f, ".codex", ".system/example");

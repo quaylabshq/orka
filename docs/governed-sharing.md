@@ -58,8 +58,8 @@ Incoming knowledge lives at
 `<project>/.orka/memory/resources/<resourceId>/content.md`, outside native memory.
 Legacy Orka cache copies are detached, retaining edits as private drafts.
 
-Review remaining private candidates under **Manage → Requests → Changes on this Mac**.
-**Review changes** opens a modal comparing the shared version with this Mac's
+Review remaining private candidates under **Reviews → On this Mac**.
+Opening one shows **Review changes**, a modal comparing the shared version with this Mac's
 changes, using per-file additions, deletions, and permission changes. Closing the
 modal keeps the private changes. A readable text diff remains available on older
 supported versions of macOS.
@@ -87,11 +87,11 @@ Request access from Memories, Skills, Plans, or Sessions. Collection requests
 work even with no visible items and are reviewed by project owners. Item views use the same
 category request; they do not expose individual file permission controls. Existing individual file
 restrictions and creation rights remain enforced. Only owners manage sharing. Requests
-are reviewed in Manage → Requests; the management page has no request form. ENV
+are reviewed in the Reviews tab; it has no request form. ENV
 requests stay in the encrypted ENV workflow and retain recipient and trusted-device
 requirements. Member names come from account metadata, with email as a fallback.
 
-Notifications open **Manage → Requests**; read state persists across devices. Attachments
+Notifications open **Reviews**; read state persists across devices. Attachments
 are restricted to their author and current reviewers until acceptance. Target,
 proposer or policy changes can make requests stale.
 
