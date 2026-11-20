@@ -8,6 +8,7 @@ import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
+import { DatabaseSync } from "node:sqlite";
 import assert from "node:assert/strict";
 
 const binary =
@@ -16,8 +17,11 @@ const binary =
 const pins = new Map<string, string>();
 let supported = true;
 let failNextPin = false;
+let rejectNextPin = false;
+let omitNextPin = false;
 const catalogs = new Map<string, { id: string; name: string }>();
 const pinCalls: string[] = [];
+const pushed: string[] = [];
 const server = createServer((req, res) => {
   const chunks: Buffer[] = [];
   req.on("data", (c) => chunks.push(Buffer.from(c)));
@@ -26,6 +30,9 @@ const server = createServer((req, res) => {
     res.setHeader("Content-Type", "application/json");
     if (req.url?.split("?")[0] === "/v2/projects" && req.method === "GET") {
       const source = catalogs.get(req.headers.authorization?.slice(7) ?? "");
+      const remoteKey =
+        source && !omitNextPin ? pins.get(source.id) : undefined;
+      omitNextPin = false;
       return res.end(
         JSON.stringify(
           source
@@ -34,13 +41,26 @@ const server = createServer((req, res) => {
                   id: projectId,
                   name: "Fixture",
                   role: "member",
-                  sources: [{ ...source, remoteKey: pins.get(source.id) }],
+                  sources: [{ ...source, remoteKey }],
                 },
               ]
             : [],
         ),
       );
     }
+    if (req.url === "/v2/sync/push") {
+      pushed.push(body.id);
+      return res.end(
+        JSON.stringify({
+          event: {
+            resource: { ...body.resource, projectId, revision: 1, files: [] },
+            conflicts: [],
+          },
+        }),
+      );
+    }
+    if (req.url?.startsWith("/v2/sync/pull?"))
+      return res.end(JSON.stringify({ cursor: 0, events: [] }));
     if (req.url === "/v2/devices" && req.method === "GET") return res.end("[]");
     if (req.url === "/v2/projects/capabilities")
       return res.end(JSON.stringify(supported ? { sourceRemoteKey: 1 } : {}));
@@ -53,6 +73,16 @@ const server = createServer((req, res) => {
         failNextPin = false;
         res.statusCode = 503;
         return res.end(JSON.stringify({ error: "Temporarily unavailable" }));
+      }
+      if (rejectNextPin) {
+        rejectNextPin = false;
+        res.statusCode = 409;
+        return res.end(
+          JSON.stringify({
+            error:
+              "This Git repository does not match the source's GitHub link.",
+          }),
+        );
       }
       const remoteKey = pins.get(body.sourceId) ?? body.remoteKey;
       pins.set(body.sourceId, remoteKey);
@@ -144,7 +174,26 @@ function mac(name: string) {
     (await call({ action: "snapshot" })).value!.projects.find(
       (p) => p.id === projectId,
     )!.sources[0];
-  return { home, call, setup, connect, source, close: () => child.stdin.end() };
+  const database = () =>
+    new DatabaseSync(
+      join(
+        home,
+        "orka",
+        "services",
+        createHash("sha256").update(service).digest("hex"),
+        user,
+        "sync.sqlite",
+      ),
+    );
+  return {
+    home,
+    call,
+    setup,
+    connect,
+    source,
+    database,
+    close: () => child.stdin.end(),
+  };
 }
 const results: [string, boolean, string][] = [];
 const check = (label: string, ok: boolean, detail: unknown) => {
@@ -214,6 +263,8 @@ const cWrong = await repo(
   join(c.home, "code", "api"),
   "git@github.com:someone/other.git",
 );
+// The first response can itself be stale if a teammate pinned during it.
+omitNextPin = true;
 r = await c.connect(cWrong);
 check(
   "C: a stale catalog still gets the server's refusal",
@@ -224,6 +275,29 @@ check(
   "C: the refused folder is not left connected",
   !(await c.source()).path,
   (await c.source()).path,
+);
+
+r = await c.connect(await repo(join(c.home, "no-remote", "api")), api);
+check(
+  "C: a stale catalog cannot attach a checkout without a remote",
+  /no Git remote/.test(r.error ?? "") && !(await c.source()).path,
+  r,
+);
+const linkRace = mac("link-race");
+const linkedId = randomUUID();
+await linkRace.setup({ id: linkedId, name: "api", path: null });
+const linkWrong = await repo(
+  join(linkRace.home, "code", "api"),
+  "https://github.com/other/api.git",
+);
+rejectNextPin = true;
+r = await linkRace.connect(linkWrong, linkedId);
+check(
+  "A semantic GitHub-link refusal leaves the new checkout unattached",
+  /does not match the source's GitHub link/.test(r.error ?? "") &&
+    !(await linkRace.source()).path &&
+    !pins.has(linkedId),
+  r,
 );
 
 // Mac A later repoints its folder at another repository.
@@ -283,6 +357,31 @@ const original = await repo(
   "https://github.com/original/api.git",
 );
 await conflict.setup({ id: api, name: "api", path: original });
+const conflictDb = conflict.database();
+const heldRequest = randomUUID();
+const healthyRequest = randomUUID();
+const healthySource = randomUUID();
+const pending = conflictDb.prepare("INSERT INTO outbox VALUES(?,?,?,?,NULL)");
+for (const [requestId, sourceId] of [
+  [heldRequest, api],
+  [healthyRequest, healthySource],
+]) {
+  pending.run(
+    requestId,
+    projectId,
+    "/v2/sync/push",
+    JSON.stringify({
+      id: requestId,
+      projectId,
+      resource: {
+        resourceId: randomUUID(),
+        sourceId,
+        kind: "memory",
+        logicalPath: "instructions/AGENTS.md",
+      },
+    }),
+  );
+}
 r = await conflict.call({ action: "sync" });
 const established = await conflict.source();
 check(
@@ -293,6 +392,17 @@ check(
     established.folderState === "repository-conflict",
   established,
 );
+
+const remaining = conflictDb.prepare("SELECT id FROM outbox ORDER BY id").all();
+check(
+  "Only the conflicting source's upload remains queued",
+  remaining.length === 1 &&
+    remaining[0].id === heldRequest &&
+    !pushed.includes(heldRequest) &&
+    pushed.includes(healthyRequest),
+  { remaining, pushed },
+);
+conflictDb.close();
 
 const renamed = mac("renamed");
 const renamedId = randomUUID();
@@ -352,7 +462,7 @@ check(
   r,
 );
 
-for (const m of [a, b, c, d, saved, conflict, renamed]) m.close();
+for (const m of [a, b, c, d, saved, conflict, renamed, linkRace]) m.close();
 server.close();
 await rm(root, { recursive: true, force: true });
 const failed = results.filter(([, ok]) => !ok);

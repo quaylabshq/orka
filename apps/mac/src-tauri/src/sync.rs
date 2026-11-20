@@ -1948,10 +1948,20 @@ impl<'a> SyncPass<'a> {
         }
         let blocked_projects = &mut self.blocked;
         let mut outbox = ProjectOutbox::open(db, project)?;
+        let paused_sources = crate::sources::paused_upload_sources(p);
         let queued: Vec<_> = outbox
             .queued(db)?
             .into_iter()
             .filter(|q| {
+                // Unattributed older rows may belong to the paused source.
+                // Keep the bytes and request ID untouched for a verified retry.
+                if !paused_sources.is_empty()
+                    && q["sourceId"]
+                        .as_str()
+                        .is_none_or(|id| paused_sources.contains(id))
+                {
+                    return false;
+                }
                 if q["path"] == crate::selective_sharing::QUEUE_PATH {
                     crate::selective_sharing::authorized_origin(db, q)
                         .is_ok_and(|origin| origin.is_some())
@@ -2714,7 +2724,8 @@ impl<'p> ProjectOutbox<'p> {
 
     /// Queued rows that may be sent now, oldest first.
     fn queued(&self, db: &rusqlite::Connection) -> Result<Vec<Value>> {
-        db::rows(db, "SELECT json_object('sequence',rowid,'id',id,'project',project,'path',path,'value',json(value),'error',error) FROM outbox WHERE project=? AND (EXISTS(SELECT 1 FROM meta WHERE key='sessionOutboxRedaction:'||outbox.id) OR error IS NULL OR error NOT GLOB '4[0-9][0-9]:*' OR substr(error,1,3) IN ('401','408','429')) ORDER BY rowid", &[&self.project])
+        let source = crate::sources::OUTBOX_SOURCE;
+        db::rows(db, &format!("SELECT json_object('sequence',o.rowid,'id',o.id,'project',o.project,'path',o.path,'value',json(o.value),'error',o.error,'sourceId',{source}) FROM outbox o WHERE o.project=? AND (EXISTS(SELECT 1 FROM meta WHERE key='sessionOutboxRedaction:'||o.id) OR o.error IS NULL OR o.error NOT GLOB '4[0-9][0-9]:*' OR substr(o.error,1,3) IN ('401','408','429')) ORDER BY o.rowid"), &[&self.project])
     }
 
     fn batch<'q>(&self, queued: &'q [Value]) -> Vec<&'q Value> {

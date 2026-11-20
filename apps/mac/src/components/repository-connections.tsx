@@ -536,7 +536,8 @@ export function RepositoryConnections({
                         }
                       />
                     ) : (
-                      !connected && (
+                      !connected &&
+                      !conflict && (
                         <Button
                           size="sm"
                           variant="primary"

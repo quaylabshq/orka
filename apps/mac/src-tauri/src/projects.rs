@@ -502,6 +502,7 @@ pub fn merge_catalog(db: &Connection, remote: &Value) -> Result<()> {
                     source["path"] = local["path"].clone();
                     source["folderIdentity"] = local["folderIdentity"].clone();
                     crate::sources::upgrade_identity(source);
+                    crate::sources::refresh_pin_verification(source, &local["verifiedRemoteKey"]);
                 }
             }
         }
@@ -652,6 +653,7 @@ pub async fn project_command(action: String, input: Value) -> Result<Value> {
             )
             .await?;
             source["remoteKey"] = Value::Null;
+            source["verifiedRemoteKey"] = Value::Null;
             db::upsert(&db, "projects", id, id, &project)?;
             SyncQueue::request(
                 &db,

@@ -678,8 +678,11 @@ fn a_pinned_source_accepts_any_checkout_of_its_repository_and_nothing_else() {
     assert!(sources::validate(&view(&main)).is_ok());
     assert!(sources::validate(&view(&worktree)).is_ok());
     assert!(sources::validate(&view(&other)).is_err());
-    // Without a known remote the folder is not treated as another repository.
-    assert!(sources::validate(&view(&bare)).is_ok());
+    // A checkout that proved its identity can temporarily lose its remote.
+    assert!(sources::validate(&view(&bare)).is_err());
+    let mut verified = view(&bare);
+    verified["verifiedRemoteKey"] = json!(pin);
+    assert!(sources::validate(&verified).is_ok());
     // A legacy project's remote hint is not a source pin.
     let mut legacy = view(&other);
     legacy["sourceRemoteKey"] = Value::Null;
