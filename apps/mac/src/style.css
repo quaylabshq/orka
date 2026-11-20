@@ -585,7 +585,7 @@
     font-variant-numeric: tabular-nums;
   }
   .sync-menu {
-    @apply z-40 flex w-[400px] flex-col overflow-hidden rounded-xl border border-line bg-raised shadow-2xl;
+    @apply z-40 flex w-[400px] flex-col overflow-hidden rounded-xl border border-line bg-panel shadow-2xl;
     max-width: calc(100vw - 24px);
     max-height: min(640px, var(--radix-popover-content-available-height));
     transform-origin: var(--radix-popover-content-transform-origin);
@@ -612,10 +612,10 @@
     @apply flex shrink-0 flex-wrap gap-2;
   }
   .sync-menu-feed {
-    @apply min-h-0 flex-1 overflow-y-auto border-t border-line px-4;
+    @apply grid min-h-0 flex-1 gap-3 overflow-y-auto border-t border-line px-4 py-3;
   }
   .sync-menu-progress {
-    @apply shrink-0 px-4 pb-4 pt-1;
+    @apply mx-4 mb-3 shrink-0 rounded-lg border border-line px-3 py-2;
   }
   .sync-menu-progress-status {
     @apply mt-2 flex items-start gap-2 text-secondary;
@@ -635,7 +635,7 @@
     font-variant-numeric: tabular-nums;
   }
   .sync-menu-progress-track {
-    @apply mt-3 h-1 overflow-hidden rounded-full bg-panel;
+    @apply mt-3 h-1 overflow-hidden rounded-full bg-raised;
   }
   .sync-menu-progress-track > span {
     @apply block h-full rounded-full bg-foreground;
@@ -644,57 +644,76 @@
   .sync-activity-icon svg {
     animation: sync-activity-spin 1.2s linear infinite;
   }
-  .sync-menu-feed h3 {
-    @apply mb-2 mt-0 text-label-xs text-muted;
+  .sync-feed-section {
+    @apply min-w-0;
   }
-  .sync-menu-feed .sync-menu-attention-heading {
-    @apply mb-0 pt-3 text-foreground;
+  .sync-feed-section h3 {
+    @apply mb-2 text-label-xs text-secondary;
   }
-  .sync-menu-queue {
-    @apply border-b border-line py-3;
+  .sync-feed-panel {
+    @apply min-w-0 rounded-lg border border-line;
   }
-  .sync-menu-queue:last-child {
-    @apply border-0;
+  .sync-feed-panel > .sync-feed-row,
+  .sync-feed-disclosure {
+    @apply px-3 py-2;
   }
-  .sync-menu-notification {
-    @apply flex flex-col items-start gap-2 border-b border-line py-3 text-xs;
+  .sync-feed-row + .sync-feed-row {
+    @apply border-t border-line;
+  }
+  .sync-feed-summary {
+    @apply flex min-h-8 items-center justify-between gap-3;
+  }
+  .sync-feed-summary > button {
+    @apply shrink-0;
+  }
+  .sync-feed-copy {
+    @apply min-w-0;
     overflow-wrap: anywhere;
   }
-  .sync-menu-notification:last-child {
-    @apply border-0;
+  .sync-feed-copy > strong {
+    @apply block text-label-xs text-foreground;
   }
-  .sync-menu-notification p,
-  .sync-menu-notification h4 {
-    @apply m-0;
+  .sync-feed-copy p,
+  .sync-feed-details {
+    @apply text-body-xs text-secondary;
+    overflow-wrap: anywhere;
   }
-  .sync-menu-notification details {
-    @apply w-full text-secondary;
+  .sync-feed-details {
+    @apply mt-1 grid min-w-0 gap-1.5;
   }
-  .sync-menu-notification summary {
-    @apply flex cursor-pointer list-none items-center gap-1.5 rounded;
-  }
-  .sync-menu-notification summary::-webkit-details-marker {
+  .sync-feed-details:empty {
     display: none;
   }
-  .sync-menu-notification summary::marker {
+  .sync-feed-details p,
+  .sync-feed-copy p {
+    @apply m-0;
+  }
+  .sync-feed-details small {
+    @apply block text-body-xs text-muted;
+  }
+  .sync-feed-panel summary {
+    @apply flex min-h-6 cursor-pointer list-none items-center gap-1.5 rounded text-label-xs text-secondary;
+  }
+  .sync-feed-panel summary::-webkit-details-marker {
+    display: none;
+  }
+  .sync-feed-panel summary::marker {
     content: "";
   }
   .sync-disclosure-chevron {
+    flex-shrink: 0;
     transition: transform 120ms var(--motion-control-ease);
   }
-  .sync-menu-notification details[open] > summary .sync-disclosure-chevron {
+  .sync-feed-panel details[open] > summary .sync-disclosure-chevron {
     transform: rotate(90deg);
   }
-  .sync-menu-notification ul {
-    @apply mb-0 mt-2 list-disc space-y-2 pl-4;
-  }
-  .sync-menu-notification small {
-    @apply text-xs text-muted;
+  .sync-feed-details ul {
+    @apply mb-0 mt-1 list-disc space-y-1 pl-4;
   }
   .sync-history-content {
     @apply mt-3 flex flex-col items-start gap-3;
   }
-  .sync-menu-notification .sync-history-list {
+  .sync-history-list {
     @apply m-0 w-full list-none rounded-lg border border-line bg-panel p-0;
   }
   .sync-history-list > li {
@@ -707,13 +726,14 @@
     @apply text-foreground;
   }
   .sync-history-status {
-    @apply capitalize;
+    @apply text-body-xs capitalize text-muted;
   }
-  .sync-menu .sync-history-action {
-    padding: calc(var(--control-padding-y) - 1px)
-      calc(var(--control-padding-x) - 1px);
-    border: 1px solid var(--border-default);
-    background: var(--surface-secondary);
+  .sync-history-action {
+    @apply self-end;
+  }
+  .sync-history-list li {
+    @apply text-body-xs text-secondary;
+    overflow-wrap: anywhere;
   }
   .sync-queue-row {
     @apply grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 py-2;
@@ -1484,7 +1504,7 @@
     @apply mr-2 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-secondary text-label-2xs;
   }
   .conflict {
-    @apply my-6 rounded-lg bg-raised p-4 text-xs;
+    @apply my-6 rounded-lg border border-line bg-panel p-4 text-xs;
   }
   .conflict > strong {
     @apply flex items-center gap-2 text-label-sm;
