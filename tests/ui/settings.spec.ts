@@ -573,9 +573,10 @@ test("Save Discard and Stay navigation protect drafts, including a failed Save",
   await expect(guard.getByRole("alert")).toBeVisible();
   await expect(guard).toBeVisible();
   await guard.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(guard).toBeHidden();
   await expect(
     settings.getByRole("heading", { name: "Devices", exact: true }),
-  ).toBeVisible();
+  ).toBeFocused();
   await button(settings, "General").click();
   await name.fill("Discard this");
   await button(settings, "Profile").click();
@@ -583,6 +584,10 @@ test("Save Discard and Stay navigation protect drafts, including a failed Save",
     .getByRole("dialog", { name: "Save your changes?" })
     .getByRole("button", { name: "Discard", exact: true })
     .click();
+  await expect(guard).toBeHidden();
+  await expect(
+    settings.getByRole("heading", { name: "Profile", exact: true }),
+  ).toBeFocused();
   await button(settings, "General").click();
   await expect(name).toHaveValue("Keep this edit");
 });

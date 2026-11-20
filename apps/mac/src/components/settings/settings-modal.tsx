@@ -2,6 +2,7 @@ import {
   forwardRef,
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useRef,
   useState,
 } from "react";
@@ -39,10 +40,11 @@ export interface SettingsNavigationHandle {
     onGuardCloseAutoFocus?: (accepted: boolean) => void,
   ) => void;
   requestSection: (section: SettingsSection) => void;
-  requestProject: (
+  requestProject: (projectId: string, action: () => void) => void;
+  requestProjectSection: (
     projectId: string,
-    action: () => void,
-    onGuardCloseAutoFocus?: (accepted: boolean) => void,
+    section: SettingsSection,
+    onGuardCloseAutoFocus: (accepted: boolean) => void,
   ) => void;
 }
 type Destination =
@@ -124,6 +126,13 @@ export const SettingsModal = forwardRef<
   const [serviceDirty, setServiceDirty] = useState(false),
     [draftVersion, setDraftVersion] = useState(0);
   const [pending, setPending] = useState<Destination | null>(null);
+  const [focusTarget, setFocusTarget] = useState<{
+    section: SettingsSection;
+  } | null>(() =>
+    initialSection === "folder" || initialSection === "sharing"
+      ? { section: initialSection }
+      : null,
+  );
   const guardCloseAutoFocus = useRef<(() => void) | undefined>(undefined);
   const [confirmation, setConfirmation] = useState<{
     action: "disconnect" | "remove-source" | "signout";
@@ -147,10 +156,9 @@ export const SettingsModal = forwardRef<
   useEffect(() => {
     forgetShapes();
   }, [projectId]);
-  useEffect(() => {
-    if (initialSection === "folder" || initialSection === "sharing")
-      focusSection(heading.current, initialSection);
-  }, [initialSection]);
+  useLayoutEffect(() => {
+    if (focusTarget) focusSection(heading.current, focusTarget.section);
+  }, [focusTarget]);
   const sharingDirty = Object.keys(sharing).some(
     (key) =>
       sharing[key as keyof typeof sharing] !==
@@ -247,6 +255,13 @@ export const SettingsModal = forwardRef<
     setFolderError("");
     setNotice("");
   };
+  const selectSection = (id: string, next: SettingsSection) => {
+    reset(id);
+    setProjectId(id);
+    setSection(normalized(next));
+    onSectionChange?.(normalized(next));
+    setFocusTarget({ section: next });
+  };
   const navigate = (destination: Destination) => {
     setPending(null);
     editor.current?.discard();
@@ -258,13 +273,10 @@ export const SettingsModal = forwardRef<
       destination();
       return;
     }
-    reset(destination.projectId);
-    setProjectId(destination.projectId);
-    setSection(normalized(destination.section));
-    onSectionChange?.(normalized(destination.section));
-    requestAnimationFrame(() =>
-      focusSection(heading.current, destination.section),
-    );
+    if (pending && !guardCloseAutoFocus.current)
+      guardCloseAutoFocus.current = () =>
+        focusSection(heading.current, destination.section);
+    selectSection(destination.projectId, destination.section);
   };
   const request = (destination: Destination, onGuardClose?: () => void) => {
     if (locked.current || pending || confirmation) return;
@@ -288,16 +300,17 @@ export const SettingsModal = forwardRef<
   };
   useImperativeHandle(ref, () => ({
     requestExit: requestNavigation,
-    requestProject: (id, action, onGuardClose) =>
-      requestNavigation(() => {
+    requestProject: (id, action) =>
+      request(() => {
         reset(id);
         setProjectId(id);
         action();
-      }, onGuardClose),
+      }),
+    requestProjectSection: (id, next, onGuardClose) =>
+      requestNavigation(() => selectSection(id, next), onGuardClose),
     requestSection: (next) => {
       if (normalized(next) !== section) request({ section: next, projectId });
-      else if (next !== section)
-        requestAnimationFrame(() => focusSection(heading.current, next));
+      else if (next !== section) setFocusTarget({ section: next });
     },
   }));
   const exitGuard = useRef({ dirty, request, close: onClose });

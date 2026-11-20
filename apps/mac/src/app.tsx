@@ -325,14 +325,9 @@ function WorkspaceApp({
   const openProjectSettings = (id: string, section: SettingsSection) => {
     if (section === "folder") projectPickerTrigger.current?.focus();
     if (settings && settingsNavigation.current) {
-      settingsNavigation.current.requestProject(
+      settingsNavigation.current.requestProjectSection(
         id,
-        () => {
-          setSettingsProject(id);
-          requestAnimationFrame(() =>
-            settingsNavigation.current?.requestSection(section),
-          );
-        },
+        section,
         (accepted) => {
           if (!accepted) projectPickerTrigger.current?.focus();
         },

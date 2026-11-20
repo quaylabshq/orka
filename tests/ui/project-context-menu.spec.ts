@@ -71,7 +71,7 @@ test("Source folders opens at its section from Profile and from General", async 
   }
 });
 
-test("canceling the Source folders shortcut keeps the draft and restores picker focus", async ({
+test("the Source folders shortcut preserves drafts through Stay and focuses the target after Discard", async ({
   page,
 }) => {
   const settings = await settingsFixture(page);
@@ -87,6 +87,16 @@ test("canceling the Source folders shortcut keeps the draft and restores picker 
   await expect(name).toHaveValue("Unsaved Orka name");
   await expect(
     page.getByRole("combobox", { name: "Select project", exact: true }),
+  ).toBeFocused();
+
+  const retry = await projectMenu(page, "Website");
+  await retry.getByRole("menuitem", { name: "Source folders…" }).press("Enter");
+  await guard
+    .getByRole("button", { name: "Discard", exact: true })
+    .press("Enter");
+  await expect(name).toHaveValue("Website");
+  await expect(
+    settings.getByRole("heading", { name: "Source Folder" }),
   ).toBeFocused();
 });
 
