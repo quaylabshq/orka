@@ -263,6 +263,7 @@ pub fn localize_outbox(db: &Connection, project: &Value) -> Result<()> {
         return Ok(());
     }
     let id = project["id"].as_str().ok_or("Missing project")?;
+    let paused_sources = crate::sources::paused_upload_sources(project);
     for q in db::rows(
         db,
         "SELECT json_object('id',id,'path',path,'value',json(value)) FROM outbox WHERE project=?",
@@ -275,6 +276,9 @@ pub fn localize_outbox(db: &Connection, project: &Value) -> Result<()> {
             continue;
         }
         let r = &q["value"]["resource"];
+        if crate::sources::upload_paused(&paused_sources, &r["sourceId"]) {
+            continue;
+        }
         if r["kind"] == "memory" || r["kind"] == "skill" {
             let b = indexer::binding(db, r["resourceId"].as_str().ok_or("Missing resource")?)?;
             capture(db, project, r, &b["paths"])?;

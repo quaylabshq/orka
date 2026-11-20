@@ -255,6 +255,7 @@ pub(crate) fn pending_publications(
     catalog: &Value,
 ) -> Result<Vec<Value>> {
     let project_id = project["id"].as_str().ok_or("Missing project")?;
+    let paused_sources = crate::sources::paused_upload_sources(project);
     let mut pending = Vec::new();
     for mut draft in db::rows(
         db,
@@ -263,6 +264,7 @@ pub(crate) fn pending_publications(
     )? {
         if preserve_removed_draft(db, project, &mut draft)?
             || require_active_source(project, &draft).is_err()
+            || crate::sources::upload_paused(&paused_sources, &draft["resource"]["sourceId"])
         {
             continue;
         }

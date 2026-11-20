@@ -35,6 +35,7 @@ fn source_view(project: &Value, source: &Value) -> Value {
     for key in ["path", "folderIdentity", "repository", "repositoryRevision"] {
         view[key] = source[key].clone();
     }
+    view["firstSyncWaiting"] = source["firstSyncWaiting"].clone();
     view["sourceRemoteKey"] = source["remoteKey"].clone();
     view["verifiedRemoteKey"] = source["verifiedRemoteKey"].clone();
     view
@@ -133,6 +134,9 @@ pub(crate) fn without_waiting(
             if source["path"].is_string() && source["removedAt"].is_null() {
                 if let Some(at) = sync_after(db, id, source_id)? {
                     source["path"] = Value::Null;
+                    // The rest of this pass must agree with the masked view,
+                    // even if the deadline expires or Sync now clears it.
+                    source["firstSyncWaiting"] = json!(true);
                     earliest = Some(earliest.map_or(at, |e| e.min(at)));
                 }
             }
@@ -273,18 +277,27 @@ pub fn validate(project: &Value) -> Result<()> {
     Ok(())
 }
 
-/// Only attached sources with a repository check can pause their queued work.
+/// Sources this pass must leave untouched, including those whose wait expires
+/// while it is running.
 pub(crate) fn paused_upload_sources(project: &Value) -> BTreeSet<String> {
     views(project)
         .into_iter()
         .filter(|source| {
-            source["path"].is_string()
-                && (source["sourceRemoteKey"].is_string()
-                    || source["repository"]["cloneUrl"].is_string())
-                && validate(source).is_err()
+            source["firstSyncWaiting"] == true
+                || (source["path"].is_string()
+                    && (source["sourceRemoteKey"].is_string()
+                        || source["repository"]["cloneUrl"].is_string())
+                    && validate(source).is_err())
         })
         .filter_map(|source| source["sourceId"].as_str().map(str::to_owned))
         .collect()
+}
+
+pub(crate) fn upload_paused(paused_sources: &BTreeSet<String>, source_id: &Value) -> bool {
+    !paused_sources.is_empty()
+        && source_id
+            .as_str()
+            .is_none_or(|id| paused_sources.contains(id))
 }
 
 /// [`folder_state`] for an entry of a project's `sources`, which keeps its pin

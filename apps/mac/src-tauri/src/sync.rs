@@ -6,7 +6,7 @@ use crate::{
     sync_schedule::Interval,
 };
 use fs2::FileExt;
-use rusqlite::{params, OptionalExtension};
+use rusqlite::params;
 use serde_json::{json, Value};
 use std::{
     collections::HashSet,
@@ -1891,7 +1891,7 @@ impl<'a> SyncPass<'a> {
         if p["governed"] == true {
             let id = p["id"].as_str().ok_or("Missing project")?;
             let result: Result<()> = async {
-                let local = crate::governance::project(db, id)?;
+                crate::projects::active(db, id)?;
                 let catalog = api_as(
                     owner,
                     "POST",
@@ -1903,13 +1903,12 @@ impl<'a> SyncPass<'a> {
                 // A lifecycle refusal must leave queued work unchanged. Only
                 // prepare legacy knowledge after current access is confirmed.
                 if !retry_only {
-                    crate::governance::localize_outbox(db, &local)?;
+                    crate::governance::localize_outbox(db, p)?;
                 } else {
-                    crate::governance::block_legacy_retry(db, &local)?;
+                    crate::governance::block_legacy_retry(db, p)?;
                 }
                 if !retry_only {
-                    crate::context_sharing::approve_own_pending(db, owner, &local, &catalog)
-                        .await?;
+                    crate::context_sharing::approve_own_pending(db, owner, p, &catalog).await?;
                 }
                 Ok(())
             }
@@ -1951,25 +1950,14 @@ impl<'a> SyncPass<'a> {
         }
         let blocked_projects = &mut self.blocked;
         let mut outbox = ProjectOutbox::open(db, project)?;
-        let mut paused_sources = crate::sources::paused_upload_sources(p);
-        for source in p["sources"].as_array().into_iter().flatten() {
-            if let Some(id) = source["id"].as_str() {
-                if crate::sources::sync_after(db, project, id)?.is_some() {
-                    paused_sources.insert(id.to_owned());
-                }
-            }
-        }
+        let paused_sources = crate::sources::paused_upload_sources(p);
         let queued: Vec<_> = outbox
             .queued(db)?
             .into_iter()
             .filter(|q| {
                 // Unattributed older rows may belong to the paused source.
                 // Keep the bytes and request ID untouched for a verified retry.
-                if !paused_sources.is_empty()
-                    && q["sourceId"]
-                        .as_str()
-                        .is_none_or(|id| paused_sources.contains(id))
-                {
+                if crate::sources::upload_paused(&paused_sources, &q["sourceId"]) {
                     return false;
                 }
                 if q["path"] == crate::selective_sharing::QUEUE_PATH {

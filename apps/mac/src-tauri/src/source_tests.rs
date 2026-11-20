@@ -585,6 +585,8 @@ fn a_newly_connected_folder_waits_before_sync_scans_or_writes_into_it() {
     let (view, earliest) = sources::without_waiting(&f.db, &project).unwrap();
     assert_eq!(earliest, Some(at));
     assert!(view["sources"][0]["path"].is_null());
+    assert_eq!(view["sources"][0]["firstSyncWaiting"], true);
+    assert!(view["sources"][1]["firstSyncWaiting"].is_null());
     assert_eq!(view["sources"][1]["path"], project["sources"][1]["path"]);
     assert_eq!(
         sources::views(&view)
