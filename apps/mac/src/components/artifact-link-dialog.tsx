@@ -139,9 +139,14 @@ export function ArtifactLinkDialog({
       </section>
       <div className="resource-command-workspace">
         <p className="command-copy">
-          Anyone with the link can read this shared revision without signing in.{" "}
-          {description[resource.kind]} Publishing an update ends access through
-          this link.
+          Anyone with the link can read this shared revision without signing in.
+          {!link?.url && (
+            <>
+              {" "}
+              {description[resource.kind]} Publishing an update ends access
+              through this link.
+            </>
+          )}
         </p>
         {stale ? (
           <p role="alert">

@@ -601,6 +601,9 @@ test("public links use the saved shared revision and can be revoked after reopen
   await expect(
     dialog.getByRole("textbox", { name: "Public link" }),
   ).toHaveValue("https://dashboard.example/share/" + "a".repeat(64));
+  await expect(
+    dialog.getByText("Copy this link before closing."),
+  ).toBeInViewport();
   expect(await resourceCalls(page, "create-public-link")).toMatchObject([
     {
       args: {
