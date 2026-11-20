@@ -2,7 +2,6 @@
   display: flex;
   width: 100%;
   min-height: 40px;
-  flex: 1;
   flex-direction: column;
   gap: 10px;
   padding-block: 4px;

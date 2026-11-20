@@ -70,16 +70,21 @@ for (const width of [1160, 900]) {
         const refresh = element
           .querySelector('[aria-label="Refresh skill usage"]')!
           .getBoundingClientRect();
+        const add = element
+          .querySelector('[aria-label="Add global skills"]')!
+          .getBoundingClientRect();
         return {
           right: element.getBoundingClientRect().right,
-          refreshRight: refresh.right,
-          gap: refresh.left - sort.right,
+          addRight: add.right,
+          sortGap: refresh.left - sort.right,
+          addGap: add.left - refresh.right,
         };
       });
       expect(
-        Math.abs(alignment.right - alignment.refreshRight),
+        Math.abs(alignment.right - alignment.addRight),
       ).toBeLessThanOrEqual(1);
-      expect(alignment.gap).toBeCloseTo(12, 0);
+      expect(alignment.sortGap).toBeCloseTo(12, 0);
+      expect(alignment.addGap).toBeCloseTo(12, 0);
     }
     const menu = page.getByRole("button", {
       name: "Actions for issue-investigate-followup",

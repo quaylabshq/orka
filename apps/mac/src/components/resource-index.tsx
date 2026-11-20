@@ -1,5 +1,11 @@
 import { LockIcon, RefreshCwIcon, TriangleAlertIcon } from "lucide-react";
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { ProjectResource as Resource } from "../types.js";
 import { SegmentedControl } from "./segmented-control.js";
 import { IconButton } from "./icon-button.js";
@@ -51,7 +57,7 @@ export interface ResourceIndexProps {
   /** A notice above the toolbar, such as unavailable session titles. */
   status?: React.ReactNode;
   accessRequest?: React.ReactNode;
-  floatingAction?: React.ReactNode;
+  toolbarAction?: React.ReactNode;
   /**
    * The resource whose reading view was just closed. Its row or card takes
    * focus, or the search field when the current filters hide it.
@@ -81,7 +87,7 @@ export function ResourceIndex({
   onRefreshLocal,
   status,
   accessRequest,
-  floatingAction,
+  toolbarAction,
   focusResource,
   onFocusHandled,
   onOpen,
@@ -118,6 +124,10 @@ export function ResourceIndex({
   }, [discovering, discoveryResult, refreshRequest, kind, notify]);
   const ownership = kind === "skill" ? "all" : (filters.ownership ?? "all");
   const root = useRef<HTMLElement>(null);
+  const body = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (kind === "skill") body.current?.scrollTo({ top: 0 });
+  }, [filters, kind]);
   const visible = useMemo(
     () =>
       applyIndexFilters(resources, filters, {
@@ -136,15 +146,6 @@ export function ResourceIndex({
     filters.query.trim() ||
     filters.source !== "all" ||
     (filters.repository && filters.repository !== "all"),
-  );
-  const inlineAction = Boolean(
-    floatingAction &&
-    !resources.length &&
-    !filtered &&
-    !discovering &&
-    !discoveryErrors.length &&
-    !noAccess &&
-    connected,
   );
   const clearFilters = () => {
     onFilters({
@@ -168,9 +169,23 @@ export function ResourceIndex({
     target?.focus();
     onFocusHandled?.();
   }, [focusResource, onFocusHandled]);
+  const showFilters = resources.length > 0 || filtered;
+  const toolbar = (showFilters || toolbarAction) && (
+    <IndexToolbar
+      kind={kind}
+      count={visible.length}
+      sources={sources}
+      filters={filters}
+      onChange={onFilters}
+      onRefreshUsage={skillUsage?.retry}
+      usageLoading={skillUsage?.loading}
+      showFilters={showFilters}
+      action={toolbarAction}
+    />
+  );
   return (
     <section
-      className={`resource-index${floatingAction ? (inlineAction ? " resource-index--inline-action" : " resource-index--floating-action") : ""}`}
+      className="resource-index"
       aria-label={collectionNoun(kind)}
       ref={root}
       tabIndex={-1}
@@ -179,7 +194,8 @@ export function ResourceIndex({
       {kind === "skill" && skillUsage && (
         <ProjectSkillUsageStatus {...skillUsage} />
       )}
-      <div className="resource-index-body">
+      {toolbarAction && <div className="resource-index-toolbar">{toolbar}</div>}
+      <div className="resource-index-body" ref={body}>
         {accessRequest}
         {kind !== "skill" && (
           <div className="resource-ownership-toolbar">
@@ -255,17 +271,7 @@ export function ResourceIndex({
             )}
           </div>
         )}
-        {(resources.length > 0 || filtered) && (
-          <IndexToolbar
-            kind={kind}
-            count={visible.length}
-            sources={sources}
-            filters={filters}
-            onChange={onFilters}
-            onRefreshUsage={skillUsage?.retry}
-            usageLoading={skillUsage?.loading}
-          />
-        )}
+        {!toolbarAction && toolbar}
         {discovering && !resources.length ? (
           <LoadingRegion
             id={`collection:${kind}`}
@@ -326,9 +332,6 @@ export function ResourceIndex({
             filtered={filtered || ownership !== "all"}
             onOpen={onOpen}
           />
-        )}
-        {floatingAction && (
-          <div className="resource-index-action">{floatingAction}</div>
         )}
       </div>
     </section>

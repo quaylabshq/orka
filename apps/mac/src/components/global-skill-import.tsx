@@ -81,7 +81,7 @@ export function GlobalSkillImport({
   return (
     <>
       <Button
-        size="lg"
+        size="sm"
         variant="primary"
         aria-label="Add global skills"
         title="Add global skills"

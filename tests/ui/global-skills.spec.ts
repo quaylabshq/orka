@@ -349,7 +349,7 @@ for (const viewport of [
   { width: 1160, height: 800 },
   { width: 900, height: 640 },
 ]) {
-  test(`floating skill import and accessible picker at ${viewport.width}`, async ({
+  test(`toolbar skill import and accessible picker at ${viewport.width}`, async ({
     page,
   }) => {
     await page.setViewportSize(viewport);
@@ -361,7 +361,7 @@ for (const viewport of [
     await expect(trigger).toBeVisible();
     await expect(trigger).toHaveText("Add Global Skills");
     const before = await trigger.boundingBox();
-    expect(before!.height).toBe(40);
+    expect(before!.height).toBe(32);
     expect(before!.width).toBeGreaterThan(before!.height * 2);
     await trigger.click();
     const dialog = page.getByRole("dialog", { name: "Add global skills" });
@@ -720,7 +720,7 @@ test("skill imports explain the sync wait and finish the original request once",
   ).toHaveLength(1);
 });
 
-test("the floating action stays pinned while the Skills collection scrolls", async ({
+test("the Skills toolbar stays above the cards when the collection scrolls", async ({
   page,
 }) => {
   await fixture(page, "populated");
@@ -729,7 +729,15 @@ test("the floating action stays pinned while the Skills collection scrolls", asy
     exact: true,
   });
   await expect(page.locator(".skill-card")).toHaveCount(24);
+  const toolbar = page.locator(".resource-index-toolbar");
+  await expect(toolbar).toContainText("Add Global Skills");
+  const search = toolbar.getByRole("searchbox", { name: "Search skills" });
+  const card = await page.locator(".skill-card").first().boundingBox();
   const before = await trigger.boundingBox();
+  const searchBefore = await search.boundingBox();
+  const searchCenter = searchBefore!.y + searchBefore!.height / 2;
+  expect(before!.y + before!.height / 2).toBe(searchCenter);
+  expect(before!.y + before!.height).toBeLessThan(card!.y);
   const list = page.locator(".resource-index-body");
   await list.evaluate((element) => {
     element.scrollTop = element.scrollHeight;
@@ -738,6 +746,10 @@ test("the floating action stays pinned while the Skills collection scrolls", asy
     0,
   );
   expect(await trigger.boundingBox()).toEqual(before);
+  expect(await search.boundingBox()).toEqual(searchBefore);
+  await search.fill("Extra skill");
+  await expect(page.locator(".skill-card")).toHaveCount(20);
+  expect(await list.evaluate((element) => element.scrollTop)).toBe(0);
   await trigger.click();
   await expect(
     page.getByRole("heading", { name: "Code review" }),

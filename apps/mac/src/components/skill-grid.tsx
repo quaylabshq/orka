@@ -72,22 +72,27 @@ export function SkillGrid({
                       Needs resolution
                     </span>
                   )}
-                  <SkillUsageCount count={usageCounts?.[skill.resourceId]} />
-                  <span className="skill-card-meta">
-                    {skill.local ? (
-                      <span>{skillSharing(skill).label}</span>
-                    ) : (
-                      <SourceLabel source={skill.source} />
-                    )}
-                    <time
-                      dateTime={skill.updatedAt}
-                      title={`Updated ${new Date(skill.updatedAt).toLocaleString()}`}
-                    >
-                      {new Date(skill.updatedAt).toLocaleDateString(undefined, {
-                        month: "short",
-                        day: "numeric",
-                      })}
-                    </time>
+                  <span className="skill-card-footer">
+                    <SkillUsageCount count={usageCounts?.[skill.resourceId]} />
+                    <span className="skill-card-meta">
+                      {skill.local ? (
+                        <span>{skillSharing(skill).label}</span>
+                      ) : (
+                        <SourceLabel source={skill.source} />
+                      )}
+                      <time
+                        dateTime={skill.updatedAt}
+                        title={`Updated ${new Date(skill.updatedAt).toLocaleString()}`}
+                      >
+                        {new Date(skill.updatedAt).toLocaleDateString(
+                          undefined,
+                          {
+                            month: "short",
+                            day: "numeric",
+                          },
+                        )}
+                      </time>
+                    </span>
                   </span>
                 </button>
                 {actions.length > 0 && (
