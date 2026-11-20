@@ -522,6 +522,15 @@ fn only_a_folders_own_or_unattributed_uploads_block_disconnecting_it() {
     let desktop = project["sources"][0]["id"].as_str().unwrap();
     let backend = project["sources"][1]["id"].as_str().unwrap();
     db::upsert(&f.db, "projects", id, id, &project).unwrap();
+    let index = |source: usize| {
+        let root = Path::new(project["sources"][source]["path"].as_str().unwrap());
+        let index = root.join(".orka/memory/index.md");
+        fs::create_dir_all(index.parent().unwrap()).unwrap();
+        fs::write(&index, "Previous memory index").unwrap();
+        index
+    };
+    let waiting_index = index(0);
+    let ready_index = index(1);
     let queue = |value: Value| {
         f.db.execute(
             "INSERT INTO outbox VALUES(?,?,?,?,NULL)",
@@ -585,6 +594,10 @@ fn a_newly_connected_folder_waits_before_sync_scans_or_writes_into_it() {
         1
     );
     assert_eq!(sources::sync_after(&f.db, id, backend).unwrap(), None);
+    // Permission refresh reloads its own project and must also honor the delay.
+    crate::governance::reset(&f.db, id, &json!([])).unwrap();
+    assert!(waiting_index.exists());
+    assert!(!ready_index.exists());
 
     // The queue shows the held-back job as scheduled, not as a retry.
     SyncQueue::request_at(&f.db, id, Priority::User, "new folder", at).unwrap();
@@ -597,6 +610,8 @@ fn a_newly_connected_folder_waits_before_sync_scans_or_writes_into_it() {
     let (view, earliest) = sources::without_waiting(&f.db, &project).unwrap();
     assert_eq!(earliest, None);
     assert_eq!(view["sources"][0]["path"], project["sources"][0]["path"]);
+    crate::governance::reset(&f.db, id, &json!([])).unwrap();
+    assert!(!waiting_index.exists());
 
     // An elapsed wait no longer holds the folder back.
     db::set(

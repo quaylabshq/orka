@@ -27,6 +27,9 @@ pub(crate) fn project_state(db: &rusqlite::Connection, project: &Value) -> Resul
     let Some(root) = project["path"].as_str().map(Path::new) else {
         return Ok(());
     };
+    if crate::sources::waiting_to_sync(db, project)? {
+        return Ok(());
+    }
     if !root.is_dir()
         || project["folderIdentity"].as_str().is_some_and(|expected| {
             !indexer::folder_identity_matches(root, expected).unwrap_or(false)

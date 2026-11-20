@@ -6,7 +6,7 @@ use crate::{
     sync_schedule::Interval,
 };
 use fs2::FileExt;
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
 use std::{
     collections::HashSet,
@@ -1720,12 +1720,14 @@ impl<'a> SyncPass<'a> {
         self.finish().await.map(Continue)
     }
 
-    async fn sync_project(&mut self, p: &Value) -> Stage {
+    async fn sync_project(&mut self, project: &Value) -> Stage {
+        let (p, waiting) = sync_ready_view(self.db, project)?;
+        let p = &p;
         let project = p["id"].as_str().ok_or("Missing project")?;
         if boundary(self.db, project)?.is_break()
             || self.prepare_project(p)?.is_break()
             || boundary(self.db, project)?.is_break()
-            || self.preflight(p)?.is_break()
+            || self.preflight(p, waiting)?.is_break()
             || boundary(self.db, project)?.is_break()
         {
             return Ok(Break(()));
@@ -1749,7 +1751,8 @@ impl<'a> SyncPass<'a> {
         if crate::projects::foreground_waiting()? {
             return Ok(Break(()));
         }
-        prepare_local(self.db, project)?;
+        let (view, _) = crate::sources::without_waiting(self.db, project)?;
+        prepare_local(self.db, &view)?;
         Ok(Continue(()))
     }
 
@@ -1819,7 +1822,7 @@ impl<'a> SyncPass<'a> {
     }
 
     /// Scans (or, for a retry, validates) one project's local files.
-    fn preflight(&mut self, p: &Value) -> Stage {
+    fn preflight(&mut self, p: &Value, waiting: Option<i64>) -> Stage {
         let db = &mut *self.db;
         let retry_only = self.mode == ProjectMode::RetryOnly;
         if crate::projects::foreground_waiting()? {
@@ -1834,7 +1837,7 @@ impl<'a> SyncPass<'a> {
         )?;
         match preflight_project(db, p, retry_only) {
             Ok(()) => {
-                if !retry_only {
+                if !retry_only && waiting.is_none() {
                     db::set(
                         db,
                         &format!("firstScan:{}", p["id"].as_str().unwrap_or("")),
@@ -1941,21 +1944,24 @@ impl<'a> SyncPass<'a> {
         }
         let blocked_projects = &mut self.blocked;
         let mut outbox = ProjectOutbox::open(db, project)?;
-        let queued: Vec<_> = outbox
-            .queued(db)?
-            .into_iter()
-            .filter(|q| {
-                if q["path"] == crate::selective_sharing::QUEUE_PATH {
-                    crate::selective_sharing::authorized_origin(db, q)
-                        .is_ok_and(|origin| origin.is_some())
-                } else {
-                    crate::projects::sharing_allowed(
-                        p,
-                        crate::projects::queued_kind(q["path"].as_str().unwrap_or(""), &q["value"]),
-                    )
-                }
-            })
-            .collect();
+        let mut queued = Vec::new();
+        for row in outbox.queued(db)? {
+            if upload_waits_for_source(db, project, &row["value"])? {
+                continue;
+            }
+            let allowed = if row["path"] == crate::selective_sharing::QUEUE_PATH {
+                crate::selective_sharing::authorized_origin(db, &row)
+                    .is_ok_and(|origin| origin.is_some())
+            } else {
+                crate::projects::sharing_allowed(
+                    p,
+                    crate::projects::queued_kind(row["path"].as_str().unwrap_or(""), &row["value"]),
+                )
+            };
+            if allowed {
+                queued.push(row);
+            }
+        }
         deferred.extend(
             queued
                 .iter()
@@ -2322,9 +2328,10 @@ async fn sync_workspace(
     )?
     .into_iter()
     .filter(selected)
-    .collect::<Vec<_>>();
-    for p in &local {
-        if pass.preflight(p)?.is_break() {
+    .map(|project| sync_ready_view(pass.db, &project))
+    .collect::<Result<Vec<_>>>()?;
+    for (p, waiting) in &local {
+        if pass.preflight(p, *waiting)?.is_break() {
             return Ok(WorkspaceSync::Yielded);
         }
     }
@@ -2346,17 +2353,17 @@ async fn sync_workspace(
     if connected?.is_break() {
         return Ok(WorkspaceSync::Yielded);
     }
-    for p in &local {
+    for (p, _) in &local {
         if pass.authorize(p).await?.is_break() {
             return Ok(WorkspaceSync::Yielded);
         }
     }
-    for p in &local {
+    for (p, _) in &local {
         if pass.drain_outbox(p).await?.is_break() {
             return Ok(WorkspaceSync::Yielded);
         }
     }
-    for p in &local {
+    for (p, _) in &local {
         if pass.pull_project(p).await?.is_break() {
             return Ok(WorkspaceSync::Yielded);
         }
@@ -2467,15 +2474,7 @@ async fn sync_job(db: &mut rusqlite::Connection, job: &crate::sync_queue::Job) -
     let mut pass = SyncPass::new(db, &owner, None);
     let flow = match (project.first(), held.first()) {
         _ if job.project == WORKSPACE => pass.sync_workspace_global().await?,
-        (Some(p), _) => {
-            // Folders still waiting for their first sync stay out of this pass;
-            // queue the project again for when the earliest of them may start.
-            let (view, waiting) = crate::sources::without_waiting(pass.db, p)?;
-            if let Some(at) = waiting {
-                SyncQueue::request_at(pass.db, &job.project, Priority::Local, "new folder", at)?;
-            }
-            pass.sync_project(&view).await?
-        }
+        (Some(p), _) => pass.sync_project(p).await?,
         // Deleted but restorable: capture locally and send nothing.
         (None, Some(p)) => {
             let flow = pass.capture_project(p)?;
@@ -2502,6 +2501,45 @@ async fn sync_job(db: &mut rusqlite::Connection, job: &crate::sync_queue::Job) -
     } else {
         Outcome::Synced
     })
+}
+
+/// A sooner sync can serve ready folders without consuming the delayed run.
+fn sync_ready_view(db: &rusqlite::Connection, project: &Value) -> Result<(Value, Option<i64>)> {
+    let (view, waiting) = crate::sources::without_waiting(db, project)?;
+    if let Some(at) = waiting {
+        let id = project["id"].as_str().ok_or("Missing project")?;
+        SyncQueue::request_at(db, id, Priority::Local, "new folder", at)?;
+    }
+    Ok((view, waiting))
+}
+
+fn upload_waits_for_source(
+    db: &rusqlite::Connection,
+    project: &str,
+    input: &Value,
+) -> Result<bool> {
+    let source = input["resource"]["sourceId"]
+        .as_str()
+        .or_else(|| input["sourceId"].as_str());
+    if let Some(source) = source {
+        return Ok(crate::sources::sync_after(db, project, source)?.is_some());
+    }
+    let Some(resource) = input["resourceId"].as_str() else {
+        return Ok(false);
+    };
+    let source: Option<String> = db
+        .query_row(
+            "SELECT json_extract(value,'$.sourceId') FROM resources WHERE project=? AND id=?",
+            [project, resource],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?
+        .flatten();
+    match source {
+        Some(source) => Ok(crate::sources::sync_after(db, project, &source)?.is_some()),
+        None => Ok(false),
+    }
 }
 
 fn project_has_retryable_errors(db: &rusqlite::Connection, project: &str) -> Result<bool> {
@@ -2982,7 +3020,7 @@ fn prepare_local(db: &rusqlite::Connection, project: &Value) -> Result<()> {
 /// Scans a deleted project's files into the outbox as held captures.
 fn scan_held(db: &rusqlite::Connection, project: &Value) -> Result<bool> {
     indexer::clear_orphan_held_captures(db)?;
-    let mut capture = project.clone();
+    let (mut capture, _) = crate::sources::without_waiting(db, project)?;
     capture["captureOnly"] = json!(true);
     capture["deferAutomaticSharing"] = json!(true);
     indexer::scan_with_status(db, &capture, false)

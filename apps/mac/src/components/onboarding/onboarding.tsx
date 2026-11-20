@@ -23,6 +23,7 @@ import { ProjectInviteDialog } from "../project-invite-dialog.js";
 import "./onboarding.css";
 import { RepositoryOnboarding } from "../repository-onboarding.js";
 import { useRepositoryCommand } from "../repository-connections.js";
+import { firstSyncLabel } from "../sync-queue.js";
 
 const descriptions = {
   memory: ["Memories", "Project instructions and knowledge."],
@@ -110,13 +111,16 @@ export function Onboarding({
   const synced = projects.filter(
     (project) => project.status === "synced",
   ).length;
+  const starting = projects.find((project) => project.status === "scheduled");
   const syncStage = projects.some(
     (p) => p.status === "connecting" || p.status === "creating",
   )
     ? "Connecting project folders"
     : projects.some((p) => p.status === "scanning")
       ? "Checking local resources"
-      : "Syncing selected resources";
+      : starting && !projects.some((p) => p.status === "syncing")
+        ? "Waiting to start first sync"
+        : "Syncing selected resources";
   const reviewPending = projects.some(
     (project) => (project.reviewPending ?? 0) > 0,
   );
@@ -559,9 +563,11 @@ export function Onboarding({
                           ? "Synced"
                           : project.status === "error"
                             ? "Needs attention"
-                            : project.status
-                              ? "Syncing"
-                              : "Queued"}
+                            : project.status === "scheduled"
+                              ? firstSyncLabel(project.syncStartsAt ?? NaN)
+                              : project.status
+                                ? "Syncing"
+                                : "Queued"}
                       </span>
                     </div>
                   ))}

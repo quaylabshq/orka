@@ -60,6 +60,7 @@ async function fixture(
     manyRepositories?: number;
     deferConnectionChecks?: boolean;
     reconnectSource?: string;
+    firstSync?: boolean;
   } = {},
 ) {
   await page.addInitScript((options) => {
@@ -84,12 +85,16 @@ async function fixture(
       repositoryRevision?: number;
       path: string | null;
       folderState: "connected" | "reconnect" | "locate";
+      syncStartsAt?: string;
     };
     const source: Source = {
       id: "source",
       name: "private-repo",
       repository: options.unbound ? undefined : repository,
       repositoryRevision: options.unbound ? 0 : 1,
+      syncStartsAt: options.firstSync
+        ? new Date(Date.now() + 150_000).toISOString()
+        : undefined,
       path:
         options.connected || options.reconnect
           ? "/Projects/private-repo"
@@ -265,6 +270,19 @@ async function fixture(
             });
           if (command === "sync_progress")
             return { user: "user", progress: null };
+          if (command === "start_source_sync") {
+            window.repositoryCalls.push({
+              action: command,
+              input: args,
+              context: null,
+            });
+            const project = projects.find((project) => project.id === args.id);
+            const source = project?.sources.find(
+              (source) => source.id === args.sourceId,
+            );
+            if (source) delete source.syncStartsAt;
+            return;
+          }
           if (command === "repository_command") {
             const action = args.action as string,
               input = (args.input ?? {}) as Record<string, unknown>;
@@ -771,6 +789,31 @@ test("connected checkouts have no clone form or connect button", async ({
     false,
   );
 });
+
+for (const [width, height] of [
+  [1160, 800],
+  [900, 640],
+]) {
+  test(`a GitHub checkout can start its scheduled first sync at ${width}px`, async ({
+    page,
+  }, info) => {
+    await page.setViewportSize({ width, height });
+    await fixture(page, { connected: true, firstSync: true });
+    const start = panel(page).getByRole("button", {
+      name: "Start syncing private-repo now",
+    });
+    await expect(start).toHaveText("Starts in 3 min · Sync now");
+    await expect(start).toBeInViewport();
+    await capture(page, info, `first-sync-checkout-${width}`);
+    await start.focus();
+    await start.press("Enter");
+    await expect(start).toHaveCount(0);
+    expect(
+      (await calls(page)).find((call) => call.action === "start_source_sync")
+        ?.input,
+    ).toEqual({ id: "project", sourceId: "source" });
+  });
+}
 
 test("missing access has one request action and contextual app help", async ({
   page,

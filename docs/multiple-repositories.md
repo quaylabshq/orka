@@ -26,7 +26,8 @@ Queued changes for other sources continue normally. Owners register shared sourc
 members connect their checkout using Locate folder. Paths can differ between Macs.
 Two source folders cannot cover the same or overlapping local directories.
 A folder newly connected on this Mac waits three minutes before its first sync,
-so a folder chosen by mistake can be disconnected before anything scans it.
+including during first-run setup or after cloning from GitHub. A folder chosen by
+mistake can be disconnected before sync scans it.
 Settings shows when it starts and offers **Sync now**; reconnecting a folder
 that was already connected is not delayed.
 

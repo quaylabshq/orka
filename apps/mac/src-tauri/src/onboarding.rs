@@ -465,6 +465,10 @@ fn project_sync_status(
         &[&id],
     )?;
     let scanned = db::get(db, &format!("firstScan:{id}"))?.is_string();
+    let waiting = match db::rows(db, "SELECT value FROM projects WHERE id=?", &[&id])?.first() {
+        Some(project) => crate::sources::without_waiting(db, project)?.1,
+        None => None,
+    };
     issues.extend(
         pending
             .iter()
@@ -474,6 +478,8 @@ fn project_sync_status(
     let issue = issues.first().and_then(|row| row["error"].as_str());
     let status = if issue.is_some() {
         "error"
+    } else if waiting.is_some() {
+        "scheduled"
     } else if scanned && pending.is_empty() && sync_error.is_none() {
         "synced"
     } else {
@@ -484,7 +490,7 @@ fn project_sync_status(
     let items = db::rows(db, "SELECT value FROM resources WHERE project=? AND coalesce(json_extract(value,'$.deleted'),0)=0", &[&id])?.len()
         + review_pending;
     Ok(
-        json!({"id":id,"status":status,"error":issue,"issues":issues,"conflicts":conflicts,"pending":pending.len(),"items":items,"reviewPending":review_pending}),
+        json!({"id":id,"status":status,"syncStartsAt":waiting,"error":issue,"issues":issues,"conflicts":conflicts,"pending":pending.len(),"items":items,"reviewPending":review_pending}),
     )
 }
 fn offline_error(error: &str) -> bool {
@@ -802,6 +808,25 @@ async fn batch_sync(
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             continue;
         }
+        if let Some(at) = result["projects"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|project| project["status"] == "scheduled")
+            .filter_map(|project| project["syncStartsAt"].as_i64())
+            .min()
+        {
+            // No sync is running until the next folder becomes eligible. If
+            // the user opens the workspace, its queued job can take over.
+            FileExt::unlock(&lock).map_err(|e| e.to_string())?;
+            let delay = (at - chrono::Utc::now().timestamp_millis()).max(0);
+            tokio::time::sleep(std::time::Duration::from_millis(delay as u64)).await;
+            let saved = scoped_draft(scope)?;
+            if saved["draft"]["completedAt"].is_string() || lock.try_lock_exclusive().is_err() {
+                return Ok(saved["draft"].clone());
+            }
+            continue;
+        }
         let d = scoped_draft(scope)?["draft"].clone();
         let failed = d["projects"].as_array().into_iter().flatten().any(|p| {
             d["selected"]
@@ -888,6 +913,7 @@ pub(crate) fn reconcile_workspace_sync(
             let status = project_sync_status(db, id, sync_error)?;
             for field in [
                 "status",
+                "syncStartsAt",
                 "error",
                 "issues",
                 "conflicts",
@@ -906,9 +932,10 @@ pub(crate) fn reconcile_workspace_sync(
     if !unfinished {
         return Ok(());
     }
-    let pending = projects
-        .iter()
-        .any(|p| selected.contains(&p["path"]) && p["status"] == "syncing");
+    let pending = projects.iter().any(|p| {
+        selected.contains(&p["path"])
+            && matches!(p["status"].as_str(), Some("syncing" | "scheduled"))
+    });
     draft["step"] = json!(match sync_error {
         Some(error) if offline_error(error) => "offline",
         Some(_) => "sync-error",
@@ -1334,7 +1361,7 @@ mod tests {
     #[test]
     fn first_sync_requires_a_scan_and_no_queue_or_resource_errors_but_allows_conflicts() {
         let db = rusqlite::Connection::open_in_memory().unwrap();
-        db.execute_batch("CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT);CREATE TABLE errors(source TEXT,error TEXT);CREATE TABLE outbox(project TEXT,error TEXT,value TEXT);CREATE TABLE resources(id TEXT,project TEXT,value TEXT);CREATE TABLE conflicts(project TEXT,value TEXT);CREATE TABLE drafts(project TEXT,value TEXT);").unwrap();
+        db.execute_batch("CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT);CREATE TABLE errors(source TEXT,error TEXT);CREATE TABLE outbox(project TEXT,error TEXT,value TEXT);CREATE TABLE resources(id TEXT,project TEXT,value TEXT);CREATE TABLE conflicts(project TEXT,value TEXT);CREATE TABLE drafts(project TEXT,value TEXT);CREATE TABLE projects(id TEXT,value TEXT);").unwrap();
         assert_eq!(
             project_sync_status(&db, "p", None).unwrap()["status"],
             "syncing"
@@ -1344,6 +1371,15 @@ mod tests {
             project_sync_status(&db, "p", None).unwrap()["status"],
             "synced"
         );
+        let project = json!({"id":"p","sources":[{"id":"source","path":"/work/project"}]});
+        db.execute("INSERT INTO projects VALUES('p',?)", [project.to_string()])
+            .unwrap();
+        let at = chrono::Utc::now().timestamp_millis() + crate::sources::NEW_FOLDER_DELAY_MS;
+        db::set(&db, "source-sync-after:p:source", &json!(at)).unwrap();
+        let scheduled = project_sync_status(&db, "p", None).unwrap();
+        assert_eq!(scheduled["status"], "scheduled");
+        assert_eq!(scheduled["syncStartsAt"], at);
+        crate::sources::clear_sync_after(&db, "p", "source").unwrap();
         db.execute("INSERT INTO outbox(project,error) VALUES('p',NULL)", [])
             .unwrap();
         assert_eq!(
