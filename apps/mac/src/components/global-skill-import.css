@@ -42,7 +42,7 @@
   color: var(--text-tertiary);
 }
 
-.add-skills-search > input {
+.add-skills .add-skills-search > input {
   min-width: 0;
   min-height: 0;
   height: 20px;
@@ -56,11 +56,11 @@
   outline: none;
 }
 
-.add-skills-search > input::placeholder {
+.add-skills .add-skills-search > input::placeholder {
   color: var(--text-tertiary);
 }
 
-.add-skills-search > input::-webkit-search-cancel-button {
+.add-skills .add-skills-search > input::-webkit-search-cancel-button {
   display: none;
 }
 
@@ -154,7 +154,7 @@
   font-size: 12px;
 }
 
-.add-skills-checkbox {
+.add-skills .add-skills-checkbox {
   position: relative;
   width: 18px;
   height: 18px;
@@ -166,13 +166,13 @@
   appearance: none;
 }
 
-.add-skills-checkbox:checked,
-.add-skills-checkbox:indeterminate {
+.add-skills .add-skills-checkbox:checked,
+.add-skills .add-skills-checkbox:indeterminate {
   border-color: var(--action-solid);
   background: var(--action-solid);
 }
 
-.add-skills-checkbox:checked::after {
+.add-skills .add-skills-checkbox:checked::after {
   position: absolute;
   top: 2px;
   left: 5px;
@@ -184,7 +184,7 @@
   transform: rotate(45deg);
 }
 
-.add-skills-checkbox:indeterminate::after {
+.add-skills .add-skills-checkbox:indeterminate::after {
   position: absolute;
   top: 7px;
   left: 4px;
@@ -195,11 +195,11 @@
   content: "";
 }
 
-.add-skills-checkbox:disabled {
+.add-skills .add-skills-checkbox:disabled {
   opacity: 0.4;
 }
 
-.add-skills-checkbox:focus-visible {
+.add-skills .add-skills-checkbox:focus-visible {
   outline: 2px solid var(--border-focus);
   outline-offset: 2px;
 }
