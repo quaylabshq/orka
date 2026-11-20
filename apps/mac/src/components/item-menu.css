@@ -93,7 +93,11 @@
 }
 
 .modal.toast-host-modal.artifact-link-dialog {
-  height: min(386px, calc(100vh - 48px));
+  height: min(424px, calc(100vh - 48px));
+}
+
+.artifact-link-dialog .resource-command-workspace {
+  gap: 12px;
 }
 
 .modal.resource-command-dialog h2 {
