@@ -92,6 +92,14 @@ for (const file of server.files) {
     .update("\0");
 }
 assert.equal(sourceTree.digest("hex"), server.sourceTreeSha256);
+for (const path of ["LICENSE", "licenses/Orka-MIT.txt"]) {
+  const exported = server.files.find((file) => file.path === path);
+  assert.equal(
+    exported?.sha256,
+    createHash("sha256").update(readFileSync(path)).digest("hex"),
+    `The public server snapshot must preserve ${path}. Apply the licensing commit before exporting the backend.`,
+  );
+}
 // Include the new source snapshot in boundary checks before it has been staged.
 const files = [
   ...new Set([
