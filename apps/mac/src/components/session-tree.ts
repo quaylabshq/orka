@@ -2,9 +2,16 @@ import type { ProjectResource } from "../types.js";
 
 /** Preserve collection sort order among siblings, while keeping forks beside
  * their source. A filtered-out or missing parent leaves a visible root. */
-export function sessionTree(resources: ProjectResource[]) {
+export function sessionTree(
+  resources: ProjectResource[],
+  heldParents?: ReadonlyMap<string, string | undefined>,
+) {
   const parentId = (resource: ProjectResource) =>
-    resource.fork?.parentId ?? resource.nativeForkParentId ?? "";
+    resource.fork?.parentId ??
+    (heldParents?.has(resource.resourceId)
+      ? heldParents.get(resource.resourceId)
+      : resource.nativeForkParentId) ??
+    "";
   const byId = new Map(
     resources.map((resource) => [resource.resourceId, resource]),
   );

@@ -32,6 +32,7 @@ export async function resourceLibraryFixture(
     cachedLocal?: boolean;
     extraRows?: number;
     boundaryFork?: boolean;
+    nativeForkAfterRefresh?: boolean;
     deferredTitleId?: string;
   } = {},
 ) {
@@ -145,6 +146,10 @@ export async function resourceLibraryFixture(
                 ...item,
                 localChanges: true,
                 sharedRevision: item.revision,
+                ...(options.nativeForkAfterRefresh &&
+                item.resourceId === "session-own"
+                  ? { nativeForkParentId: "session-extra-0" }
+                  : {}),
               })),
           ];
     Object.assign(window, {

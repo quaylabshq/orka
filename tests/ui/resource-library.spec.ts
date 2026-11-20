@@ -914,6 +914,54 @@ test("a focused session stays reachable when its display title changes pages", a
   await expect(item).toBeFocused();
 });
 
+for (const mode of ["keyboard focus", "an open menu"] as const) {
+  test(`a session with ${mode} remains reachable when discovery adds its fork parent`, async ({
+    page,
+  }) => {
+    await resourceLibraryFixture(page, {
+      defer: true,
+      extraRows: 1,
+      nativeForkAfterRefresh: true,
+    });
+    await page.getByRole("button", { name: /^Sessions/ }).click();
+    const fork = page.getByRole("button", {
+      name: "My shared session",
+      exact: true,
+    });
+    const row = fork.locator("xpath=ancestor::tr");
+    const menu = page.getByRole("menu");
+    if (mode === "keyboard focus") {
+      await fork.focus();
+      await expect(fork).toBeFocused();
+    } else {
+      await row
+        .getByRole("button", { name: "Actions for My shared session" })
+        .press("Enter");
+      await expect(menu).toBeVisible();
+    }
+    await page.waitForFunction(
+      () => (window as unknown as LibraryWindow).library.finishCatalog,
+    );
+    await page.evaluate(() =>
+      (window as unknown as LibraryWindow).library.finishCatalog?.(),
+    );
+    await expect(row).toContainText("Local changes");
+    if (mode === "keyboard focus") {
+      await expect(fork).toBeFocused();
+    } else {
+      await expect(menu).toBeVisible();
+      await page.keyboard.press("Escape");
+      await expect(menu).toBeHidden();
+    }
+    await page.getByRole("searchbox", { name: "Search sessions" }).focus();
+    const toggle = page.getByRole("button", {
+      name: "Expand 1 fork of Archive session 0",
+    });
+    await toggle.click();
+    await expect(row).toHaveClass("session-fork-row");
+  });
+}
+
 for (const mode of ["button", "context menu"] as const) {
   test(`an open resource ${mode} stays available when its session changes pages`, async ({
     page,
