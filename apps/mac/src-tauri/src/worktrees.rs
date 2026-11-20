@@ -50,7 +50,7 @@ pub(crate) struct Observed {
 }
 
 impl Observed {
-    fn matches(&self, source: &Value) -> bool {
+    pub(crate) fn matches(&self, source: &Value) -> bool {
         self.project == source["id"] && self.source == source["sourceId"]
     }
 
@@ -73,6 +73,22 @@ impl Observed {
         }
         Ok(())
     }
+}
+
+pub(crate) fn pinned_session(
+    db: &rusqlite::Connection,
+    tool: &str,
+    id: &str,
+) -> Result<Option<Observed>> {
+    db.query_row(
+        "SELECT value FROM worktree_sessions WHERE tool=? AND native_id=?",
+        [tool, id],
+        |r| r.get::<_, String>(0),
+    )
+    .optional()
+    .map_err(|e| e.to_string())?
+    .map(|value| serde_json::from_str(&value).map_err(|e| e.to_string()))
+    .transpose()
 }
 
 fn observations(db: &rusqlite::Connection) -> Result<Vec<Observed>> {
@@ -365,18 +381,9 @@ impl<'a> SessionScope<'a> {
         id: &str,
         cwd: &Path,
     ) -> Result<Option<SessionCheckout>> {
-        let saved = self
-            .db
-            .query_row(
-                "SELECT value FROM worktree_sessions WHERE tool=? AND native_id=?",
-                [tool, id],
-                |r| r.get::<_, String>(0),
-            )
-            .optional()
-            .map_err(|e| e.to_string())?;
+        let saved = pinned_session(self.db, tool, id)?;
         let current = self.checkout_scope(cwd);
-        if let Some(saved) = saved {
-            let route: Observed = serde_json::from_str(&saved).map_err(|e| e.to_string())?;
+        if let Some(route) = saved {
             if !route.matches(self.source) {
                 return Ok(None);
             }
