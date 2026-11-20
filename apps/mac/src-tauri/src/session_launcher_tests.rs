@@ -121,6 +121,7 @@ impl Host for FakeHost {
         _: Option<&Path>,
     ) -> db::Result<Option<String>> {
         let call = match intent {
+            LaunchIntent::Start => json!({"destination":destination,"tool":tool,"root":root}),
             LaunchIntent::Resume(id) => {
                 json!({"destination":destination,"tool":tool,"id":id,"root":root})
             }
@@ -1349,6 +1350,41 @@ fn handoff_opens_a_composer_without_submitting_or_rewriting_the_source() {
             assert_eq!(call["destination"], json!(terminal));
         }
     }
+}
+
+#[test]
+fn codex_trust_launcher_starts_without_a_prompt_in_the_connected_folder() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let binary = root.join("codex");
+    fs::write(
+        &binary,
+        "#!/bin/sh\nprintf '%s\\n' \"$PWD\" \"$CODEX_HOME\" \"$#\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+    let script = root.join("open.command");
+    let home = root.join("codex home");
+    fs::write(
+        &script,
+        session_launcher::terminal_script(
+            &binary,
+            Tool::Codex,
+            LaunchIntent::Start,
+            &root,
+            &home,
+            None,
+            None,
+        ),
+    )
+    .unwrap();
+    let result = Command::new("/bin/sh").arg(&script).output().unwrap();
+    assert!(result.status.success(), "{result:?}");
+    assert_eq!(
+        String::from_utf8(result.stdout).unwrap(),
+        format!("{}\n{}\n0\n", root.display(), home.display()),
+    );
+    assert!(!script.exists());
 }
 
 #[test]

@@ -392,7 +392,7 @@ impl Rpc {
         }
         Err(format!("Cannot detect Codex pagination support: {message}"))
     }
-    fn request(&mut self, method: &str, params: Value) -> Result<Value> {
+    pub(crate) fn request(&mut self, method: &str, params: Value) -> Result<Value> {
         self.next += 1;
         let id = self.next;
         let deadline = std::time::Instant::now() + self.remaining();
@@ -413,7 +413,7 @@ impl Rpc {
         }
     }
 }
-fn unsupported_method(error: &Value, method: &str) -> bool {
+pub(crate) fn unsupported_method(error: &Value, method: &str) -> bool {
     error["code"] == -32601
         || (error["code"] == -32600
             && error["message"]
@@ -663,6 +663,10 @@ impl Hooks {
         let (executable, profile) = prefix.rsplit_once(" --profile ").unwrap_or((prefix, ""));
         let literal = executable.strip_prefix("'/")?.strip_suffix('\'')?;
         (!literal.replace("'\\''", "").contains('\'')).then_some((executable, profile))
+    }
+    /// The exact command this Orka build writes for `tool`.
+    pub fn current_command(executable: &Path, tool: &str) -> String {
+        Self::command(executable, tool)
     }
     /// Whether a hook command string is one Orka wrote for `tool`, under any
     /// profile or executable.

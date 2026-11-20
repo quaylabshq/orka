@@ -194,7 +194,8 @@ impl Doctor {
     /// Ok when Codex runs Orka's hooks in `root`; otherwise the finding and
     /// next step that replace the activity check.
     fn codex(trust: &Report, root: &Path) -> Result<(), ((Verdict, String), &'static str)> {
-        const APPROVE: &str = "Run codex in this folder, trust the folder when asked, then open /hooks and approve Orka's hooks. Rerun doctor.";
+        const APPROVE: &str =
+            "Open Orka Settings > Source folders and choose Approve Orka hooks, then rerun doctor.";
         let trust =
             match trust {
                 Report::Folders(folders) => folders
@@ -224,7 +225,7 @@ impl Doctor {
             };
         let (detail, next) = match trust {
             Trust::Trusted => return Ok(()),
-            Trust::FolderNotTrusted => ("Codex skips this folder's hooks because the folder isn't trusted in Codex", APPROVE),
+            Trust::FolderNotTrusted => ("Codex skips this folder's hooks because the folder isn't trusted in Codex", "Open this folder in Codex and review its trust there, then return to Orka Settings to approve Orka's hooks."),
             Trust::FolderUntrusted => ("Codex skips this folder's hooks because it's marked untrusted in Codex", "To use Orka memory in Codex here, change this folder's trust_level in your Codex config.toml, then rerun doctor."),
             Trust::HooksNotApproved => ("Codex trusts this folder but Orka's hooks haven't been approved", APPROVE),
             Trust::HooksChanged => ("Orka's hooks changed since they were approved in Codex, so Codex skips them", APPROVE),
