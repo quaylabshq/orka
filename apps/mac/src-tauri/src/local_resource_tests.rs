@@ -197,6 +197,7 @@ fn local_library_groups_native_forks_without_changing_session_identity() {
     let codex_child = uuid::Uuid::new_v4().to_string();
     let claude_parent = uuid::Uuid::new_v4().to_string();
     let claude_child = uuid::Uuid::new_v4().to_string();
+    let claude_resumed_fork = uuid::Uuid::new_v4().to_string();
     let orphan = uuid::Uuid::new_v4().to_string();
     let codex_file = |id: &str, parent: Option<&str>| {
         let mut meta =
@@ -221,10 +222,28 @@ fn local_library_groups_native_forks_without_changing_session_identity() {
     codex_file(&codex_child, None);
     claude_file(&claude_parent, None);
     claude_file(&claude_child, None);
+    claude_file(&claude_resumed_fork, None);
     let before = local_resources::catalog(&f.db, &f.project, "session").unwrap();
 
     let codex_fork_path = codex_file(&codex_child, Some(&codex_parent));
     claude_file(&claude_child, Some(&claude_parent));
+    // Non-interactive Claude forks keep the request's originating session on
+    // replayed assistant messages, followed by replies authored in the new ID.
+    let assistant = |origin: Option<&str>| {
+        let uuid = uuid::Uuid::new_v4().to_string();
+        let mut record = json!({"type":"assistant","uuid":uuid,"sessionId":claude_resumed_fork,"cwd":f.root,"message":{"role":"assistant","content":"Example Claude reply"}});
+        if let Some(origin) = origin {
+            record["requestSessionId"] = json!(origin);
+        }
+        record
+    };
+    let mut inherited = assistant(Some(&orphan));
+    inherited["forkedFrom"] = json!({"sessionId":orphan,"messageUuid":inherited["uuid"]});
+    fs::write(
+        claude.join(format!("{claude_resumed_fork}.jsonl")),
+        native::encode(&[inherited, assistant(Some(&claude_parent)), assistant(None)]),
+    )
+    .unwrap();
     // A matching UUID from a different provider cannot become a parent.
     claude_file(&orphan, Some(&codex_parent));
     let after = local_resources::catalog(&f.db, &f.project, "session").unwrap();
@@ -242,6 +261,7 @@ fn local_library_groups_native_forks_without_changing_session_identity() {
     for (tool, parent, child) in [
         ("codex", &codex_parent, &codex_child),
         ("claude", &claude_parent, &claude_child),
+        ("claude", &claude_parent, &claude_resumed_fork),
     ] {
         let resource = find(&after, tool, child);
         assert_eq!(

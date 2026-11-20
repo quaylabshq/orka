@@ -8,20 +8,32 @@ use serde_json::{json, Value};
 pub(crate) fn native_parent<'a>(tool: &str, id: &str, records: &'a [Value]) -> Option<&'a str> {
     let parent = match tool {
         "codex" => records.first()?["payload"]["forked_from_id"].as_str()?,
-        "claude" => {
-            let mut parents = records
-                .iter()
-                .filter(|record| record["sessionId"] == id)
-                .filter_map(|record| record["forkedFrom"]["sessionId"].as_str());
-            let parent = parents.next()?;
-            if parents.any(|other| other != parent) {
-                return None;
-            }
-            parent
-        }
+        "claude" => claude_parent(id, records)?,
         _ => return None,
     };
     (parent != id && uuid::Uuid::parse_str(parent).is_ok()).then_some(parent)
+}
+
+fn claude_parent<'a>(id: &str, records: &'a [Value]) -> Option<&'a str> {
+    let own_records = records.iter().filter(|record| record["sessionId"] == id);
+    // Nested --fork-session copies can retain older /branch markers. Use the
+    // last replayed reply before this session starts producing its own replies.
+    let inherited_parent = own_records
+        .clone()
+        .filter(|record| record["type"] == "assistant")
+        .map_while(|record| {
+            record["forkedFrom"]["sessionId"]
+                .as_str()
+                .or_else(|| record["requestSessionId"].as_str())
+                .filter(|origin| *origin != id)
+        })
+        .last();
+    if inherited_parent.is_some() {
+        return inherited_parent;
+    }
+    let mut parents = own_records.filter_map(|record| record["forkedFrom"]["sessionId"].as_str());
+    let parent = parents.next()?;
+    parents.all(|other| other == parent).then_some(parent)
 }
 
 pub fn info(db: &Connection, id: &str) -> Result<Value> {

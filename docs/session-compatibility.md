@@ -105,6 +105,8 @@ Sessions forked directly in Codex or Claude Code also appear beneath their
 parent when both local histories identify the same connected source and owner.
 Orka uses the provider's explicit fork metadata as a local display detail. A
 fork with unavailable or ambiguous lineage appears as a standalone session.
+For a Claude Code `--fork-session` transcript, the last inherited reply can
+identify the closest recorded ancestor through its fork marker or request origin.
 
 Forks appear immediately in the session table before publication, with expandable parent/child rows, five more children per View more action, and nested forks. Filtering retains matching orphans and returning from the reader expands the required ancestors and restores focus. The existing logical-path namespace carries lineage as `<tool>/forks/<parent-resource-id>/<surface>/<native-id>`, so grouping survives sharing and ZIP export without changing the protocol or backend schema. Each Mac resolves its own native binding; the path's native ID is never used to launch another Mac's session. Cross-provider continuations join their source group once the destination records the first prompt and ordinary indexing discovers the new session. Draft desktop composers are not represented as confirmed sessions. Older forks are linked when an import receipt identifies exactly one parent snapshot. Ambiguous or missing legacy lineage remains available as ordinary rows; matching titles alone never create relationships.
 
