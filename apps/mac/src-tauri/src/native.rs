@@ -626,6 +626,11 @@ impl Hooks {
         let literal = executable.strip_prefix("'/")?.strip_suffix('\'')?;
         (!literal.replace("'\\''", "").contains('\'')).then_some((executable, profile))
     }
+    /// Whether a hook command string is one Orka wrote for `tool`, under any
+    /// profile or executable.
+    pub fn owns(command: &Value, tool: &str) -> bool {
+        Self::parts(&json!({"type":"command","command":command}), tool).is_some()
+    }
     pub fn install(root: &Path) -> Result<()> {
         let base = root.canonicalize().map_err(|e| e.to_string())?;
         let executable = crate::updates::executable().map_err(|e| e.to_string())?;
@@ -770,6 +775,13 @@ fn hook_project(db: &rusqlite::Connection, cwd: &str) -> Result<Option<(Value, b
     Ok(None)
 }
 
+/// Where hook activity for one connected source folder is recorded. A
+/// single-folder project without source records is keyed by its project id.
+pub fn hook_seen_key(tool: &str, source: &Value) -> Option<String> {
+    let id = source["sourceId"].as_str().or(source["id"].as_str())?;
+    Some(format!("hookSeen:{tool}:{id}"))
+}
+
 pub fn hook(tool: &str, input: Value) -> Result<Value> {
     let db = db::open()?;
     let Some(cwd) = input["cwd"].as_str() else {
@@ -780,7 +792,12 @@ pub fn hook(tool: &str, input: Value) -> Result<Value> {
     };
     let project = &project;
     if matches!(tool, "claude" | "codex") {
-        db::set(&db, &format!("hookSeen:{tool}"), &json!(db::now()))?;
+        let now = json!(db::now());
+        // The tool-wide key stays for older Orka versions and setup status.
+        db::set(&db, &format!("hookSeen:{tool}"), &now)?;
+        if let Some(key) = hook_seen_key(tool, project) {
+            db::set(&db, &key, &now)?;
+        }
     }
     let id = input["session_id"].as_str().unwrap_or("unknown");
     let project_id = project["id"].as_str().ok_or("Missing project")?;

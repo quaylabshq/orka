@@ -5,6 +5,7 @@ mod bundles;
 mod claude_import;
 mod codex_import;
 mod codex_skills;
+mod codex_trust;
 mod commands;
 mod context_sharing;
 mod db;

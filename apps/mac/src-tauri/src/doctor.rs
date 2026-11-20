@@ -1,7 +1,15 @@
-use crate::{auth, db, native, projects, sources, sync};
+use crate::{
+    auth,
+    codex_trust::{self, Report, Trust},
+    db, native, projects, sources, sync,
+};
 use chrono::{DateTime, Utc};
 use serde_json::Value;
-use std::{collections::BTreeSet, io::Write, path::Path};
+use std::{
+    collections::BTreeSet,
+    io::Write,
+    path::{Path, PathBuf},
+};
 
 #[derive(Clone, Copy)]
 enum Verdict {
@@ -24,10 +32,17 @@ impl Doctor {
             .map_or(1, |_| report.code)
     }
     pub(crate) fn collect(db: Option<&rusqlite::Connection>, session: db::Result<Value>) -> Self {
+        Self::collect_with(db, session, &codex_trust::inspect)
+    }
+    pub(crate) fn collect_with(
+        db: Option<&rusqlite::Connection>,
+        session: db::Result<Value>,
+        codex: &dyn Fn(&[PathBuf]) -> Report,
+    ) -> Self {
         let mut report = Self::default();
         report.record("Login", Self::login(db, session), "Open Orka, allow Keychain access, and sign in to the selected service; choose Sync now to refresh an expired session.");
         report.record("Sync", Self::sync(db), "Open Orka's sync menu, review issues, and choose Retry uploads or Sync now. If sync is in progress, wait and rerun doctor.");
-        if let Err(error) = report.hooks(db) {
+        if let Err(error) = report.hooks(db, codex) {
             report.record(
                 "Hooks",
                 Err(error),
@@ -52,7 +67,11 @@ impl Doctor {
             self.output.push_str(&format!("  Next: {next}\n"));
         }
     }
-    fn hooks(&mut self, db: Option<&rusqlite::Connection>) -> db::Result<()> {
+    fn hooks(
+        &mut self,
+        db: Option<&rusqlite::Connection>,
+        codex: &dyn Fn(&[PathBuf]) -> Report,
+    ) -> db::Result<()> {
         use native::HookState::*;
         let db = db.ok_or("Local database unavailable")?;
         let projects = db::rows(
@@ -62,10 +81,12 @@ impl Doctor {
         )?;
         let mut roots = BTreeSet::new();
         let mut any = false;
+        let mut folders = Vec::new();
         for source in projects.iter().flat_map(sources::views) {
-            let Some(path) = source["path"].as_str() else {
+            let Some(path) = source["path"].as_str().map(str::to_owned) else {
                 continue;
             };
+            let path = &*path;
             any = true;
             if path.is_empty() || sources::validate(&source).is_err() {
                 self.record(
@@ -81,32 +102,59 @@ impl Doctor {
             if !roots.insert(path.to_owned()) {
                 continue;
             }
-            let status = match native::Hooks::inspect(Path::new(path)) {
-                Ok(status) => status,
-                Err(error) => {
-                    self.record("Hooks", Err(error), "Check the Orka installation and source-folder permissions, then rerun doctor.");
-                    continue;
-                }
-            };
+            match native::Hooks::inspect(Path::new(path)) {
+                Ok(status) => folders.push((source, PathBuf::from(path), status)),
+                Err(error) => self.record(
+                    "Hooks",
+                    Err(error),
+                    "Check the Orka installation and source-folder permissions, then rerun doctor.",
+                ),
+            }
+        }
+        // Ask Codex once, and only about folders whose Codex hook file is correct.
+        let asked: Vec<PathBuf> = folders
+            .iter()
+            .filter(|(_, _, status)| {
+                status
+                    .files
+                    .iter()
+                    .any(|file| file.tool == "codex" && file.state == Configured)
+            })
+            .map(|(_, path, _)| path.clone())
+            .collect();
+        let trust = codex(&asked);
+        for (source, root, status) in folders {
             for file in status.files {
                 let (finding, next) = match file.state {
                     Configured => {
-                        let finding =
-                            db::get(db, &format!("hookSeen:{}", file.tool)).map(|value| {
-                                match Self::time(&value) {
+                        let seen = native::hook_seen_key(file.tool, &source)
+                            .map(|key| db::get(db, &key))
+                            .transpose()
+                            .map(|value| value.as_ref().and_then(Self::time));
+                        let is_codex = file.tool == "codex";
+                        let label = if is_codex { ", trusted by Codex" } else { "" };
+                        let codex_trust = is_codex.then(|| Self::codex(&trust, &root));
+                        match codex_trust {
+                            Some(Err((finding, next))) => (Ok(finding), next),
+                            _ => (
+                                seen.map(|seen| match seen {
                                     Some(time) => (
                                         Verdict::Pass,
                                         format!(
-                                            "configured; last seen {} (tool-wide, not per folder)",
+                                            "configured{label}; last seen in this folder {}",
                                             Self::stamp(Some(time))
                                         ),
                                     ),
-                                    None => {
-                                        (Verdict::Warn, "configured; activity unverified".into())
-                                    }
-                                }
-                            });
-                        (finding, "Check local storage access, then start this tool in a connected source folder and rerun doctor.")
+                                    None => (
+                                        Verdict::Warn,
+                                        format!(
+                                            "configured{label}; no activity recorded in this folder yet"
+                                        ),
+                                    ),
+                                }),
+                                "Check local storage access, then start this tool in this source folder and rerun doctor.",
+                            ),
+                        }
                     }
                     state => {
                         let next = if state == Unreadable {
@@ -142,6 +190,53 @@ impl Doctor {
             );
         }
         Ok(())
+    }
+    /// Ok when Codex runs Orka's hooks in `root`; otherwise the finding and
+    /// next step that replace the activity check.
+    fn codex(trust: &Report, root: &Path) -> Result<(), ((Verdict, String), &'static str)> {
+        const APPROVE: &str = "Run codex in this folder, trust the folder when asked, then open /hooks and approve Orka's hooks. Rerun doctor.";
+        let trust =
+            match trust {
+                Report::Folders(folders) => folders
+                    .iter()
+                    .find(|(path, _)| path == root)
+                    .map(|(_, trust)| trust.clone())
+                    .unwrap_or_else(|| Trust::Unknown("not checked".into())),
+                Report::Unsupported => return Err((
+                    (
+                        Verdict::Warn,
+                        "configured; this Codex version can't report whether it runs Orka's hooks"
+                            .into(),
+                    ),
+                    "Update Codex, then rerun doctor.",
+                )),
+                Report::Unavailable(reason) => {
+                    return Err((
+                        (
+                            Verdict::Warn,
+                            format!(
+                        "configured; couldn't ask Codex whether it runs Orka's hooks ({reason})"
+                    ),
+                        ),
+                        "Check that Codex is installed and opens, then rerun doctor.",
+                    ))
+                }
+            };
+        let (detail, next) = match trust {
+            Trust::Trusted => return Ok(()),
+            Trust::FolderNotTrusted => ("Codex skips this folder's hooks because the folder isn't trusted in Codex", APPROVE),
+            Trust::FolderUntrusted => ("Codex skips this folder's hooks because it's marked untrusted in Codex", "To use Orka memory in Codex here, change this folder's trust_level in your Codex config.toml, then rerun doctor."),
+            Trust::HooksNotApproved => ("Codex trusts this folder but Orka's hooks haven't been approved", APPROVE),
+            Trust::HooksChanged => ("Orka's hooks changed since they were approved in Codex, so Codex skips them", APPROVE),
+            Trust::HooksDisabled => ("Codex hooks are turned off", "Remove features.hooks = false from your Codex config.toml, or turn Orka's hooks back on in Codex /hooks, then rerun doctor."),
+            Trust::Unknown(_) => ("configured; Codex's answer didn't show whether it runs Orka's hooks", "Run codex in this folder and check /hooks, then rerun doctor."),
+        };
+        let verdict = if matches!(trust, Trust::Unknown(_)) {
+            Verdict::Warn
+        } else {
+            Verdict::Fail
+        };
+        Err(((verdict, detail.into()), next))
     }
     fn time(value: &Value) -> Option<DateTime<Utc>> {
         value.as_str()?.parse().ok()
