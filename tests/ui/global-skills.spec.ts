@@ -426,6 +426,10 @@ for (const viewport of [
     await expect(
       dialog.getByRole("button", { name: "Add 1 skill", exact: true }),
     ).toBeEnabled();
+    await pick(page, "Code review").focus();
+    const peek = dialog.getByRole("tooltip");
+    await expect(peek).toBeVisible();
+    expect((await peek.boundingBox())!.x).toBeGreaterThanOrEqual(0);
     const box = (await dialog.boundingBox())!;
     expect(box.width).toBe(380);
     expect(box.y + box.height).toBeLessThanOrEqual(viewport.height);
@@ -481,7 +485,7 @@ test("the picker ranks cached usage first and applies a fresh ranking", async ({
   );
 });
 
-test("the picker keeps keyboard focus and selection when history finishes loading", async ({
+test("the picker waits for keyboard focus to leave the list before reordering", async ({
   page,
 }) => {
   await fixture(page, "usage-empty-cache");
@@ -499,6 +503,9 @@ test("the picker keeps keyboard focus and selection when history finishes loadin
   });
   await expect(names.nth(0)).toHaveText("Code review");
   await expect(skill).toBeFocused();
+  await expect(skill).toBeChecked();
+  await dialog.getByRole("searchbox", { name: "Search global skills" }).focus();
+  await expect(names.nth(0)).toHaveText("Extra skill 0");
   await expect(skill).toBeChecked();
 });
 

@@ -891,8 +891,8 @@ fn global_skill_usage_saves_counts_for_the_picker_and_recovers_from_partial_hist
     let blocked = f._home.path().join(".claude/projects");
     fs::create_dir_all(blocked.parent().unwrap()).unwrap();
     fs::write(&blocked, "").unwrap();
-    assert_eq!(refresh(), json!({"counts":{id:1},"partial":true}));
-    assert_eq!(scan()["usage"]["counts"][id], 1);
+    assert_eq!(refresh(), json!({"counts":{id:0},"partial":true}));
+    assert_eq!(scan()["usage"]["counts"][id], 0);
 
     fs::remove_file(blocked).unwrap();
     assert_eq!(refresh(), json!({"counts":{id:0},"partial":false}));

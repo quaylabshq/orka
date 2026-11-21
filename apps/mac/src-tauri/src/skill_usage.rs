@@ -93,15 +93,6 @@ fn refresh_global(db: &Connection, scope: &db::CacheScope, project: &Value) -> R
     let scan = global_skills::scan(db, project)?;
     let mut usage = collect(db, &scan.skills)?;
     usage.partial |= !scan.errors.is_empty();
-    if usage.partial {
-        // Unreadable history can hide previously observed chats.
-        if let Some(cached) = cached_global(scope) {
-            for (id, count) in cached.counts {
-                let current = usage.counts.entry(id).or_default();
-                *current = (*current).max(count);
-            }
-        }
-    }
     if let (Ok(dir), Ok(bytes)) = (scope.path(), serde_json::to_vec(&usage)) {
         // A cache write failure should still return the counts just computed.
         let _ = db::atomic(&dir.join(GLOBAL_CACHE_FILE), &bytes);
