@@ -262,22 +262,28 @@ async function fixture(page: Page, mode = "normal") {
                       "Cannot scan /Users/test/.claude/skills: permission denied",
                     ]
                   : [],
+              usage: mode.startsWith("usage-")
+                ? {
+                    counts:
+                      mode === "usage-empty-cache" && usageCount === 0
+                        ? {}
+                        : { claude: 12, codex: 8 },
+                    partial: false,
+                  }
+                : undefined,
             };
           }
           if (name === "global_skill_usage") {
             usageCount += 1;
             const usage = {
-              counts: Object.fromEntries(
-                skills.map((skill) => [
-                  skill.id,
-                  skill.id === "claude" ? 12 : skill.id === "codex" ? 8 : 0,
-                ]),
-              ),
-              partial: mode === "usage-partial",
+              counts: mode.startsWith("usage-")
+                ? { "extra-0": 15, claude: 12, codex: 8 }
+                : {},
+              partial: false,
             };
             if (mode === "usage-error" && usageCount === 1)
               throw "History unreadable";
-            if (mode === "usage-loading")
+            if (mode === "usage-loading" || mode === "usage-empty-cache")
               return new Promise((resolve) => {
                 (window as any).resolveSkillUsage = () => resolve(usage);
               });
@@ -453,6 +459,63 @@ test("search matches names and reveals skills that cannot be added", async ({
   await expect(dialog.getByText("Can’t be added")).toBeVisible();
   await search.fill("guide");
   await expect(dialog.getByText("1 of 22 match")).toBeVisible();
+});
+
+test("the picker ranks cached usage first and applies a fresh ranking", async ({
+  page,
+}) => {
+  await fixture(page, "usage-loading");
+  await trigger(page).click();
+  const dialog = popover(page);
+  const names = dialog.locator(".add-skills-name");
+  await expect(names.nth(0)).toHaveText("Writing guide");
+  await expect(names.nth(1)).toHaveText("Code review");
+  await expect(names.nth(2)).toHaveText("Extra skill 0");
+  await expect.poll(() => calls(page, "global_skill_usage")).toHaveLength(1);
+  await page.evaluate(() => (window as any).resolveSkillUsage());
+  await expect(names.nth(0)).toHaveText("Extra skill 0");
+  await expect(names.nth(1)).toHaveText("Writing guide");
+  await pick(page, "Writing guide").focus();
+  await expect(dialog.getByRole("tooltip")).toContainText(
+    "Detected in 12 chats",
+  );
+});
+
+test("the picker keeps keyboard focus and selection when history finishes loading", async ({
+  page,
+}) => {
+  await fixture(page, "usage-empty-cache");
+  await trigger(page).click();
+  const dialog = popover(page);
+  const names = dialog.locator(".add-skills-name");
+  await expect(names.nth(0)).toHaveText("Code review");
+  const skill = pick(page, "Code review");
+  await skill.focus();
+  await page.keyboard.press("Space");
+  await expect.poll(() => calls(page, "global_skill_usage")).toHaveLength(1);
+  await page.evaluate(async () => {
+    (window as any).resolveSkillUsage();
+    await new Promise(requestAnimationFrame);
+  });
+  await expect(names.nth(0)).toHaveText("Code review");
+  await expect(skill).toBeFocused();
+  await expect(skill).toBeChecked();
+});
+
+test("a history refresh failure leaves the saved ranking usable", async ({
+  page,
+}) => {
+  await fixture(page, "usage-error");
+  await trigger(page).click();
+  const dialog = popover(page);
+  await expect(dialog.locator(".add-skills-name").first()).toHaveText(
+    "Writing guide",
+  );
+  await expect.poll(() => calls(page, "global_skill_usage")).toHaveLength(1);
+  await pick(page, "Writing guide").check();
+  await expect(
+    dialog.getByRole("button", { name: "Add 1 skill" }),
+  ).toBeEnabled();
 });
 
 test("hover and focus open a skill's details beside the popover", async ({

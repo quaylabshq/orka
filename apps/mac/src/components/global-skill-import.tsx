@@ -4,6 +4,7 @@ import {
   CircleXIcon,
   FileIcon,
   FolderIcon,
+  MessageSquareIcon,
   PlusIcon,
   RefreshCwIcon,
   SearchIcon,
@@ -47,6 +48,10 @@ interface GlobalSkill {
 interface Scan {
   skills: GlobalSkill[];
   errors: string[];
+  usage?: SkillUsage;
+}
+interface SkillUsage {
+  counts: Record<string, number>;
 }
 interface ImportResult {
   skillId: string;
@@ -221,6 +226,7 @@ function AddSkills({
   const peekId = useId();
   const [connectError, setConnectError] = useState("");
   const [scan, setScan] = useState<Scan | null>(null);
+  const [usage, setUsage] = useState<SkillUsage | null>(null);
   const [scanError, setScanError] = useState("");
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -234,6 +240,7 @@ function AddSkills({
   const generation = useRef(0);
   const peekTimer = useRef(0);
   const list = useRef<HTMLUListElement>(null);
+  const rankingLocked = useRef(false);
 
   const target = path ? JSON.stringify([sourceId, path]) : null;
   const [previousTarget, setPreviousTarget] = useState(target);
@@ -272,6 +279,24 @@ function AddSkills({
     };
   }, [rescan, target]);
 
+  const hasSkills = Boolean(scan?.skills.length);
+  useEffect(() => {
+    if (!hasSkills) return;
+    let mounted = true;
+    void invoke<SkillUsage>("global_skill_usage", { projectId: project.id })
+      .then((next) => {
+        // Moving rows under the pointer or keyboard focus can change what gets picked.
+        if (mounted && !rankingLocked.current) setUsage(next);
+      })
+      .catch(() => {
+        // The saved order remains usable if history cannot be refreshed.
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [hasSkills, project.id]);
+
+  const counts = usage?.counts ?? scan?.usage?.counts;
   const skills = useMemo(
     () =>
       (scan?.skills ?? [])
@@ -282,13 +307,16 @@ function AddSkills({
             folder: skill.name,
             name: name || skill.name,
             description,
+            count: counts?.[skill.id],
           };
         })
         .sort(
           (a, b) =>
-            a.name.localeCompare(b.name) || a.path.localeCompare(b.path),
+            (b.count ?? 0) - (a.count ?? 0) ||
+            a.name.localeCompare(b.name) ||
+            a.path.localeCompare(b.path),
         ),
-    [scan],
+    [scan, counts],
   );
   type Skill = (typeof skills)[number];
   const unavailable = (skill: Skill) =>
@@ -709,6 +737,12 @@ function AddSkills({
               ref={list}
               className="add-skills-list"
               aria-label="Global skills"
+              onPointerEnter={() => {
+                rankingLocked.current = true;
+              }}
+              onFocusCapture={() => {
+                rankingLocked.current = true;
+              }}
               onKeyDown={moveFocus}
               onScroll={closePeek}
             >
@@ -835,6 +869,15 @@ function AddSkills({
             </p>
           )}
           <p>{peeked.description || "No description"}</p>
+          {peeked.count !== undefined && (
+            <p className="add-skills-peek-meta">
+              <MessageSquareIcon size={12} aria-hidden="true" />
+              <span>
+                Detected in {peeked.count}{" "}
+                {peeked.count === 1 ? "chat" : "chats"}
+              </span>
+            </p>
+          )}
           <p className="add-skills-peek-meta">
             <FileIcon size={12} aria-hidden="true" />
             <span>
