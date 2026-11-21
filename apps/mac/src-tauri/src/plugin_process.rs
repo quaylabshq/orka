@@ -139,42 +139,32 @@ fn running_code(pid: u32) -> Option<SecCode> {
 
 #[cfg(target_os = "macos")]
 fn own_code_requirement() -> Option<SecRequirement> {
-    use core_foundation::{
-        base::{CFType, CFTypeRef, TCFType},
-        data::CFData,
-        dictionary::{CFDictionary, CFDictionaryRef},
-        string::{CFString, CFStringRef},
-    };
-    use std::{ptr, sync::OnceLock};
+    use core_foundation::base::TCFType;
+    use std::ptr;
 
     #[link(name = "Security", kind = "framework")]
     extern "C" {
-        static kSecCodeInfoUnique: CFStringRef;
-        fn SecCodeCopySigningInformation(
-            code: CFTypeRef,
+        // Security also accepts a dynamic SecCodeRef here to obtain its requirement.
+        fn SecCodeCopyDesignatedRequirement(
+            code: <SecCode as TCFType>::Ref,
             flags: u32,
-            information: *mut CFDictionaryRef,
+            requirement: *mut <SecRequirement as TCFType>::Ref,
         ) -> i32;
     }
 
-    static CODE_HASH: OnceLock<Option<String>> = OnceLock::new();
-    let hash = CODE_HASH
-        .get_or_init(|| {
-            let code = SecCode::for_self(Flags::empty()).ok()?;
-            let mut information = ptr::null();
-            let result =
-                unsafe { SecCodeCopySigningInformation(code.as_CFTypeRef(), 0, &mut information) };
-            if result != 0 || information.is_null() {
-                return None;
-            }
-            let information =
-                unsafe { CFDictionary::<CFString, CFType>::wrap_under_create_rule(information) };
-            let key = unsafe { CFString::wrap_under_get_rule(kSecCodeInfoUnique) };
-            let data = information.find(&key)?.downcast::<CFData>()?;
-            Some(crate::db::hex(data.bytes()))
-        })
-        .as_ref()?;
-    format!(r#"cdhash H"{hash}""#).parse().ok()
+    let own_code = SecCode::for_self(Flags::empty()).ok()?;
+    let mut requirement = ptr::null_mut();
+    let result = unsafe {
+        SecCodeCopyDesignatedRequirement(own_code.as_concrete_TypeRef(), 0, &mut requirement)
+    };
+    if result != 0 || requirement.is_null() {
+        return None;
+    }
+    let requirement = unsafe { SecRequirement::wrap_under_create_rule(requirement) };
+    // The designated requirement works across slices of a signed universal app.
+    // Verify it against the running broker before trusting a helper that matches it.
+    own_code.check_validity(Flags::empty(), &requirement).ok()?;
+    Some(requirement)
 }
 
 #[derive(Clone, Debug)]
