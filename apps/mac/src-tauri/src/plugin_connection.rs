@@ -42,12 +42,14 @@ fn read_state() -> Result<Value> {
             if !state["sessions"].is_object() {
                 state["sessions"] = json!({});
             }
+            if !state["assistantAttention"].is_object() {
+                state["assistantAttention"] = json!({});
+            }
             state.as_object_mut().ok_or(RECONNECT)?.remove("approval");
             Ok(state)
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            let state =
-                json!({"generation":Uuid::new_v4().to_string(),"reason":null,"sessions":{}});
+            let state = json!({"generation":Uuid::new_v4().to_string(),"reason":null,"sessions":{},"assistantAttention":{}});
             write_state(&state)?;
             Ok(state)
         }
@@ -85,9 +87,42 @@ fn reconcile(state: &mut Value) -> bool {
     state["sessions"] != before
 }
 
+// Import already-approved assistants before reconciliation removes old sessions.
+fn remember_approvals(state: &mut Value) -> bool {
+    let apps: Vec<String> = state["sessions"]
+        .as_object()
+        .into_iter()
+        .flat_map(|sessions| sessions.values())
+        .filter(|session| !session["connectedAt"].is_null())
+        .filter_map(|session| session["assistantApp"].as_str().map(String::from))
+        .collect();
+    let mut changed = false;
+    for app in apps {
+        if state["assistantAttention"][&app]["reviewed"] != true {
+            state["assistantAttention"][&app]["reviewed"] = json!(true);
+            changed = true;
+        }
+    }
+    changed
+}
+
+fn connection_completed(state: &mut Value, app: &str) {
+    state["assistantAttention"][app] = json!({"reviewed":true,"notified":false});
+    if let Some(sessions) = state["sessions"].as_object_mut() {
+        for session in sessions.values_mut() {
+            if session["assistantApp"] == app
+                && matches!(session["state"].as_str(), Some("pending" | "signed_out"))
+            {
+                session["reconnectResolved"] = json!(true);
+            }
+        }
+    }
+}
+
 fn live_state() -> Result<Value> {
     let mut state = read_state()?;
-    if reconcile(&mut state) {
+    let remembered = remember_approvals(&mut state);
+    if reconcile(&mut state) || remembered {
         write_state(&state)?;
     }
     Ok(state)
@@ -102,6 +137,7 @@ pub(crate) fn generation() -> Result<String> {
 pub(crate) fn invalidate(reason: &str) -> Result<()> {
     let _lock = state_lock()?;
     let mut state = read_state().unwrap_or_else(|_| json!({"sessions":{}}));
+    remember_approvals(&mut state);
     state["generation"] = json!(Uuid::new_v4().to_string());
     state["reason"] = json!(reason);
     // Keep tombstones: a live old helper must never acquire a new account's grant.
@@ -266,6 +302,10 @@ pub(crate) fn initialize_session(
     };
     let valid = binding.is_some() && !actual.is_null();
     let assistant_app = json!(app);
+    let first_request = valid
+        && assistant_app
+            .as_str()
+            .is_some_and(|app| state["assistantAttention"][app]["reviewed"] != true);
     let assistant = json!(peer.assistant);
     let workspace = json!(binding);
     let member = json!({"secretHash":db::digest(secret.as_bytes()),"process":peer.helper,"assistant":assistant});
@@ -309,6 +349,12 @@ pub(crate) fn initialize_session(
         state["sessions"][&connection]["members"][id] = member;
         let value = &state["sessions"][&connection];
         let result = json!({"state":value["state"],"requestId":value["requestId"]});
+        if let Some(app) = assistant_app
+            .as_str()
+            .filter(|_| value["state"] == "approved")
+        {
+            connection_completed(&mut state, app);
+        }
         write_state(&state)?;
         return Ok(result);
     }
@@ -340,7 +386,7 @@ pub(crate) fn initialize_session(
         "state":if valid{"pending"}else{"signed_out"},"expiresAt":(chrono::Utc::now()+chrono::Duration::minutes(10)).to_rfc3339()});
     write_state(&state)?;
     Ok(
-        json!({"state":if valid{"pending"}else{"signed_out"},"requestId":if valid{json!(request_id)}else{Value::Null}}),
+        json!({"state":if valid{"pending"}else{"signed_out"},"requestId":if valid{json!(request_id)}else{Value::Null},"raiseConsent":first_request}),
     )
 }
 
@@ -442,6 +488,82 @@ pub fn plugin_connection_requests() -> Result<Value> {
         .map(preview)
         .collect::<Vec<_>>()))
 }
+fn first_pending_consent(state: &Value) -> Option<&Value> {
+    state["sessions"].as_object()?.values().find(|session| {
+        session["state"] == "pending"
+            && session["binding"]["generation"] == state["generation"]
+            && expires(&session["expiresAt"])
+            && session["assistantApp"]
+                .as_str()
+                .is_some_and(|app| state["assistantAttention"][app]["reviewed"] != true)
+    })
+}
+
+pub(crate) fn has_first_pending_consent() -> Result<bool> {
+    let _lock = state_lock()?;
+    Ok(first_pending_consent(&live_state()?).is_some())
+}
+
+/// Supply the main window with an initial consent request or a quiet reconnect notice.
+#[tauri::command]
+pub fn plugin_connection_attention(
+    allow_prompt: bool,
+    reported_notice: Option<String>,
+) -> Result<Value> {
+    let _lock = state_lock()?;
+    let mut state = live_state()?;
+    if let Some(id) = reported_notice {
+        if let Some(notice) = state["assistantAttention"]
+            .as_object_mut()
+            .ok_or(RECONNECT)?
+            .values_mut()
+            .find(|attention| attention["noticeId"] == id && attention["notified"] != true)
+        {
+            notice["notified"] = json!(true);
+            write_state(&state)?;
+        }
+        return Ok(Value::Null);
+    }
+    if allow_prompt {
+        if let Some(request) = first_pending_consent(&state) {
+            return Ok(json!({"requestId":request["requestId"]}));
+        }
+    }
+    let sessions = state["sessions"].as_object().ok_or(RECONNECT)?;
+    let failed = sessions.values().find_map(|session| {
+        let app = session["assistantApp"].as_str()?;
+        let attention = &state["assistantAttention"][app];
+        if attention["reviewed"] != true
+            || attention["notified"] == true
+            || session["automaticReview"] == true
+            || session["reconnectResolved"] == true
+            || !matches!(session["state"].as_str(), Some("pending" | "signed_out"))
+            || sessions.values().any(|candidate| {
+                candidate["assistantApp"] == app
+                    && candidate["state"] == "approved"
+                    && candidate["binding"]["generation"] == state["generation"]
+                    && candidate["members"]
+                        .as_object()
+                        .is_some_and(|members| !members.is_empty())
+            })
+        {
+            return None;
+        }
+        Some((app.to_owned(), session["client"]["name"].clone()))
+    });
+    if let Some((app, name)) = failed {
+        let attention = &mut state["assistantAttention"][&app];
+        if !attention["noticeId"].is_string() {
+            attention["noticeId"] = json!(Uuid::new_v4().to_string());
+            write_state(&state)?;
+        }
+        return Ok(
+            json!({"reconnect":{"id":state["assistantAttention"][&app]["noticeId"],"name":name}}),
+        );
+    }
+    Ok(Value::Null)
+}
+
 #[tauri::command]
 pub fn plugin_connection_status() -> Result<Value> {
     let db = db::open()?;
@@ -531,11 +653,27 @@ pub async fn plugin_authorization(operation: String, input: Value) -> Result<Val
     {
         return Ok(Value::Null);
     }
+    let app = value["assistantApp"].as_str().map(String::from);
     if operation == "preview" {
-        return Ok(preview(value));
+        let details = preview(value);
+        if input["automatic"] == true && value["automaticReview"] != true {
+            let Some(app) = app else {
+                return Ok(Value::Null);
+            };
+            value["automaticReview"] = json!(true);
+            if state["assistantAttention"][&app]["reviewed"] == true {
+                return Ok(Value::Null);
+            }
+            state["assistantAttention"][&app]["reviewed"] = json!(true);
+            write_state(&state)?;
+        }
+        return Ok(details);
     }
     if operation == "cancel" {
         value["state"] = json!("denied");
+        if let Some(app) = app {
+            state["assistantAttention"][&app]["reviewed"] = json!(true);
+        }
         write_state(&state)?;
         return Ok(json!({"cancelled":true}));
     }
@@ -556,6 +694,9 @@ pub async fn plugin_authorization(operation: String, input: Value) -> Result<Val
     value["scopes"] = scopes;
     value["state"] = json!("approved");
     value["connectedAt"] = json!(db::now());
+    if let Some(app) = app {
+        connection_completed(&mut state, &app);
+    }
     write_state(&state)?;
     Ok(json!({"approved":true}))
 }

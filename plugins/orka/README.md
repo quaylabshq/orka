@@ -15,13 +15,13 @@ The bridge forwards requests over a private, profile-local Unix socket. It does 
 
 1. Install an updated Orka desktop and sign in normally. The service must advertise `desktopConnector: 1` at `/v2/instance` for shared tools.
 2. Install the desktop plugin ZIP in Codex or Claude Code and connect Orka.
-3. Open **Settings → Connectors → Review request** in Orka. Review the account and service, then approve the access you want to grant.
+3. When a verified assistant connects for the first time, Orka opens the approval dialog. Review the account and service, then approve the access you want to grant. Other setups can open **Settings → Connectors → Review request**.
 
-Orka remembers the selected access for Codex, Claude Code, and Claude when macOS verifies the app's signing identity. Reopening a verified assistant restores those same permissions for the same Orka account and service. Other setups can still connect with approval for the running assistant. Existing process-only approvals stay valid for their original connection. Review one fresh request to save access across restarts.
+Orka remembers the selected access for Codex, Claude Code, and Claude when macOS verifies the app's signing identity. Reopening a verified assistant restores those same permissions for the same Orka account and service. Other setups can still connect with approval for the running assistant. If a returning verified assistant needs attention, Orka shows a quiet toast with a link to **Connectors**. Existing process-only approvals stay valid for their original connection. Review one fresh request to save access across restarts.
 
 **Settings → Connectors** shows pending requests, active sessions and saved access when an assistant is closed. Revoking access, signing out, or switching account or service invalidates the old grant and its sessions, even after switching back. To change approved access, revoke the grant, reconnect from the assistant, and review the new request with the desired scopes.
 
-`get_connection_status` works before approval and reports if Orka is closed, without exposing project content. Once Orka is open, the connector can register on the next tool call.
+`get_connection_status` works before approval and reports if Orka is closed, without exposing project content. The connector retries registration when Orka opens.
 
 When upgrading from plugin 0.2.0, update the installed plugin as well as Orka desktop. A local plugin marketplace must also contain the new 0.3.2 package; publishing a desktop release does not refresh a local marketplace. The new package has one stdio `orka` connector. A remaining remote `orka` plus local `orka_local` pair indicates the old package and can cause repeated OAuth startup errors against retired endpoints.
 

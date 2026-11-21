@@ -221,13 +221,21 @@ async fn dispatch(request: &Value, peer: &Peer) -> Result<Value> {
         plugin_connection::identify_session(id, secret, peer)?;
     }
     match request["operation"].as_str().unwrap_or("") {
-        "initialize" => plugin_connection::initialize_session(
-            id,
-            secret,
-            request["clientName"].as_str().unwrap_or("Assistant"),
-            peer,
-            peer.verified_app(),
-        ),
+        "initialize" => {
+            let result = plugin_connection::initialize_session(
+                id,
+                secret,
+                request["clientName"].as_str().unwrap_or("Assistant"),
+                peer,
+                peer.verified_app(),
+            )?;
+            if result["raiseConsent"] == true {
+                if let Ok(root) = db::root() {
+                    let _ = db::atomic(&root.join("connector-focus"), b"");
+                }
+            }
+            Ok(result)
+        }
         "close" => plugin_connection::close_session(id, secret).map(|_| json!({})),
         "tools" => {
             plugin_connection::session_status(id, secret)?;

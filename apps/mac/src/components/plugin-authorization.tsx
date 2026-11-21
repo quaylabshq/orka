@@ -26,10 +26,12 @@ export function PluginAuthorization({
   request,
   scope,
   onClose,
+  automatic = false,
 }: {
   request: { requestId: string; scope: string };
   scope: string;
   onClose: () => void;
+  automatic?: boolean;
 }) {
   const [preview, setPreview] = useState<Authorization | null>(null);
   const [error, setError] = useState("");
@@ -46,7 +48,10 @@ export function PluginAuthorization({
     let stopped = false;
     void invoke<Authorization | null>("plugin_authorization", {
       operation: "preview",
-      input: { requestId: request.requestId },
+      input: {
+        requestId: request.requestId,
+        ...(automatic && { automatic: true }),
+      },
     }).then(
       (result) => {
         if (stopped) return;
@@ -64,13 +69,40 @@ export function PluginAuthorization({
     return () => {
       stopped = true;
     };
-  }, [request.requestId, changed, attempt, onClose]);
+  }, [request.requestId, changed, attempt, onClose, automatic]);
   useEffect(() => {
     if (!preview || approved) return;
     const remaining = Date.parse(preview.expiresAt) - Date.now();
     const timer = window.setTimeout(onClose, Math.max(0, remaining));
     return () => window.clearTimeout(timer);
   }, [preview, approved, onClose]);
+  useEffect(() => {
+    if (!automatic || changed || approved || busy) return;
+    let stopped = false;
+    let timer: number;
+    const check = async () => {
+      try {
+        const pending = await invoke<{ requestId: string }[]>(
+          "plugin_connection_requests",
+        );
+        if (
+          !stopped &&
+          !pending.some((item) => item.requestId === request.requestId)
+        ) {
+          onClose();
+          return;
+        }
+      } catch {
+        // A temporary native error can be checked again on the next poll.
+      }
+      if (!stopped) timer = window.setTimeout(() => void check(), 1000);
+    };
+    timer = window.setTimeout(() => void check(), 1000);
+    return () => {
+      stopped = true;
+      window.clearTimeout(timer);
+    };
+  }, [automatic, request.requestId, changed, approved, busy, onClose]);
   const close = async () => {
     if (busy) return;
     if (!approved) {

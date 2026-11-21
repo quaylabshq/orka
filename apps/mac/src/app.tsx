@@ -104,6 +104,7 @@ import {
 import { skillReviewState } from "./components/skill-review-state.js";
 import { skillStatus, type SkillStatus } from "./components/skill-status.js";
 import { useDeepLinks } from "./components/use-deep-links.js";
+import { PluginAuthorization } from "./components/plugin-authorization.js";
 import { parseProjectInvite } from "./components/project-invite.js";
 import { useIndexFilters } from "./components/use-index-filters.js";
 import { defaultIndexFilters } from "./components/index-toolbar.js";
@@ -234,7 +235,8 @@ function WorkspaceApp({
     errorFeedback,
     actionNotice,
   } = workspace;
-  const { notify } = useToasts();
+  const { notify, queue } = useToasts();
+  const toastShowing = queue.length > 0;
   const workspaceScope = WorkspaceCache.scope(state);
   const updates = useDesktopUpdates(workspaceScope, state.user);
   const account = useAccount(state.config, !state.user);
@@ -259,6 +261,14 @@ function WorkspaceApp({
   const [returnFocus, setReturnFocus] = useState("");
   const clearReturnFocus = useCallback(() => setReturnFocus(""), []);
   const [settings, setSettings] = useState<SettingsSection | null>(null);
+  const [connectorRequest, setConnectorRequest] = useState<{
+    requestId: string;
+    scope: string;
+  } | null>(null);
+  const closeConnectorRequest = useCallback(
+    () => setConnectorRequest(null),
+    [],
+  );
   const [settingsProject, setSettingsProject] = useState<string | null>(null);
   useEffect(() => {
     if (!settings) setSettingsProject(null);
@@ -339,11 +349,72 @@ function WorkspaceApp({
       setSettings(section);
     }
   };
-  const openSettings = (section: SettingsSection) => {
+  const openSettings = useCallback((section: SettingsSection) => {
     if (settingsNavigation.current)
       settingsNavigation.current.requestSection(section);
     else setSettings(section);
-  };
+  }, []);
+  const canApproveConnector = Boolean(state.user);
+  const activeConnectorRequest =
+    connectorRequest?.scope === workspaceScope ? connectorRequest : null;
+  useEffect(() => {
+    if (busy || activeConnectorRequest) return;
+    let stopped = false;
+    let timer: number | undefined;
+    const dialogOpen = () => !!document.querySelector('[role="dialog"]');
+    const poll = async () => {
+      try {
+        if (document.hidden || !document.hasFocus() || dialogOpen()) return;
+        const attention = await invoke<{
+          requestId?: string;
+          reconnect?: { id: string; name: string };
+        } | null>("plugin_connection_attention", {
+          allowPrompt: canApproveConnector,
+        });
+        if (stopped || document.hidden || !document.hasFocus() || !attention)
+          return;
+        if (attention.requestId && !dialogOpen()) {
+          setConnectorRequest({
+            requestId: attention.requestId,
+            scope: workspaceScope,
+          });
+        } else if (attention.reconnect && !toastShowing) {
+          const { id, name } = attention.reconnect;
+          notify({
+            title: `${name} couldn’t reconnect to Orka`,
+            placement: "bottom-right",
+            action: {
+              label: "Connectors",
+              onClick: () => openSettings("connections"),
+            },
+            onDisplay: () => {
+              void invoke("plugin_connection_attention", {
+                allowPrompt: false,
+                reportedNotice: id,
+              }).catch(() => {});
+            },
+          });
+        }
+      } catch {
+        // Connector discovery can continue once the native broker is available.
+      } finally {
+        if (!stopped) timer = window.setTimeout(() => void poll(), 1000);
+      }
+    };
+    void poll();
+    return () => {
+      stopped = true;
+      window.clearTimeout(timer);
+    };
+  }, [
+    activeConnectorRequest,
+    busy,
+    canApproveConnector,
+    notify,
+    openSettings,
+    toastShowing,
+    workspaceScope,
+  ]);
   const manualUpdateCheck = useRef(() => {});
   manualUpdateCheck.current = () => {
     openSettings("updates");
@@ -707,6 +778,15 @@ function WorkspaceApp({
         </div>
       </Overlay>
     ) : null;
+  const connectorDialog = activeConnectorRequest && (
+    <PluginAuthorization
+      key={activeConnectorRequest.requestId}
+      automatic
+      request={activeConnectorRequest}
+      scope={workspaceScope}
+      onClose={closeConnectorRequest}
+    />
+  );
   if (!state.user)
     return (
       <>
@@ -723,6 +803,8 @@ function WorkspaceApp({
         />
         {updatesDialog}
         {connectorsDialog}
+        {connectorDialog}
+        <ToastViewport />
       </>
     );
   if (state.onboarding?.active && setup.dialog !== "join")
@@ -736,6 +818,8 @@ function WorkspaceApp({
         />
         {updatesDialog}
         {connectorsDialog}
+        {connectorDialog}
+        <ToastViewport />
       </>
     );
   const openResource = (id: string) => {
@@ -1483,6 +1567,7 @@ function WorkspaceApp({
             onRefresh={refresh}
           />
         )}
+        {connectorDialog}
       </div>
     </ResourceMenuProvider>
   );

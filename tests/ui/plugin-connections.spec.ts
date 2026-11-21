@@ -22,11 +22,13 @@ async function capture(page: Page, state: string) {
     fixture: "synthetic-settings-v1",
     theme: "desktop-dark",
     expectedVisible: [
-      state === "consent"
+      state === "consent" || state === "first-connection"
         ? ".plugin-authorization"
         : state === "startup"
           ? '.sidebar-bottom button[aria-label="Settings"]'
-          : ".settings-panel",
+          : state === "reconnect-toast"
+            ? "[data-orka-toast]"
+            : ".settings-panel",
     ],
   });
 }
@@ -150,6 +152,120 @@ test("consent remains fixed while loading and fits a compact window", async ({
         command === "plugin_authorization" && args.operation === "cancel",
     )?.args.input,
   ).toEqual({ requestId: "fixture-request" });
+});
+
+test("a verified first connection opens consent from Home", async ({
+  page,
+}) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await settingsFixture(page, {
+    openSettings: false,
+    pluginRequestId: "fixture-request",
+    pluginFirstConnection: true,
+    pluginClientName: "Codex",
+    pluginRemembered: true,
+  });
+  const dialog = page.getByRole("dialog", { name: "Connect to Orka" });
+  await expect(
+    dialog.getByRole("heading", { name: "Codex", exact: true }),
+  ).toBeVisible();
+  await expect(
+    dialog.getByRole("button", { name: "Allow connection" }),
+  ).toBeEnabled();
+  await capture(page, "first-connection");
+  expect(
+    (await settingsCalls(page)).find(
+      ({ command, args }) =>
+        command === "plugin_authorization" && args.operation === "preview",
+    )?.args.input,
+  ).toEqual({ requestId: "fixture-request", automatic: true });
+  await dialog.getByRole("button", { name: "Allow connection" }).click();
+  await expect(dialog.getByRole("status")).toContainText("Connection approved");
+  await dialog.getByRole("button", { name: "Done" }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(
+    page.getByRole("region", { name: "Settings", exact: true }),
+  ).toHaveCount(0);
+  await expect(page.locator("[data-orka-toast]")).toHaveCount(0);
+});
+
+for (const previewBusy of [false, true]) {
+  test(`automatic consent closes when the assistant leaves ${previewBusy ? "before preview" : "during review"}`, async ({
+    page,
+  }) => {
+    await settingsFixture(page, {
+      openSettings: false,
+      pluginRequestId: "fixture-request",
+      pluginFirstConnection: true,
+      pluginError: previewBusy
+        ? "A sync or project operation is in progress."
+        : undefined,
+    });
+    const dialog = page.getByRole("dialog", { name: "Connect to Orka" });
+    if (previewBusy)
+      await expect(dialog.getByRole("alert")).toContainText(
+        "A sync or project operation",
+      );
+    else
+      await expect(
+        dialog.getByRole("button", { name: "Allow connection" }),
+      ).toBeEnabled();
+    await page.evaluate(() => {
+      (window as any).settingsControls.pluginRequestId = "";
+    });
+    await expect(dialog).toHaveCount(0);
+    await expect(page.locator("[data-orka-toast]")).toHaveCount(0);
+  });
+}
+
+test("a failed reconnect shows a quiet bottom-right toast with a Connectors action", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 900, height: 640 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await settingsFixture(page, {
+    openSettings: false,
+    pluginClientName: "Claude Code",
+    pluginRemembered: true,
+  });
+  const settings = page.getByRole("button", { name: "Settings", exact: true });
+  await settings.focus();
+  await expect(settings).toBeFocused();
+  await expect(page.locator("[data-orka-toast]")).toHaveCount(0);
+  await page.evaluate(() => {
+    const controls = (window as any).settingsControls;
+    controls.pluginRequestId = "fixture-request";
+    controls.pluginReconnectNotice = "Claude Code";
+  });
+  const toast = page.locator("[data-orka-toast]");
+  await expect(toast.getByRole("status")).toHaveText(
+    "Claude Code couldn’t reconnect to Orka",
+  );
+  await expect(toast.getByRole("alert")).toHaveCount(0);
+  await expect(settings).toBeFocused();
+  await expect(
+    page.getByRole("dialog", { name: "Connect to Orka" }),
+  ).toHaveCount(0);
+  await expect
+    .poll(async () => {
+      const bounds = await toast.boundingBox();
+      return (
+        bounds && [
+          Math.round(bounds.x + bounds.width),
+          Math.round(bounds.y + bounds.height),
+        ]
+      );
+    })
+    .toEqual([876, 616]);
+  await capture(page, "reconnect-toast");
+  await toast.getByRole("button", { name: "Connectors" }).click();
+  const panel = page.locator('.settings-panel[data-section="connections"]');
+  await expect(
+    panel.getByRole("button", { name: "Review request" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("dialog", { name: "Connect to Orka" }),
+  ).toHaveCount(0);
 });
 
 test("requests stay in Settings and an expired request closes quietly", async ({

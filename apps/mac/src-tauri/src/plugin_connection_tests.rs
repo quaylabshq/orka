@@ -1,5 +1,8 @@
 use super::*;
-use crate::plugin_connection::{self, Binding};
+use crate::{
+    plugin_connection::{self, Binding},
+    plugin_process::{AssistantApp, Peer, ProcessIdentity},
+};
 use uuid::Uuid;
 
 #[test]
@@ -274,21 +277,242 @@ fn legacy_approvals_are_not_reported_live_until_their_secret_identifies_a_real_h
 }
 
 #[test]
+fn verified_first_connector_request_is_offered_once_and_retries_notify_once() {
+    let f = Fixture::new();
+    crate::env::test_support::install_memory_keychain();
+    db::set(&f.db, "config", &json!({"apiUrl":"https://plugin.example"})).unwrap();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let identity = ProcessIdentity::read(std::process::id()).unwrap().0;
+    let peer = Peer {
+        helper: identity.clone(),
+        assistant: identity,
+    };
+    let secret = &"c".repeat(64);
+    let init = |app: Option<AssistantApp>| {
+        let id = Uuid::new_v4().to_string();
+        let label = if app.is_some() {
+            "Untrusted name"
+        } else {
+            "Codex"
+        };
+        let response =
+            plugin_connection::initialize_session(&id, secret, label, &peer, app).unwrap();
+        (id, response)
+    };
+    let attention =
+        |allow_prompt| plugin_connection::plugin_connection_attention(allow_prompt, None).unwrap();
+    let review = |operation: &str, input: Value| {
+        runtime
+            .block_on(plugin_connection::plugin_authorization(
+                operation.into(),
+                input,
+            ))
+            .unwrap()
+    };
+
+    let (signed_out, request) = init(Some(AssistantApp::Codex));
+    assert_eq!(request["state"], "signed_out");
+    assert_eq!(request["raiseConsent"], false);
+    assert!(attention(false).is_null());
+    plugin_connection::close_session(&signed_out, secret).unwrap();
+    sign_in_connector_fixture(&f);
+
+    let (unverified, request) = init(None);
+    assert_eq!(request["state"], "pending");
+    assert_eq!(request["raiseConsent"], false);
+    assert!(attention(true).is_null());
+    assert!(review(
+        "preview",
+        json!({"requestId":request["requestId"],"automatic":true})
+    )
+    .is_null());
+    plugin_connection::close_session(&unverified, secret).unwrap();
+
+    let (brief, request) = init(Some(AssistantApp::Codex));
+    assert_eq!(request["raiseConsent"], true);
+    plugin_connection::close_session(&brief, secret).unwrap();
+    assert!(attention(true).is_null());
+
+    let (first, request) = init(Some(AssistantApp::Codex));
+    assert_eq!(request["state"], "pending");
+    assert_eq!(request["raiseConsent"], true);
+    assert_eq!(attention(true), json!({"requestId":request["requestId"]}));
+    assert!(attention(false).is_null());
+    let (second, joined) = init(Some(AssistantApp::Codex));
+    assert_eq!(joined["requestId"], request["requestId"]);
+    assert_ne!(joined["raiseConsent"], true);
+    plugin_connection::close_session(&first, secret).unwrap();
+
+    let automatic = json!({"requestId":request["requestId"],"automatic":true});
+    let preview = review("preview", automatic.clone());
+    assert_eq!(preview["verified"], true);
+    assert_eq!(preview["client"]["name"], "Codex");
+    assert_eq!(review("preview", automatic.clone()), preview);
+    assert!(attention(true).is_null());
+    let dismiss = json!({"requestId":request["requestId"]});
+    assert_eq!(review("preview", dismiss.clone())["verified"], true);
+    assert_eq!(review("cancel", dismiss), json!({"cancelled":true}));
+    assert!(review("preview", automatic).is_null());
+    assert!(attention(true).is_null());
+    plugin_connection::close_session(&second, secret).unwrap();
+    assert!(attention(true).is_null());
+
+    let (failed, request) = init(Some(AssistantApp::Codex));
+    assert_eq!(request["raiseConsent"], false);
+    let reconnect = attention(true);
+    assert_eq!(reconnect["reconnect"]["name"], "Codex");
+    let notice_id = reconnect["reconnect"]["id"].as_str().unwrap().to_owned();
+    assert_eq!(attention(false), reconnect);
+    plugin_connection::close_session(&failed, secret).unwrap();
+    assert!(
+        plugin_connection::plugin_connection_attention(false, Some(notice_id.clone()))
+            .unwrap()
+            .is_null()
+    );
+    assert!(attention(true).is_null());
+
+    let (replacement, request) = init(Some(AssistantApp::Codex));
+    assert_eq!(request["state"], "pending");
+    assert!(attention(true).is_null());
+    assert_eq!(
+        review(
+            "approve",
+            json!({"requestId":request["requestId"],"scopes":["orka.read"]})
+        ),
+        json!({"approved":true})
+    );
+    assert!(plugin_connection::authorize(&replacement, secret, "orka.read").is_ok());
+    assert!(attention(true).is_null());
+    plugin_connection::close_session(&replacement, secret).unwrap();
+
+    // Leave an older helper running that started while its Keychain session was unavailable.
+    crate::env::test_support::install_memory_keychain();
+    let (_, state) = init(Some(AssistantApp::Codex));
+    assert_eq!(state["state"], "signed_out");
+    let reconnect = attention(false);
+    assert_eq!(reconnect["reconnect"]["name"], "Codex");
+    let stale_notice = reconnect["reconnect"]["id"].as_str().unwrap().to_owned();
+    assert_ne!(stale_notice, notice_id);
+    sign_in_connector_fixture(&f);
+    let (resumed, state) = init(Some(AssistantApp::Codex));
+    assert_eq!(state["state"], "approved");
+    assert!(plugin_connection::authorize(&resumed, secret, "orka.read").is_ok());
+    assert!(attention(true).is_null());
+    plugin_connection::close_session(&resumed, secret).unwrap();
+    assert!(attention(true).is_null());
+    assert_eq!(
+        review("revoke", json!({"connectionId":replacement})),
+        json!({"revoked":true})
+    );
+    assert!(attention(true).is_null());
+    let (_, request) = init(Some(AssistantApp::Codex));
+    assert_eq!(request["raiseConsent"], false);
+    let reconnect = attention(true);
+    assert_eq!(reconnect["reconnect"]["name"], "Codex");
+    assert_ne!(reconnect["reconnect"]["id"], stale_notice);
+    assert!(
+        plugin_connection::plugin_connection_attention(false, Some(stale_notice))
+            .unwrap()
+            .is_null()
+    );
+    assert_eq!(attention(false), reconnect);
+}
+
+#[test]
+fn existing_verified_grants_keep_reconnects_quiet_after_upgrade() {
+    let f = Fixture::new();
+    crate::env::test_support::install_memory_keychain();
+    db::set(&f.db, "config", &json!({"apiUrl":"https://plugin.example"})).unwrap();
+    sign_in_connector_fixture(&f);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let identity = ProcessIdentity::read(std::process::id()).unwrap().0;
+    let peer = Peer {
+        helper: identity.clone(),
+        assistant: identity,
+    };
+    let secret = &"c".repeat(64);
+    let init = |app| {
+        let id = Uuid::new_v4().to_string();
+        let response = plugin_connection::initialize_session(
+            &id,
+            secret,
+            "Fixture assistant",
+            &peer,
+            Some(app),
+        )
+        .unwrap();
+        (id, response)
+    };
+    let approve = |app| {
+        let (id, request) = init(app);
+        assert_eq!(
+            runtime
+                .block_on(plugin_connection::plugin_authorization(
+                    "approve".into(),
+                    json!({"requestId":request["requestId"],"scopes":["orka.read"]}),
+                ))
+                .unwrap(),
+            json!({"approved":true})
+        );
+        id
+    };
+    let active = approve(AssistantApp::Codex);
+    let idle = approve(AssistantApp::ClaudeCode);
+    let revoked = approve(AssistantApp::ClaudeDesktop);
+    plugin_connection::close_session(&idle, secret).unwrap();
+    runtime
+        .block_on(plugin_connection::plugin_authorization(
+            "revoke".into(),
+            json!({"connectionId":revoked}),
+        ))
+        .unwrap();
+
+    let path = db::root().unwrap().join("plugin-connection.json");
+    let mut previous: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    previous
+        .as_object_mut()
+        .unwrap()
+        .remove("assistantAttention");
+    previous["sessions"][&revoked]["members"] = json!({});
+    db::atomic(&path, previous.to_string().as_bytes()).unwrap();
+
+    assert!(plugin_connection::authorize(&active, secret, "orka.read").is_ok());
+    assert!(plugin_connection::plugin_connection_attention(true, None)
+        .unwrap()
+        .is_null());
+    let (resumed, state) = init(AssistantApp::ClaudeCode);
+    assert_eq!(state["state"], "approved");
+    assert!(plugin_connection::authorize(&resumed, secret, "orka.read").is_ok());
+    assert!(plugin_connection::plugin_connection_attention(true, None)
+        .unwrap()
+        .is_null());
+
+    let (replacement, state) = init(AssistantApp::ClaudeDesktop);
+    assert_eq!(state["state"], "pending");
+    assert_eq!(state["raiseConsent"], false);
+    assert!(plugin_connection::authorize(&replacement, secret, "orka.read").is_err());
+    let attention = plugin_connection::plugin_connection_attention(true, None).unwrap();
+    assert_eq!(attention["reconnect"]["name"], "Claude");
+    assert!(attention["reconnect"]["id"].is_string());
+}
+
+fn sign_in_connector_fixture(f: &Fixture) {
+    let account_id = db::get(&f.db, "user").unwrap();
+    crate::auth::test_session(&json!({
+        "user":{"id":account_id},"access_token":"fixture","refresh_token":"fixture"
+    }))
+    .unwrap();
+}
+
+#[test]
 fn verified_connector_access_survives_new_processes_but_not_revocation_or_workspace_changes() {
-    use crate::plugin_process::{AssistantApp, Peer, ProcessIdentity};
     use std::process::Command;
 
     let f = Fixture::new();
     crate::env::test_support::install_memory_keychain();
-    let account_id = db::get(&f.db, "user").unwrap();
     let config = json!({"apiUrl":"https://plugin.example"});
     db::set(&f.db, "config", &config).unwrap();
-    let sign_in = || {
-        crate::auth::test_session(&json!({
-            "user":{"id":account_id},"access_token":"fixture","refresh_token":"fixture"
-        }))
-        .unwrap()
-    };
+    let sign_in = || sign_in_connector_fixture(&f);
     sign_in();
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let review = |operation: &str, input: Value| {

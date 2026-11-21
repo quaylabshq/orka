@@ -31,6 +31,7 @@ export async function settingsFixture(
     pluginError?: string;
     pluginClientName?: string;
     pluginRequestId?: string;
+    pluginFirstConnection?: boolean;
     pluginRemembered?: boolean;
     pluginStatusDelay?: number;
     pluginSessionCount?: number;
@@ -299,6 +300,8 @@ export async function settingsFixture(
       updateDelay: options.updateDelay ?? 0,
       pluginCallback: "",
       pluginRequestId: options.pluginRequestId ?? "",
+      pluginFirstConnection: options.pluginFirstConnection ?? false,
+      pluginReconnectNotice: "",
       pluginState: "not_linked",
       pluginError: options.pluginError ?? "",
       pluginStatusDelay: options.pluginStatusDelay ?? 0,
@@ -342,6 +345,27 @@ export async function settingsFixture(
             controls.pluginCallback = "";
             return callback || null;
           }
+          if (command === "plugin_connection_attention") {
+            if (
+              args.allowPrompt &&
+              controls.pluginFirstConnection &&
+              controls.pluginRequestId
+            )
+              return { requestId: controls.pluginRequestId };
+            if (args.reportedNotice) {
+              controls.pluginReconnectNotice = "";
+              return null;
+            }
+            if (controls.pluginReconnectNotice) {
+              return {
+                reconnect: {
+                  id: "fixture-connection",
+                  name: controls.pluginReconnectNotice,
+                },
+              };
+            }
+            return null;
+          }
           if (command === "plugin_connection_requests")
             return controls.pluginRequestId
               ? [{ requestId: controls.pluginRequestId }]
@@ -354,7 +378,8 @@ export async function settingsFixture(
               args.input.requestId !== controls.pluginRequestId
             )
               return null;
-            if (args.operation === "preview")
+            if (args.operation === "preview") {
+              if (args.input.automatic) controls.pluginFirstConnection = false;
               return {
                 requestId: "fixture-request",
                 account: {
@@ -376,6 +401,7 @@ export async function settingsFixture(
                 expiresAt: new Date(Date.now() + 60000).toISOString(),
                 verified: options.pluginRemembered,
               };
+            }
             if (args.operation === "approve") controls.pluginState = "linked";
             if (args.operation === "revoke")
               controls.pluginState =

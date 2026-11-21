@@ -837,7 +837,11 @@ with tempfile.TemporaryDirectory(prefix="orka-plugin-native-") as temp:
         assert unavailable.tool("get_connection_status")["state"] == "unavailable"
         assert not (pathlib.Path(location) / "broker.sock").exists()
         native({"action": "plugin-start"})
-        # The same helper registers when Orka returns, and only on an explicit call.
+        # The idle helper retries when Orka returns, without needing a tool call.
+        deadline = time.monotonic() + 8
+        while not native({"action": "plugin-requests"})["value"]:
+            assert time.monotonic() < deadline, "startup registration did not recover"
+            time.sleep(0.05)
         assert unavailable.tool("get_connection_status")["state"] == "pending"
         approve(unavailable)
         assert unavailable.tool("get_profile")["accountId"] == uid
@@ -847,6 +851,10 @@ with tempfile.TemporaryDirectory(prefix="orka-plugin-native-") as temp:
             busy = Bridge("Busy desktop")
             assert len(busy.rpc("tools/list")["result"]["tools"]) == 27
             assert busy.tool("get_connection_status")["state"] == "busy"
+        deadline = time.monotonic() + 8
+        while not native({"action": "plugin-requests"})["value"]:
+            assert time.monotonic() < deadline, "background registration did not recover"
+            time.sleep(0.05)
         assert busy.tool("get_connection_status")["state"] == "pending"
         busy.close()
         native({"action": "plugin-stop"})
