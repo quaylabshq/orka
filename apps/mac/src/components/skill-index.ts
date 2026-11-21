@@ -6,7 +6,7 @@ import { skillStatusRank, type SkillStatus } from "./skill-status.js";
 export const skillSharedBy = (skill: ProjectResource, user: string | null) =>
   skill.local ? (user ?? skill.owner) : skill.owner;
 
-/** Recently updated reads newest first; every other sort reads A to Z. */
+/** Last updated reads newest first; every other sort reads A to Z. */
 export const sortDirection = (filters: IndexFilters): IndexSortDirection =>
   filters.direction ?? (filters.sort === "updated" ? "desc" : "asc");
 

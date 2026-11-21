@@ -339,8 +339,10 @@ export function ResourceIndex({
                   : `No ${collectionNoun(kind)} match`
               }
               description={
+                // With a search and filters both on, the title and the two
+                // buttons already say everything.
                 kind === "skill" && filters.query.trim() && skillFiltered
-                  ? "Filters are also narrowing the list. Clear the search, the filters, or both."
+                  ? undefined
                   : "Try a different search or clear your filters."
               }
               announce
@@ -430,7 +432,7 @@ const emptyDescriptions: Record<Resource["kind"], string> = {
   session: "Start a chat in Claude Code or Codex from a connected folder.",
   memory: "Project instructions and memories found by Orka appear here.",
   plan: "Plans saved by your coding tools for this project appear here.",
-  skill: "Import a skill from Codex or Claude.",
+  skill: "Add a skill from Codex or Claude.",
 };
 
 function ResourceEmptyState({

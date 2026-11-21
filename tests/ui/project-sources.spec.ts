@@ -266,7 +266,9 @@ for (const viewport of [
         await page.keyboard.press("Escape");
         await page.keyboard.press("Escape");
         await row.hover();
-        await expect(row.getByRole("tooltip")).toContainText("Global");
+        await expect(row.getByRole("tooltip")).toContainText(
+          "From your global skills",
+        );
       } else {
         await expect(
           page.getByRole("columnheader", { name: "Repository", exact: true }),

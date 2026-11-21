@@ -271,12 +271,6 @@
   color: var(--text-tertiary);
 }
 
-.skill-table-peek-origin > strong {
-  margin-right: 6px;
-  color: var(--text-secondary);
-  font-weight: var(--font-weight-medium);
-}
-
 .skill-table-peek-loading {
   display: flex;
   flex-direction: column;

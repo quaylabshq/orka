@@ -572,7 +572,7 @@ test("a skill's description opens on hover and marks global imports", async ({
   const row = rows(page).first();
   await row.hover();
   const peek = row.getByRole("tooltip");
-  await expect(peek).toContainText("Imported from your global skills");
+  await expect(peek).toContainText("From your global skills");
 });
 
 test("local-only skills stay visible and a shared revision replaces the local row", async ({
@@ -637,9 +637,7 @@ test("without a folder the popover offers to connect one; an empty scan says so"
     popover(page).getByRole("heading", { name: "Nothing to add" }),
   ).toBeVisible();
   await expect(
-    popover(page).getByText(
-      "No global skills were found in Codex or Claude on this Mac.",
-    ),
+    popover(page).getByText("No global skills found in Codex or Claude."),
   ).toBeVisible();
 });
 
@@ -945,7 +943,7 @@ test("a failure that a retry cannot fix unticks the skill and explains in a toas
     .click();
   await expect(
     page.getByText(
-      /Writing guide wasn’t added\. A skill with this folder name/,
+      "Writing guide wasn’t added. That name is already in this project.",
     ),
   ).toBeVisible();
   await expect(dialog).toBeVisible();

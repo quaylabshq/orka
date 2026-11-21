@@ -61,6 +61,12 @@ const PEEK_DELAY = 400;
 const SYNC_WAIT_MS = 5000;
 /** The one per-skill failure a second attempt can fix: the list went stale. */
 const STALE_SKILL = "Global skill unavailable. Scan again.";
+/** Native's wording when the project already has a skill folder of that name. */
+const NAME_TAKEN =
+  "A skill with this folder name is already in the project. Existing files were preserved.";
+/** A toast has room for one short reason. */
+const reason = (error?: string) =>
+  error === NAME_TAKEN ? "That name is already in this project." : error;
 
 const agentName = (agent: Agent) => (agent === "codex" ? "Codex" : "Claude");
 const plural = (count: number) => (count === 1 ? "skill" : "skills");
@@ -123,7 +129,6 @@ export function GlobalSkillImport({
         <Button
           size={compact ? "sm" : "lg"}
           variant="primary"
-          aria-label={compact ? undefined : "Add global skills"}
           title="Add global skills"
           aria-haspopup="dialog"
         >
@@ -132,7 +137,7 @@ export function GlobalSkillImport({
           ) : (
             <>
               <Icon icon={PlusIcon} />
-              Add Global Skills
+              Add skills
             </>
           )}
         </Button>
@@ -349,8 +354,8 @@ function AddSkills({
         kind: "error",
         title:
           dead.length === 1
-            ? `${name(dead[0].skillId)} wasn’t added. ${dead[0].error}`
-            : `${dead.length} skills weren’t added. ${dead[0].error}`,
+            ? `${name(dead[0].skillId)} wasn’t added. ${reason(dead[0].error)}`
+            : `${dead.length} skills weren’t added. ${reason(dead[0].error)}`,
       });
   };
   const scanNow = () =>
@@ -504,10 +509,7 @@ function AddSkills({
       <div className="add-skills-message">
         <Icon icon={FolderIcon} size="lg" variant="secondary" />
         <h2>Connect a folder first</h2>
-        <p>
-          Skills are added to a project folder on this Mac, and this project
-          does not have one yet.
-        </p>
+        <p>Skills are added to a project folder on this Mac.</p>
         <Button
           size="sm"
           variant="primary"
@@ -556,7 +558,7 @@ function AddSkills({
         <input
           type="search"
           aria-label="Search global skills"
-          placeholder="Search your global skills…"
+          placeholder="Search global skills…"
           value={query}
           autoFocus
           disabled={locked || needsDestination}
@@ -634,7 +636,7 @@ function AddSkills({
         <div className="add-skills-message" role="status">
           <Icon icon={FolderIcon} size="lg" variant="secondary" />
           <h2>Repository unavailable</h2>
-          <p>Choose a connected repository to continue adding skills.</p>
+          <p>Choose a connected repository.</p>
         </div>
       ) : scanError ? (
         <div className="add-skills-message">
@@ -659,12 +661,12 @@ function AddSkills({
           <h2>Nothing to add</h2>
           <p>
             {skills.some((skill) => !skill.exists)
-              ? "Search to see why individual skills can’t be added."
+              ? "Search for a skill to see why it can’t be added."
               : skills.length
                 ? "Every global skill on this Mac is already in this project."
                 : scan.errors.length
                   ? "No global skills could be read on this Mac."
-                  : "No global skills were found in Codex or Claude on this Mac."}
+                  : "No global skills found in Codex or Claude."}
           </p>
           {scan.errors.map((error, index) => (
             <p key={index} className="add-skills-note" role="status">
