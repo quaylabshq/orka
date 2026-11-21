@@ -235,8 +235,8 @@ function WorkspaceApp({
     errorFeedback,
     actionNotice,
   } = workspace;
-  const { notify, queue } = useToasts();
-  const toastShowing = queue.length > 0;
+  const { notify, queue: toasts } = useToasts();
+  const toastShowing = toasts.length > 0;
   const workspaceScope = WorkspaceCache.scope(state);
   const updates = useDesktopUpdates(workspaceScope, state.user);
   const account = useAccount(state.config, !state.user);
