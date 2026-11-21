@@ -4,6 +4,7 @@ import {
   CircleXIcon,
   FileIcon,
   FolderIcon,
+  MessageSquareIcon,
   PlusIcon,
   RefreshCwIcon,
   SearchIcon,
@@ -47,6 +48,10 @@ interface GlobalSkill {
 interface Scan {
   skills: GlobalSkill[];
   errors: string[];
+  usage?: SkillUsage;
+}
+interface SkillUsage {
+  counts: Record<string, number>;
 }
 interface ImportResult {
   skillId: string;
@@ -229,11 +234,18 @@ function AddSkills({
   /** Why the last attempt failed, when trying again can fix it. */
   const [retry, setRetry] = useState("");
   const [failed, setFailed] = useState<Record<string, string>>({});
-  const [peek, setPeek] = useState<{ id: string; top: number }>();
+  const [peek, setPeek] = useState<{
+    id: string;
+    top: number;
+    maxWidth: number;
+    side: "left" | "right";
+  }>();
   const active = useRef(true);
   const generation = useRef(0);
   const peekTimer = useRef(0);
   const list = useRef<HTMLUListElement>(null);
+  const pendingUsage = useRef<SkillUsage>(undefined);
+  const rankingFrame = useRef(0);
 
   const target = path ? JSON.stringify([sourceId, path]) : null;
   const [previousTarget, setPreviousTarget] = useState(target);
@@ -269,8 +281,37 @@ function AddSkills({
       active.current = false;
       generation.current += 1;
       window.clearTimeout(peekTimer.current);
+      window.cancelAnimationFrame(rankingFrame.current);
     };
   }, [rescan, target]);
+
+  const applyRanking = useCallback(() => {
+    window.cancelAnimationFrame(rankingFrame.current);
+    rankingFrame.current = window.requestAnimationFrame(() => {
+      const usage = pendingUsage.current;
+      // Wait for the pointer and focus to leave before moving rows.
+      if (!usage || list.current?.matches(":hover, :focus-within")) return;
+      pendingUsage.current = undefined;
+      setScan((current) => current && { ...current, usage });
+    });
+  }, []);
+  const hasSkills = Boolean(scan?.skills.length);
+  useEffect(() => {
+    if (!hasSkills) return;
+    let mounted = true;
+    void invoke<SkillUsage>("global_skill_usage", { projectId: project.id })
+      .then((next) => {
+        if (!mounted) return;
+        pendingUsage.current = next;
+        applyRanking();
+      })
+      .catch(() => {
+        // The saved order remains usable if history cannot be refreshed.
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [applyRanking, hasSkills, project.id]);
 
   const skills = useMemo(
     () =>
@@ -282,11 +323,14 @@ function AddSkills({
             folder: skill.name,
             name: name || skill.name,
             description,
+            count: scan?.usage?.counts[skill.id],
           };
         })
         .sort(
           (a, b) =>
-            a.name.localeCompare(b.name) || a.path.localeCompare(b.path),
+            (b.count ?? 0) - (a.count ?? 0) ||
+            a.name.localeCompare(b.name) ||
+            a.path.localeCompare(b.path),
         ),
     [scan],
   );
@@ -301,6 +345,10 @@ function AddSkills({
       (search ? skill.name.toLocaleLowerCase().includes(search) : true) &&
       (search || !unavailable(skill)),
   );
+  useEffect(() => {
+    // Filtering out every row removes the list without a pointer-leave event.
+    if (!visible.length) applyRanking();
+  }, [applyRanking, visible.length]);
   const selectable = visible.filter((skill) => !unavailable(skill));
   const chosen = addable.filter((skill) => selected.has(skill.id));
   const allSelected =
@@ -468,9 +516,15 @@ function AddSkills({
     window.clearTimeout(peekTimer.current);
     const popover = row.closest<HTMLElement>(".add-skills-popover");
     if (!popover) return;
-    const top =
-      row.getBoundingClientRect().top - popover.getBoundingClientRect().top;
-    peekTimer.current = window.setTimeout(() => setPeek({ id, top }), delay);
+    const { left, right, top } = popover.getBoundingClientRect();
+    const rowTop = row.getBoundingClientRect().top - top;
+    const rightSpace = window.innerWidth - right;
+    const side = left >= 321 || left >= rightSpace ? "left" : "right";
+    const maxWidth = (side === "left" ? left : rightSpace) - 21;
+    peekTimer.current = window.setTimeout(
+      () => setPeek({ id, top: rowTop, maxWidth, side }),
+      delay,
+    );
   };
   const closePeek = () => {
     window.clearTimeout(peekTimer.current);
@@ -709,6 +763,8 @@ function AddSkills({
               ref={list}
               className="add-skills-list"
               aria-label="Global skills"
+              onPointerLeave={applyRanking}
+              onBlurCapture={applyRanking}
               onKeyDown={moveFocus}
               onScroll={closePeek}
             >
@@ -822,7 +878,11 @@ function AddSkills({
           id={peekId}
           className="add-skills-peek"
           role="tooltip"
-          style={{ top: Math.max(0, peek.top - 40) }}
+          data-side={peek.side}
+          style={{
+            top: Math.max(0, peek.top - 40),
+            maxWidth: peek.maxWidth,
+          }}
         >
           <div className="add-skills-peek-heading">
             <strong>{peeked.name}</strong>
@@ -832,6 +892,15 @@ function AddSkills({
             <p className="add-skills-peek-error">
               <CircleXIcon size={12} aria-hidden="true" />
               <span>{failed[peeked.id] || peeked.error}</span>
+            </p>
+          )}
+          {peeked.count !== undefined && (
+            <p className="add-skills-peek-meta">
+              <MessageSquareIcon size={12} aria-hidden="true" />
+              <span>
+                Detected in {peeked.count}{" "}
+                {peeked.count === 1 ? "chat" : "chats"}
+              </span>
             </p>
           )}
           <p>{peeked.description || "No description"}</p>
