@@ -525,6 +525,32 @@ test("a history refresh failure leaves the saved ranking usable", async ({
   ).toBeEnabled();
 });
 
+test("clearing a no-match search shows rankings that arrived during hover", async ({
+  page,
+}) => {
+  await fixture(page, "usage-empty-cache");
+  await trigger(page).click();
+  const dialog = popover(page);
+  const names = dialog.locator(".add-skills-name");
+  const search = dialog.getByRole("searchbox", {
+    name: "Search global skills",
+  });
+  await expect(names.first()).toHaveText("Code review");
+  await expect(search).toBeFocused();
+  await dialog.getByRole("list", { name: "Global skills" }).hover();
+  await expect.poll(() => calls(page, "global_skill_usage")).toHaveLength(1);
+  await page.evaluate(async () => {
+    (window as any).resolveSkillUsage();
+    await new Promise(requestAnimationFrame);
+  });
+  await expect(names.first()).toHaveText("Code review");
+  await search.fill("no matching skill");
+  await expect(dialog.getByText("No global skills match")).toBeVisible();
+  await page.mouse.move(0, 0);
+  await search.fill("");
+  await expect(names.first()).toHaveText("Extra skill 0");
+});
+
 test("hover and focus open a skill's details beside the popover", async ({
   page,
 }) => {

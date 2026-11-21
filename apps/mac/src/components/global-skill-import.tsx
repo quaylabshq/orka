@@ -345,6 +345,10 @@ function AddSkills({
       (search ? skill.name.toLocaleLowerCase().includes(search) : true) &&
       (search || !unavailable(skill)),
   );
+  useEffect(() => {
+    // Filtering out every row removes the list without a pointer-leave event.
+    if (!visible.length) applyRanking();
+  }, [applyRanking, visible.length]);
   const selectable = visible.filter((skill) => !unavailable(skill));
   const chosen = addable.filter((skill) => selected.has(skill.id));
   const allSelected =
@@ -890,7 +894,6 @@ function AddSkills({
               <span>{failed[peeked.id] || peeked.error}</span>
             </p>
           )}
-          <p>{peeked.description || "No description"}</p>
           {peeked.count !== undefined && (
             <p className="add-skills-peek-meta">
               <MessageSquareIcon size={12} aria-hidden="true" />
@@ -900,6 +903,7 @@ function AddSkills({
               </span>
             </p>
           )}
+          <p>{peeked.description || "No description"}</p>
           <p className="add-skills-peek-meta">
             <FileIcon size={12} aria-hidden="true" />
             <span>
