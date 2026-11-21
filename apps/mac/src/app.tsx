@@ -104,7 +104,6 @@ import {
 import { skillReviewState } from "./components/skill-review-state.js";
 import { skillStatus, type SkillStatus } from "./components/skill-status.js";
 import { useDeepLinks } from "./components/use-deep-links.js";
-import { PluginAuthorization } from "./components/plugin-authorization.js";
 import { parseProjectInvite } from "./components/project-invite.js";
 import { useIndexFilters } from "./components/use-index-filters.js";
 import { defaultIndexFilters } from "./components/index-toolbar.js";
@@ -260,10 +259,6 @@ function WorkspaceApp({
   const [returnFocus, setReturnFocus] = useState("");
   const clearReturnFocus = useCallback(() => setReturnFocus(""), []);
   const [settings, setSettings] = useState<SettingsSection | null>(null);
-  const [pluginRequest, setPluginRequest] = useState<{
-    requestId: string;
-    scope: string;
-  } | null>(null);
   const [settingsProject, setSettingsProject] = useState<string | null>(null);
   useEffect(() => {
     if (!settings) setSettingsProject(null);
@@ -581,33 +576,6 @@ function WorkspaceApp({
       setComparison("");
     }
   }, [comparison, selected?.resourceId, view]);
-  // Pending requests originate in the native broker, never from callback URLs.
-  useEffect(() => {
-    if (busy || pluginRequest || !state.user) return;
-    let stopped = false;
-    let timer: number | undefined;
-    const poll = async () => {
-      try {
-        const pending = await invoke<{ requestId: string }[]>(
-          "plugin_connection_requests",
-        );
-        if (!stopped && pending[0])
-          setPluginRequest({
-            requestId: pending[0].requestId,
-            scope: workspaceScope,
-          });
-      } catch {
-        // The broker may still be starting. Native commands enforce identity.
-      } finally {
-        if (!stopped) timer = window.setTimeout(() => void poll(), 1000);
-      }
-    };
-    void poll();
-    return () => {
-      stopped = true;
-      window.clearTimeout(timer);
-    };
-  }, [busy, pluginRequest, state.user, workspaceScope]);
   const openDeepLink = (link: URL) => {
     if (link.hostname === "connectors") {
       openSettings("connections");
@@ -739,14 +707,6 @@ function WorkspaceApp({
         </div>
       </Overlay>
     ) : null;
-  const pluginDialog = pluginRequest ? (
-    <PluginAuthorization
-      key={pluginRequest.requestId}
-      request={pluginRequest}
-      scope={workspaceScope}
-      onClose={() => setPluginRequest(null)}
-    />
-  ) : null;
   if (!state.user)
     return (
       <>
@@ -763,7 +723,6 @@ function WorkspaceApp({
         />
         {updatesDialog}
         {connectorsDialog}
-        {pluginDialog}
       </>
     );
   if (state.onboarding?.active && setup.dialog !== "join")
@@ -777,7 +736,6 @@ function WorkspaceApp({
         />
         {updatesDialog}
         {connectorsDialog}
-        {pluginDialog}
       </>
     );
   const openResource = (id: string) => {
@@ -1525,7 +1483,6 @@ function WorkspaceApp({
             onRefresh={refresh}
           />
         )}
-        {pluginDialog}
       </div>
     </ResourceMenuProvider>
   );

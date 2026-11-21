@@ -228,6 +228,7 @@ fn connector_history_is_bounded_and_expired_pending_requests_require_reconnect()
                 .unwrap()
                 .0,
         },
+        None,
     )
     .unwrap();
     let bounded: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
@@ -270,4 +271,112 @@ fn legacy_approvals_are_not_reported_live_until_their_secret_identifies_a_real_h
     assert_eq!(inactive["connections"][0]["state"], "idle");
     assert_eq!(inactive["connections"][0]["sessionCount"], 0);
     assert!(plugin_connection::identify_session(&id, &secret, &peer).is_err());
+}
+
+#[test]
+fn verified_connector_access_survives_new_processes_but_not_revocation_or_workspace_changes() {
+    use crate::plugin_process::{AssistantApp, Peer, ProcessIdentity};
+    use std::process::Command;
+
+    let f = Fixture::new();
+    crate::env::test_support::install_memory_keychain();
+    let account_id = db::get(&f.db, "user").unwrap();
+    let config = json!({"apiUrl":"https://plugin.example"});
+    db::set(&f.db, "config", &config).unwrap();
+    let sign_in = || {
+        crate::auth::test_session(&json!({
+            "user":{"id":account_id},"access_token":"fixture","refresh_token":"fixture"
+        }))
+        .unwrap()
+    };
+    sign_in();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let review = |operation: &str, input: Value| {
+        runtime
+            .block_on(plugin_connection::plugin_authorization(
+                operation.into(),
+                input,
+            ))
+            .unwrap()
+    };
+    let secret = &"c".repeat(64);
+    let helper = ProcessIdentity::read(std::process::id()).unwrap().0;
+    let mut first_parent = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+    let mut second_parent = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+    let first = Peer {
+        helper: helper.clone(),
+        assistant: ProcessIdentity::read(first_parent.id()).unwrap().0,
+    };
+    let second = Peer {
+        helper,
+        assistant: ProcessIdentity::read(second_parent.id()).unwrap().0,
+    };
+    let init = |peer, app| {
+        let id = Uuid::new_v4().to_string();
+        let state =
+            plugin_connection::initialize_session(&id, secret, "Spoofable label", peer, app)
+                .unwrap();
+        (id, state)
+    };
+    let approve = |request: &Value| {
+        review(
+            "approve",
+            json!({"requestId":request["requestId"],"scopes":["orka.read"]}),
+        )
+    };
+
+    let (first_id, request) = init(&first, Some(AssistantApp::Codex));
+    assert_eq!(request["state"], "pending");
+    assert_eq!(approve(&request), json!({"approved":true}));
+    assert!(plugin_connection::authorize(&first_id, secret, "orka.read").is_ok());
+    first_parent.kill().unwrap();
+    first_parent.wait().unwrap();
+    assert!(plugin_connection::identify_session(&first_id, secret, &first).is_err());
+    let idle = plugin_connection::plugin_connection_status().unwrap();
+    assert_eq!(idle["connections"][0]["state"], "idle");
+    assert_eq!(idle["connections"][0]["scopes"], json!(["orka.read"]));
+    assert_eq!(idle["reconnectRequired"], false);
+
+    for app in [
+        None,
+        Some(AssistantApp::ClaudeCode),
+        Some(AssistantApp::ClaudeDesktop),
+    ] {
+        let (id, request) = init(&second, app);
+        assert_eq!(request["state"], "pending");
+        assert!(plugin_connection::authorize(&id, secret, "orka.read").is_err());
+        plugin_connection::close_session(&id, secret).unwrap();
+        assert!(review("preview", json!({"requestId":request["requestId"]})).is_null());
+        assert!(approve(&request).is_null());
+    }
+    let (returned, state) = init(&second, Some(AssistantApp::Codex));
+    assert_eq!(state["state"], "approved");
+    assert!(plugin_connection::identify_session(&returned, secret, &first).is_err());
+    assert!(plugin_connection::identify_session(&returned, secret, &second).is_ok());
+    assert!(plugin_connection::authorize(&returned, secret, "orka.read").is_ok());
+    for scope in ["orka.write", "orka.manage"] {
+        assert!(plugin_connection::authorize(&returned, secret, scope).is_err());
+    }
+    plugin_connection::close_session(&returned, secret).unwrap();
+    review("revoke", json!({"connectionId":first_id}));
+    let (replacement, request) = init(&second, Some(AssistantApp::Codex));
+    assert_eq!(request["state"], "pending");
+    assert_eq!(approve(&request), json!({"approved":true}));
+
+    db::set(&f.db, "config", &json!({"apiUrl":"https://other.example"})).unwrap();
+    db::set(&f.db, "config", &config).unwrap();
+    sign_in();
+    assert!(plugin_connection::authorize(&replacement, secret, "orka.read").is_err());
+    let (new_session, request) = init(&second, Some(AssistantApp::Codex));
+    assert_eq!(request["state"], "pending");
+    assert_eq!(approve(&request), json!({"approved":true}));
+    db::guest().unwrap();
+    sign_in();
+    assert!(plugin_connection::authorize(&new_session, secret, "orka.read").is_err());
+    assert_eq!(
+        init(&second, Some(AssistantApp::Codex)).1["state"],
+        "pending"
+    );
+    second_parent.kill().unwrap();
+    second_parent.wait().unwrap();
 }

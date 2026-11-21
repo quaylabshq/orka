@@ -30,6 +30,8 @@ export async function settingsFixture(
     pluginDelay?: number;
     pluginError?: string;
     pluginClientName?: string;
+    pluginRequestId?: string;
+    pluginRemembered?: boolean;
     pluginStatusDelay?: number;
     pluginSessionCount?: number;
     role?: "owner" | "admin" | "member";
@@ -296,7 +298,7 @@ export async function settingsFixture(
       updateError: options.updateError ?? "",
       updateDelay: options.updateDelay ?? 0,
       pluginCallback: "",
-      pluginRequestId: "",
+      pluginRequestId: options.pluginRequestId ?? "",
       pluginState: "not_linked",
       pluginError: options.pluginError ?? "",
       pluginStatusDelay: options.pluginStatusDelay ?? 0,
@@ -347,6 +349,11 @@ export async function settingsFixture(
           if (command === "plugin_authorization") {
             await wait(options.pluginDelay ?? 0);
             if (controls.pluginError) throw new Error(controls.pluginError);
+            if (
+              args.operation !== "revoke" &&
+              args.input.requestId !== controls.pluginRequestId
+            )
+              return null;
             if (args.operation === "preview")
               return {
                 requestId: "fixture-request",
@@ -367,6 +374,7 @@ export async function settingsFixture(
                   "Manage project permissions and review requests within your existing authority.",
                 ],
                 expiresAt: new Date(Date.now() + 60000).toISOString(),
+                verified: options.pluginRemembered,
               };
             if (args.operation === "approve") controls.pluginState = "linked";
             if (args.operation === "revoke")
@@ -381,8 +389,9 @@ export async function settingsFixture(
           }
           if (command === "plugin_connection_status") {
             const result = {
-              state:
-                controls.pluginState === "idle"
+              state: controls.pluginRequestId
+                ? "pending"
+                : controls.pluginState === "idle"
                   ? "not_linked"
                   : controls.pluginState,
               account: {
@@ -391,8 +400,19 @@ export async function settingsFixture(
                 displayName: profile.displayName,
               },
               serviceOrigin: state.config.apiUrl,
-              connections:
-                controls.pluginState === "not_linked"
+              connections: controls.pluginRequestId
+                ? [
+                    {
+                      id: "fixture-pending",
+                      client: {
+                        id: "fixture-assistant",
+                        name: options.pluginClientName ?? "Fixture Assistant",
+                      },
+                      state: "pending",
+                      requestId: controls.pluginRequestId,
+                    },
+                  ]
+                : controls.pluginState === "not_linked"
                   ? []
                   : [
                       {
@@ -409,6 +429,7 @@ export async function settingsFixture(
                               ? "idle"
                               : "reconnect_required",
                         connectedAt: null,
+                        remembered: options.pluginRemembered,
                         sessionCount:
                           controls.pluginState === "idle"
                             ? 0

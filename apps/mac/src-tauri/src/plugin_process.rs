@@ -1,7 +1,12 @@
-//! Kernel identities bind helper lifetimes and consent to the actual assistant process.
+//! Kernel identity binds each helper to its parent. macOS verifies supported assistant signatures.
 use crate::db::Result;
 use serde::{Deserialize, Serialize};
 use std::{os::fd::AsRawFd, os::unix::net::UnixStream};
+
+#[cfg(target_os = "macos")]
+use security_framework::os::macos::code_signing::{
+    Flags, GuestAttributes, SecCode, SecRequirement,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ProcessIdentity {
@@ -85,6 +90,93 @@ impl ProcessIdentity {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AssistantApp {
+    Codex,
+    ClaudeCode,
+    ClaudeDesktop,
+}
+
+impl AssistantApp {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Codex => "Codex",
+            Self::ClaudeCode => "Claude Code",
+            Self::ClaudeDesktop => "Claude",
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn verify(process: &ProcessIdentity) -> Option<Self> {
+        // Check running code from the kernel, not a path or a client-supplied name.
+        let code = running_code(process.pid)?;
+        let app = [
+            (Self::Codex, r#"(identifier "codex" or identifier "com.openai.codex")"#, "2DC432GLL2"),
+            (Self::ClaudeCode, r#"identifier "com.anthropic.claude-code""#, "Q6L2SF6YDW"),
+            (Self::ClaudeDesktop, r#"identifier "com.anthropic.claudefordesktop""#, "Q6L2SF6YDW"),
+        ]
+        .into_iter()
+        .find_map(|(app, identifier, team)| {
+            let requirement = format!(
+                r#"{identifier} and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = "{team}""#
+            )
+            .parse::<SecRequirement>()
+            .ok()?;
+            code.check_validity(Flags::empty(), &requirement).ok()?;
+            Some(app)
+        })?;
+        process.alive().then_some(app)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn running_code(pid: u32) -> Option<SecCode> {
+    let mut attributes = GuestAttributes::new();
+    attributes.set_pid(pid as i32);
+    SecCode::copy_guest_with_attribues(None, &attributes, Flags::empty()).ok()
+}
+
+#[cfg(target_os = "macos")]
+fn own_code_requirement() -> Option<SecRequirement> {
+    use core_foundation::{
+        base::{CFType, CFTypeRef, TCFType},
+        data::CFData,
+        dictionary::{CFDictionary, CFDictionaryRef},
+        string::{CFString, CFStringRef},
+    };
+    use std::{ptr, sync::OnceLock};
+
+    #[link(name = "Security", kind = "framework")]
+    extern "C" {
+        static kSecCodeInfoUnique: CFStringRef;
+        fn SecCodeCopySigningInformation(
+            code: CFTypeRef,
+            flags: u32,
+            information: *mut CFDictionaryRef,
+        ) -> i32;
+    }
+
+    static CODE_HASH: OnceLock<Option<String>> = OnceLock::new();
+    let hash = CODE_HASH
+        .get_or_init(|| {
+            let code = SecCode::for_self(Flags::empty()).ok()?;
+            let mut information = ptr::null();
+            let result =
+                unsafe { SecCodeCopySigningInformation(code.as_CFTypeRef(), 0, &mut information) };
+            if result != 0 || information.is_null() {
+                return None;
+            }
+            let information =
+                unsafe { CFDictionary::<CFString, CFType>::wrap_under_create_rule(information) };
+            let key = unsafe { CFString::wrap_under_get_rule(kSecCodeInfoUnique) };
+            let data = information.find(&key)?.downcast::<CFData>()?;
+            Some(crate::db::hex(data.bytes()))
+        })
+        .as_ref()?;
+    format!(r#"cdhash H"{hash}""#).parse().ok()
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct Peer {
     pub(crate) helper: ProcessIdentity,
@@ -92,6 +184,25 @@ pub(crate) struct Peer {
 }
 
 impl Peer {
+    pub(crate) fn verified_app(&self) -> Option<AssistantApp> {
+        #[cfg(target_os = "macos")]
+        {
+            if self.helper != self.assistant {
+                // Assistants can launch arbitrary MCP servers. Remember access only
+                // for Orka's own running connector binary, even under a trusted host.
+                running_code(self.helper.pid)?
+                    .check_validity(Flags::empty(), &own_code_requirement()?)
+                    .ok()?;
+                let app = AssistantApp::verify(&self.assistant)?;
+                let (helper, parent) = ProcessIdentity::read(self.helper.pid).ok()?;
+                if helper == self.helper && parent == self.assistant.pid {
+                    return Some(app);
+                }
+            }
+        }
+        None
+    }
+
     pub(crate) fn read(stream: &UnixStream) -> Result<Self> {
         crate::plugin_broker::verify_peer(stream)?;
         #[cfg(target_os = "macos")]
@@ -154,6 +265,18 @@ mod tests {
         let (identity, parent) = ProcessIdentity::read(child.id()).unwrap();
         assert_eq!(parent, std::process::id());
         assert!(identity.alive());
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            let requirement = own_code_requirement().unwrap();
+            assert!(running_code(std::process::id())
+                .unwrap()
+                .check_validity(Flags::empty(), &requirement)
+                .is_ok());
+            assert!(running_code(child.id())
+                .unwrap()
+                .check_validity(Flags::empty(), &requirement)
+                .is_err());
+        }
         let mut reused = identity.clone();
         reused.started += 1;
         assert!(!reused.alive());
