@@ -55,7 +55,7 @@ const sorts: SortOption<IndexSort>[] = [
   },
   {
     value: "updated",
-    label: "Recently updated",
+    label: "Last updated",
     icon: ClockIcon,
     directions: ["Oldest first", "Newest first"],
   },

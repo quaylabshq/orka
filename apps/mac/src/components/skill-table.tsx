@@ -92,9 +92,7 @@ function Peek({
         <span className="skill-table-peek-empty">No description</span>
       )}
       {skill.global && (
-        <span className="skill-table-peek-origin">
-          <strong>Global</strong> Imported from your global skills
-        </span>
+        <span className="skill-table-peek-origin">From your global skills</span>
       )}
     </span>
   );
