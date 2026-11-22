@@ -590,7 +590,31 @@ fn pi_shared_delete_preview_keeps_later_private_turns() {
     );
     let preview = crate::resource_commands::preview_delete(&f.db, &f.project, &input).unwrap();
     assert!(preview["previewToken"].is_string());
-    assert_eq!(fs::read(path).unwrap(), bytes);
+    assert!(preview["paths"].as_array().unwrap().is_empty());
+    input["previewToken"] = preview["previewToken"].clone();
+    let frozen = crate::resource_commands::delete_request(&f.db, &f.project, &input).unwrap();
+    assert_eq!(frozen["request"]["resource"]["deleted"], true);
+    assert_eq!(frozen["request"]["resource"]["files"], json!([]));
+    // An older or foreign binding can still point at the native session. Acknowledging
+    // the shared deletion must settle it without removing Pi's own file.
+    let mut deleted = resource.clone();
+    deleted["deleted"] = json!(true);
+    deleted["files"] = json!([]);
+    deleted["revision"] = json!(8);
+    let binding = json!({"base":resource,"nativeId":native_id.to_string(),"paths":[path]});
+    db::upsert(
+        &f.db,
+        "bindings",
+        id,
+        f.project["id"].as_str().unwrap(),
+        &binding,
+    )
+    .unwrap();
+    assert!(crate::repair::deletion_complete(&deleted, &binding).unwrap());
+    crate::repair::settle_deletion(&f.db, &f.project, &deleted, binding).unwrap();
+    assert_eq!(indexer::binding(&f.db, id).unwrap()["paths"], json!([]));
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+    assert!(crate::local_resources::catalog(&f.db, &f.project, "session").is_ok());
 }
 
 #[test]

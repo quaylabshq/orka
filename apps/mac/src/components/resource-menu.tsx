@@ -77,13 +77,17 @@ interface ResourceMenuContextValue {
 const ResourceMenuContext = createContext<ResourceMenuContextValue | null>(
   null,
 );
+// A Pi row exposes Orka's private copy of the live session, not the shared
+// snapshot. Later private turns must not invalidate a review of that snapshot.
 const identity = (resource: ProjectResource) =>
   JSON.stringify([
     resource.projectId,
     resource.resourceId,
-    resource.revision,
-    resource.hash,
-    resource.files,
+    resource.source === "pi"
+      ? (resource.sharedRevision ?? resource.revision)
+      : resource.revision,
+    resource.source === "pi" ? null : resource.hash,
+    resource.source === "pi" ? null : resource.files,
   ]);
 
 const resourceKey = (resource: ProjectResource) =>

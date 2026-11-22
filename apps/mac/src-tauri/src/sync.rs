@@ -2736,8 +2736,7 @@ pub(crate) fn service_error(error: &str) -> bool {
         || error.starts_with("Service changed")
 }
 
-// Match only the packaged backend's resource-local MemoryUnavailable contract.
-// General 503s, blob failures, auth failures and transport errors remain fatal.
+// Deferred rows stay queued without blocking the rest of the project's work.
 fn defer_upload(queued: &Value, error: &str) -> bool {
     consolidation_pending(queued, error)
         || error.starts_with("Local upload: ")
@@ -2746,6 +2745,8 @@ fn defer_upload(queued: &Value, error: &str) -> bool {
             && error == crate::selective_sharing::PI_SERVICE_UPGRADE)
 }
 
+// Match only the packaged backend's resource-local MemoryUnavailable contract.
+// General 503s, blob failures, auth failures and transport errors remain fatal.
 fn consolidation_pending(queued: &Value, error: &str) -> bool {
     if !matches!(
         queued["path"].as_str(),
