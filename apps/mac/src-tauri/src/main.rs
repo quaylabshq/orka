@@ -105,12 +105,35 @@ fn main() {
         println!("Orka sync completed");
         return;
     }
-    if args.get(1).is_some_and(|a| a == "--orka-hook") {
+    if args
+        .get(1)
+        .is_some_and(|a| a == "--orka-claude-worktree-plugin")
+    {
+        match native::Hooks::claude_worktree_plugin() {
+            Ok(directory) => println!("{}", directory.display()),
+            Err(error) => {
+                eprintln!("Orka Claude plugin: {error}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+    let worktree_hook = args
+        .get(1)
+        .is_some_and(|a| a == "--orka-claude-worktree-hook");
+    if worktree_hook || args.get(1).is_some_and(|a| a == "--orka-hook") {
         let mut input = String::new();
         let _ = std::io::stdin().take(1_000_000).read_to_string(&mut input);
         let result = serde_json::from_str(&input)
             .map_err(|e| e.to_string())
-            .and_then(|v| native::hook(args.get(2).map(String::as_str).unwrap_or(""), v));
+            .and_then(|v| {
+                let argument = args.get(2).map(String::as_str).unwrap_or("");
+                if worktree_hook {
+                    native::claude_worktree_hook(argument, v)
+                } else {
+                    native::hook(argument, v)
+                }
+            });
         match result {
             Ok(v) => println!("{v}"),
             Err(e) => {

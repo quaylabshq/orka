@@ -159,6 +159,112 @@ async fn watcher_startup_failure_keeps_polling() {
 }
 
 #[test]
+fn claude_launch_hook_checks_scope_and_delivers_once_with_the_file_hook() {
+    let mut f = Fixture::new();
+    let user = uuid::Uuid::new_v4().to_string();
+    db::set(
+        &f.db,
+        "config",
+        &json!({"apiUrl":"https://fixture.invalid"}),
+    )
+    .unwrap();
+    db::profile(&user).unwrap();
+    f.db = db::open().unwrap();
+    db::set(&f.db, "user", &json!(user)).unwrap();
+    set_project(&f, &f.project);
+    init(&f.root);
+    let tree = crate::worktrees::home().unwrap().join("claude-launch");
+    worktree(&f.root, &tree);
+    let scope = db::CacheScope::current()
+        .unwrap()
+        .claude_worktree_scope()
+        .unwrap();
+    let settings = tree.join(".claude/settings.local.json");
+    let user_settings = r#"{"permissions":{"deny":["Bash"]}}"#;
+    write(&settings, user_settings);
+    let plugin = native::Hooks::claude_worktree_plugin().unwrap();
+    let manifest_file = plugin.join(".claude-plugin/plugin.json");
+    let manifest_bytes = fs::read(&manifest_file).unwrap();
+    let manifest: Value = serde_json::from_slice(&manifest_bytes).unwrap();
+    assert!(
+        manifest["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .ends_with(&format!(" --orka-claude-worktree-hook {scope}"))
+    );
+    assert_eq!(fs::read_to_string(&settings).unwrap(), user_settings);
+
+    let id = uuid::Uuid::new_v4().to_string();
+    let event = json!({"cwd":tree,"session_id":id,"hook_event_name":"UserPromptSubmit"});
+    assert_eq!(
+        native::claude_worktree_hook("stale-scope", event.clone()).unwrap(),
+        json!({}),
+    );
+    assert_eq!(
+        native::claude_worktree_hook(
+            &scope,
+            json!({
+                "cwd":f.root,"session_id":id,"hook_event_name":"UserPromptSubmit"
+            })
+        )
+        .unwrap(),
+        json!({}),
+    );
+    let barrier = std::sync::Barrier::new(2);
+    let outputs = std::thread::scope(|threads| {
+        let barrier = &barrier;
+        let plugin = threads.spawn(|| {
+            barrier.wait();
+            native::claude_worktree_hook(&scope, event.clone()).unwrap()
+        });
+        let file = threads.spawn(|| {
+            barrier.wait();
+            native::hook("claude", event.clone()).unwrap()
+        });
+        [plugin.join().unwrap(), file.join().unwrap()]
+    });
+    assert_eq!(
+        outputs
+            .iter()
+            .filter(|value| value["hookSpecificOutput"]["additionalContext"].is_string())
+            .count(),
+        1,
+        "{outputs:?}",
+    );
+    let ended = json!({"cwd":tree,"session_id":id,"hook_event_name":"SessionEnd"});
+    assert_eq!(
+        native::claude_worktree_hook(&scope, ended).unwrap(),
+        json!({})
+    );
+    assert!(
+        native::claude_worktree_hook(&scope, event.clone()).unwrap()["hookSpecificOutput"]
+            ["additionalContext"]
+            .is_string()
+    );
+    let mut disconnected = f.project.clone();
+    disconnected["path"] = Value::Null;
+    set_project(&f, &disconnected);
+    assert_eq!(
+        native::claude_worktree_hook(&scope, event.clone()).unwrap(),
+        json!({})
+    );
+    db::set(
+        &f.db,
+        "config",
+        &json!({"apiUrl":"https://second.fixture.invalid"}),
+    )
+    .unwrap();
+    let new_plugin = native::Hooks::claude_worktree_plugin().unwrap();
+    assert_ne!(new_plugin, plugin);
+    assert_eq!(fs::read(&manifest_file).unwrap(), manifest_bytes);
+    db::guest().unwrap();
+    assert_eq!(
+        native::claude_worktree_hook(&scope, event).unwrap(),
+        json!({})
+    );
+}
+
+#[test]
 fn worktree_routes_to_the_most_specific_equivalent_source() {
     let f = Fixture::new();
     init(&f.root);

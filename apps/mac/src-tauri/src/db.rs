@@ -113,6 +113,16 @@ impl CacheScope {
         })
     }
 
+    pub(crate) fn claude_worktree_scope(&self) -> Option<String> {
+        (self.account != "guest" && !self.origin.is_empty()).then(|| {
+            digest(
+                json!([self.root, self.account, self.origin])
+                    .to_string()
+                    .as_bytes(),
+            )
+        })
+    }
+
     pub(crate) fn open(&self) -> Result<Connection> {
         // Bind pre-mode caches to their original service once, before any switch.
         let legacy = self.root.join("legacy-service.json");

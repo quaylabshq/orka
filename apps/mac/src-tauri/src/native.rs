@@ -614,6 +614,35 @@ impl Hooks {
             Self::FLAG
         )
     }
+    pub(crate) fn claude_worktree_plugin() -> Result<PathBuf> {
+        let scope = db::CacheScope::current()?
+            .claude_worktree_scope()
+            .ok_or("Sign in to Orka before setting up its Claude worktree plugin")?;
+        let executable = crate::updates::executable().map_err(|e| e.to_string())?;
+        let executable = executable
+            .to_str()
+            .ok_or("Orka's installation path is not valid UTF-8")?;
+        let root = db::root()?;
+        let directory = root.join("claude-worktree-plugins").join(&scope);
+        let manifest = directory.join(".claude-plugin");
+        packages::safe_directory(&root, &manifest)?;
+        let command = format!(
+            "{} --profile {} --orka-claude-worktree-hook {scope}",
+            Self::quote(executable),
+            Self::quote(crate::profiles::current()),
+        );
+        let handler = json!([{"hooks":[{"type":"command","command":command,"timeout":3}]}]);
+        let contents = json!({
+            "name":"orka-worktree-context",
+            "version":env!("CARGO_PKG_VERSION"),
+            "description":"Load shared Orka context on the first prompt in a connected Git worktree.",
+            "hooks":{"UserPromptSubmit":handler,"SessionEnd":handler}
+        });
+        let bytes = serde_json::to_vec_pretty(&contents).map_err(|e| e.to_string())?;
+        db::atomic(&manifest.join("plugin.json"), &bytes)?;
+        Ok(directory)
+    }
+
     fn parts<'a>(hook: &'a Value, tool: &str) -> Option<(&'a str, &'a str)> {
         if hook["type"] != "command" {
             return None;
@@ -875,6 +904,7 @@ fn hook_project(
     cwd: &str,
     tool: &str,
     id: &str,
+    worktree_only: bool,
 ) -> Result<Option<(Value, PathBuf, bool)>> {
     let home = crate::worktrees::home()?;
     if crate::worktrees::is_stale(db, Path::new(cwd), &home)? {
@@ -888,6 +918,9 @@ fn hook_project(
         let views = crate::worktrees::source_views(db, predicate)?;
         let resolver = crate::worktrees::Resolver::new(&views, &home);
         if let Some(route) = resolver.resolve(Path::new(cwd)) {
+            if worktree_only && (route.observed.is_none() || capture_only) {
+                return Ok(None);
+            }
             // A cwd change must not inject another source's context into a pinned session.
             if pinned
                 .as_ref()
@@ -896,7 +929,11 @@ fn hook_project(
                 return Ok(None);
             }
             if let Some(observed) = route.observed {
-                observed.remember(db)?;
+                // The launch plugin pins this native session only. A later,
+                // unrelated session cannot inherit its path from this callback.
+                if !worktree_only {
+                    observed.remember(db)?;
+                }
                 observed.pin(db, tool, id)?;
             }
             return Ok(Some((route.source.clone(), route.equivalent, capture_only)));
@@ -906,141 +943,254 @@ fn hook_project(
 }
 
 pub fn hook(tool: &str, input: Value) -> Result<Value> {
-    let db = db::open()?;
+    run_hook(tool, input, None)
+}
+
+pub(crate) fn claude_worktree_hook(scope: &str, input: Value) -> Result<Value> {
+    if !matches!(
+        input["hook_event_name"].as_str(),
+        Some("UserPromptSubmit" | "SessionEnd")
+    ) || !input["session_id"]
+        .as_str()
+        .is_some_and(|id| !id.is_empty() && id != "unknown")
+    {
+        return Ok(json!({}));
+    }
+    run_hook("claude", input, Some(scope))
+}
+
+fn run_hook(tool: &str, input: Value, worktree_scope: Option<&str>) -> Result<Value> {
+    let scope = db::CacheScope::current()?;
+    if worktree_scope
+        .is_some_and(|expected| scope.claude_worktree_scope().as_deref() != Some(expected))
+    {
+        return Ok(json!({}));
+    }
+    let mut connection = scope.open()?;
     let Some(cwd) = input["cwd"].as_str() else {
         return Ok(json!({}));
     };
     let id = input["session_id"].as_str().unwrap_or("unknown");
-    let Some((project, equivalent_cwd, capture_only)) = hook_project(&db, cwd, tool, id)? else {
-        return Ok(json!({}));
+    let worktree_only = worktree_scope.is_some();
+    let file_route = if worktree_only {
+        None
+    } else {
+        let Some(route) = hook_project(&connection, cwd, tool, id, false)? else {
+            return Ok(json!({}));
+        };
+        Some(route)
+    };
+    let event = input["hook_event_name"].as_str().unwrap_or("SessionStart");
+    let pid = if worktree_only || event == "SessionEnd" {
+        Value::Null
+    } else {
+        hook_parent_pid(tool)?
+    };
+    let transaction = connection
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    let db = &*transaction;
+    let (project, equivalent_cwd, capture_only) = match file_route {
+        Some(route) => route,
+        None => {
+            let Some(route) = hook_project(db, cwd, tool, id, true)? else {
+                return Ok(json!({}));
+            };
+            route
+        }
     };
     let project = &project;
-    if matches!(tool, "claude" | "codex") {
-        db::set(&db, &format!("hookSeen:{tool}"), &json!(db::now()))?;
-    }
     let project_id = project["id"].as_str().ok_or("Missing project")?;
-    let event = input["hook_event_name"].as_str().unwrap_or("SessionStart");
-    if event == "SessionEnd" {
-        if !capture_only || id != "unknown" {
-            db::set(
-                &db,
-                &format!("sessionSources:{project_id}:{id}"),
-                &session_sources(&db, project_id, id)?,
-            )?;
-        }
-        db.execute("DELETE FROM active WHERE native_id=?", [id])
-            .map_err(|e| e.to_string())?;
-    } else {
-        let mut pid = std::process::id();
-        let mut found = false;
-        for _ in 0..8 {
-            let output = Command::new("/bin/ps")
-                .args(["-p", &pid.to_string(), "-o", "ppid="])
-                .output()
-                .map_err(|e| e.to_string())?;
-            let Ok(parent) = String::from_utf8_lossy(&output.stdout)
-                .trim()
-                .parse::<u32>()
-            else {
-                break;
-            };
-            pid = parent;
-            let command = Command::new("/bin/ps")
-                .args(["-p", &pid.to_string(), "-o", "comm="])
-                .output()
-                .map_err(|e| e.to_string())?;
-            if String::from_utf8_lossy(&command.stdout).contains(tool) {
-                found = true;
-                break;
-            }
-        }
-        let known = session_sources(&db, project_id, id)?;
-        let value = json!({"contextSources":known,"nativeId":id,"project":project["id"],"source":tool,"pid":if found{json!(pid)}else{Value::Null},"ended":false,"updatedAt":db::now(),"transcriptPath":input["transcript_path"]});
-        db.execute("INSERT INTO active VALUES(?,?) ON CONFLICT(native_id) DO UPDATE SET value=excluded.value",params![id,value.to_string()]).map_err(|e|e.to_string())?;
-        // Promotion is local and durable; the daemon creates the server copy before uploads.
-        for mut binding in db::rows(
-            &db,
-            "SELECT value FROM bindings WHERE json_extract(value,'$.nativeId')=?",
-            &[&id],
-        )? {
-            if binding["base"]["owner"] != db::get(&db, "user")?
-                && !binding["base"]["owner"].is_null()
-            {
-                binding["needsCopy"] = json!(true);
-                db::upsert(
-                    &db,
-                    "bindings",
-                    binding["base"]["resourceId"]
-                        .as_str()
-                        .ok_or("Missing resource")?,
-                    project["id"].as_str().ok_or("Missing project")?,
-                    &binding,
+    if matches!(tool, "claude" | "codex") {
+        db::set(db, &format!("hookSeen:{tool}"), &json!(db::now()))?;
+    }
+    // Launch hooks deliver context and record provenance. File hooks own
+    // live-session tracking, even when both hook sources are present.
+    if !worktree_only {
+        if event == "SessionEnd" {
+            if !capture_only || id != "unknown" {
+                db::set(
+                    db,
+                    &format!("sessionSources:{project_id}:{id}"),
+                    &session_sources(db, project_id, id)?,
                 )?;
+            }
+            db.execute("DELETE FROM active WHERE native_id=?", [id])
+                .map_err(|e| e.to_string())?;
+        } else {
+            let known = session_sources(db, project_id, id)?;
+            let value = json!({"contextSources":known,"nativeId":id,"project":project["id"],"source":tool,"pid":pid,"ended":false,"updatedAt":db::now(),"transcriptPath":input["transcript_path"]});
+            db.execute("INSERT INTO active VALUES(?,?) ON CONFLICT(native_id) DO UPDATE SET value=excluded.value",params![id,value.to_string()]).map_err(|e|e.to_string())?;
+            // Promotion is local and durable; the daemon creates the server copy before uploads.
+            for mut binding in db::rows(
+                db,
+                "SELECT value FROM bindings WHERE json_extract(value,'$.nativeId')=?",
+                &[&id],
+            )? {
+                if binding["base"]["owner"] != db::get(db, "user")?
+                    && !binding["base"]["owner"].is_null()
+                {
+                    binding["needsCopy"] = json!(true);
+                    db::upsert(
+                        db,
+                        "bindings",
+                        binding["base"]["resourceId"]
+                            .as_str()
+                            .ok_or("Missing resource")?,
+                        project["id"].as_str().ok_or("Missing project")?,
+                        &binding,
+                    )?;
+                }
             }
         }
     }
     // A deleted project that can still be restored tracks the session, but its
     // shared context is frozen: inject nothing until it is restored.
-    if capture_only {
-        return Ok(json!({}));
-    }
-    if project["governed"] != true && !crate::projects::sharing_allowed(project, "memory") {
+    if capture_only
+        || (project["governed"] != true && !crate::projects::sharing_allowed(project, "memory"))
+    {
+        transaction.commit().map_err(|e| e.to_string())?;
         return Ok(json!({}));
     }
     let delivery_key = format!("contextDelivery:{project_id}:{tool}:{id}");
     if matches!(event, "Stop" | "SessionEnd") {
         if event == "SessionEnd" {
-            db::set(&db, &delivery_key, &Value::Null)?;
+            db::set(db, &delivery_key, &Value::Null)?;
         }
+        transaction.commit().map_err(|e| e.to_string())?;
         return Ok(json!({}));
     }
-    let delivered = db::get(&db, &delivery_key)?;
-    let (text, sources, fingerprints) = crate::governance::context_with_query(
-        &db,
+    transaction.commit().map_err(|e| e.to_string())?;
+    let context = deliver_hook_context(
+        &mut connection,
+        tool,
+        &input,
         project,
         &equivalent_cwd,
-        Some(input["prompt"].as_str().unwrap_or("")),
-        // Missing session identities must never share a delivery cache.
-        if id == "unknown" {
-            None
-        } else {
-            Some(&delivered)
-        },
+        worktree_only,
     )?;
-    if project["governed"] == true {
-        let mut previous = db::rows(&db, "SELECT value FROM active WHERE native_id=?", &[&id])?
-            .into_iter()
-            .next()
-            .unwrap_or(json!({}));
-        let mut known = previous["contextSources"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
-        for source in sources {
-            if !known.contains(&source) {
-                known.push(source);
-            }
-        }
-        previous["contextSources"] = json!(known);
-        db::set(
-            &db,
-            &format!("sessionSources:{project_id}:{id}"),
-            &previous["contextSources"],
-        )?;
-        db.execute(
-            "UPDATE active SET value=? WHERE native_id=?",
-            params![previous.to_string(), id],
-        )
-        .map_err(|e| e.to_string())?;
-    }
-    if id != "unknown" {
-        db::set(&db, &delivery_key, &fingerprints)?;
-    }
-    if text.is_empty() {
+    if worktree_only && db::CacheScope::current()? != scope {
         return Ok(json!({}));
     }
-    let content = format!("{text}\nNative provider: {tool}; sessionId: {id}.\n");
-    Ok(
-        json!({"hookSpecificOutput":{"hookEventName":event,"additionalContext":format!("Shared Orka project memory. Source labels are preserved; consult linked files for details.\n{content}")}}),
-    )
+    Ok(context)
+}
+
+fn deliver_hook_context(
+    db: &mut rusqlite::Connection,
+    tool: &str,
+    input: &Value,
+    project: &Value,
+    equivalent_cwd: &Path,
+    worktree_only: bool,
+) -> Result<Value> {
+    let id = input["session_id"].as_str().unwrap_or("unknown");
+    let project_id = project["id"].as_str().ok_or("Missing project")?;
+    let event = input["hook_event_name"].as_str().unwrap_or("SessionStart");
+    let delivery_key = format!("contextDelivery:{project_id}:{tool}:{id}");
+    for _ in 0..2 {
+        let delivered = db::get(db, &delivery_key)?;
+        let (text, sources, fingerprints) = crate::governance::prepare_context(
+            db,
+            project,
+            equivalent_cwd,
+            Some(input["prompt"].as_str().unwrap_or("")),
+            (id != "unknown").then_some(&delivered),
+        )?;
+        let transaction = db
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|e| e.to_string())?;
+        // Claude may call the file hook and the launch plugin concurrently.
+        // Compare after reading the context so only the short commit holds
+        // the writer lock. Replay with fresh fingerprints if another hook won.
+        if id != "unknown" && db::get(&transaction, &delivery_key)? != delivered {
+            continue;
+        }
+        if crate::worktrees::pinned_session(&transaction, tool, id)?
+            .is_some_and(|pinned| !pinned.matches(project))
+        {
+            return Ok(json!({}));
+        }
+        if worktree_only {
+            let cwd = input["cwd"].as_str().ok_or("Missing worktree")?;
+            let current = hook_project(&transaction, cwd, tool, id, true)?;
+            if !current
+                .is_some_and(|(source, path, _)| source == *project && path == equivalent_cwd)
+            {
+                return Ok(json!({}));
+            }
+        }
+        crate::governance::record_context_sources(&transaction, project, &sources)?;
+        if project["governed"] == true {
+            let mut active = db::rows(
+                &transaction,
+                "SELECT value FROM active WHERE native_id=? AND json_extract(value,'$.project')=?",
+                &[&id, &project_id],
+            )?
+            .into_iter()
+            .next();
+            let mut known = session_sources(&transaction, project_id, id)?
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            for source in sources {
+                if !known.contains(&source) {
+                    known.push(source);
+                }
+            }
+            let known = json!(known);
+            db::set(
+                &transaction,
+                &format!("sessionSources:{project_id}:{id}"),
+                &known,
+            )?;
+            if let Some(active) = &mut active {
+                active["contextSources"] = known;
+                transaction
+                    .execute(
+                        "UPDATE active SET value=? WHERE native_id=?",
+                        params![active.to_string(), id],
+                    )
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        if id != "unknown" {
+            db::set(&transaction, &delivery_key, &fingerprints)?;
+        }
+        transaction.commit().map_err(|e| e.to_string())?;
+        if text.is_empty() {
+            return Ok(json!({}));
+        }
+        let content = format!("{text}\nNative provider: {tool}; sessionId: {id}.\n");
+        return Ok(
+            json!({"hookSpecificOutput":{"hookEventName":event,"additionalContext":format!("Shared Orka project memory. Source labels are preserved; consult linked files for details.\n{content}")}}),
+        );
+    }
+    Ok(json!({}))
+}
+
+fn hook_parent_pid(tool: &str) -> Result<Value> {
+    let mut pid = std::process::id();
+    let mut found = false;
+    for _ in 0..8 {
+        let output = Command::new("/bin/ps")
+            .args(["-p", &pid.to_string(), "-o", "ppid="])
+            .output()
+            .map_err(|e| e.to_string())?;
+        let Ok(parent) = String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .parse::<u32>()
+        else {
+            break;
+        };
+        pid = parent;
+        let command = Command::new("/bin/ps")
+            .args(["-p", &pid.to_string(), "-o", "comm="])
+            .output()
+            .map_err(|e| e.to_string())?;
+        if String::from_utf8_lossy(&command.stdout).contains(tool) {
+            found = true;
+            break;
+        }
+    }
+    Ok(if found { json!(pid) } else { Value::Null })
 }

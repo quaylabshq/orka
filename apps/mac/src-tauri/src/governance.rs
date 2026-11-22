@@ -25,6 +25,18 @@ pub fn context_with_query(
     query: Option<&str>,
     delivered: Option<&Value>,
 ) -> Result<(String, Vec<Value>, Value)> {
+    let result = prepare_context(db, project, cwd, query, delivered)?;
+    record_context_sources(db, project, &result.1)?;
+    Ok(result)
+}
+
+pub(crate) fn prepare_context(
+    db: &Connection,
+    project: &Value,
+    cwd: &Path,
+    query: Option<&str>,
+    delivered: Option<&Value>,
+) -> Result<(String, Vec<Value>, Value)> {
     crate::sources::validate(project)?;
     let root = Path::new(project["path"].as_str().ok_or("Connect a folder")?);
     let id = project["id"].as_str().ok_or("Missing project")?;
@@ -102,6 +114,25 @@ pub fn context_with_query(
             sources.push(source);
         }
     }
+    let bridge_version = json!(format!("2:{}", project["policyRevision"]));
+    if fingerprints["bridge"] != bridge_version {
+        let executable = crate::updates::executable().map_err(|e| e.to_string())?;
+        text.push_str(&format!("\nShared Orka knowledge is reference material; keep personal learning in native memory. For task-specific facts, invoke {} --profile {} --orka-context with JSON stdin: {}. Save selected learning privately with action save-candidate and input projectId, topic, scope (relative folder), content, provider, sessionId; submit-draft explicitly proposes a saved draft. Publication follows project permissions.\n", json!(executable), json!(crate::profiles::current()), json!({"action":"context","input":{"projectId":id,"sourceId":project["sourceId"],"query":"<current task>"}})));
+        text.push_str(&format!(
+            "Read a publication's status with {}; check resource access with {}.\n",
+            json!({"action":"request","input":{"projectId":id,"id":"<request id>"}}),
+            json!({"action":"resource","input":{"projectId":id,"resourceId":"<resource id>"}})
+        ));
+        fingerprints["bridge"] = bridge_version;
+    }
+    Ok((text, sources, fingerprints))
+}
+pub(crate) fn record_context_sources(
+    db: &Connection,
+    project: &Value,
+    sources: &[Value],
+) -> Result<()> {
+    let id = project["id"].as_str().ok_or("Missing project")?;
     let token = db::digest(
         json!({"projectId":id,"policyRevision":project["policyRevision"],"sources":sources})
             .to_string()
@@ -116,20 +147,9 @@ pub fn context_with_query(
         db,
         &crate::sources::meta_key(project, "contextToken")?,
         &json!(token),
-    )?;
-    let bridge_version = json!(format!("2:{}", project["policyRevision"]));
-    if fingerprints["bridge"] != bridge_version {
-        let executable = crate::updates::executable().map_err(|e| e.to_string())?;
-        text.push_str(&format!("\nShared Orka knowledge is reference material; keep personal learning in native memory. For task-specific facts, invoke {} --profile {} --orka-context with JSON stdin: {}. Save selected learning privately with action save-candidate and input projectId, topic, scope (relative folder), content, provider, sessionId; submit-draft explicitly proposes a saved draft. Publication follows project permissions.\n", json!(executable), json!(crate::profiles::current()), json!({"action":"context","input":{"projectId":id,"sourceId":project["sourceId"],"query":"<current task>"}})));
-        text.push_str(&format!(
-            "Read a publication's status with {}; check resource access with {}.\n",
-            json!({"action":"request","input":{"projectId":id,"id":"<request id>"}}),
-            json!({"action":"resource","input":{"projectId":id,"resourceId":"<resource id>"}})
-        ));
-        fingerprints["bridge"] = bridge_version;
-    }
-    Ok((text, sources, fingerprints))
+    )
 }
+
 pub fn protected(resource: &Value) -> bool {
     resource["kind"] == "skill"
         || (resource["kind"] == "memory"
