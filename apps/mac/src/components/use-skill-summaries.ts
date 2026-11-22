@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { Resource } from "@portable/protocol";
+import type { WorkspaceResource as Resource } from "../types.js";
 import type { Inspection } from "../types.js";
 
 export type SkillSummary = { name: string; description: string };

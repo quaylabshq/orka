@@ -1112,12 +1112,19 @@ fn materialize_install(
     if crate::repair::deletion_complete(resource, &b)? {
         return crate::repair::settle_deletion(db, project, resource, b);
     }
-    if kind == "session" && resource["source"] == "codex" && resource["deleted"] != true {
+    if kind == "session"
+        && matches!(resource["source"].as_str(), Some("codex" | "pi"))
+        && resource["deleted"] != true
+    {
         // Sync keeps snapshots in Orka. Only an explicit launch creates native history.
         if b["nativeId"].is_string() {
             b["availableRevision"] = resource["revision"].clone();
         } else {
-            crate::history::History::resource(resource)?;
+            if resource["source"] == "pi" {
+                crate::history::resource_records(resource)?;
+            } else {
+                crate::history::History::resource(resource)?;
+            }
             b["previous"] = b["base"].clone();
             b["base"] = resource.clone();
             b["paths"] = json!([]);

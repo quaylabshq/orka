@@ -11,6 +11,25 @@ The implementation follows four boundaries:
 3. **Translate on native import.** Source snapshots remain unchanged. Known execution coordinates are remapped in the receiving copy. Claude keeps message UUIDs, parent links, tool IDs, content, and version provenance. Codex keeps its validated inherited prefix, response payloads, compaction, and retained metadata while remapping session references and execution folders.
 4. **Negotiate the receiving server.** Codex initialization establishes the configured native home, rather than matching a user-agent version. A direct child explicitly receives `CODEX_HOME`; an older direct server may omit the home response, but a proxy must prove its home. Standard `app-server` stdio startup works without the newer `--stdio` flag. Version commands are bounded to ten seconds.
 
+## Pi session discovery and sharing
+
+Orka lists Pi's version 2 and 3 JSONL sessions with standard UUIDs in the private
+Sessions collection for their recorded working directory. It scans
+`~/.pi/agent/sessions` or the directory specified by `PI_CODING_AGENT_DIR` or
+`PI_CODING_AGENT_SESSION_DIR` in Orka's environment. Orka does not discover
+per-invocation `--session-dir` paths unless they are part of that directory.
+
+The reader follows the last complete entry's branch and omits tool and setup
+records. Snapshots retain all complete branches and apply Orka's existing
+secret redaction. Discovery does not modify Pi files or enable sharing.
+
+Use the existing snapshot preview to share one Pi session. The uploader checks
+for `piSessions: 1` before transferring any files. An older service leaves the
+selected snapshot queued locally. Deploy the compatible API and upgrade
+recipient desktops before sharing Pi sessions in a project. Incoming Pi
+snapshots are cached for reading and export, never installed into Pi. Automatic
+Pi sharing and Open in Pi are not included.
+
 ## Codex multi-agent rollout replacements
 
 Codex can enter multi-agent v2 by writing a replacement rollout with the same

@@ -204,6 +204,9 @@ pub async fn send(db: &Connection, owner: &str, queued: &Value) -> Result<Value>
     if capabilities["selectedSharing"] != 1 {
         return Err("Update the Orka service to support one-off sharing. The selected snapshot is queued on this Mac.".into());
     }
+    if queued["value"]["resource"]["source"] == "pi" && capabilities["piSessions"] != 1 {
+        return Err("Update the Orka service to share Pi sessions. The selected snapshot is queued on this Mac.".into());
+    }
     let device = queued["value"]["deviceId"]
         .as_str()
         .ok_or("Missing device")?;
@@ -255,6 +258,7 @@ pub fn complete(db: &Connection, queued: &Value, result: &Value) -> Result<()> {
             }
             sync::apply_event(db, &result["receipt"]["event"])?;
             if result["status"] == "published"
+                && actual["source"] != "pi"
                 && actual["resourceId"] == receipt["localResourceId"]
                 && actual["files"] == selected["files"]
                 && receipt["paths"]

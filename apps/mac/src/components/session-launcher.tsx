@@ -145,14 +145,16 @@ export function SessionLauncher({
     (option) => option.tool === tool && option.mode === "resume",
   );
   const actionLabel =
-    primary?.mode === "handoff"
-      ? primary.destination === "desktop"
-        ? `Continue in ${label}…`
-        : `Start in ${label}`
-      : primary?.mode === "fork" ||
-          (!primary && !resource.fork && !resource.localForkId)
-        ? `Fork and open in ${label}`
-        : `Open in ${label}`;
+    resource.source === "pi"
+      ? "Open in Pi"
+      : primary?.mode === "handoff"
+        ? primary.destination === "desktop"
+          ? `Continue in ${label}…`
+          : `Start in ${label}`
+        : primary?.mode === "fork" ||
+            (!primary && !resource.fork && !resource.localForkId)
+          ? `Fork and open in ${label}`
+          : `Open in ${label}`;
   useEffect(() => {
     let cancelled = false;
     void invoke<SessionLaunchOption[]>("session_launch_options", {
@@ -230,15 +232,18 @@ export function SessionLauncher({
         aria-label={actionLabel}
         title={
           primary?.reason ??
-          (current?.error
-            ? "Open the menu to retry checking apps"
-            : primary
-              ? primary.mode === "handoff" && primary.destination !== "desktop"
-                ? `Starts a new conversation immediately in ${label}`
-                : actionLabel
-              : current
-                ? "No compatible app available"
-                : "Checking apps…")
+          (resource.source === "pi"
+            ? "Opening sessions in Pi is not supported yet"
+            : current?.error
+              ? "Open the menu to retry checking apps"
+              : primary
+                ? primary.mode === "handoff" &&
+                  primary.destination !== "desktop"
+                  ? `Starts a new conversation immediately in ${label}`
+                  : actionLabel
+                : current
+                  ? "No compatible app available"
+                  : "Checking apps…")
         }
         disabled={busy || !tool || !primary?.available}
         onClick={() => void actions.resume(primary)}

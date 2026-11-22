@@ -36,6 +36,7 @@ export async function resourceLibraryFixture(
     nativeForkAfterRefresh?: boolean;
     deferredTitleId?: string;
     publicLinks?: boolean;
+    piSession?: boolean;
   } = {},
 ) {
   await page.emulateMedia({ reducedMotion: "reduce" });
@@ -58,7 +59,7 @@ export async function resourceLibraryFixture(
       id: string,
       title: string,
       owner: string,
-      extra: Partial<ProjectResource> = {},
+      extra: Partial<Exclude<ProjectResource, { source: "pi" }>> = {},
     ): ProjectResource => ({
       resourceId: `${kind}-${id}`,
       projectId: "project",
@@ -140,6 +141,19 @@ export async function resourceLibraryFixture(
                 },
               ],
             }),
+            ...(options.piSession && kind === "session"
+              ? [
+                  {
+                    ...resource("session", "pi", "Private Pi session", "user", {
+                      local: true,
+                      revision: 0,
+                    }),
+                    kind: "session" as const,
+                    source: "pi" as const,
+                    logicalPath: "pi/fixture",
+                  },
+                ]
+              : []),
             resource(kind, "backend", `Backend ${kind} notes`, "user", {
               local: true,
               revision: 0,
@@ -293,6 +307,18 @@ export async function resourceLibraryFixture(
               });
             return null;
           }
+          if (command === "session_messages" && args.id === "session-pi")
+            return {
+              messages: [
+                {
+                  index: 0,
+                  role: "assistant",
+                  text: "Answer from the saved Pi branch",
+                },
+              ],
+              total: 1,
+              offset: 0,
+            };
           if (command === "session_messages")
             return {
               messages: [
@@ -313,7 +339,9 @@ export async function resourceLibraryFixture(
               paths: ["/synthetic/library/content.md"],
             };
           if (command === "session_launch_options")
-            return { options: [], default: null };
+            return args.id === "session-pi"
+              ? []
+              : { options: [], default: null };
           if (command.startsWith("plugin:")) return null;
           return {};
         },

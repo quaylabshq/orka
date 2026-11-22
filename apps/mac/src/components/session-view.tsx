@@ -9,13 +9,12 @@ import React, {
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import type { Resource } from "@portable/protocol";
 import { Button } from "./button.js";
 import { Icon } from "./icon.js";
-import { SourceLabel } from "./source-label.js";
+import { SourceLabel, sourceName } from "./source-label.js";
 import { markdownComponents } from "./resource-content.js";
 import { useSessionMessages } from "./use-session-messages.js";
-import type { SessionMessage } from "../types.js";
+import type { ResourceSource, SessionMessage } from "../types.js";
 import { DetailLayout, type DetailLayoutProps } from "./detail-layout.js";
 import { LoadingRegion } from "./loading-region.js";
 import { ReaderState } from "./skill-state.js";
@@ -48,10 +47,10 @@ const SessionTurn = memo(function SessionTurn({
 }: {
   message: SessionMessage;
   raw: boolean;
-  source: Resource["source"];
+  source: ResourceSource;
 }) {
   const user = message.role === "user";
-  const speaker = user ? "You" : source === "claude" ? "Claude" : "Codex";
+  const speaker = user ? "You" : sourceName(source);
   return (
     <article
       className={
@@ -96,7 +95,7 @@ export interface SessionViewProps {
   refreshOnMount?: boolean;
   /** Conflict preview to read instead of the shared version. */
   conflictId: string;
-  source: Resource["source"];
+  source: ResourceSource;
   /** The shared detail shell around the turns. */
   shell: Omit<DetailLayoutProps, "children" | "readerRef" | "bodyClassName">;
   mode: SessionViewMode;

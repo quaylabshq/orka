@@ -104,6 +104,8 @@ fn checked_paths(resource: &Value, source: &Value, binding: &Value) -> Result<Ve
                         path = crate::history::current_path(&path, id)?;
                     }
                     crate::native::codex_home()?
+                } else if resource["source"] == "pi" {
+                    crate::pi_sessions::directory()?
                 } else {
                     crate::native::claude_home()?
                 }
@@ -248,7 +250,10 @@ fn deletion_state(db: &Connection, project: &Value, resource: &Value) -> Result<
     let source = source(project, resource)?;
     let id = resource["resourceId"].as_str().ok_or("Missing item")?;
     let mut binding = indexer::binding(db, id)?;
-    if resource["kind"] == "session" && reading["nativeId"].is_string() {
+    if resource["kind"] == "session"
+        && resource["source"] != "pi"
+        && reading["nativeId"].is_string()
+    {
         if let Some(native) = crate::local_resources::native_binding(db, &reading)? {
             binding = native;
         }
@@ -325,6 +330,7 @@ pub(crate) fn preview_delete(db: &Connection, project: &Value, input: &Value) ->
         Some("memory") => "Removes this memory from shared project context and its installed shared copies. Personal learned memory is kept. Previously exported copies are not recalled.",
         Some("skill") => "Removes this skill from shared project context and installed project skill folders on Macs that sync skills. The original global skill is kept. Local edits need review before removal.",
         Some("plan") => "Removes this plan from shared project context and materialized plan files on Macs that sync plans. An extracted plan's original session remains intact.",
+        Some("session") if resource["source"] == "pi" => "Removes this snapshot from shared history. The original Pi session stays on its Mac.",
         Some("session") => "Removes this session from shared history. Synced native copies may be archived in Codex or removed from Claude history. Active or locally changed sessions are preserved until reviewed.",
         _ => unreachable!(),
     };

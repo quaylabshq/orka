@@ -421,16 +421,32 @@ pub fn session_cwd(tool: &str, records: &[Value]) -> Result<PathBuf> {
     if !cwd.is_absolute() {
         return Err("Session cwd must be absolute".into());
     }
+    if tool == "pi"
+        && cwd
+            .components()
+            .any(|part| part == std::path::Component::ParentDir)
+    {
+        return Err("Pi session cwd cannot contain parent components".into());
+    }
     Ok(cwd)
 }
 pub fn session_info(tool: &str, records: &[Value]) -> Result<(String, PathBuf, String)> {
     let metadata = session_translation::metadata(tool, records)?;
     let cwd = session_cwd(tool, records)?;
     session_translation::format(tool, records)?;
-    let id = metadata[if tool == "codex" { "id" } else { "sessionId" }]
+    let id = metadata[if tool == "claude" { "sessionId" } else { "id" }]
         .as_str()
         .ok_or("Missing native ID")?;
-    Ok((id.into(), cwd, transcript_title(records)))
+    let title = if tool == "pi" {
+        crate::pi_sessions::branch(records)?
+            .into_iter()
+            .filter(|record| record["type"] == "message")
+            .find_map(title_from_record)
+            .unwrap_or_else(|| "Pi session".into())
+    } else {
+        transcript_title(records)
+    };
+    Ok((id.into(), cwd, title))
 }
 pub fn validate_session_import(tool: &str, records: &[Value]) -> Result<()> {
     session_info(tool, records)?;
@@ -439,12 +455,13 @@ pub fn validate_session_import(tool: &str, records: &[Value]) -> Result<()> {
 fn transcript_title(records: &[Value]) -> String {
     records
         .iter()
-        .filter_map(session_translation::user_text)
-        .find_map(|text| {
-            let redacted = crate::session_redaction::SessionRedactor::text(&text);
-            crate::session_presentation::request_text(&redacted)
-        })
+        .find_map(title_from_record)
         .unwrap_or_else(|| "Imported session".into())
+}
+fn title_from_record(record: &Value) -> Option<String> {
+    let text = session_translation::user_text(record)?;
+    let redacted = crate::session_redaction::SessionRedactor::text(&text);
+    crate::session_presentation::request_text(&redacted)
 }
 pub fn transcript_messages(records: &[Value]) -> Vec<Value> {
     session_translation::messages(records)

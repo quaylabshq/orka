@@ -6,6 +6,27 @@ import {
   type LibraryWindow,
 } from "./fixtures/resource-library.js";
 
+for (const width of [1160, 900]) {
+  test(`Pi sessions keep their source identity in the catalog and reader at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: width === 900 ? 640 : 800 });
+    await resourceLibraryFixture(page, { piSession: true });
+    await page.getByRole("button", { name: /^Sessions/ }).click();
+    const source = page.getByRole("group", { name: "Filter by source" });
+    await source.getByRole("button", { name: "Pi", exact: true }).click();
+    const table = page.getByRole("table");
+    await expect(table.locator("tbody tr")).toHaveCount(1);
+    await expect(table.getByRole("img", { name: "Pi · You" })).toBeVisible();
+    await table
+      .getByRole("button", { name: "Private Pi session", exact: true })
+      .click();
+    await expect(
+      page.getByRole("article", { name: "Pi", exact: true }),
+    ).toContainText("Answer from the saved Pi branch");
+  });
+}
+
 const kinds = [
   { kind: "memory", label: "Memories" },
   { kind: "session", label: "Sessions" },

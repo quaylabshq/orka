@@ -759,6 +759,12 @@ pub fn session_files(tool: &str, path: &Path, scope: Option<&Path>) -> Result<Ve
         return history.files();
     }
     let mut records = native::complete_records(&read(path, None)?)?;
+    if tool == "pi" {
+        let (_, cwd, _) = native::session_info(tool, &records)?;
+        if scope.is_some_and(|root| !cwd.starts_with(root)) {
+            return Err("Pi session belongs to a different repository".into());
+        }
+    }
     records
         .iter_mut()
         .for_each(crate::session_redaction::SessionRedactor::redact);
@@ -808,5 +814,10 @@ pub(crate) fn resource_records_with(
         .as_array()
         .and_then(|files| files.iter().find(|f| f["path"] == "session.jsonl"))
         .ok_or("Missing transcript")?;
-    native::complete_records(&read_blob(file["hash"].as_str().ok_or("Missing hash")?)?)
+    let records =
+        native::complete_records(&read_blob(file["hash"].as_str().ok_or("Missing hash")?)?)?;
+    if resource["source"] == "pi" {
+        native::validate_session_import("pi", &records)?;
+    }
+    Ok(records)
 }

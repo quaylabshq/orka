@@ -988,10 +988,11 @@ fn refresh_catalog(
             .filter_map(|value| value["error"].as_str().map(str::to_owned))
             .collect::<Vec<_>>();
         if reads_history {
-            for (tool, directory) in [
-                ("codex", native::codex_home()?.join("sessions")),
-                ("claude", native::claude_home()?.join("projects")),
-            ] {
+            for (tool, directory) in session_directories(
+                &native::codex_home()?,
+                &native::claude_home()?,
+                kind == "session",
+            )? {
                 let previously_discovered = previous.iter().any(|entry| {
                     entry["resource"]["source"] == tool
                         && (kind == "session"
@@ -1037,6 +1038,21 @@ fn refresh_catalog(
     let mut unique = BTreeSet::new();
     errors.retain(|message| unique.insert(message.clone()));
     Ok(errors)
+}
+
+fn session_directories(
+    codex: &Path,
+    claude: &Path,
+    include_pi: bool,
+) -> Result<Vec<(&'static str, PathBuf)>> {
+    let mut directories = vec![
+        ("codex", codex.join("sessions")),
+        ("claude", claude.join("projects")),
+    ];
+    if include_pi {
+        directories.push(("pi", crate::pi_sessions::directory()?));
+    }
+    Ok(directories)
 }
 
 pub fn scan(db: &rusqlite::Connection, project: &Value) -> Result<()> {
@@ -1656,12 +1672,13 @@ fn scan_source(
         || crate::projects::sharing_allowed(project, "plan")
     {
         let mut last_history_progress = None;
-        for (tool, directory) in [
-            ("codex", codex.join("sessions")),
-            ("claude", claude.join("projects")),
-        ] {
+        let include_pi =
+            project["catalogOnly"] == true && crate::projects::sharing_allowed(project, "session");
+        for (tool, directory) in session_directories(&codex, &claude, include_pi)? {
             if !directory.exists() {
-                sessions_complete = false;
+                if tool != "pi" {
+                    sessions_complete = false;
+                }
                 continue;
             }
             for entry in WalkDir::new(&directory).follow_links(false) {
@@ -1691,10 +1708,9 @@ fn scan_source(
                     .map(|cache| cache.contains(db))
                     .transpose()?
                     .unwrap_or(false);
-                // Codex's first record identifies its project. Avoid loading unrelated
-                // histories in full; uncertain attribution keeps the existing scan path.
+                // Codex and Pi put the working directory in the first record.
                 if cached_unrelated
-                    || (tool == "codex"
+                    || (matches!(tool, "codex" | "pi")
                         && history::session_cwd_prefix(e.path(), tool)
                             .is_some_and(|cwd| !cwd.starts_with(&root)))
                 {
@@ -1829,7 +1845,7 @@ fn scan_source(
                         crate::history::resource_records(&json!({"source":tool,"files":files}))?;
                     native::bind_handoff(db, project_id, &id, &records)?;
                 }
-                if crate::projects::sharing_allowed(project, "plan") {
+                if tool != "pi" && crate::projects::sharing_allowed(project, "plan") {
                     let plan_records =
                         crate::history::resource_records(&json!({"source":tool,"files":files}))?;
                     let mut has_plan_file = false;

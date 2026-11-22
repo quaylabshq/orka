@@ -22,6 +22,7 @@ mod menu_bar;
 mod native;
 mod onboarding;
 mod packages;
+mod pi_sessions;
 mod plans;
 mod plugin_broker;
 mod plugin_connection;

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
-import type { Resource } from "@portable/protocol";
+import type { WorkspaceResource as Resource } from "../types.js";
 
 /** Runs a native action with the shared busy and error handling, then refreshes. */
 export type ActionFeedback = {
