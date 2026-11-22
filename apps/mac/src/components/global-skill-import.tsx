@@ -29,7 +29,7 @@ import { Button } from "./button.js";
 import { Icon } from "./icon.js";
 import { activeSources, repositoryLabel } from "./project-sources.js";
 import { readSkillMarkdown } from "./skill-markdown.js";
-import { useToasts } from "./toasts.js";
+import { useToastEscape, useToasts } from "./toasts.js";
 import { connectProject } from "./use-project-setup.js";
 import "./item-menu.css";
 import "./global-skill-import.css";
@@ -122,6 +122,7 @@ export function GlobalSkillImport({
 }) {
   const [open, setOpen] = useState(false);
   const [adding, setAdding] = useState(false);
+  const dismissToastOnEscape = useToastEscape();
   const content = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     if (adding) content.current?.focus({ preventScroll: true });
@@ -173,8 +174,16 @@ export function GlobalSkillImport({
           onPointerDownOutside={(event) => {
             if (adding) event.preventDefault();
           }}
+          onInteractOutside={(event) => {
+            if (
+              event.target instanceof Element &&
+              event.target.closest("[data-orka-toast]")
+            )
+              event.preventDefault();
+          }}
           onEscapeKeyDown={(event) => {
             if (adding) event.preventDefault();
+            else dismissToastOnEscape(event);
           }}
           onKeyDown={(event) => {
             if (adding && event.key === "Tab") event.preventDefault();
@@ -251,6 +260,7 @@ function AddSkills({
   const generation = useRef(0);
   const peekTimer = useRef(0);
   const list = useRef<HTMLUListElement>(null);
+  const searchInput = useRef<HTMLInputElement>(null);
   const pendingUsage = useRef<SkillUsage>(undefined);
   const rankingFrame = useRef(0);
 
@@ -376,7 +386,11 @@ function AddSkills({
     added: ImportResult[],
     dead: ImportResult[],
     name: (id: string) => string,
+    keepsPickerOpen: boolean,
   ) => {
+    const feedback = keepsPickerOpen
+      ? { overPopover: true, returnFocusTo: searchInput.current }
+      : {};
     if (added.length) {
       const subject =
         added.length === 1 ? name(added[0].skillId) : `${added.length} skills`;
@@ -384,17 +398,20 @@ function AddSkills({
       if (statuses.includes("draft"))
         notify({
           kind: "success",
+          ...feedback,
           title: `${subject} added on this Mac. Review ${added.length === 1 ? "it" : "them"} to share.`,
           action: { label: "Review", onClick: onReview },
         });
       else if (statuses.every((status) => status === "local"))
         notify({
           kind: "success",
+          ...feedback,
           title: `${subject} added on this Mac. Sharing is off for skills.`,
         });
       else
         notify({
           kind: "success",
+          ...feedback,
           title: `${subject} added to ${destination}`,
         });
     }
@@ -402,6 +419,7 @@ function AddSkills({
     if (dead.length)
       notify({
         kind: "error",
+        ...feedback,
         title:
           dead.length === 1
             ? `${name(dead[0].skillId)} wasn’t added. ${reason(dead[0].error)}`
@@ -467,7 +485,8 @@ function AddSkills({
           }
           stale = retryable;
         }
-        report(added, dead, name);
+        const keepsPickerOpen = stale.length > 0 || dead.length > 0;
+        report(added, dead, name, keepsPickerOpen);
         if (!active.current) return;
         if (next && current === generation.current) setScan(next);
         else if (added.length && current === generation.current) {
@@ -501,7 +520,7 @@ function AddSkills({
               : `Couldn’t add ${stale.length} ${plural(stale.length)}.`,
           );
         }
-        closeOnSuccess = !stale.length && !dead.length;
+        closeOnSuccess = !keepsPickerOpen;
       });
     } catch (error) {
       if (active.current && !answered)
@@ -612,6 +631,7 @@ function AddSkills({
       <label className="add-skills-search">
         <SearchIcon size={16} aria-hidden="true" />
         <input
+          ref={searchInput}
           type="search"
           aria-label="Search global skills"
           placeholder="Search global skills…"

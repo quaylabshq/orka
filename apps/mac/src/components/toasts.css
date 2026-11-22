@@ -12,6 +12,10 @@
     justify-content: center;
     pointer-events: none;
   }
+  body:has(.add-skills-popover[data-state="open"]:not([aria-modal="true"]))
+    .toast-viewport--over-popover {
+    z-index: 111;
+  }
   .toast-viewport--modal {
     position: fixed;
     right: auto;

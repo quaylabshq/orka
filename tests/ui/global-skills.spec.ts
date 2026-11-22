@@ -949,6 +949,7 @@ test("the keyboard moves through rows, ticks with Space, and adds with Return", 
 test("a stale skill stays ticked for another try while the rest are added", async ({
   page,
 }) => {
+  await page.setViewportSize({ width: 900, height: 640 });
   await fixture(page, "bulk-partial");
   await expect(rows(page)).toHaveCount(0);
   await trigger(page).click();
@@ -971,6 +972,13 @@ test("a stale skill stays ticked for another try while the rest are added", asyn
   ).toBeVisible();
   // The one that went in has left the list.
   await expect(pick(page, "Code review")).toHaveCount(0);
+  const dismiss = page.getByRole("button", { name: "Dismiss", exact: true });
+  await expect(
+    page.getByText("Code review added to Orka", { exact: true }),
+  ).toBeVisible();
+  await dismiss.click();
+  await expect(dismiss).toHaveCount(0);
+  await expect(dialog).toBeVisible();
   await dialog.getByRole("button", { name: "Try again", exact: true }).click();
   await expect(dialog).toBeHidden();
   expect(
@@ -1027,21 +1035,24 @@ test("choosing a repository with the keyboard changes the destination without ad
   await expect(dialog).toBeVisible();
 });
 
-for (const { skills, button, summary } of [
+for (const { skills, button, summary, dismissal } of [
   {
     skills: ["Writing guide"],
     button: "Add 1 skill",
     summary: "Writing guide wasn’t added.",
+    dismissal: "click",
   },
   {
     skills: ["Writing guide", "Code review"],
     button: "Add 2 skills",
     summary: "2 skills weren’t added.",
+    dismissal: "Escape",
   },
 ]) {
   test(`a folder name collision clears selection and explains the failure (${button})`, async ({
     page,
   }) => {
+    await page.setViewportSize({ width: 900, height: 640 });
     await fixture(page, "bulk-dead");
     await trigger(page).click();
     const dialog = popover(page);
@@ -1059,6 +1070,15 @@ for (const { skills, button, summary } of [
     await expect(
       dialog.getByRole("button", { name: "Try again", exact: true }),
     ).toHaveCount(0);
+    const dismiss = page.getByRole("button", { name: "Dismiss", exact: true });
+    if (dismissal === "Escape") {
+      await dismiss.press("Escape");
+      await expect(dialog.getByRole("searchbox")).toBeFocused();
+    } else {
+      await dismiss.click();
+    }
+    await expect(dismiss).toHaveCount(0);
+    await expect(dialog).toBeVisible();
   });
 }
 
