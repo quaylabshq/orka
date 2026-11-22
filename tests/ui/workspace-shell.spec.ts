@@ -313,9 +313,11 @@ test("Figma shell geometry, fluid gap selection, collapse reversal and keyboard 
     ).toBeLessThanOrEqual(2);
   }
   await page.screenshot({ path: "artifacts/sidebar-collapsed.png" });
-  await page
-    .getByRole("combobox", { name: "Select project: Orka", exact: true })
-    .click();
+  const collapsedProject = page.getByRole("combobox", {
+    name: "Select project: Orka",
+    exact: true,
+  });
+  await collapsedProject.click();
   await expect(
     page.getByRole("option", { name: "Studio", exact: true }),
   ).toBeVisible();
@@ -327,6 +329,8 @@ test("Figma shell geometry, fluid gap selection, collapse reversal and keyboard 
     collapsedSelector.y,
   );
   await page.keyboard.press("Escape");
+  // The popover restores focus to its trigger asynchronously after closing.
+  await expect(collapsedProject).toBeFocused();
   const expand = page.getByRole("button", {
     name: "Expand sidebar",
     exact: true,

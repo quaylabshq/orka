@@ -12,10 +12,20 @@
     justify-content: center;
     pointer-events: none;
   }
+  body:has(.add-skills-popover[data-state="open"]:not([aria-modal="true"]))
+    .toast-viewport--over-popover {
+    z-index: 111;
+  }
   .toast-viewport--modal {
     position: fixed;
     right: auto;
     transform: translateX(-50%);
+  }
+  .toast-viewport--bottom-right {
+    position: fixed;
+    inset-inline: 0 24px;
+    justify-content: flex-end;
+    transform: none;
   }
   /* Margin centering keeps the modal's exact geometry without a transformed
      containing block that would clip a viewport-positioned notification. */

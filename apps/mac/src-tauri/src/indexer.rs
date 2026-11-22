@@ -8,6 +8,7 @@ use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
+    io::Read,
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -45,38 +46,372 @@ pub fn folder_identity_matches(path: &Path, expected: &str) -> Result<bool> {
     let meta = fs::metadata(path).map_err(|e| e.to_string())?;
     Ok(format!("{}:{}", meta.dev(), meta.ino()) == expected)
 }
+#[cfg(test)]
 pub fn claude_memory(root: &Path) -> Result<PathBuf> {
-    let encoded = root
-        .to_string_lossy()
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect::<String>();
-    let mut memory = native::claude_home()?
+    Ok(ClaudeMemory::resolve(root)?.native)
+}
+
+pub fn claude_memory_target(root: &Path) -> Result<PathBuf> {
+    let root = fs::canonicalize(root).map_err(|e| e.to_string())?;
+    let base = legacy_claude_memory(&root)?;
+    check_memory_directory(&base)?;
+    Ok(base)
+}
+
+pub fn claude_memory_base(root: &Path, path: &Path) -> Result<PathBuf> {
+    let root = fs::canonicalize(root).map_err(|e| e.to_string())?;
+    let legacy = legacy_claude_memory(&root)?;
+    let default = claude_memory_for(&claude_memory_root(&root), true)?;
+    let base = [legacy, default]
+        .into_iter()
+        .find(|dir| path.starts_with(dir))
+        .ok_or("Claude memory outside the default locations is read-only")?;
+    check_memory_directory(&base)?;
+    Ok(base)
+}
+
+// Check from the config directory, not just the memory leaf: a symlink in
+// projects/<key> can otherwise redirect a write or delete outside Claude home.
+fn check_memory_directory(base: &Path) -> Result<()> {
+    let home = native::claude_home()?;
+    if fs::symlink_metadata(&home).is_ok_and(|meta| !meta.is_dir()) {
+        return Err("Claude config directory is a symlink or file".into());
+    }
+    let relative = base
+        .strip_prefix(&home)
+        .map_err(|_| "Invalid Claude memory directory")?;
+    let mut current = home;
+    for component in relative.components() {
+        current.push(component);
+        match fs::symlink_metadata(&current) {
+            Ok(meta) if !meta.is_dir() => {
+                return Err("Claude memory directory contains a symlink or file".into())
+            }
+            Ok(_) => (),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    Ok(())
+}
+
+fn legacy_claude_memory(root: &Path) -> Result<PathBuf> {
+    if root.to_string_lossy().chars().count() > 255 {
+        // The old key could not be created on APFS.
+        return claude_memory_for(root, true);
+    }
+    claude_memory_for(root, false)
+}
+
+pub fn claude_memory_read_base(root: &Path, path: &Path) -> Result<PathBuf> {
+    let memory = ClaudeMemory::resolve(root)?;
+    let base = [memory.legacy, memory.native]
+        .into_iter()
+        .find(|base| path.starts_with(base))
+        .ok_or("Path is outside the Claude memory directories")?;
+    if base.starts_with(native::claude_home()?) {
+        check_memory_directory(&base)?;
+    }
+    Ok(base)
+}
+
+fn claude_memory_for(project: &Path, native_encoding: bool) -> Result<PathBuf> {
+    let path = project.to_string_lossy();
+    let mut encoded = if native_encoding {
+        path.encode_utf16()
+            .map(|c| {
+                u8::try_from(c)
+                    .ok()
+                    .filter(u8::is_ascii_alphanumeric)
+                    .map_or('-', char::from)
+            })
+            .collect::<String>()
+    } else {
+        path.replace(|c: char| !c.is_ascii_alphanumeric(), "-")
+    };
+    if native_encoding && encoded.len() > 200 {
+        let mut hash = path
+            .encode_utf16()
+            .fold(0i32, |hash, c| {
+                hash.wrapping_mul(31).wrapping_add(i32::from(c))
+            })
+            .unsigned_abs();
+        let mut digits = Vec::new();
+        loop {
+            digits.push(char::from_digit(hash % 36, 36).expect("base 36 digit"));
+            hash /= 36;
+            if hash == 0 {
+                break;
+            }
+        }
+        encoded.truncate(200);
+        encoded.push('-');
+        encoded.extend(digits.into_iter().rev());
+    }
+    Ok(native::claude_home()?
         .join("projects")
         .join(encoded)
-        .join("memory");
-    for path in [
-        root.join(".claude/settings.json"),
-        root.join(".claude/settings.local.json"),
-    ] {
-        if path.try_exists().map_err(|e| e.to_string())? {
-            let value: Value = serde_json::from_slice(&fs::read(path).map_err(|e| e.to_string())?)
-                .map_err(|e| e.to_string())?;
-            if let Some(custom) = value["autoMemoryDirectory"].as_str() {
-                let p = custom
-                    .strip_prefix("~/")
-                    .map(|rest| db::home().map(|home| home.join(rest)))
-                    .transpose()?
-                    .unwrap_or(PathBuf::from(custom));
-                if !p.is_absolute() {
-                    return Err("Claude auto-memory directory must be absolute".into());
+        .join("memory"))
+}
+
+struct ClaudeMemory {
+    native: PathBuf,
+    legacy: PathBuf,
+}
+
+impl ClaudeMemory {
+    fn resolve(root: &Path) -> Result<Self> {
+        let root = fs::canonicalize(root).map_err(|e| e.to_string())?;
+        let checkout = claude_memory_root(&root);
+        let native = match claude_memory_setting(
+            &root,
+            &checkout,
+            Path::new("/Library/Application Support/ClaudeCode"),
+        )? {
+            Some(custom) => fs::canonicalize(&custom).unwrap_or(custom),
+            None => {
+                let name = std::env::var_os("CLAUDE_CONFIG_DIR")
+                    .and_then(|_| std::env::var_os("CLAUDE_CODE_PROJECT_DIR_NAME"));
+                if let Some(name) = name.filter(|name| {
+                    let path = Path::new(name);
+                    path.components().count() == 1
+                        && matches!(
+                            path.components().next(),
+                            Some(std::path::Component::Normal(_))
+                        )
+                }) {
+                    native::claude_home()?
+                        .join("projects")
+                        .join(name)
+                        .join("memory")
+                } else {
+                    claude_memory_for(&checkout, true)?
                 }
-                memory = p;
+            }
+        };
+        let legacy = legacy_claude_memory(&root)?;
+        Ok(Self { native, legacy })
+    }
+}
+
+fn small_git_file(path: &Path) -> Option<String> {
+    if !fs::symlink_metadata(path).ok()?.is_file() {
+        return None;
+    }
+    let mut text = String::new();
+    fs::File::open(path)
+        .ok()?
+        .take(8193)
+        .read_to_string(&mut text)
+        .ok()?;
+    (text.len() <= 8192).then_some(text)
+}
+
+pub(crate) fn claude_memory_root(root: &Path) -> PathBuf {
+    let home = db::home()
+        .ok()
+        .and_then(|home| home.canonicalize().ok().or(Some(home)));
+    let Some(checkout) = root
+        .ancestors()
+        .take_while(|dir| !home.as_ref().is_some_and(|home| home.starts_with(dir)))
+        .find(|dir| fs::symlink_metadata(dir.join(".git")).is_ok())
+    else {
+        return root.to_path_buf();
+    };
+    let dot_git = checkout.join(".git");
+    if dot_git.is_dir() && dot_git.join("HEAD").is_file() {
+        return checkout.to_path_buf();
+    }
+    let Some(pointer) = small_git_file(&dot_git) else {
+        return root.to_path_buf();
+    };
+    let Some(gitdir) = pointer
+        .trim()
+        .strip_prefix("gitdir:")
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+    else {
+        return root.to_path_buf();
+    };
+    let Ok(gitdir) = checkout.join(gitdir).canonicalize() else {
+        return root.to_path_buf();
+    };
+    if !gitdir.join("HEAD").is_file() {
+        return root.to_path_buf();
+    }
+    // Submodules and separate Git directories do not have a common-dir link.
+    // Linked worktrees of a bare repository have no main checkout to use.
+    if let Some(common) = small_git_file(&gitdir.join("commondir"))
+        .and_then(|text| gitdir.join(text.trim()).canonicalize().ok())
+    {
+        let matching_worktree = gitdir.parent() == Some(common.join("worktrees").as_path())
+            && small_git_file(&gitdir.join("gitdir"))
+                .and_then(|back| gitdir.join(back.trim()).canonicalize().ok())
+                .as_deref()
+                == Some(dot_git.as_path());
+        if let Some(main) = common.parent().filter(|main| {
+            matching_worktree
+                && common.ends_with(".git")
+                && common.join("HEAD").is_file()
+                && !home.as_ref().is_some_and(|home| home.starts_with(main))
+        }) {
+            return main.to_path_buf();
+        }
+    }
+    checkout.to_path_buf()
+}
+
+pub(crate) fn claude_memory_setting(
+    root: &Path,
+    checkout: &Path,
+    managed: &Path,
+) -> Result<Option<PathBuf>> {
+    let config = native::claude_home()?;
+    let mut policies: Vec<_> = fs::read_dir(managed.join("managed-settings.d"))
+        .into_iter()
+        .flatten()
+        .filter_map(std::result::Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension().is_some_and(|ext| ext == "json")
+                && path
+                    .file_name()
+                    .is_some_and(|name| !name.as_encoded_bytes().starts_with(b"."))
+        })
+        .collect();
+    policies.sort_unstable();
+    if let Some(custom) = policies
+        .iter()
+        .rev()
+        .cloned()
+        .chain([managed.join("managed-settings.json")])
+        .find_map(|path| memory_setting_in(&path).ok().flatten())
+    {
+        return Ok(Some(custom));
+    }
+    let trust_file = if std::env::var_os("CLAUDE_CONFIG_DIR").is_some() {
+        config.join(".claude.json")
+    } else {
+        db::home()?.join(".claude.json")
+    };
+    let trust = fs::read(trust_file)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .unwrap_or_default();
+    let trusted = |path: &Path| {
+        trust["projects"][path.to_string_lossy().as_ref()]["hasTrustDialogAccepted"] == true
+    };
+    for (path, name) in [
+        (checkout, "settings.local.json"),
+        (root, "settings.local.json"),
+        (root, "settings.json"),
+    ] {
+        if trusted(path) {
+            if let Some(custom) = memory_setting_in(&path.join(".claude").join(name))? {
+                return Ok(Some(custom));
             }
         }
     }
-    Ok(memory)
+    Ok(memory_setting_in(&config.join("settings.json"))
+        .ok()
+        .flatten())
 }
+
+fn memory_setting_in(path: &Path) -> Result<Option<PathBuf>> {
+    if !path.try_exists().map_err(|e| e.to_string())? {
+        return Ok(None);
+    }
+    let value: Value = serde_json::from_slice(&fs::read(path).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    let Some(custom) = value["autoMemoryDirectory"].as_str() else {
+        return Ok(None);
+    };
+    let p = custom
+        .strip_prefix("~/")
+        .map(|rest| db::home().map(|home| home.join(rest.trim_start_matches('/'))))
+        .transpose()?
+        .unwrap_or(PathBuf::from(custom));
+    if !p.is_absolute() || p.components().any(|c| c == std::path::Component::ParentDir) {
+        return Err("Claude auto-memory directory must be absolute".into());
+    }
+    Ok(Some(p))
+}
+#[derive(Default)]
+struct ClaudeMemoryScan {
+    sources: BTreeMap<String, Result<ClaudeMemory>>,
+    owners: BTreeMap<PathBuf, (u8, String)>,
+}
+
+impl ClaudeMemoryScan {
+    fn new(project: &Value) -> Self {
+        let mut scan = Self::default();
+        for source in crate::sources::views(project) {
+            let Some(path) = source["path"].as_str() else {
+                continue;
+            };
+            let id = source["sourceId"].as_str().unwrap_or("").to_owned();
+            let memory = ClaudeMemory::resolve(Path::new(path));
+            if let Ok(memory) = &memory {
+                // Registered repository identity is shared by Macs even when
+                // their connected folders differ. Include disconnected pins.
+                let pinned = source["repository"]["id"].as_str().and_then(|repository| {
+                    project["sources"]
+                        .as_array()?
+                        .iter()
+                        .filter(|other| other["repository"]["id"] == repository)
+                        .filter_map(|other| other["id"].as_str())
+                        .min()
+                });
+                let priority = if pinned.is_some() {
+                    0
+                } else if memory.native == memory.legacy {
+                    1
+                } else {
+                    2
+                };
+                let candidate = (priority, pinned.unwrap_or(&id).to_owned());
+                let owner = scan
+                    .owners
+                    .entry(memory.native.clone())
+                    .or_insert_with(|| candidate.clone());
+                if candidate < *owner {
+                    *owner = candidate;
+                }
+            }
+            scan.sources.insert(id, memory);
+        }
+        scan
+    }
+
+    fn permits_untracked(
+        &self,
+        db: &rusqlite::Connection,
+        project: &Value,
+        directory: &Path,
+    ) -> Result<bool> {
+        let Some((_, candidate)) = self.owners.get(directory) else {
+            return Ok(true);
+        };
+        let id = project["sourceId"].as_str().unwrap_or("");
+        let project_id = project["id"].as_str().ok_or("Missing project")?;
+        let key = format!(
+            "claude-memory-owner:{project_id}:{}",
+            db::digest(directory.as_os_str().as_encoded_bytes())
+        );
+        let owner = db::get(db, &key)?;
+        if let Some(owner) = owner.as_str() {
+            return Ok(owner == id || (owner.is_empty() && id == project_id));
+        }
+        if candidate != id {
+            return Ok(false);
+        }
+        // Do not hand off a shared directory when its collector disappears.
+        // The source ID is part of the server resource identity.
+        db::set(db, &key, &json!(id))?;
+        Ok(true)
+    }
+}
+
 pub fn resource_id(project: &str, kind: &str, path: &str) -> String {
     Uuid::new_v5(
         &Uuid::NAMESPACE_URL,
@@ -956,6 +1291,7 @@ fn refresh_catalog(
         history::clear_missing_session_errors(db)?;
     }
     let mut errors = Vec::new();
+    let claude_scan = (kind == "memory").then(|| ClaudeMemoryScan::new(project));
     for mut source in crate::sources::views(project) {
         if !source["path"].is_string() {
             continue;
@@ -973,7 +1309,7 @@ fn refresh_catalog(
         };
         let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
         let previous = db::rows(&tx, "SELECT value FROM local_resources WHERE project=? AND json_extract(value,'$.resource.kind')=? AND coalesce(json_extract(value,'$.resource.sourceId'),'')=?", &[&id,&kind,&source_id])?;
-        let scan = scan_source(&tx, &source, false, progress);
+        let scan = scan_source(&tx, &source, false, progress, claude_scan.as_ref());
         let failures = db::rows(
             &tx,
             "SELECT json_object('error',error) FROM errors WHERE source GLOB ? OR (? AND source GLOB ?)",
@@ -1055,8 +1391,10 @@ pub(crate) fn scan_with_status(
 ) -> Result<bool> {
     let mut failures = Vec::new();
     let mut complete = true;
+    let claude_scan =
+        crate::projects::sharing_allowed(project, "memory").then(|| ClaudeMemoryScan::new(project));
     for source in crate::sources::views(project) {
-        let result = scan_source(db, &source, report_progress, None);
+        let result = scan_source(db, &source, report_progress, None, claude_scan.as_ref());
         let key = format!(
             "{}:source:{}",
             project["id"].as_str().unwrap_or(""),
@@ -1096,6 +1434,7 @@ fn scan_source(
     project: &Value,
     report_progress: bool,
     progress: DiscoveryProgress<'_>,
+    claude_scan: Option<&ClaudeMemoryScan>,
 ) -> Result<()> {
     let Some(raw) = project["path"].as_str() else {
         return Ok(());
@@ -1233,46 +1572,115 @@ fn scan_source(
                 })();
                 crate::sync::record_result(db, &format!("{scan_id}:scan:{logical}"), result)?;
             }
-            let memory = claude_memory(&root)?;
-            if memory.exists() {
-                for entry in WalkDir::new(&memory).follow_links(false) {
-                    let e = entry.map_err(|e| e.to_string())?;
-                    if e.file_type().is_file() && e.path().extension().is_some_and(|s| s == "md") {
-                        let rel = e
-                            .path()
-                            .strip_prefix(&memory)
-                            .map_err(|e| e.to_string())?
-                            .to_string_lossy()
-                            .to_string();
-                        let logical = format!("claude/{rel}");
-                        report_file(e.path())?;
-                        seen.insert(scoped_resource_id(db, project, "memory", &logical)?);
-                        let result = (|| {
-                            collect(
-                                db,
-                                project,
-                                Scanned {
-                                    kind: "memory",
-                                    source: "claude",
-                                    logical: &logical,
-                                    title: &rel,
-                                    files: vec![packages::file(e.path(), "content.md")?],
-                                    paths: vec![e.path().into()],
-                                    native_id: None,
-                                    native_parent: None,
-                                },
-                                &mut seen,
-                            )?;
-                            Ok(())
-                        })();
-                        crate::sync::record_result(
-                            db,
-                            &format!("{scan_id}:scan:{logical}"),
-                            result,
-                        )?;
+            let claude_result = (|| {
+                let layout = claude_scan.ok_or("Missing Claude memory scan")?;
+                let source_id = project["sourceId"].as_str().unwrap_or("");
+                let memory = layout
+                    .sources
+                    .get(source_id)
+                    .ok_or("Missing Claude memory source")?
+                    .as_ref()
+                    .map_err(Clone::clone)?;
+                let tracked = db::rows(db, "SELECT value FROM bindings WHERE project=?1 AND json_extract(value,'$.base.kind')='memory' AND json_extract(value,'$.base.source')='claude' UNION ALL SELECT json_set(value,'$.base',json_extract(value,'$.resource')) FROM drafts WHERE project=?1 AND json_extract(value,'$.resource.kind')='memory' AND json_extract(value,'$.resource.source')='claude' AND json_extract(value,'$.status')='local'", &[&project_id])?;
+                let mut claimed_paths = BTreeMap::new();
+                let mut claimed_names = BTreeMap::new();
+                for claim in &tracked {
+                    if let (Some(path), Some(name)) = (
+                        claim["paths"][0].as_str(),
+                        claim["base"]["logicalPath"].as_str(),
+                    ) {
+                        let owner = claim["base"]["sourceId"].as_str().unwrap_or("");
+                        claimed_paths.entry(Path::new(path)).or_insert(owner);
+                        if owner == source_id {
+                            claimed_names.entry(name).or_insert(Path::new(path));
+                        }
                     }
                 }
-            }
+                let mut claude_names = BTreeSet::new();
+                for directory in [&memory.native, &memory.legacy]
+                    .into_iter()
+                    .take(if memory.native == memory.legacy { 1 } else { 2 })
+                {
+                    if !directory.try_exists().map_err(|e| e.to_string())? {
+                        continue;
+                    }
+                    if directory.starts_with(&claude) {
+                        check_memory_directory(directory)?;
+                    }
+                    let mut permits_untracked = None;
+                    for entry in WalkDir::new(directory)
+                        .follow_links(false)
+                        .follow_root_links(false)
+                    {
+                        let e = entry.map_err(|e| e.to_string())?;
+                        if e.file_type().is_file()
+                            && e.path().extension().is_some_and(|s| s == "md")
+                        {
+                            let rel = e
+                                .path()
+                                .strip_prefix(directory)
+                                .map_err(|e| e.to_string())?
+                                .to_string_lossy()
+                                .to_string();
+                            let logical = format!("claude/{rel}");
+                            if let Some(path) = claimed_names.get(logical.as_str()) {
+                                if *path != e.path() {
+                                    continue;
+                                }
+                            } else if claimed_paths.contains_key(e.path()) {
+                                continue;
+                            } else {
+                                let allowed = match permits_untracked {
+                                    Some(allowed) => allowed,
+                                    None => {
+                                        let allowed =
+                                            layout.permits_untracked(db, project, directory)?;
+                                        permits_untracked = Some(allowed);
+                                        allowed
+                                    }
+                                };
+                                if !allowed {
+                                    continue;
+                                }
+                            }
+                            if !claude_names.insert(logical.clone()) {
+                                continue;
+                            }
+                            report_file(e.path())?;
+                            seen.insert(scoped_resource_id(db, project, "memory", &logical)?);
+                            let result = (|| {
+                                collect(
+                                    db,
+                                    project,
+                                    Scanned {
+                                        kind: "memory",
+                                        source: "claude",
+                                        logical: &logical,
+                                        title: &rel,
+                                        files: vec![packages::file(e.path(), "content.md")?],
+                                        paths: vec![e.path().into()],
+                                        native_id: None,
+                                        native_parent: None,
+                                    },
+                                    &mut seen,
+                                )?;
+                                Ok(())
+                            })();
+                            crate::sync::record_result(
+                                db,
+                                &format!("{scan_id}:scan:{logical}"),
+                                result,
+                            )?;
+                        }
+                    }
+                }
+                Ok(())
+            })();
+            crate::sync::record_result(
+                db,
+                &format!("{scan_id}:scan:claude-memory"),
+                claude_result,
+            )?;
             let summaries = codex.join("memories/rollout_summaries");
             let mut summary_projects = BTreeMap::new();
             let mut summary_threads = BTreeMap::new();
@@ -2072,7 +2480,11 @@ fn scan_source(
             if kind == "session" && !sessions_complete {
                 return Ok(());
             }
-            if kind == "memory" && (!memory_complete || base["source"] == "codex") {
+            // Claude's directory, settings and mounts can change independently
+            // of the connected folder. Absence is not an explicit shared delete.
+            if kind == "memory"
+                && (!memory_complete || base["source"] == "codex" || base["source"] == "claude")
+            {
                 return Ok(());
             }
             if kind == "plan"

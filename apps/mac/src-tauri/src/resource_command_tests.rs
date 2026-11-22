@@ -116,6 +116,30 @@ fn item_actions_bind_account_service_project_and_source_locations() {
     assert!(f.outbox().is_empty());
 }
 
+#[tokio::test]
+async fn public_link_rejects_non_artifacts_and_stale_shared_revisions_before_network_access() {
+    let mut f = Fixture::new();
+    let mut input = prepare(&mut f);
+    for (kind, revision) in [("memory", 7), ("plan", 6)] {
+        let resource = published(&f, kind);
+        input["resourceId"] = resource["resourceId"].clone();
+        input["revision"] = json!(revision);
+        let error = actions::run_command("create-public-link".into(), input.clone(), None)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            "Open the current shared snapshot before managing its public link."
+        );
+    }
+    input["resourceId"] = json!(uuid::Uuid::new_v4().to_string());
+    let error = actions::run_command("create-public-link".into(), input, None)
+        .await
+        .unwrap_err();
+    assert_eq!(error, "This item has no shared snapshot.");
+    assert!(f.outbox().is_empty());
+}
+
 #[test]
 fn item_paths_reject_missing_external_symlinked_and_changed_source_locations() {
     let mut f = Fixture::new();

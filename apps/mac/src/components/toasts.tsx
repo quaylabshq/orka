@@ -33,6 +33,10 @@ export type ToastInput = {
   title: string;
   kind?: "success" | "info" | "queued" | "warning" | "error";
   action?: { label: string; onClick: () => void };
+  placement?: "bottom-right";
+  overPopover?: boolean;
+  returnFocusTo?: HTMLElement | null;
+  onDisplay?: () => void;
 };
 type Toast = ToastInput & {
   id: number;
@@ -128,7 +132,7 @@ export function ToastProvider({
       // the newly selected workspace. Nothing is persisted in app settings.
       if (!input.title || scopeRef.current !== scope) return;
       if (!ENV_ENABLED && /\bENVs?\b/.test(input.title)) return;
-      const target = interactionTarget.current;
+      const target = input.returnFocusTo ?? interactionTarget.current;
       const item: Toast = {
         ...input,
         id: ++nextId.current,
@@ -393,11 +397,16 @@ export function ToastViewport({ modal = false }: { modal?: boolean }) {
       window.removeEventListener("resize", update);
     };
   }, [modal, setBounds]);
+  const hostActive =
+    context &&
+    (modal ? context.modalHosts.at(-1) === id : !context.modalHosts.length);
+  const active = hostActive ? context?.queue[0] : undefined;
+  useEffect(() => {
+    active?.onDisplay?.();
+  }, [active]);
   if (!context) return null;
-  const hostActive = modal
-    ? context.modalHosts.at(-1) === id
-    : !context.modalHosts.length;
-  const active = hostActive ? context.queue[0] : undefined;
+  const corner = active?.placement === "bottom-right";
+  const overPopover = !modal && active?.overPopover;
   const icon =
     active?.kind === "error"
       ? CircleXIcon
@@ -412,9 +421,9 @@ export function ToastViewport({ modal = false }: { modal?: boolean }) {
   return (
     <div
       ref={ref}
-      className={`toast-viewport${modal ? " toast-viewport--modal" : ""}`}
+      className={`toast-viewport${modal ? " toast-viewport--modal" : ""}${corner ? " toast-viewport--bottom-right" : ""}${overPopover ? " toast-viewport--over-popover" : ""}`}
       style={
-        modal && context.bounds
+        modal && !corner && context.bounds
           ? {
               left: context.bounds.center,
               bottom: context.bounds.bottom,
