@@ -96,7 +96,7 @@ export function canDeleteSharedResource(
 ) {
   if (
     resource.local ||
-    resource.localChanges ||
+    (resource.localChanges && resource.source !== "pi") ||
     resource.revision < 1 ||
     resource.deleted
   )

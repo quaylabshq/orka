@@ -550,6 +550,50 @@ fn shared_deletion_keeps_a_conflict_distinct_from_success_and_cleans_project_pre
 }
 
 #[test]
+fn pi_shared_delete_preview_keeps_later_private_turns() {
+    let mut f = Fixture::new();
+    let mut input = prepare(&mut f);
+    let folder = crate::pi_sessions::directory().unwrap();
+    fs::create_dir_all(&folder).unwrap();
+    let native_id = uuid::Uuid::new_v4();
+    let path = folder.join(format!("{native_id}.jsonl"));
+    let mut records = vec![
+        json!({"type":"session","version":3,"id":native_id,"cwd":f.root}),
+        json!({"type":"message","id":"a","parentId":null,"message":{"role":"user","content":"Shared question"}}),
+    ];
+    fs::write(&path, native::encode(&records)).unwrap();
+    let local = indexer::discover(&f.db, &f.project, "session")
+        .unwrap()
+        .remove(0);
+    let mut resource = local["resource"].clone();
+    resource["projectId"] = f.project["id"].clone();
+    resource["owner"] = input["accountId"].clone();
+    resource["revision"] = json!(7);
+    resource["access"] = json!({"mode":"publish"});
+    input["resourceId"] = resource["resourceId"].clone();
+    let id = resource["resourceId"].as_str().unwrap();
+    db::upsert(
+        &f.db,
+        "resources",
+        id,
+        f.project["id"].as_str().unwrap(),
+        &resource,
+    )
+    .unwrap();
+    records.push(json!({"type":"message","id":"b","parentId":"a","message":{"role":"user","content":"Private follow-up"}}));
+    let bytes = native::encode(&records);
+    fs::write(&path, &bytes).unwrap();
+    indexer::discover(&f.db, &f.project, "session").unwrap();
+    assert_eq!(
+        crate::local_resources::resource(&f.db, id).unwrap()["localChanges"],
+        true
+    );
+    let preview = crate::resource_commands::preview_delete(&f.db, &f.project, &input).unwrap();
+    assert!(preview["previewToken"].is_string());
+    assert_eq!(fs::read(path).unwrap(), bytes);
+}
+
+#[test]
 fn shared_deletion_checks_native_session_activity_before_creating_a_preview() {
     let mut f = Fixture::new();
     let mut input = prepare(&mut f);

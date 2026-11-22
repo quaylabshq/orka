@@ -8,6 +8,8 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 pub const QUEUE_PATH: &str = "/local/selected-share";
+pub(crate) const PI_SERVICE_UPGRADE: &str =
+    "Update the Orka service to share Pi sessions. The selected snapshot is queued on this Mac.";
 
 pub(crate) fn context(db: &Connection, input: &Value) -> Result<Value> {
     let user = db::get(db, "user")?;
@@ -114,8 +116,13 @@ pub(crate) fn preview_from_local(
         .iter()
         .filter_map(|file| file["size"].as_u64())
         .sum();
+    let note = if resource["source"] == "pi" {
+        "This snapshot includes all saved branches, including abandoned branches and tool records not shown in the reader. Later edits and future turns stay private unless you share again."
+    } else {
+        "This exact snapshot will be shared. Later edits and future turns remain private unless automatic sharing is enabled or you explicitly share again."
+    };
     Ok(
-        json!({"previewToken":token,"expiresAt":expires,"title":resource["title"],"kind":resource["kind"],"sourceId":resource["sourceId"],"files":resource["files"],"totalBytes":bytes,"snapshotHash":indexer::manifest_hash(&resource["files"]),"automaticSharingChanged":false,"note":"This exact snapshot will be shared. Later edits and future turns remain private unless automatic sharing is enabled or you explicitly share again."}),
+        json!({"previewToken":token,"expiresAt":expires,"title":resource["title"],"kind":resource["kind"],"sourceId":resource["sourceId"],"files":resource["files"],"totalBytes":bytes,"snapshotHash":indexer::manifest_hash(&resource["files"]),"automaticSharingChanged":false,"note":note}),
     )
 }
 
@@ -205,7 +212,7 @@ pub async fn send(db: &Connection, owner: &str, queued: &Value) -> Result<Value>
         return Err("Update the Orka service to support one-off sharing. The selected snapshot is queued on this Mac.".into());
     }
     if queued["value"]["resource"]["source"] == "pi" && capabilities["piSessions"] != 1 {
-        return Err("Update the Orka service to share Pi sessions. The selected snapshot is queued on this Mac.".into());
+        return Err(PI_SERVICE_UPGRADE.into());
     }
     let device = queued["value"]["deviceId"]
         .as_str()

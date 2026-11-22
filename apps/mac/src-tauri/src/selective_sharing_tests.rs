@@ -113,6 +113,11 @@ async fn pi_session_discovery_reads_the_saved_branch_and_queues_only_an_explicit
     request["kind"] = json!("session");
     request["resourceId"] = json!(resource_id);
     let preview = selective_sharing::preview(&f.db, &f.project, &request).unwrap();
+    assert!(preview["note"]
+        .as_str()
+        .unwrap()
+        .contains("abandoned branches"));
+    assert!(preview["note"].as_str().unwrap().contains("tool records"));
     request["previewToken"] = preview["previewToken"].clone();
     assert_eq!(
         selective_sharing::queue(&f.db, &f.project, &request).unwrap()["status"],
@@ -136,6 +141,46 @@ async fn pi_session_discovery_reads_the_saved_branch_and_queues_only_an_explicit
     assert_eq!(cached["base"]["files"], incoming["files"]);
     assert_eq!(cached["paths"], json!([]));
     assert_eq!(fs::read(&path).unwrap(), original);
+}
+
+#[test]
+fn pi_and_codex_sessions_with_the_same_native_id_keep_separate_identity() {
+    let mut f = Fixture::new();
+    prepare(&mut f);
+    let codex = indexer::discover(&f.db, &f.project, "session")
+        .unwrap()
+        .into_iter()
+        .find(|r| r["resource"]["source"] == "codex")
+        .unwrap();
+    let id = codex["nativeId"].as_str().unwrap();
+    let folder = crate::pi_sessions::directory().unwrap();
+    fs::create_dir_all(&folder).unwrap();
+    let path = folder.join(format!("{id}.jsonl"));
+    fs::write(&path, native::encode(&[
+        json!({"type":"session","version":3,"id":id,"cwd":f.root}),
+        json!({"type":"message","id":"a","parentId":null,"message":{"role":"user","content":"Different Pi chat"}}),
+    ])).unwrap();
+    assert_eq!(
+        crate::history::session_route_prefix(&path, "pi"),
+        Some((Some(id.to_owned()), f.root.clone()))
+    );
+    let entries = indexer::discover(&f.db, &f.project, "session").unwrap();
+    let pi = entries
+        .iter()
+        .find(|r| r["resource"]["source"] == "pi")
+        .unwrap();
+    let found = entries
+        .iter()
+        .find(|r| r["resource"]["source"] == "codex")
+        .unwrap();
+    assert_eq!(
+        found["resource"]["resourceId"],
+        codex["resource"]["resourceId"]
+    );
+    assert_ne!(
+        pi["resource"]["resourceId"],
+        found["resource"]["resourceId"]
+    );
 }
 
 #[test]

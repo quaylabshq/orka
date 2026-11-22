@@ -809,8 +809,8 @@ fn collect(
     if let Some(native_id) = native_id {
         if let Some(b) = db::rows(
             db,
-            "SELECT value FROM bindings WHERE project=? AND json_extract(value,'$.nativeId')=? AND coalesce(json_extract(value,'$.base.sourceId'),'')=?",
-            &[&project_id, &native_id, &project["sourceId"].as_str().unwrap_or("")],
+            "SELECT value FROM bindings WHERE project=? AND json_extract(value,'$.nativeId')=? AND coalesce(json_extract(value,'$.base.sourceId'),'')=? AND json_extract(value,'$.base.source')=?",
+            &[&project_id, &native_id, &project["sourceId"].as_str().unwrap_or(""), &source],
         )?
         .first()
         {
@@ -829,7 +829,7 @@ fn collect(
     {
         if let Some(known_id) = origin["resourceId"].as_str() {
             id = known_id.to_owned();
-        } else if let Some(previous) = db::rows(db,"SELECT value FROM local_resources WHERE project=? AND json_extract(value,'$.resource.kind')=? AND coalesce(json_extract(value,'$.resource.sourceId'),'')=? AND (json_extract(value,'$.resource.logicalPath')=? OR (? IS NOT NULL AND json_extract(value,'$.nativeId')=?)) LIMIT 1",&[&project_id,&kind,&project["sourceId"].as_str().unwrap_or(""),&logical,&native_id,&native_id])?.first() {
+        } else if let Some(previous) = db::rows(db,"SELECT value FROM local_resources WHERE project=? AND json_extract(value,'$.resource.kind')=? AND coalesce(json_extract(value,'$.resource.sourceId'),'')=? AND json_extract(value,'$.resource.source')=? AND (json_extract(value,'$.resource.logicalPath')=? OR (? IS NOT NULL AND json_extract(value,'$.nativeId')=?)) LIMIT 1",&[&project_id,&kind,&project["sourceId"].as_str().unwrap_or(""),&source,&logical,&native_id,&native_id])?.first() {
             id = previous["resource"]["resourceId"].as_str().ok_or("Missing resource")?.to_owned();
         }
     }
@@ -838,7 +838,11 @@ fn collect(
     if project["catalogOnly"] == true {
         let mut resource = json!({"resourceId":id,"kind":kind,"source":source,"logicalPath":logical,"title":title,"files":files,"deleted":false});
         crate::sources::scope(project, &mut resource);
-        resource["contextSources"] = scanned_sources(db, project, logical, native_id)?;
+        resource["contextSources"] = if source == "pi" {
+            json!([])
+        } else {
+            scanned_sources(db, project, logical, native_id)?
+        };
         let previous = db::rows(db, "SELECT value FROM local_resources WHERE id=?", &[&id])?
             .into_iter()
             .next()

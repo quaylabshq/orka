@@ -195,7 +195,7 @@ pub(crate) fn session_route_prefix(path: &Path, tool: &str) -> Option<(Option<St
     let records = native::complete_records(&prefix).ok()?;
     let cwd = native::session_cwd(tool, &records).ok()?;
     let metadata = crate::session_translation::metadata(tool, &records).ok()?;
-    let id = metadata[if tool == "codex" { "id" } else { "sessionId" }].as_str();
+    let id = metadata[if tool == "claude" { "sessionId" } else { "id" }].as_str();
     Some((id.map(str::to_owned), cwd))
 }
 
