@@ -208,7 +208,8 @@ pub fn record(
 }
 
 pub fn resumable(db: &Connection, resource: &Value) -> Result<Option<Value>> {
-    if resource["nativeId"].is_string()
+    if resource["source"] != "pi"
+        && resource["nativeId"].is_string()
         && crate::local_resources::native_binding(db, resource)?.is_some()
     {
         return Ok(Some(resource.clone()));
@@ -238,7 +239,7 @@ fn has_native_file(binding: &Value) -> bool {
 }
 
 pub fn binding(db: &Connection, resource: &Value) -> Result<Value> {
-    if resource["nativeId"].is_string() {
+    if resource["source"] != "pi" && resource["nativeId"].is_string() {
         if let Some(binding) = crate::local_resources::native_binding(db, resource)? {
             return Ok(binding);
         }
@@ -271,6 +272,8 @@ pub fn binding(db: &Connection, resource: &Value) -> Result<Value> {
     }
     let home = if resource["source"] == "codex" {
         crate::native::codex_home()?
+    } else if resource["source"] == "pi" {
+        crate::pi_sessions::copy_directory()?
     } else {
         crate::native::claude_home()?
     };

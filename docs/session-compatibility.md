@@ -30,7 +30,13 @@ recipient desktops before sharing Pi sessions in a project. A pre-Pi desktop
 can fetch the readable conversation through its connector with the resource ID,
 but its local session sync can report `Unknown tool`. Updated desktops cache
 incoming Pi snapshots for reading and export without installing them into Pi.
-Automatic Pi sharing and Open in Pi are not included.
+**Open in Pi** makes a private local copy in the Orka profile and opens that
+file in an installed Terminal, Warp, or iTerm2. The copy has a new session ID
+and uses the connected checkout as its working directory. Reopening reuses that
+copy. Choose **Fork and open in Pi** to make another copy, including when a
+previous copy was removed. Orka does not launch a model turn or modify the
+source. Automatic Pi sharing and cross-provider launch to or from Pi are not
+included.
 
 ## Codex multi-agent rollout replacements
 

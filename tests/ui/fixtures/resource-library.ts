@@ -340,8 +340,22 @@ export async function resourceLibraryFixture(
             };
           if (command === "session_launch_options")
             return args.id === "session-pi"
-              ? []
+              ? [
+                  {
+                    tool: "pi",
+                    destination: "terminal",
+                    label: "Terminal",
+                    isDefault: true,
+                    available: true,
+                    mode: "fork",
+                  },
+                ]
               : { options: [], default: null };
+          if (command === "resume_session" && args.id === "session-pi")
+            return {
+              opened: true,
+              instruction: "Session opening requested in Terminal.",
+            };
           if (command.startsWith("plugin:")) return null;
           return {};
         },

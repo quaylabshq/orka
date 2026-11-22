@@ -39,7 +39,10 @@ function AppIcon({
   const [failed, setFailed] = useState<string | null>(null);
   const icon = option?.icon;
   const localIcon = icon && icon !== failed ? icon : undefined;
-  if (!localIcon && option?.destination !== "desktop" && option)
+  if (
+    !localIcon &&
+    (tool === "pi" || (option && option.destination !== "desktop"))
+  )
     return <Icon icon={SquareTerminalIcon} />;
   return (
     <span className="ui-icon" aria-hidden="true">
@@ -125,9 +128,11 @@ export function SessionLauncher({
   const targetLabel = (option: SessionLaunchOption) =>
     option.destination === "desktop"
       ? option.label
-      : option.tool === "claude"
-        ? "Claude Code CLI"
-        : "Codex CLI";
+      : option.tool === "pi"
+        ? "Pi"
+        : option.tool === "claude"
+          ? "Claude Code CLI"
+          : "Codex CLI";
   const label = primary
     ? targetLabel(primary)
     : tool === "claude"
@@ -232,18 +237,15 @@ export function SessionLauncher({
         aria-label={actionLabel}
         title={
           primary?.reason ??
-          (resource.source === "pi"
-            ? "Opening sessions in Pi is not supported yet"
-            : current?.error
-              ? "Open the menu to retry checking apps"
-              : primary
-                ? primary.mode === "handoff" &&
-                  primary.destination !== "desktop"
-                  ? `Starts a new conversation immediately in ${label}`
-                  : actionLabel
-                : current
-                  ? "No compatible app available"
-                  : "Checking apps…")
+          (current?.error
+            ? "Open the menu to retry checking apps"
+            : primary
+              ? primary.mode === "handoff" && primary.destination !== "desktop"
+                ? `Starts a new conversation immediately in ${label}`
+                : actionLabel
+              : current
+                ? "No compatible app available"
+                : "Checking apps…")
         }
         disabled={busy || !tool || !primary?.available}
         onClick={() => void actions.resume(primary)}

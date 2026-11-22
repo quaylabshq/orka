@@ -14,7 +14,7 @@ use std::{
 };
 use uuid::Uuid;
 pub fn binary(tool: &str) -> Result<PathBuf> {
-    if !["codex", "claude"].contains(&tool) {
+    if !["codex", "claude", "pi"].contains(&tool) {
         return Err("Unknown tool".into());
     }
     let mut candidates = vec![

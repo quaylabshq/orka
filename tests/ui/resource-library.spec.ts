@@ -24,6 +24,17 @@ for (const width of [1160, 900]) {
     await expect(
       page.getByRole("article", { name: "Pi", exact: true }),
     ).toContainText("Answer from the saved Pi branch");
+    await page.getByRole("button", { name: "Open in Pi", exact: true }).click();
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            (window as unknown as LibraryWindow).library.calls.find(
+              ({ command }) => command === "resume_session",
+            )?.args,
+        ),
+      )
+      .toEqual({ id: "session-pi", tool: "pi", destination: "terminal" });
   });
 }
 
