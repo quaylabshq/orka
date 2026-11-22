@@ -71,7 +71,9 @@ const NAME_TAKEN =
   "A skill with this folder name is already in the project. Existing files were preserved.";
 /** A toast has room for one short reason. */
 const reason = (error?: string) =>
-  error === NAME_TAKEN ? "That name is already in this project." : error;
+  error === NAME_TAKEN
+    ? "A skill with the same folder name is already in this project."
+    : error;
 
 const agentName = (agent: Agent) => (agent === "codex" ? "Codex" : "Claude");
 const plural = (count: number) => (count === 1 ? "skill" : "skills");
