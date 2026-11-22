@@ -234,9 +234,10 @@ pub fn claude_home() -> Result<PathBuf> {
 }
 pub struct Rpc {
     child: std::process::Child,
-    input: std::process::ChildStdin,
+    input: mpsc::Sender<(Value, mpsc::Sender<Result<()>>)>,
     rx: mpsc::Receiver<Value>,
     next: u64,
+    deadline: Option<std::time::Instant>,
 }
 impl Rpc {
     fn spawn(proxy: bool) -> Result<Self> {
@@ -255,8 +256,19 @@ impl Rpc {
             .stderr(Stdio::null())
             .spawn()
             .map_err(|e| e.to_string())?;
-        let input = child.stdin.take().ok_or("No app-server stdin")?;
+        let mut stdin = child.stdin.take().ok_or("No app-server stdin")?;
         let output = child.stdout.take().ok_or("No app-server stdout")?;
+        let (input, requests) = mpsc::channel::<(Value, mpsc::Sender<Result<()>>)>();
+        std::thread::spawn(move || {
+            for (value, complete) in requests {
+                let result = writeln!(stdin, "{value}")
+                    .and_then(|()| stdin.flush())
+                    .map_err(|e| e.to_string());
+                if complete.send(result).is_err() {
+                    break;
+                }
+            }
+        });
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
             for line in BufReader::new(output).lines() {
@@ -273,13 +285,24 @@ impl Rpc {
             input,
             rx,
             next: 0,
+            deadline: None,
         })
     }
     pub fn connect() -> Result<Self> {
         version("codex")?;
+        Self::connect_with(&[true, false], None)
+    }
+    pub fn connect_for_trust() -> Result<Self> {
+        Self::connect_with(
+            &[false],
+            Some(std::time::Instant::now() + Duration::from_secs(8)),
+        )
+    }
+    fn connect_with(modes: &[bool], deadline: Option<std::time::Instant>) -> Result<Self> {
         let mut failures = Vec::new();
-        for proxy in [true, false] {
+        for &proxy in modes {
             let mut rpc = Self::spawn(proxy)?;
+            rpc.deadline = deadline;
             let initialized = match rpc.call("initialize",json!({"clientInfo":{"name":"orka","version":"0.1.0"},"capabilities":{"experimentalApi":true}})) {
                 Ok(value) if value.is_object() => value,
                 Ok(_) => { failures.push("invalid app-server initialization response".into()); continue; }
@@ -308,8 +331,22 @@ impl Rpc {
         ))
     }
     fn send(&mut self, value: Value) -> Result<()> {
-        writeln!(self.input, "{value}").map_err(|e| e.to_string())?;
-        self.input.flush().map_err(|e| e.to_string())
+        let remaining = self.remaining();
+        if remaining.is_zero() {
+            return Err("Codex app server request timed out".into());
+        }
+        let (complete, result) = mpsc::channel();
+        self.input
+            .send((value, complete))
+            .map_err(|_| "Codex app server closed stdin")?;
+        result
+            .recv_timeout(remaining)
+            .map_err(|_| "Codex app server did not accept the request")?
+    }
+    fn remaining(&self) -> Duration {
+        self.deadline.map_or(Duration::from_secs(20), |deadline| {
+            deadline.saturating_duration_since(std::time::Instant::now())
+        })
     }
     pub fn call(&mut self, method: &str, params: Value) -> Result<Value> {
         self.call_optional(method, params)?
@@ -355,11 +392,11 @@ impl Rpc {
         }
         Err(format!("Cannot detect Codex pagination support: {message}"))
     }
-    fn request(&mut self, method: &str, params: Value) -> Result<Value> {
+    pub(crate) fn request(&mut self, method: &str, params: Value) -> Result<Value> {
         self.next += 1;
         let id = self.next;
+        let deadline = std::time::Instant::now() + self.remaining();
         self.send(json!({"id":id,"method":method,"params":params}))?;
-        let deadline = std::time::Instant::now() + Duration::from_secs(20);
         loop {
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
             let v = self
@@ -376,7 +413,7 @@ impl Rpc {
         }
     }
 }
-fn unsupported_method(error: &Value, method: &str) -> bool {
+pub(crate) fn unsupported_method(error: &Value, method: &str) -> bool {
     error["code"] == -32601
         || (error["code"] == -32600
             && error["message"]
@@ -600,7 +637,8 @@ impl Hooks {
         ("claude", ".claude/settings.local.json"),
         ("codex", ".codex/hooks.json"),
     ];
-    const EVENTS: [&'static str; 4] = ["SessionStart", "UserPromptSubmit", "Stop", "SessionEnd"];
+    pub(crate) const EVENTS: [&'static str; 4] =
+        ["SessionStart", "UserPromptSubmit", "Stop", "SessionEnd"];
     const FLAG: &'static str = "--orka-hook";
 
     fn quote(value: &str) -> String {
@@ -654,6 +692,15 @@ impl Hooks {
         let (executable, profile) = prefix.rsplit_once(" --profile ").unwrap_or((prefix, ""));
         let literal = executable.strip_prefix("'/")?.strip_suffix('\'')?;
         (!literal.replace("'\\''", "").contains('\'')).then_some((executable, profile))
+    }
+    /// The exact command this Orka build writes for `tool`.
+    pub fn current_command(executable: &Path, tool: &str) -> String {
+        Self::command(executable, tool)
+    }
+    /// Whether a hook command string is one Orka wrote for `tool`, under any
+    /// profile or executable.
+    pub fn owns(command: &Value, tool: &str) -> bool {
+        Self::parts(&json!({"type":"command","command":command}), tool).is_some()
     }
     fn configure(cfg: &mut Value, executable: &Path, tool: &str) {
         if cfg["hooks"].is_null() {
@@ -942,6 +989,13 @@ fn hook_project(
     Ok(None)
 }
 
+/// Where hook activity for one connected source folder is recorded. A
+/// single-folder project without source records is keyed by its project id.
+pub fn hook_seen_key(tool: &str, source: &Value) -> Option<String> {
+    let id = source["sourceId"].as_str().or(source["id"].as_str())?;
+    Some(format!("hookSeen:{tool}:{id}"))
+}
+
 pub fn hook(tool: &str, input: Value) -> Result<Value> {
     run_hook(tool, input, None)
 }
@@ -1002,7 +1056,12 @@ fn run_hook(tool: &str, input: Value, worktree_scope: Option<&str>) -> Result<Va
     let project = &project;
     let project_id = project["id"].as_str().ok_or("Missing project")?;
     if matches!(tool, "claude" | "codex") {
-        db::set(db, &format!("hookSeen:{tool}"), &json!(db::now()))?;
+        let now = json!(db::now());
+        // The tool-wide key stays for older Orka versions and setup status.
+        db::set(db, &format!("hookSeen:{tool}"), &now)?;
+        if let Some(key) = hook_seen_key(tool, project) {
+            db::set(db, &key, &now)?;
+        }
     }
     // Launch hooks deliver context and record provenance. File hooks own
     // live-session tracking, even when both hook sources are present.

@@ -382,6 +382,11 @@
   margin: 0;
 }
 
+.add-skills-peek[data-side="right"] {
+  right: auto;
+  left: calc(100% + 9px);
+}
+
 .add-skills-peek-heading {
   display: flex;
   align-items: flex-start;

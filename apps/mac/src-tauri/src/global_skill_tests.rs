@@ -846,6 +846,64 @@ fn usage(f: &Fixture, name: &str) -> (usize, bool) {
 }
 
 #[test]
+fn global_skill_usage_saves_counts_for_the_picker_and_recovers_from_partial_history() {
+    let f = Fixture::new();
+    let skill = global(&f, ".codex", "example").join("SKILL.md");
+    let project_id = f.project["id"].as_str().unwrap();
+    let scan = || {
+        serde_json::to_value(
+            tauri::async_runtime::block_on(global_skills::scan_global_skills(
+                project_id.into(),
+                None,
+            ))
+            .unwrap(),
+        )
+        .unwrap()
+    };
+    let refresh = || {
+        serde_json::to_value(
+            tauri::async_runtime::block_on(crate::skill_usage::global_skill_usage(
+                project_id.into(),
+            ))
+            .unwrap(),
+        )
+        .unwrap()
+    };
+    let first = scan();
+    let id = first["skills"][0]["id"].as_str().unwrap();
+    assert!(first.get("usage").is_none());
+    let attachment = json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"text":format!("<skill>\n<path>{}</path>\n</skill>\nprivate transcript",skill.display())}]}});
+    let chat = history(&f, "codex", "first", &[attachment]);
+    let cache = db::CacheScope::current()
+        .unwrap()
+        .path()
+        .unwrap()
+        .join("global-skill-usage.json");
+    let complete = json!({"counts":{id:1},"partial":false});
+    assert_eq!(refresh(), complete);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&fs::read(&cache).unwrap()).unwrap(),
+        complete
+    );
+
+    fs::remove_file(chat).unwrap();
+    assert_eq!(scan()["usage"], complete);
+    let blocked = f._home.path().join(".claude/projects");
+    fs::create_dir_all(blocked.parent().unwrap()).unwrap();
+    fs::write(&blocked, "").unwrap();
+    assert_eq!(refresh(), json!({"counts":{id:0},"partial":true}));
+    assert_eq!(scan()["usage"]["counts"][id], 0);
+
+    fs::remove_file(blocked).unwrap();
+    assert_eq!(refresh(), json!({"counts":{id:0},"partial":false}));
+    fs::write(&cache, "{truncated").unwrap();
+    assert!(scan().get("usage").is_none());
+    assert_eq!(refresh(), json!({"counts":{id:0},"partial":false}));
+    assert_eq!(scan()["usage"]["counts"][id], 0);
+    assert!(f.outbox().is_empty());
+}
+
+#[test]
 fn skill_usage_project_counts_both_copies_once_per_chat_and_isolates_other_paths() {
     let f = Fixture::new();
     let global = global(&f, ".codex", "example");

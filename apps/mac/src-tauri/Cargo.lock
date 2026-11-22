@@ -3349,11 +3349,12 @@ dependencies = [
 
 [[package]]
 name = "portable-workspace-mac"
-version = "0.3.17"
+version = "0.3.18"
 dependencies = [
  "age",
  "base64 0.23.1",
  "chrono",
+ "core-foundation 0.10.1",
  "dirs",
  "ed25519-dalek",
  "fs2",
@@ -3368,6 +3369,7 @@ dependencies = [
  "regex",
  "reqwest 0.12.28",
  "rusqlite",
+ "security-framework 3.7.0",
  "serde",
  "serde_json",
  "sha2 0.11.0",

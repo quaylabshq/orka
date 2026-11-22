@@ -4,6 +4,7 @@ import {
   CircleXIcon,
   FileIcon,
   FolderIcon,
+  MessageSquareIcon,
   PlusIcon,
   RefreshCwIcon,
   SearchIcon,
@@ -28,7 +29,7 @@ import { Button } from "./button.js";
 import { Icon } from "./icon.js";
 import { activeSources, repositoryLabel } from "./project-sources.js";
 import { readSkillMarkdown } from "./skill-markdown.js";
-import { useToasts } from "./toasts.js";
+import { useToastEscape, useToasts } from "./toasts.js";
 import { connectProject } from "./use-project-setup.js";
 import "./item-menu.css";
 import "./global-skill-import.css";
@@ -47,6 +48,10 @@ interface GlobalSkill {
 interface Scan {
   skills: GlobalSkill[];
   errors: string[];
+  usage?: SkillUsage;
+}
+interface SkillUsage {
+  counts: Record<string, number>;
 }
 interface ImportResult {
   skillId: string;
@@ -61,6 +66,14 @@ const PEEK_DELAY = 400;
 const SYNC_WAIT_MS = 5000;
 /** The one per-skill failure a second attempt can fix: the list went stale. */
 const STALE_SKILL = "Global skill unavailable. Scan again.";
+/** Native's wording when the project already has a skill folder of that name. */
+const NAME_TAKEN =
+  "A skill with this folder name is already in the project. Existing files were preserved.";
+/** A toast has room for one short reason. */
+const reason = (error?: string) =>
+  error === NAME_TAKEN
+    ? "A skill with the same folder name is already in this project."
+    : error;
 
 const agentName = (agent: Agent) => (agent === "codex" ? "Codex" : "Claude");
 const plural = (count: number) => (count === 1 ? "skill" : "skills");
@@ -109,6 +122,7 @@ export function GlobalSkillImport({
 }) {
   const [open, setOpen] = useState(false);
   const [adding, setAdding] = useState(false);
+  const dismissToastOnEscape = useToastEscape();
   const content = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     if (adding) content.current?.focus({ preventScroll: true });
@@ -123,7 +137,6 @@ export function GlobalSkillImport({
         <Button
           size={compact ? "sm" : "lg"}
           variant="primary"
-          aria-label={compact ? undefined : "Add global skills"}
           title="Add global skills"
           aria-haspopup="dialog"
         >
@@ -132,7 +145,7 @@ export function GlobalSkillImport({
           ) : (
             <>
               <Icon icon={PlusIcon} />
-              Add Global Skills
+              Add skills
             </>
           )}
         </Button>
@@ -161,8 +174,16 @@ export function GlobalSkillImport({
           onPointerDownOutside={(event) => {
             if (adding) event.preventDefault();
           }}
+          onInteractOutside={(event) => {
+            if (
+              event.target instanceof Element &&
+              event.target.closest("[data-orka-toast]")
+            )
+              event.preventDefault();
+          }}
           onEscapeKeyDown={(event) => {
             if (adding) event.preventDefault();
+            else dismissToastOnEscape(event);
           }}
           onKeyDown={(event) => {
             if (adding && event.key === "Tab") event.preventDefault();
@@ -229,11 +250,19 @@ function AddSkills({
   /** Why the last attempt failed, when trying again can fix it. */
   const [retry, setRetry] = useState("");
   const [failed, setFailed] = useState<Record<string, string>>({});
-  const [peek, setPeek] = useState<{ id: string; top: number }>();
+  const [peek, setPeek] = useState<{
+    id: string;
+    top: number;
+    maxWidth: number;
+    side: "left" | "right";
+  }>();
   const active = useRef(true);
   const generation = useRef(0);
   const peekTimer = useRef(0);
   const list = useRef<HTMLUListElement>(null);
+  const searchInput = useRef<HTMLInputElement>(null);
+  const pendingUsage = useRef<SkillUsage>(undefined);
+  const rankingFrame = useRef(0);
 
   const target = path ? JSON.stringify([sourceId, path]) : null;
   const [previousTarget, setPreviousTarget] = useState(target);
@@ -269,8 +298,37 @@ function AddSkills({
       active.current = false;
       generation.current += 1;
       window.clearTimeout(peekTimer.current);
+      window.cancelAnimationFrame(rankingFrame.current);
     };
   }, [rescan, target]);
+
+  const applyRanking = useCallback(() => {
+    window.cancelAnimationFrame(rankingFrame.current);
+    rankingFrame.current = window.requestAnimationFrame(() => {
+      const usage = pendingUsage.current;
+      // Wait for the pointer and focus to leave before moving rows.
+      if (!usage || list.current?.matches(":hover, :focus-within")) return;
+      pendingUsage.current = undefined;
+      setScan((current) => current && { ...current, usage });
+    });
+  }, []);
+  const hasSkills = Boolean(scan?.skills.length);
+  useEffect(() => {
+    if (!hasSkills) return;
+    let mounted = true;
+    void invoke<SkillUsage>("global_skill_usage", { projectId: project.id })
+      .then((next) => {
+        if (!mounted) return;
+        pendingUsage.current = next;
+        applyRanking();
+      })
+      .catch(() => {
+        // The saved order remains usable if history cannot be refreshed.
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [applyRanking, hasSkills, project.id]);
 
   const skills = useMemo(
     () =>
@@ -282,11 +340,14 @@ function AddSkills({
             folder: skill.name,
             name: name || skill.name,
             description,
+            count: scan?.usage?.counts[skill.id],
           };
         })
         .sort(
           (a, b) =>
-            a.name.localeCompare(b.name) || a.path.localeCompare(b.path),
+            (b.count ?? 0) - (a.count ?? 0) ||
+            a.name.localeCompare(b.name) ||
+            a.path.localeCompare(b.path),
         ),
     [scan],
   );
@@ -301,6 +362,10 @@ function AddSkills({
       (search ? skill.name.toLocaleLowerCase().includes(search) : true) &&
       (search || !unavailable(skill)),
   );
+  useEffect(() => {
+    // Filtering out every row removes the list without a pointer-leave event.
+    if (!visible.length) applyRanking();
+  }, [applyRanking, visible.length]);
   const selectable = visible.filter((skill) => !unavailable(skill));
   const chosen = addable.filter((skill) => selected.has(skill.id));
   const allSelected =
@@ -321,7 +386,11 @@ function AddSkills({
     added: ImportResult[],
     dead: ImportResult[],
     name: (id: string) => string,
+    keepsPickerOpen: boolean,
   ) => {
+    const feedback = keepsPickerOpen
+      ? { overPopover: true, returnFocusTo: searchInput.current }
+      : {};
     if (added.length) {
       const subject =
         added.length === 1 ? name(added[0].skillId) : `${added.length} skills`;
@@ -329,17 +398,20 @@ function AddSkills({
       if (statuses.includes("draft"))
         notify({
           kind: "success",
+          ...feedback,
           title: `${subject} added on this Mac. Review ${added.length === 1 ? "it" : "them"} to share.`,
           action: { label: "Review", onClick: onReview },
         });
       else if (statuses.every((status) => status === "local"))
         notify({
           kind: "success",
+          ...feedback,
           title: `${subject} added on this Mac. Sharing is off for skills.`,
         });
       else
         notify({
           kind: "success",
+          ...feedback,
           title: `${subject} added to ${destination}`,
         });
     }
@@ -347,10 +419,11 @@ function AddSkills({
     if (dead.length)
       notify({
         kind: "error",
+        ...feedback,
         title:
           dead.length === 1
-            ? `${name(dead[0].skillId)} wasn’t added. ${dead[0].error}`
-            : `${dead.length} skills weren’t added. ${dead[0].error}`,
+            ? `${name(dead[0].skillId)} wasn’t added. ${reason(dead[0].error)}`
+            : `${dead.length} skills weren’t added. ${reason(dead[0].error)}`,
       });
   };
   const scanNow = () =>
@@ -412,7 +485,8 @@ function AddSkills({
           }
           stale = retryable;
         }
-        report(added, dead, name);
+        const keepsPickerOpen = stale.length > 0 || dead.length > 0;
+        report(added, dead, name, keepsPickerOpen);
         if (!active.current) return;
         if (next && current === generation.current) setScan(next);
         else if (added.length && current === generation.current) {
@@ -446,7 +520,7 @@ function AddSkills({
               : `Couldn’t add ${stale.length} ${plural(stale.length)}.`,
           );
         }
-        closeOnSuccess = !stale.length && !dead.length;
+        closeOnSuccess = !keepsPickerOpen;
       });
     } catch (error) {
       if (active.current && !answered)
@@ -468,9 +542,15 @@ function AddSkills({
     window.clearTimeout(peekTimer.current);
     const popover = row.closest<HTMLElement>(".add-skills-popover");
     if (!popover) return;
-    const top =
-      row.getBoundingClientRect().top - popover.getBoundingClientRect().top;
-    peekTimer.current = window.setTimeout(() => setPeek({ id, top }), delay);
+    const { left, right, top } = popover.getBoundingClientRect();
+    const rowTop = row.getBoundingClientRect().top - top;
+    const rightSpace = window.innerWidth - right;
+    const side = left >= 321 || left >= rightSpace ? "left" : "right";
+    const maxWidth = (side === "left" ? left : rightSpace) - 21;
+    peekTimer.current = window.setTimeout(
+      () => setPeek({ id, top: rowTop, maxWidth, side }),
+      delay,
+    );
   };
   const closePeek = () => {
     window.clearTimeout(peekTimer.current);
@@ -504,10 +584,7 @@ function AddSkills({
       <div className="add-skills-message">
         <Icon icon={FolderIcon} size="lg" variant="secondary" />
         <h2>Connect a folder first</h2>
-        <p>
-          Skills are added to a project folder on this Mac, and this project
-          does not have one yet.
-        </p>
+        <p>Skills are added to a project folder on this Mac.</p>
         <Button
           size="sm"
           variant="primary"
@@ -554,9 +631,10 @@ function AddSkills({
       <label className="add-skills-search">
         <SearchIcon size={16} aria-hidden="true" />
         <input
+          ref={searchInput}
           type="search"
           aria-label="Search global skills"
-          placeholder="Search your global skills…"
+          placeholder="Search global skills…"
           value={query}
           autoFocus
           disabled={locked || needsDestination}
@@ -634,7 +712,7 @@ function AddSkills({
         <div className="add-skills-message" role="status">
           <Icon icon={FolderIcon} size="lg" variant="secondary" />
           <h2>Repository unavailable</h2>
-          <p>Choose a connected repository to continue adding skills.</p>
+          <p>Choose a connected repository.</p>
         </div>
       ) : scanError ? (
         <div className="add-skills-message">
@@ -659,12 +737,12 @@ function AddSkills({
           <h2>Nothing to add</h2>
           <p>
             {skills.some((skill) => !skill.exists)
-              ? "Search to see why individual skills can’t be added."
+              ? "Search for a skill to see why it can’t be added."
               : skills.length
                 ? "Every global skill on this Mac is already in this project."
                 : scan.errors.length
                   ? "No global skills could be read on this Mac."
-                  : "No global skills were found in Codex or Claude on this Mac."}
+                  : "No global skills found in Codex or Claude."}
           </p>
           {scan.errors.map((error, index) => (
             <p key={index} className="add-skills-note" role="status">
@@ -709,6 +787,8 @@ function AddSkills({
               ref={list}
               className="add-skills-list"
               aria-label="Global skills"
+              onPointerLeave={applyRanking}
+              onBlurCapture={applyRanking}
               onKeyDown={moveFocus}
               onScroll={closePeek}
             >
@@ -822,7 +902,11 @@ function AddSkills({
           id={peekId}
           className="add-skills-peek"
           role="tooltip"
-          style={{ top: Math.max(0, peek.top - 40) }}
+          data-side={peek.side}
+          style={{
+            top: Math.max(0, peek.top - 40),
+            maxWidth: peek.maxWidth,
+          }}
         >
           <div className="add-skills-peek-heading">
             <strong>{peeked.name}</strong>
@@ -832,6 +916,15 @@ function AddSkills({
             <p className="add-skills-peek-error">
               <CircleXIcon size={12} aria-hidden="true" />
               <span>{failed[peeked.id] || peeked.error}</span>
+            </p>
+          )}
+          {peeked.count !== undefined && (
+            <p className="add-skills-peek-meta">
+              <MessageSquareIcon size={12} aria-hidden="true" />
+              <span>
+                Detected in {peeked.count}{" "}
+                {peeked.count === 1 ? "chat" : "chats"}
+              </span>
             </p>
           )}
           <p>{peeked.description || "No description"}</p>
