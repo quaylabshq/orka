@@ -819,7 +819,7 @@ Declared licenses are upstream metadata. Preserve the actual license notices and
 | [foreign-types](https://crates.io/crates/foreign-types/0.5.0) | 0.5.0 | MIT/Apache-2.0 |
 | [foreign-types-macros](https://crates.io/crates/foreign-types-macros/0.2.4) | 0.2.4 | MIT/Apache-2.0 |
 | [foreign-types-shared](https://crates.io/crates/foreign-types-shared/0.3.1) | 0.3.1 | MIT/Apache-2.0 |
-| [form_urlencoded](https://crates.io/crates/form_urlencoded/1.2.2) | 1.2.2 | MIT OR Apache-2.0 |
+| [form_urlencoded](https://crates.io/crates/form_urlencoded/1.2.3) | 1.2.3 | MIT OR Apache-2.0 |
 | [fs2](https://crates.io/crates/fs2/0.4.3) | 0.4.3 | MIT/Apache-2.0 |
 | [futures](https://crates.io/crates/futures/0.3.34) | 0.3.34 | MIT OR Apache-2.0 |
 | [futures-channel](https://crates.io/crates/futures-channel/0.3.34) | 0.3.34 | MIT OR Apache-2.0 |
@@ -1179,7 +1179,7 @@ Declared licenses are upstream metadata. Preserve the actual license notices and
 | [unicode-segmentation](https://crates.io/crates/unicode-segmentation/1.13.3) | 1.13.3 | MIT OR Apache-2.0 |
 | [universal-hash](https://crates.io/crates/universal-hash/0.5.1) | 0.5.1 | MIT OR Apache-2.0 |
 | [untrusted](https://crates.io/crates/untrusted/0.9.0) | 0.9.0 | ISC |
-| [url](https://crates.io/crates/url/2.5.8) | 2.5.8 | MIT OR Apache-2.0 |
+| [url](https://crates.io/crates/url/2.5.9) | 2.5.9 | MIT OR Apache-2.0 |
 | [urlpattern](https://crates.io/crates/urlpattern/0.6.0) | 0.6.0 | MIT |
 | [utf8_iter](https://crates.io/crates/utf8_iter/1.0.4) | 1.0.4 | Apache-2.0 OR MIT |
 | [uuid](https://crates.io/crates/uuid/1.28.0) | 1.28.0 | Apache-2.0 OR MIT |
