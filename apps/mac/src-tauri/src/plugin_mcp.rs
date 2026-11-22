@@ -30,6 +30,16 @@ pub fn tools() -> Value {
     let shared: Vec<Value> = serde_json::from_str(include_str!("connector-tools.json"))
         .expect("Bundled connector catalog");
     for mut tool in shared {
+        // The next protocol bundle includes Pi. Keep the pinned catalog intact
+        // and require the connected service's Pi capability before forwarding.
+        if tool["name"] == "list_sessions" {
+            let providers = tool["inputSchema"]["properties"]["provider"]["enum"]
+                .as_array_mut()
+                .expect("Bundled session provider filter");
+            if !providers.contains(&json!("pi")) {
+                providers.push(json!("pi"));
+            }
+        }
         let read = tool["scope"] == "orka.read";
         tool["annotations"] = json!({"readOnlyHint":read,"destructiveHint":false,"idempotentHint":true,"openWorldHint":true});
         tool.as_object_mut().unwrap().remove("scope");
@@ -165,6 +175,20 @@ pub(crate) async fn call_session(
                 .lock()
                 .map_err(|_| "Connector capability unavailable")?
                 .insert(binding.generation.clone());
+        }
+        if name == "list_sessions" && arguments["provider"] == "pi" {
+            let capabilities = crate::sync::api_at(
+                &binding.account_id,
+                &binding.service_origin,
+                "GET",
+                "/v2/projects/capabilities",
+                None,
+            )
+            .await?;
+            binding.check_current()?;
+            if capabilities["piSessions"] != 1 {
+                return Err("Update the Orka service to list shared Pi sessions.".into());
+            }
         }
         let result = crate::sync::api_at(
             &binding.account_id,

@@ -26,9 +26,11 @@ secret redaction. Discovery does not modify Pi files or enable sharing.
 Use the existing snapshot preview to share one Pi session. The uploader checks
 for `piSessions: 1` before transferring any files. An older service leaves the
 selected snapshot queued locally. Deploy the compatible API and upgrade
-recipient desktops before sharing Pi sessions in a project. Incoming Pi
-snapshots are cached for reading and export, never installed into Pi. Automatic
-Pi sharing and Open in Pi are not included.
+recipient desktops before sharing Pi sessions in a project. A pre-Pi desktop
+can fetch the readable conversation through its connector with the resource ID,
+but its local session sync can report `Unknown tool`. Updated desktops cache
+incoming Pi snapshots for reading and export without installing them into Pi.
+Automatic Pi sharing and Open in Pi are not included.
 
 ## Codex multi-agent rollout replacements
 
