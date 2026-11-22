@@ -123,7 +123,7 @@ impl CacheScope {
         open_at(&self.path()?)
     }
 
-    fn path(&self) -> Result<PathBuf> {
+    pub(crate) fn path(&self) -> Result<PathBuf> {
         if self.account == "guest" {
             Ok(self.root.join(&self.account))
         } else {
