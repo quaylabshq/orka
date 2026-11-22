@@ -62,10 +62,17 @@ struct Launcher {
         }
     }
 
-    private static func launch(_ installation: Installation, arguments: [String]) throws {
+    static func isHeadless(arguments: [String]) -> Bool {
         let command = arguments.dropFirst(arguments.first == "--profile" ? 2 : 0).first
-        let headless = ["--orka-agent", "--orka-plugin", "--orka-sync", "--orka-doctor", "--orka-hook", "--orka-context", "--orka-env-test", "--orka-test"].contains(command ?? "")
-        if headless {
+        return [
+            "--orka-agent", "--orka-plugin", "--orka-sync", "--orka-doctor",
+            "--orka-hook", "--orka-claude-worktree-hook", "--orka-claude-worktree-plugin",
+            "--orka-context", "--orka-env-test", "--orka-test",
+        ].contains(command ?? "")
+    }
+
+    private static func launch(_ installation: Installation, arguments: [String]) throws {
+        if isHeadless(arguments: arguments) {
             try replaceProcess(with: installation.desktopExecutable, arguments: arguments)
         }
         // LaunchServices must start the desktop executable without a subsequent exec.

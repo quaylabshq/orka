@@ -2,16 +2,44 @@ use crate::db::{self, Result};
 use fs2::FileExt;
 use std::{
     collections::BTreeMap,
-    fs, io,
+    fs,
+    io::{self, Write},
     path::{Path, PathBuf},
-    process::{Command, Output},
+    process::{Command, Output, Stdio},
 };
 
 const BEGIN: &str = "# BEGIN Orka integration";
 const END: &str = "# END Orka integration";
 const SOURCE: &str = "# Orka source hook (retained)";
 
-fn git(checkout: &Path, args: &[&str], path: &Path) -> Result<Output> {
+#[derive(Debug)]
+pub(crate) enum ProtectionError {
+    Refused(&'static str),
+    Failed(String),
+}
+
+impl From<String> for ProtectionError {
+    fn from(error: String) -> Self {
+        Self::Failed(error)
+    }
+}
+
+impl From<&str> for ProtectionError {
+    fn from(error: &str) -> Self {
+        Self::Failed(error.into())
+    }
+}
+
+impl From<ProtectionError> for String {
+    fn from(error: ProtectionError) -> Self {
+        match error {
+            ProtectionError::Refused(reason) => reason.into(),
+            ProtectionError::Failed(error) => error,
+        }
+    }
+}
+
+fn git_command(checkout: &Path, args: &[&str]) -> Command {
     let mut command = Command::new("/usr/bin/git");
     // Hooks may inherit Git's environment for a different checkout or index.
     for key in [
@@ -30,24 +58,79 @@ fn git(checkout: &Path, args: &[&str], path: &Path) -> Result<Output> {
     command
         .current_dir(checkout)
         .arg("--no-optional-locks")
-        .args(args)
+        .args(args);
+    command
+}
+
+fn git(checkout: &Path, args: &[&str], path: &Path) -> Result<Output> {
+    git_command(checkout, args)
         .arg("--")
         .arg(path)
         .output()
         .map_err(|e| e.to_string())
 }
 
-pub(crate) fn untracked(checkout: &Path, relative: &Path) -> Result<()> {
+pub(crate) fn untracked(
+    checkout: &Path,
+    relative: &Path,
+) -> std::result::Result<(), ProtectionError> {
     let output = git(
         checkout,
         &["--literal-pathspecs", "ls-files", "-z", "--cached"],
         relative,
     )?;
     if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
+        return Err(String::from_utf8_lossy(&output.stderr)
+            .trim()
+            .to_owned()
+            .into());
     }
     if !output.stdout.is_empty() {
-        return Err("Destination is tracked by Git".into());
+        return Err(ProtectionError::Refused("Destination is tracked by Git"));
+    }
+    Ok(())
+}
+
+/// Check user-owned paths without changing Git's ignore rules.
+pub(crate) fn check_hook_ownership(
+    checkout: &Path,
+    relative: &Path,
+) -> std::result::Result<(), ProtectionError> {
+    untracked(checkout, relative)?;
+    let mut child = git_command(
+        checkout,
+        &["check-ignore", "--no-index", "-v", "-z", "--stdin"],
+    )
+    .stdin(Stdio::piped())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .spawn()
+    .map_err(|error| error.to_string())?;
+    let mut input = child.stdin.take().expect("piped Git stdin");
+    let write = input
+        .write_all(relative.as_os_str().as_encoded_bytes())
+        .and_then(|()| input.write_all(&[0]));
+    drop(input);
+    let output = child
+        .wait_with_output()
+        .map_err(|error| error.to_string())?;
+    if !matches!(output.status.code(), Some(0 | 1)) {
+        return Err(String::from_utf8_lossy(&output.stderr)
+            .trim()
+            .to_owned()
+            .into());
+    }
+    write.map_err(|error| error.to_string())?;
+    // Verbose NUL-delimited records contain source, line, pattern and path.
+    if output
+        .stdout
+        .split(|byte| *byte == 0)
+        .nth(2)
+        .is_some_and(|pattern| pattern.starts_with(b"!"))
+    {
+        return Err(ProtectionError::Refused(
+            "Destination is explicitly included by Git",
+        ));
     }
     Ok(())
 }
@@ -145,7 +228,12 @@ impl Excludes {
         db::atomic(&self.path, content.as_bytes())
     }
 
-    pub(crate) fn protect(&mut self, checkout: &Path, relative: &Path, retain: bool) -> Result<()> {
+    pub(crate) fn protect(
+        &mut self,
+        checkout: &Path,
+        relative: &Path,
+        retain: bool,
+    ) -> std::result::Result<(), ProtectionError> {
         untracked(checkout, relative)?;
         let rule = rule(relative)?;
         let previous = self.rules.get(&rule).copied();
@@ -171,9 +259,14 @@ impl Excludes {
         }
         let output = output?;
         if output.status.code() == Some(1) {
-            Err("Destination is not ignored by Git".into())
+            Err(ProtectionError::Refused(
+                "Destination is not ignored by Git",
+            ))
         } else {
-            Err(String::from_utf8_lossy(&output.stderr).trim().to_owned())
+            Err(String::from_utf8_lossy(&output.stderr)
+                .trim()
+                .to_owned()
+                .into())
         }
     }
 
@@ -203,7 +296,7 @@ pub(crate) fn publish(
     mode: u32,
     replacing: bool,
 ) -> Result<()> {
-    use std::{io::Write, os::unix::fs::OpenOptionsExt};
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     let mut tmp = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -211,6 +304,7 @@ pub(crate) fn publish(
         .open(scratch)
         .map_err(|e| e.to_string())?;
     let result = (|| -> io::Result<()> {
+        tmp.set_permissions(fs::Permissions::from_mode(mode))?;
         tmp.write_all(bytes)?;
         tmp.sync_all()?;
         if replacing {
