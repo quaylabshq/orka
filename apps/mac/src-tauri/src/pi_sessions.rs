@@ -37,6 +37,10 @@ pub(crate) fn copy_directory() -> Result<PathBuf> {
     Ok(db::root()?.join("pi-session-copies"))
 }
 
+pub(crate) fn is_private_copy(binding: &Value) -> bool {
+    binding.get("piCopyOrigin").is_some() && binding["base"]["source"] == "pi"
+}
+
 pub(crate) fn copy_path(binding: &Value, root: &Path) -> Result<PathBuf> {
     let id = binding["nativeId"]
         .as_str()
@@ -91,6 +95,18 @@ pub(crate) fn fork(project: &Value, resource: &Value) -> Result<Value> {
     let hash = db::blob(&bytes)?;
     db::atomic(&path, &bytes)?;
     let mut base = resource.clone();
+    let fields = base.as_object_mut().ok_or("Invalid Pi session resource")?;
+    for key in [
+        "paths",
+        "nativeId",
+        "local",
+        "localChanges",
+        "sharedRevision",
+        "localForkId",
+        "nativeForkParentId",
+    ] {
+        fields.remove(key);
+    }
     base["resourceId"] = json!(Uuid::new_v4());
     base["files"] =
         json!([{"path":"session.jsonl","hash":hash,"size":bytes.len(),"executable":false}]);

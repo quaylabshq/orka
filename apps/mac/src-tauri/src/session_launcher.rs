@@ -1074,11 +1074,11 @@ pub(crate) fn launch_with(
     let binding = if let Some(resource) = &existing {
         session_forks::binding(&db, resource)?
     } else {
-        host.fork(
-            &db,
-            &source_project,
-            &session_forks::current_resource(&db, &session.resource)?,
-        )?
+        let snapshot = match session_forks::current_resource(&db, &session.resource) {
+            Err(_) if tool == Tool::Pi && force_fork => session.resource.clone(),
+            result => result?,
+        };
+        host.fork(&db, &source_project, &snapshot)?
     };
     revalidate(&db, &scope, &session)?;
     let native_id = binding["nativeId"]

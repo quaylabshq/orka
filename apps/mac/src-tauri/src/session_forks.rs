@@ -196,8 +196,22 @@ pub fn record(
     resource["hash"] = json!(indexer::manifest_hash(&resource["files"]));
     let mut saved_binding = binding.clone();
     saved_binding["base"] = resource.clone();
-    // The first scan still needs to publish the native copy at base revision 0.
-    saved_binding["base"]["files"] = json!([]);
+    if source["source"] == "pi" {
+        let parent_id = source["resourceId"].as_str().ok_or("Missing parent")?;
+        let parent = indexer::binding(db, parent_id)?;
+        saved_binding["piCopyOrigin"] = if crate::pi_sessions::is_private_copy(&parent) {
+            parent["piCopyOrigin"].clone()
+        } else if source["revision"].as_u64().is_some_and(|rev| rev > 0)
+            || source["sharedRevision"].as_u64().is_some_and(|rev| rev > 0)
+        {
+            json!(parent_id)
+        } else {
+            Value::Null
+        };
+    } else {
+        // The first scan still needs to publish the native copy at base revision 0.
+        saved_binding["base"]["files"] = json!([]);
+    }
     let fork = json!({"parentId":source["resourceId"],"nativeId":native_id,"projectId":project,"destination":destination,"createdAt":resource["updatedAt"]});
     let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
     db::upsert(&tx, "resources", &id, project, &resource)?;
@@ -326,10 +340,20 @@ pub fn current_resource(db: &Connection, resource: &Value) -> Result<Value> {
         .as_ref()
         .and_then(|s| s["path"].as_str())
         .map(std::path::Path::new);
+    let pi_path = if crate::pi_sessions::is_private_copy(&binding) {
+        Some(crate::pi_sessions::copy_path(
+            &binding,
+            root.ok_or("Connect a folder first")?,
+        )?)
+    } else {
+        None
+    };
     let mut current = resource.clone();
     current["files"] = json!(crate::history::session_files(
         resource["source"].as_str().ok_or("Missing tool")?,
-        std::path::Path::new(path),
+        pi_path
+            .as_deref()
+            .unwrap_or_else(|| std::path::Path::new(path)),
         root
     )?);
     Ok(current)

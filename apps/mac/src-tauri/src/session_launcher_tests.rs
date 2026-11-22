@@ -308,6 +308,106 @@ fn open_in_pi_retains_a_private_copy_and_reuses_its_exact_path() {
 }
 
 #[test]
+fn pi_copy_survives_an_authorized_feed_reset_and_never_queues_a_delete() {
+    let mut f = Fixture::new();
+    f.project["sharing"]["session"] = json!(true);
+    let project = f.project["id"].as_str().unwrap();
+    db::upsert(&f.db, "projects", project, project, &f.project).unwrap();
+    fs::create_dir_all(native::codex_home().unwrap().join("sessions")).unwrap();
+    fs::create_dir_all(native::claude_home().unwrap().join("projects")).unwrap();
+    let mut source = session(&f, "pi", true);
+    source["title"] = json!("Shared Pi session");
+    source["logicalPath"] = json!(format!("pi/{}", source["resourceId"].as_str().unwrap()));
+    let id = source["resourceId"].as_str().unwrap();
+    db::upsert(&f.db, "resources", id, project, &source).unwrap();
+    let host = FakeHost::default();
+    let first = session_launcher::resume_with(id, Tool::Pi, Destination::Terminal, &host).unwrap();
+    let child = session_launcher::launch_with(
+        first["resourceId"].as_str().unwrap(),
+        Tool::Pi,
+        Destination::Terminal,
+        true,
+        &host,
+    )
+    .unwrap();
+    crate::governance::reset(&f.db, project, &json!([{"resource":source}])).unwrap();
+    let reopened =
+        session_launcher::resume_with(id, Tool::Pi, Destination::Terminal, &host).unwrap();
+    assert_eq!(reopened["nativeId"], first["nativeId"]);
+    let reopened_child = session_launcher::resume_with(
+        child["resourceId"].as_str().unwrap(),
+        Tool::Pi,
+        Destination::Terminal,
+        &host,
+    )
+    .unwrap();
+    assert_eq!(reopened_child["nativeId"], child["nativeId"]);
+    let path = PathBuf::from(host.calls.borrow()[0]["path"].as_str().unwrap());
+    assert_eq!(
+        crate::resource_commands::paths(
+            &f.db,
+            &f.project,
+            &json!({"resourceId":first["resourceId"]})
+        )
+        .unwrap(),
+        [path.canonicalize().unwrap()]
+    );
+    fs::remove_file(path).unwrap();
+    indexer::scan(&f.db, &f.project).unwrap();
+    assert!(f.outbox().is_empty(), "{:?}", f.outbox());
+    crate::governance::reset(&f.db, project, &json!([])).unwrap();
+    assert!(
+        crate::local_resources::resource(&f.db, child["resourceId"].as_str().unwrap()).is_err()
+    );
+    assert!(host.calls.borrow()[1]["path"]
+        .as_str()
+        .is_some_and(|p| Path::new(p).is_file()));
+}
+
+#[test]
+fn pi_local_fork_reveals_its_copy_and_recovers_from_a_corrupt_file() {
+    let f = Fixture::new();
+    let folder = crate::pi_sessions::directory().unwrap();
+    fs::create_dir_all(&folder).unwrap();
+    let native_id = uuid::Uuid::new_v4();
+    let original = folder.join(format!("{native_id}.jsonl"));
+    let bytes = native::encode(&[
+        json!({"type":"session","version":3,"id":native_id,"cwd":f.root}),
+        json!({"type":"message","id":"start","parentId":null,"message":{"role":"user","content":"Private Pi task"}}),
+    ]);
+    fs::write(&original, &bytes).unwrap();
+    let row = indexer::discover(&f.db, &f.project, "session")
+        .unwrap()
+        .into_iter()
+        .find(|entry| entry["resource"]["source"] == "pi")
+        .unwrap();
+    let host = FakeHost::default();
+    let first = session_launcher::resume_with(
+        row["resource"]["resourceId"].as_str().unwrap(),
+        Tool::Pi,
+        Destination::Terminal,
+        &host,
+    )
+    .unwrap();
+    let id = first["resourceId"].as_str().unwrap();
+    let copy = PathBuf::from(host.calls.borrow()[0]["path"].as_str().unwrap());
+    assert_ne!(copy, original);
+    assert_eq!(
+        crate::resource_commands::paths(&f.db, &f.project, &json!({"resourceId":id})).unwrap(),
+        [copy.canonicalize().unwrap()]
+    );
+    fs::write(&copy, "invalid JSON\n").unwrap();
+    let options = json!(session_launcher::options_with(id, &host).unwrap());
+    assert_eq!(options[0]["available"], false);
+    assert_eq!(options[0]["forkAvailable"], true);
+    let recovered =
+        session_launcher::launch_with(id, Tool::Pi, Destination::Terminal, true, &host).unwrap();
+    assert_ne!(recovered["nativeId"], first["nativeId"]);
+    assert_eq!(fs::read_to_string(&copy).unwrap(), "invalid JSON\n");
+    assert_eq!(fs::read(original).unwrap(), bytes);
+}
+
+#[test]
 fn pi_terminal_script_opens_the_exact_copy_and_blocks_an_overlapping_launch() {
     let f = Fixture::new();
     let input = f.root.join("copy 'with spaces'.jsonl");

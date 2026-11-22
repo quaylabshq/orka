@@ -538,13 +538,25 @@ fn reset_source(db: &Connection, project_id: &str, events: &Value, p: &Value) ->
             continue;
         }
         let b = indexer::binding(db, id)?;
+        let private_pi = crate::pi_sessions::is_private_copy(&b);
+        if private_pi {
+            let origin = &b["piCopyOrigin"];
+            if origin.is_null()
+                || visible.iter().any(|event| {
+                    event["resource"]["resourceId"] == *origin
+                        && event["resource"]["deleted"] != true
+                })
+            {
+                continue;
+            }
+        }
         crate::local_resources::remember_origin(db, p, &r, &b)?;
         for queued in db::rows(db,"SELECT json_object('id',id,'path',path,'value',json(value)) FROM outbox WHERE project=? AND (json_extract(value,'$.resource.resourceId')=? OR json_extract(value,'$.resourceId')=?)",&[&project_id,&id,&id])? {
             preserve_queued(db, p, &queued, &b["paths"])?;
             db.execute("DELETE FROM outbox WHERE id=?",[queued["id"].as_str()]).map_err(|e|e.to_string())?;
         }
         // Capture dirty local files before removing Orka-managed copies from agent discovery.
-        if let Some(paths) = b["paths"].as_array().filter(|_| available) {
+        if let Some(paths) = b["paths"].as_array().filter(|_| available && !private_pi) {
             for raw in paths {
                 let path = Path::new(raw.as_str().ok_or("Invalid binding")?);
                 if !path.exists() {

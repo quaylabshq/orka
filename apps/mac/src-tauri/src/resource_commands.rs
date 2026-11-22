@@ -86,6 +86,11 @@ fn checked_paths(resource: &Value, source: &Value, binding: &Value) -> Result<Ve
     let Some(root) = source["path"].as_str().map(Path::new) else {
         return Ok(vec![]);
     };
+    if crate::pi_sessions::is_private_copy(binding) {
+        let path = crate::pi_sessions::copy_path(binding, root)?;
+        return canonical_path(&crate::pi_sessions::copy_directory()?, &path)
+            .map(|path| vec![path]);
+    }
     let raw = if resource["paths"].is_array() {
         &resource["paths"]
     } else {

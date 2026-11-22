@@ -2441,7 +2441,7 @@ fn scan_source(
         &[&project_id],
     )? {
         let base = &b["base"];
-        if !crate::sources::matches(project, base) {
+        if crate::pi_sessions::is_private_copy(&b) || !crate::sources::matches(project, base) {
             continue;
         }
         let Some(id) = base["resourceId"].as_str() else {
