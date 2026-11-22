@@ -87,7 +87,7 @@ fn checked_paths(resource: &Value, source: &Value, binding: &Value) -> Result<Ve
         return Ok(vec![]);
     };
     if crate::pi_sessions::is_private_copy(binding) {
-        let path = crate::pi_sessions::copy_path(binding, root)?;
+        let path = crate::pi_sessions::copy_location(binding)?;
         return canonical_path(&crate::pi_sessions::copy_directory()?, &path)
             .map(|path| vec![path]);
     }

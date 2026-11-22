@@ -41,7 +41,7 @@ pub(crate) fn is_private_copy(binding: &Value) -> bool {
     binding.get("piCopyOrigin").is_some() && binding["base"]["source"] == "pi"
 }
 
-pub(crate) fn copy_path(binding: &Value, root: &Path) -> Result<PathBuf> {
+pub(crate) fn copy_location(binding: &Value) -> Result<PathBuf> {
     let id = binding["nativeId"]
         .as_str()
         .ok_or("Missing Pi session ID")?;
@@ -56,12 +56,28 @@ pub(crate) fn copy_path(binding: &Value, root: &Path) -> Result<PathBuf> {
             "The local Pi copy is unavailable. Choose Fork and open to create another copy.".into(),
         );
     }
+    Ok(path)
+}
+
+pub(crate) fn copy_path(binding: &Value, root: &Path) -> Result<PathBuf> {
+    let path = copy_location(binding)?;
     let records = native::complete_records(&history::read_session(&path)?)?;
     let (actual, cwd, _) = native::session_info("pi", &records)?;
-    if actual != id || cwd != root {
+    if binding["nativeId"] != actual || cwd != root {
         return Err("The local Pi copy no longer matches its session or repository.".into());
     }
     Ok(path)
+}
+
+pub(crate) fn forget_copies(db: &rusqlite::Connection, project: &str, origin: &str) -> Result<()> {
+    for table in ["resources", "bindings"] {
+        db.execute(
+            &format!("DELETE FROM {table} WHERE project=?1 AND id IN (SELECT id FROM bindings WHERE project=?1 AND json_extract(value,'$.base.source')='pi' AND json_extract(value,'$.piCopyOrigin')=?2)"),
+            [project, origin],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 pub(crate) fn launch_in_use(path: &Path) -> bool {

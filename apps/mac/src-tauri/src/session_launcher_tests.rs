@@ -397,6 +397,10 @@ fn pi_local_fork_reveals_its_copy_and_recovers_from_a_corrupt_file() {
         [copy.canonicalize().unwrap()]
     );
     fs::write(&copy, "invalid JSON\n").unwrap();
+    assert_eq!(
+        crate::resource_commands::paths(&f.db, &f.project, &json!({"resourceId":id})).unwrap(),
+        [copy.canonicalize().unwrap()]
+    );
     let options = json!(session_launcher::options_with(id, &host).unwrap());
     assert_eq!(options[0]["available"], false);
     assert_eq!(options[0]["forkAvailable"], true);
@@ -405,6 +409,38 @@ fn pi_local_fork_reveals_its_copy_and_recovers_from_a_corrupt_file() {
     assert_ne!(recovered["nativeId"], first["nativeId"]);
     assert_eq!(fs::read_to_string(&copy).unwrap(), "invalid JSON\n");
     assert_eq!(fs::read(original).unwrap(), bytes);
+}
+
+#[test]
+fn pi_origin_tombstone_unlists_descendants_and_rejects_a_stale_nested_fork() {
+    let f = Fixture::new();
+    let source = session(&f, "pi", true);
+    let id = source["resourceId"].as_str().unwrap();
+    let host = FakeHost::default();
+    let first = session_launcher::resume_with(id, Tool::Pi, Destination::Terminal, &host).unwrap();
+    let first_id = first["resourceId"].as_str().unwrap();
+    let parent = crate::local_resources::resource(&f.db, first_id).unwrap();
+    let nested =
+        session_launcher::launch_with(first_id, Tool::Pi, Destination::Terminal, true, &host)
+            .unwrap();
+    let pending = crate::pi_sessions::fork(&f.project, &parent).unwrap();
+    let mut deletion = source.clone();
+    deletion["revision"] = json!(2);
+    deletion["deleted"] = json!(true);
+    deletion["files"] = json!([]);
+    sync::apply_event(&f.db, &json!({"resource":deletion,"conflicts":[]})).unwrap();
+    for copy in [&first, &nested] {
+        let id = copy["resourceId"].as_str().unwrap();
+        assert!(crate::local_resources::resource(&f.db, id).is_err());
+        assert_eq!(indexer::binding(&f.db, id).unwrap(), json!({}));
+    }
+    assert!(crate::session_forks::record(&f.db, &parent, &pending, "terminal").is_err());
+    assert!(host
+        .calls
+        .borrow()
+        .iter()
+        .all(|call| Path::new(call["path"].as_str().unwrap()).is_file()));
+    assert!(f.outbox().is_empty());
 }
 
 #[test]

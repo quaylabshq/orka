@@ -608,6 +608,9 @@ fn reset_source(db: &Connection, project_id: &str, events: &Value, p: &Value) ->
             db.execute(&format!("DELETE FROM {table} WHERE id=?"), [id])
                 .map_err(|e| e.to_string())?;
         }
+        if r["source"] == "pi" && !private_pi {
+            crate::pi_sessions::forget_copies(db, project_id, id)?;
+        }
         db.execute(
             "DELETE FROM conflicts WHERE json_extract(value,'$.resourceId')=?",
             [id],
