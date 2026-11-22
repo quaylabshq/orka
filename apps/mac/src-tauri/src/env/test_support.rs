@@ -111,6 +111,7 @@ pub fn run() {
                 "settings" => runtime.block_on(crate::settings::settings_command(
                     super::field(&input, "operation")?.into(),
                     input["context"].clone(),
+                    input.get("input").cloned(),
                 )),
                 "onboarding" => runtime.block_on(crate::onboarding::onboarding_command(
                     super::field(&input, "operation")?.into(),

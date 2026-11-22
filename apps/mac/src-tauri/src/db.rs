@@ -113,6 +113,16 @@ impl CacheScope {
         })
     }
 
+    pub(crate) fn claude_worktree_scope(&self) -> Option<String> {
+        (self.account != "guest" && !self.origin.is_empty()).then(|| {
+            digest(
+                json!([self.root, self.account, self.origin])
+                    .to_string()
+                    .as_bytes(),
+            )
+        })
+    }
+
     pub(crate) fn open(&self) -> Result<Connection> {
         // Bind pre-mode caches to their original service once, before any switch.
         let legacy = self.root.join("legacy-service.json");
@@ -171,7 +181,24 @@ pub fn open_at(root: &Path) -> Result<Connection> {
     db.busy_timeout(std::time::Duration::from_secs(5))
         .map_err(|e| e.to_string())?;
     db.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TABLE IF NOT EXISTS resources(id TEXT PRIMARY KEY,project TEXT NOT NULL,value TEXT NOT NULL); CREATE TABLE IF NOT EXISTS bindings(id TEXT PRIMARY KEY,project TEXT NOT NULL,value TEXT NOT NULL); CREATE TABLE IF NOT EXISTS outbox(id TEXT PRIMARY KEY,project TEXT NOT NULL,path TEXT NOT NULL,value TEXT NOT NULL,error TEXT); CREATE TABLE IF NOT EXISTS cursors(project TEXT PRIMARY KEY,cursor INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS conflicts(id TEXT PRIMARY KEY,project TEXT NOT NULL,value TEXT NOT NULL); CREATE TABLE IF NOT EXISTS activity(id TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TABLE IF NOT EXISTS active(native_id TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TABLE IF NOT EXISTS errors(source TEXT PRIMARY KEY,error TEXT NOT NULL); CREATE TABLE IF NOT EXISTS drafts(id TEXT PRIMARY KEY,project TEXT NOT NULL,value TEXT NOT NULL);").map_err(|e|e.to_string())?;
+    db.execute_batch(
+        "CREATE TRIGGER IF NOT EXISTS prune_hook_activity AFTER UPDATE OF value ON projects BEGIN
+            DELETE FROM meta WHERE key IN (
+                SELECT tool.prefix || source.id FROM
+                (SELECT 'hookSeen:claude:' AS prefix UNION ALL SELECT 'hookSeen:codex:') tool,
+                (SELECT old.id AS id WHERE json_type(old.value,'$.sources') IS NOT 'array'
+                    UNION SELECT json_extract(value,'$.id') FROM json_each(old.value,'$.sources')) source
+                WHERE json_extract(new.value,'$.purged') = 1 OR NOT (
+                    (source.id = new.id AND json_type(new.value,'$.sources') IS NOT 'array') OR
+                    EXISTS (SELECT 1 FROM json_each(new.value,'$.sources')
+                        WHERE json_extract(value,'$.id') = source.id
+                          AND json_extract(value,'$.removedAt') IS NULL)
+                )
+            );
+        END;",
+    ).map_err(|e| e.to_string())?;
     db.execute_batch("CREATE TABLE IF NOT EXISTS local_resources(id TEXT PRIMARY KEY,project TEXT NOT NULL,value TEXT NOT NULL);").map_err(|e|e.to_string())?;
+    db.execute_batch("CREATE TABLE IF NOT EXISTS worktree_routes(scope TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TABLE IF NOT EXISTS worktree_sessions(tool TEXT NOT NULL,native_id TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(tool,native_id));").map_err(|e| e.to_string())?;
     // One pending sync job per project; '*' is the workspace-wide steps. Times are Unix milliseconds.
     db.execute_batch("CREATE TABLE IF NOT EXISTS sync_queue(project TEXT PRIMARY KEY,priority INTEGER NOT NULL,reason TEXT NOT NULL,requested_at INTEGER NOT NULL,not_before INTEGER NOT NULL,attempts INTEGER NOT NULL DEFAULT 0);").map_err(|e|e.to_string())?;
     Ok(db)
