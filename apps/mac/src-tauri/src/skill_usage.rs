@@ -17,6 +17,7 @@ use walkdir::WalkDir;
 
 const MAX_RECORD: u64 = 2 * 1024 * 1024;
 const GUARD_BYTES: u64 = 4096;
+const GLOBAL_CACHE_FILE: &str = "global-skill-usage.json";
 static LOCK: Mutex<()> = Mutex::new(());
 static READ_COMMAND: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(r"(?:^|[;|&\n])\s*(?:cat|head|tail|sed)\s+([^;|&\n<>]+)").unwrap()
@@ -76,10 +77,27 @@ struct CachedFile {
     guards: Guards,
     state: ParserState,
 }
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 pub struct Usage {
     counts: BTreeMap<String, usize>,
     partial: bool,
+}
+
+pub(crate) fn cached_global(scope: &db::CacheScope) -> Option<Usage> {
+    let path = scope.path().ok()?.join(GLOBAL_CACHE_FILE);
+    let bytes = fs::read(path).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+fn refresh_global(db: &Connection, scope: &db::CacheScope, project: &Value) -> Result<Usage> {
+    let scan = global_skills::scan(db, project)?;
+    let mut usage = collect(db, &scan.skills)?;
+    usage.partial |= !scan.errors.is_empty();
+    if let (Ok(dir), Ok(bytes)) = (scope.path(), serde_json::to_vec(&usage)) {
+        // A cache write failure should still return the counts just computed.
+        let _ = db::atomic(&dir.join(GLOBAL_CACHE_FILE), &bytes);
+    }
+    Ok(usage)
 }
 
 struct Homes {
@@ -634,10 +652,10 @@ pub async fn global_skill_usage(project_id: String) -> Result<Usage> {
         let _lock = LOCK
             .lock()
             .map_err(|_| "Usage scan unavailable. Try again.")?;
-        let db = db::open()?;
+        let scope = db::CacheScope::current()?;
+        let db = scope.open()?;
         let project = governance::project(&db, &project_id)?;
-        let skills = global_skills::scan(&db, &project)?.skills;
-        collect(&db, &skills)
+        refresh_global(&db, &scope, &project)
     })
     .await
     .map_err(|e| e.to_string())?

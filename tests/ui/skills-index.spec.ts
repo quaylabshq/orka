@@ -414,9 +414,7 @@ test("an empty project keeps its own Add button, which opens the same popover", 
   await expect(
     page.getByRole("searchbox", { name: "Search skills" }),
   ).toHaveCount(0);
-  await page
-    .getByRole("button", { name: "Add global skills", exact: true })
-    .click();
+  await page.getByRole("button", { name: "Add skills", exact: true }).click();
   const popover = page.getByRole("dialog", { name: "Add global skills" });
   await expect(popover.getByRole("checkbox").first()).toBeVisible();
   const box = (await popover.boundingBox())!;
@@ -597,7 +595,7 @@ test("a long description preview and its origin fit the minimum window", async (
   await name.hover();
   const peek = page.getByRole("tooltip");
   await expect(peek).toContainText("Review changes with supporting scripts");
-  await expect(peek).toContainText("Imported from your global skills");
+  await expect(peek).toContainText("From your global skills");
   const view = (await page.locator(".resource-index-body").boundingBox())!;
   const box = (await peek.boundingBox())!;
   expect(box.y).toBeGreaterThanOrEqual(view.y);

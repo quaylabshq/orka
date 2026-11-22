@@ -436,7 +436,72 @@ fn report_progress(progress: Option<&Channel<Value>>, value: Value) {
     }
 }
 
+async fn artifact_link(action: &str, input: &Value) -> Result<Value> {
+    let db = db::open()?;
+    let project = context(&db, input)?;
+    let id = input["resourceId"].as_str().ok_or("Choose an item")?;
+    let project_id = project["id"].as_str().ok_or("Choose a project")?;
+    Uuid::parse_str(id).map_err(|_| "Invalid item")?;
+    let resource = db::rows(
+        &db,
+        "SELECT value FROM resources WHERE project=? AND id=?",
+        &[&project_id, &id],
+    )?
+    .into_iter()
+    .next()
+    .ok_or("This item has no shared snapshot.")?;
+    let revision = resource["revision"].as_u64().unwrap_or(0);
+    if !matches!(
+        resource["kind"].as_str(),
+        Some("skill" | "plan" | "session")
+    ) || resource["deleted"] == true
+        || resource["access"]["mode"] == "hidden"
+        || revision == 0
+        || input["revision"] != revision
+    {
+        return Err("Open the current shared snapshot before managing its public link.".into());
+    }
+    let owner = input["accountId"].as_str().ok_or("Sign in required")?;
+    let origin = input["serviceOrigin"].as_str().ok_or("Choose a service")?;
+    // Release the local database before waiting on the service. The scoped API
+    // client binds the credential to the account and service validated above.
+    drop(db);
+    let result = if action == "public-link-status" {
+        let path = format!(
+            "/v2/artifact-links?projectId={project_id}&resourceId={id}&revision={revision}"
+        );
+        sync::api_at(owner, origin, "GET", &path, None).await
+    } else {
+        let body = json!({
+            "projectId":project_id, "resourceId":id, "revision":revision,
+            "action":if action == "create-public-link" { "create" } else { "revoke" },
+            "linkVersion":input["linkVersion"],
+        });
+        sync::api_at(owner, origin, "POST", "/v2/artifact-links", Some(&body)).await
+    }
+    .map_err(|error| {
+        if error == "Cloud unavailable; local work stays queued" {
+            "Couldn’t confirm the public link status. Reconnect and check again.".to_owned()
+        } else {
+            error
+                .strip_prefix("403: ")
+                .or_else(|| error.strip_prefix("404: "))
+                .or_else(|| error.strip_prefix("409: "))
+                .unwrap_or(&error)
+                .to_owned()
+        }
+    })?;
+    context(&db::open()?, input)?;
+    Ok(result)
+}
+
 async fn run(action: &str, input: &Value, progress: Option<&Channel<Value>>) -> Result<Value> {
+    if matches!(
+        action,
+        "public-link-status" | "create-public-link" | "revoke-public-link"
+    ) {
+        return artifact_link(action, input).await;
+    }
     if action == "share" {
         {
             let _lock = projects::lock()?;

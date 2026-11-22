@@ -32,6 +32,12 @@ the configured sync interval, including changes to that setting. Explicit refres
 remains immediate, and revalidation preserves loaded rows and counts. This timing
 also applies when automatic sharing is off; browsing does not queue publication.
 
+Add skills orders global skills by the number of local Codex and Claude chats in
+which Orka detected each skill. It reads `global-skill-usage.json` in the active
+profile's account and service cache before refreshing the counts from local
+history. The JSON file contains skill IDs and counts, plus whether the scan was
+partial. The per-transcript SQLite cache avoids re-reading unchanged history.
+
 Memories, plans, and text skill files use three-way merges. Binary files and executable flags use whole-value acceptance. Sessions preserve complete native snapshots and use explicit conflict handling; they are never line-merged. Active native sessions are protected from incoming replacement or deletion.
 
 ENV support remains in the native implementation for compatibility, but is currently disabled in the desktop UI. See the [security model](security-model.md).

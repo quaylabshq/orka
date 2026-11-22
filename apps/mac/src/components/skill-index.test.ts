@@ -340,7 +340,7 @@ describe("applySkillFilters", () => {
     ).toEqual(["release-notes", "standup", "code-review", "code-review"]);
   });
 
-  it("reads Recently updated newest first unless reversed", () => {
+  it("reads Last updated newest first unless reversed", () => {
     const filters = { ...defaultIndexFilters, sort: "updated" as const };
     expect(sortDirection(filters)).toBe("desc");
     expect(titles(applySkillFilters(skills, filters, context()))[0]).toBe(

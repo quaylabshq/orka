@@ -1,6 +1,6 @@
 use crate::{
     db::{self, Result},
-    governance, indexer, native, packages, projects,
+    governance, indexer, native, packages, projects, skill_usage,
     sync_queue::{Priority, SyncQueue},
 };
 use rusqlite::Connection;
@@ -33,7 +33,9 @@ pub struct GlobalSkill {
 #[derive(Serialize)]
 pub struct Scan {
     pub(crate) skills: Vec<GlobalSkill>,
-    errors: Vec<String>,
+    pub(crate) errors: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    usage: Option<skill_usage::Usage>,
 }
 
 fn roots() -> Result<Vec<(String, PathBuf)>> {
@@ -166,6 +168,7 @@ pub fn scan(db: &Connection, project: &Value) -> Result<Scan> {
     Ok(Scan {
         skills: skills.into_values().collect(),
         errors,
+        usage: None,
     })
 }
 
@@ -427,10 +430,14 @@ pub fn local_skill(db: &Connection, id: &str) -> Result<Option<Value>> {
 #[tauri::command]
 pub async fn scan_global_skills(project_id: String, source_id: Option<String>) -> Result<Scan> {
     tauri::async_runtime::spawn_blocking(move || {
-        let db = db::open()?;
+        let scope = db::CacheScope::current()?;
+        let db = scope.open()?;
         let project = governance::project(&db, &project_id)?;
         let project = crate::sources::select(&project, source_id.as_deref())?;
-        scan(&db, &project)
+        // Read the saved order before the UI requests a history refresh.
+        let mut scan = scan(&db, &project)?;
+        scan.usage = skill_usage::cached_global(&scope);
+        Ok(scan)
     })
     .await
     .map_err(|e| e.to_string())?
