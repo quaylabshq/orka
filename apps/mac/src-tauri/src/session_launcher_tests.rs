@@ -128,8 +128,8 @@ impl Host for FakeHost {
             LaunchIntent::Resume(id) => {
                 json!({"destination":destination,"tool":tool,"id":id,"root":root})
             }
-            LaunchIntent::PiSession(path) => {
-                json!({"destination":destination,"tool":tool,"path":path,"root":root})
+            LaunchIntent::PiSession { path, lock } => {
+                json!({"destination":destination,"tool":tool,"path":path,"lock":lock,"root":root})
             }
             LaunchIntent::Handoff(prompt) => {
                 json!({"destination":destination,"tool":tool,"prompt":prompt,"root":root})
@@ -356,24 +356,34 @@ fn pi_copy_survives_an_authorized_feed_reset_and_never_queues_a_delete() {
     indexer::scan(&f.db, &f.project).unwrap();
     assert!(f.outbox().is_empty(), "{:?}", f.outbox());
     crate::governance::reset(&f.db, project, &json!([])).unwrap();
-    assert!(
-        crate::local_resources::resource(&f.db, child["resourceId"].as_str().unwrap()).is_err()
+    let child_id = child["resourceId"].as_str().unwrap();
+    assert!(crate::local_resources::resource(&f.db, child_id).is_ok());
+    assert_eq!(
+        indexer::binding(&f.db, child_id)
+            .unwrap()
+            .get("piCopyOrigin"),
+        Some(&Value::Null)
     );
+    let reopened_child =
+        session_launcher::resume_with(child_id, Tool::Pi, Destination::Terminal, &host).unwrap();
+    assert_eq!(reopened_child["nativeId"], child["nativeId"]);
+    assert!(f.outbox().is_empty(), "{:?}", f.outbox());
     assert!(host.calls.borrow()[1]["path"]
         .as_str()
         .is_some_and(|p| Path::new(p).is_file()));
 }
 
 #[test]
-fn pi_local_fork_reveals_its_copy_and_recovers_from_a_corrupt_file() {
+fn own_pi_session_resumes_in_place_and_forks_every_raw_turn() {
     let f = Fixture::new();
     let folder = crate::pi_sessions::directory().unwrap();
     fs::create_dir_all(&folder).unwrap();
     let native_id = uuid::Uuid::new_v4();
     let original = folder.join(format!("{native_id}.jsonl"));
+    let secret = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     let bytes = native::encode(&[
         json!({"type":"session","version":3,"id":native_id,"cwd":f.root}),
-        json!({"type":"message","id":"start","parentId":null,"message":{"role":"user","content":"Private Pi task"}}),
+        json!({"type":"message","id":"start","parentId":null,"message":{"role":"user","content":format!("Private Pi task using {secret}")}}),
     ]);
     fs::write(&original, &bytes).unwrap();
     let row = indexer::discover(&f.db, &f.project, "session")
@@ -381,38 +391,95 @@ fn pi_local_fork_reveals_its_copy_and_recovers_from_a_corrupt_file() {
         .into_iter()
         .find(|entry| entry["resource"]["source"] == "pi")
         .unwrap();
+    let id = row["resource"]["resourceId"].as_str().unwrap();
     let host = FakeHost::default();
-    let first = session_launcher::resume_with(
-        row["resource"]["resourceId"].as_str().unwrap(),
-        Tool::Pi,
-        Destination::Terminal,
-        &host,
-    )
-    .unwrap();
-    let id = first["resourceId"].as_str().unwrap();
-    let copy = PathBuf::from(host.calls.borrow()[0]["path"].as_str().unwrap());
-    assert_ne!(copy, original);
+    let options = json!(session_launcher::options_with(id, &host).unwrap());
+    assert_eq!(options[0]["mode"], "resume");
+    assert_eq!(options[0]["available"], true);
+
+    let opened = session_launcher::resume_with(id, Tool::Pi, Destination::Terminal, &host).unwrap();
+    assert_eq!(opened["forked"], false);
+    assert_eq!(opened["nativeId"], json!(native_id.to_string()));
+    let call = host.calls.borrow()[0].clone();
+    assert_eq!(call["path"], json!(original));
+    let lock = PathBuf::from(call["lock"].as_str().unwrap());
+    assert_eq!(lock, crate::pi_sessions::lock_file(&original).unwrap());
+    assert!(!lock.starts_with(crate::pi_sessions::agent_directory().unwrap()));
+    assert!(lock.parent().unwrap().is_dir());
+    assert!(host.forks.borrow().is_empty());
+
+    // Continue in Pi, then fork: the copy carries every raw turn.
+    let mut continued = bytes.clone();
+    continued.extend(native::encode(&[json!({"type":"message","id":"later","parentId":"start","message":{"role":"assistant","content":"Later turn"}})]));
+    fs::write(&original, &continued).unwrap();
+    let fork =
+        session_launcher::launch_with(id, Tool::Pi, Destination::Terminal, true, &host).unwrap();
+    assert_eq!(fork["forked"], true);
+    let copy = PathBuf::from(host.calls.borrow()[1]["path"].as_str().unwrap());
+    assert!(copy.starts_with(crate::pi_sessions::copy_directory().unwrap()));
+    let raw = native::complete_records(&continued).unwrap();
+    let copied = native::complete_records(&fs::read(&copy).unwrap()).unwrap();
+    assert_eq!(copied[0]["id"], fork["nativeId"]);
+    assert_eq!(&copied[1..], &raw[1..]);
+    assert_eq!(fs::read(&original).unwrap(), continued);
+    let fork_id = fork["resourceId"].as_str().unwrap();
     assert_eq!(
-        crate::resource_commands::paths(&f.db, &f.project, &json!({"resourceId":id})).unwrap(),
+        crate::resource_commands::paths(&f.db, &f.project, &json!({"resourceId":fork_id})).unwrap(),
         [copy.canonicalize().unwrap()]
     );
+
+    // A copy that no longer matches the checkout cannot reopen, but forking it
+    // still keeps the turns added in Pi.
+    let mut moved = copied.clone();
+    moved[0]["cwd"] = json!("/moved/checkout");
+    moved.push(json!({"type":"message","id":"copy-turn","parentId":"later","message":{"role":"user","content":"Turn in the copy"}}));
+    fs::write(&copy, native::encode(&moved)).unwrap();
+    let options = json!(session_launcher::options_with(fork_id, &host).unwrap());
+    assert_eq!(options[0]["available"], false);
+    assert_eq!(options[0]["forkAvailable"], true);
+    let refork =
+        session_launcher::launch_with(fork_id, Tool::Pi, Destination::Terminal, true, &host)
+            .unwrap();
+    let refork_path = PathBuf::from(host.calls.borrow()[2]["path"].as_str().unwrap());
+    let reforked = native::complete_records(&fs::read(&refork_path).unwrap()).unwrap();
+    assert_eq!(reforked[0]["id"], refork["nativeId"]);
+    assert_eq!(reforked[0]["cwd"], json!(f.root));
+    assert_eq!(&reforked[1..], &moved[1..]);
+
+    // A corrupt copy is preserved and an explicit fork recovers from the snapshot.
     fs::write(&copy, "invalid JSON\n").unwrap();
-    assert_eq!(
-        crate::resource_commands::paths(&f.db, &f.project, &json!({"resourceId":id})).unwrap(),
-        [copy.canonicalize().unwrap()]
-    );
+    let recovered =
+        session_launcher::launch_with(fork_id, Tool::Pi, Destination::Terminal, true, &host)
+            .unwrap();
+    assert_ne!(recovered["nativeId"], fork["nativeId"]);
+    assert_eq!(fs::read_to_string(&copy).unwrap(), "invalid JSON\n");
+
+    // A corrupt own file cannot resume, but Fork still recovers from the snapshot.
+    fs::write(&original, "invalid JSON\n").unwrap();
     let options = json!(session_launcher::options_with(id, &host).unwrap());
     assert_eq!(options[0]["available"], false);
     assert_eq!(options[0]["forkAvailable"], true);
-    let recovered =
+    assert!(session_launcher::resume_with(id, Tool::Pi, Destination::Terminal, &host).is_err());
+    let rescued =
         session_launcher::launch_with(id, Tool::Pi, Destination::Terminal, true, &host).unwrap();
-    assert_ne!(recovered["nativeId"], first["nativeId"]);
-    assert_eq!(fs::read_to_string(&copy).unwrap(), "invalid JSON\n");
-    assert_eq!(fs::read(original).unwrap(), bytes);
+    assert_eq!(rescued["forked"], true);
+    assert_eq!(fs::read_to_string(&original).unwrap(), "invalid JSON\n");
+
+    // MacHost's overlap check and the launch script share one Orka-owned lock.
+    let held = fs::File::create(crate::pi_sessions::prepare_lock(&copy).unwrap()).unwrap();
+    use std::os::fd::AsRawFd;
+    assert_eq!(
+        unsafe { libc::flock(held.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+        0
+    );
+    assert!(crate::pi_sessions::launch_in_use(&copy));
+    drop(held);
+    assert!(!crate::pi_sessions::launch_in_use(&copy));
+    assert!(f.outbox().is_empty());
 }
 
 #[test]
-fn pi_origin_tombstone_unlists_descendants_and_rejects_a_stale_nested_fork() {
+fn pi_origin_tombstone_keeps_descendants_as_local_only_copies() {
     let f = Fixture::new();
     let source = session(&f, "pi", true);
     let id = source["resourceId"].as_str().unwrap();
@@ -430,11 +497,19 @@ fn pi_origin_tombstone_unlists_descendants_and_rejects_a_stale_nested_fork() {
     deletion["files"] = json!([]);
     sync::apply_event(&f.db, &json!({"resource":deletion,"conflicts":[]})).unwrap();
     for copy in [&first, &nested] {
-        let id = copy["resourceId"].as_str().unwrap();
-        assert!(crate::local_resources::resource(&f.db, id).is_err());
-        assert_eq!(indexer::binding(&f.db, id).unwrap(), json!({}));
+        let copy_id = copy["resourceId"].as_str().unwrap();
+        assert!(crate::local_resources::resource(&f.db, copy_id).is_ok());
+        assert_eq!(
+            indexer::binding(&f.db, copy_id)
+                .unwrap()
+                .get("piCopyOrigin"),
+            Some(&Value::Null)
+        );
+        let reopened =
+            session_launcher::resume_with(copy_id, Tool::Pi, Destination::Terminal, &host).unwrap();
+        assert_eq!(reopened["nativeId"], copy["nativeId"]);
     }
-    assert!(crate::session_forks::record(&f.db, &parent, &pending, "terminal").is_err());
+    assert!(crate::session_forks::record(&f.db, &parent, &pending, "terminal").is_ok());
     assert!(host
         .calls
         .borrow()
@@ -456,6 +531,7 @@ fn pi_terminal_script_opens_the_exact_copy_and_blocks_an_overlapping_launch() {
     .unwrap();
     fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
     let home = f.root.join("pi home");
+    let lock_path = f.root.join("session.lock");
     let marker = f.root.join("started");
     let script = f.root.join("launch.command");
     let launch = || {
@@ -464,7 +540,10 @@ fn pi_terminal_script_opens_the_exact_copy_and_blocks_an_overlapping_launch() {
             session_launcher::terminal_script(
                 &binary,
                 Tool::Pi,
-                LaunchIntent::PiSession(&input),
+                LaunchIntent::PiSession {
+                    path: &input,
+                    lock: &lock_path,
+                },
                 &f.root,
                 &home,
                 None,
@@ -491,8 +570,7 @@ fn pi_terminal_script_opens_the_exact_copy_and_blocks_an_overlapping_launch() {
         )
     );
     fs::remove_file(&marker).unwrap();
-    let lock_path = input.with_extension("lock");
-    let lock = fs::File::open(lock_path).unwrap();
+    let lock = fs::File::open(&lock_path).unwrap();
     use std::os::fd::AsRawFd;
     assert_eq!(
         unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },

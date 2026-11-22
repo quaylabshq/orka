@@ -69,20 +69,93 @@ pub(crate) fn copy_path(binding: &Value, root: &Path) -> Result<PathBuf> {
     Ok(path)
 }
 
-pub(crate) fn forget_copies(db: &rusqlite::Connection, project: &str, origin: &str) -> Result<()> {
-    for table in ["resources", "bindings"] {
-        db.execute(
-            &format!("DELETE FROM {table} WHERE project=?1 AND id IN (SELECT id FROM bindings WHERE project=?1 AND json_extract(value,'$.base.source')='pi' AND json_extract(value,'$.piCopyOrigin')=?2)"),
-            [project, origin],
-        )
-        .map_err(|e| e.to_string())?;
+/// The Pi file a launch opens: a private copy, or the user's own native session
+/// that `local_resources::native_binding` already validated.
+pub(crate) fn launch_path(binding: &Value, root: &Path) -> Result<PathBuf> {
+    if is_private_copy(binding) {
+        return copy_path(binding, root);
     }
+    let path = PathBuf::from(
+        binding["paths"][0]
+            .as_str()
+            .ok_or("Pi session file unavailable")?,
+    );
+    let home = directory()?.canonicalize().map_err(|e| e.to_string())?;
+    if !path.is_file()
+        || !path
+            .canonicalize()
+            .is_ok_and(|path| path.starts_with(&home))
+    {
+        return Err("This Pi session moved. Open the collection again.".into());
+    }
+    Ok(path)
+}
+
+/// Fork from the session's own local file when there is one, so a copy keeps
+/// every turn and unredacted content. Shared or unreadable sessions fall back to
+/// the stored snapshot.
+pub(crate) fn fork_snapshot(db: &rusqlite::Connection, resource: &Value) -> Result<Value> {
+    // An unusable own file falls back to the snapshot like a missing copy does.
+    let path = if let Ok(Some(native)) = crate::local_resources::native_binding(db, resource) {
+        native["paths"][0].as_str().map(PathBuf::from)
+    } else {
+        let id = resource["resourceId"].as_str().ok_or("Missing session")?;
+        let binding = crate::indexer::binding(db, id)?;
+        is_private_copy(&binding)
+            .then(|| copy_location(&binding).ok())
+            .flatten()
+    };
+    let Some(path) = path else {
+        return Ok(resource.clone());
+    };
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(resource.clone()),
+        Err(error) => return Err(error.to_string()),
+    };
+    let valid = native::complete_records(&bytes)
+        .is_ok_and(|records| records.first().is_some_and(|r| r["type"] == "session"));
+    if !valid {
+        return Ok(resource.clone());
+    }
+    let mut snapshot = resource.clone();
+    snapshot["files"] = json!([{"path":"session.jsonl","hash":db::blob(&bytes)?,"size":bytes.len(),"executable":false}]);
+    Ok(snapshot)
+}
+
+/// Keep copies of a deleted or inaccessible shared session as local-only work.
+pub(crate) fn detach_copies(db: &rusqlite::Connection, project: &str, origin: &str) -> Result<()> {
+    db.execute(
+        "UPDATE bindings SET value=json_set(value,'$.piCopyOrigin',json('null')) WHERE project=?1 AND json_extract(value,'$.base.source')='pi' AND json_extract(value,'$.piCopyOrigin')=?2",
+        [project, origin],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Orka-owned lock for a Pi session file, kept outside Pi's own directories.
+pub(crate) fn lock_file(path: &Path) -> Result<PathBuf> {
+    let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    Ok(db::root()?.join("pi-session-locks").join(format!(
+        "{}.lock",
+        db::digest(path.to_string_lossy().as_bytes())
+    )))
+}
+
+pub(crate) fn prepare_lock(path: &Path) -> Result<PathBuf> {
+    let lock = lock_file(path)?;
+    let directory = lock.parent().ok_or("Missing lock directory")?;
+    packages::safe_directory(&db::root()?, directory)?;
+    fs::set_permissions(directory, fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
+    Ok(lock)
 }
 
 pub(crate) fn launch_in_use(path: &Path) -> bool {
     use std::os::fd::AsRawFd;
-    match fs::File::open(path.with_extension("lock")) {
+    let Ok(lock) = lock_file(path) else {
+        return true;
+    };
+    match fs::File::open(lock) {
         Ok(file) => {
             // The terminal's lockf process holds this same lock until Pi exits.
             unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) != 0 }

@@ -413,6 +413,8 @@ pub fn native_binding(db: &Connection, resource: &Value) -> Result<Option<Value>
     );
     let home = if resource["source"] == "codex" {
         crate::native::codex_home()?
+    } else if resource["source"] == "pi" {
+        crate::pi_sessions::directory()?
     } else {
         crate::native::claude_home()?
     };

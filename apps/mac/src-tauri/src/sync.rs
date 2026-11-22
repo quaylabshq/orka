@@ -226,7 +226,7 @@ pub fn apply_event(db: &rusqlite::Connection, event: &Value) -> Result<()> {
     {
         db::upsert(db, "resources", id, project, r)?;
         if r["source"] == "pi" && r["deleted"] == true {
-            crate::pi_sessions::forget_copies(db, project, id)?;
+            crate::pi_sessions::detach_copies(db, project, id)?;
         }
         db.execute(
             "DELETE FROM conflicts WHERE project=? AND json_extract(value,'$.resourceId')=?",

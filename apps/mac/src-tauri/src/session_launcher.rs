@@ -84,7 +84,7 @@ impl Tool {
 pub(crate) enum LaunchIntent<'a> {
     Start,
     Resume(&'a str),
-    PiSession(&'a Path),
+    PiSession { path: &'a Path, lock: &'a Path },
     Handoff(&'a str),
 }
 
@@ -101,7 +101,9 @@ impl LaunchIntent<'_> {
                 },
                 shell_quote(id)
             ),
-            Self::PiSession(path) => format!("--session {}", shell_quote(&path.to_string_lossy())),
+            Self::PiSession { path, .. } => {
+                format!("--session {}", shell_quote(&path.to_string_lossy()))
+            }
             Self::Handoff(prompt) => shell_quote(prompt),
         }
     }
@@ -602,7 +604,7 @@ pub(crate) fn options_with(id: &str, host: &impl Host) -> Result<Vec<LaunchOptio
         session_forks::binding(&db, resource)
             .and_then(|binding| {
                 if session.tool == Tool::Pi {
-                    crate::pi_sessions::copy_path(
+                    crate::pi_sessions::launch_path(
                         &binding,
                         folder.as_ref().map_err(Clone::clone)?,
                     )?;
@@ -783,9 +785,9 @@ fn terminal_command(
         shell_quote(&binary.to_string_lossy())
     );
     match intent {
-        LaunchIntent::PiSession(path) => format!(
+        LaunchIntent::PiSession { lock, .. } => format!(
             "exec /usr/bin/lockf -k -t 0 {} /bin/sh -eu -c {}",
-            shell_quote(&path.with_extension("lock").to_string_lossy()),
+            shell_quote(&lock.to_string_lossy()),
             shell_quote(&command)
         ),
         _ => command,
@@ -910,7 +912,7 @@ fn launch_terminal(
     }
     result?;
     if destination == Destination::Warp {
-        let command = if matches!(intent, LaunchIntent::PiSession(_)) {
+        let command = if matches!(intent, LaunchIntent::PiSession { .. }) {
             format!(
                 "/bin/sh -eu -c {}",
                 shell_quote(&terminal_command(binary, tool, intent, None))
@@ -1074,9 +1076,10 @@ pub(crate) fn launch_with(
     let binding = if let Some(resource) = &existing {
         session_forks::binding(&db, resource)?
     } else {
-        let snapshot = match session_forks::current_resource(&db, &session.resource) {
-            Err(_) if tool == Tool::Pi && force_fork => session.resource.clone(),
-            result => result?,
+        let snapshot = if tool == Tool::Pi {
+            crate::pi_sessions::fork_snapshot(&db, &session.resource)?
+        } else {
+            session_forks::current_resource(&db, &session.resource)?
         };
         host.fork(&db, &source_project, &snapshot)?
     };
@@ -1092,7 +1095,13 @@ pub(crate) fn launch_with(
         session_forks::record(&db, &session.resource, &binding, destination.name())?
     };
     let pi_path = (tool == Tool::Pi)
-        .then(|| crate::pi_sessions::copy_path(&binding, &root))
+        .then(|| -> Result<_> {
+            // The saved binding records whether this is a private copy.
+            let saved = session_forks::binding(&db, &target)?;
+            let path = crate::pi_sessions::launch_path(&saved, &root)?;
+            let lock = crate::pi_sessions::prepare_lock(&path)?;
+            Ok((path, lock))
+        })
         .transpose()?;
     if destination != Destination::Desktop || tool == Tool::Claude {
         let paths: Vec<_> = binding["paths"]
@@ -1143,8 +1152,10 @@ pub(crate) fn launch_with(
     }
     if destination != Destination::Desktop {
         let intent = pi_path
-            .as_deref()
-            .map_or(LaunchIntent::Resume(&native_id), LaunchIntent::PiSession);
+            .as_ref()
+            .map_or(LaunchIntent::Resume(&native_id), |(path, lock)| {
+                LaunchIntent::PiSession { path, lock }
+            });
         let manual_command =
             host.open_session(destination, tool, intent, &root, binary.as_deref())?;
         if let Some(command) = manual_command {

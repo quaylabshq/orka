@@ -247,11 +247,14 @@ pub fn record(
 }
 
 pub fn resumable(db: &Connection, resource: &Value) -> Result<Option<Value>> {
-    if resource["source"] != "pi"
-        && resource["nativeId"].is_string()
-        && crate::local_resources::native_binding(db, resource)?.is_some()
-    {
-        return Ok(Some(resource.clone()));
+    if resource["nativeId"].is_string() {
+        match crate::local_resources::native_binding(db, resource) {
+            Ok(Some(_)) => return Ok(Some(resource.clone())),
+            // Report an unusable own Pi file as the resume error and keep Fork available.
+            Err(_) if resource["source"] == "pi" => return Ok(Some(resource.clone())),
+            Err(error) => return Err(error),
+            Ok(None) => (),
+        }
     }
     let id = resource["resourceId"].as_str().ok_or("Missing session")?;
     let fork = info(db, id)?;
@@ -278,7 +281,7 @@ fn has_native_file(binding: &Value) -> bool {
 }
 
 pub fn binding(db: &Connection, resource: &Value) -> Result<Value> {
-    if resource["source"] != "pi" && resource["nativeId"].is_string() {
+    if resource["nativeId"].is_string() {
         if let Some(binding) = crate::local_resources::native_binding(db, resource)? {
             return Ok(binding);
         }

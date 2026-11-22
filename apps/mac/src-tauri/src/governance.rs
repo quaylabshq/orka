@@ -540,15 +540,18 @@ fn reset_source(db: &Connection, project_id: &str, events: &Value, p: &Value) ->
         let b = indexer::binding(db, id)?;
         let private_pi = crate::pi_sessions::is_private_copy(&b);
         if private_pi {
+            // A private copy is this user's local work: keep it, local-only once
+            // its shared origin is gone.
             let origin = &b["piCopyOrigin"];
-            if origin.is_null()
-                || visible.iter().any(|event| {
+            if let Some(origin) = origin.as_str().filter(|origin| {
+                !visible.iter().any(|event| {
                     event["resource"]["resourceId"] == *origin
                         && event["resource"]["deleted"] != true
                 })
-            {
-                continue;
+            }) {
+                crate::pi_sessions::detach_copies(db, project_id, origin)?;
             }
+            continue;
         }
         crate::local_resources::remember_origin(db, p, &r, &b)?;
         for queued in db::rows(db,"SELECT json_object('id',id,'path',path,'value',json(value)) FROM outbox WHERE project=? AND (json_extract(value,'$.resource.resourceId')=? OR json_extract(value,'$.resourceId')=?)",&[&project_id,&id,&id])? {
@@ -556,7 +559,7 @@ fn reset_source(db: &Connection, project_id: &str, events: &Value, p: &Value) ->
             db.execute("DELETE FROM outbox WHERE id=?",[queued["id"].as_str()]).map_err(|e|e.to_string())?;
         }
         // Capture dirty local files before removing Orka-managed copies from agent discovery.
-        if let Some(paths) = b["paths"].as_array().filter(|_| available && !private_pi) {
+        if let Some(paths) = b["paths"].as_array().filter(|_| available) {
             for raw in paths {
                 let path = Path::new(raw.as_str().ok_or("Invalid binding")?);
                 if !path.exists() {
@@ -608,8 +611,8 @@ fn reset_source(db: &Connection, project_id: &str, events: &Value, p: &Value) ->
             db.execute(&format!("DELETE FROM {table} WHERE id=?"), [id])
                 .map_err(|e| e.to_string())?;
         }
-        if r["source"] == "pi" && !private_pi {
-            crate::pi_sessions::forget_copies(db, project_id, id)?;
+        if r["source"] == "pi" {
+            crate::pi_sessions::detach_copies(db, project_id, id)?;
         }
         db.execute(
             "DELETE FROM conflicts WHERE json_extract(value,'$.resourceId')=?",
