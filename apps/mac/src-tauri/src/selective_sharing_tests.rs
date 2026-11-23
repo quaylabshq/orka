@@ -190,6 +190,33 @@ fn pi_and_codex_sessions_with_the_same_native_id_keep_separate_identity() {
         pi["resource"]["resourceId"],
         found["resource"]["resourceId"]
     );
+    // A pre-provider binding must keep serving older tools but never Pi.
+    let legacy = json!({"base":{"resourceId":codex["resource"]["resourceId"],"owner":f.project["id"],"projectId":f.project["id"]},"nativeId":id,"paths":[f.root.join("codex.jsonl")]});
+    db::upsert(
+        &f.db,
+        "bindings",
+        codex["resource"]["resourceId"].as_str().unwrap(),
+        f.project["id"].as_str().unwrap(),
+        &legacy,
+    )
+    .unwrap();
+    let entries = indexer::discover(&f.db, &f.project, "session").unwrap();
+    let pi = entries
+        .iter()
+        .find(|r| r["resource"]["source"] == "pi")
+        .unwrap();
+    let found = entries
+        .iter()
+        .find(|r| r["resource"]["source"] == "codex")
+        .unwrap();
+    assert_eq!(
+        found["resource"]["resourceId"],
+        codex["resource"]["resourceId"]
+    );
+    assert_ne!(
+        pi["resource"]["resourceId"],
+        found["resource"]["resourceId"]
+    );
 }
 
 #[test]

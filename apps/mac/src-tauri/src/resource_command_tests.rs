@@ -623,12 +623,17 @@ fn pi_shared_delete_preview_keeps_later_private_turns() {
     sync::materialize(&f.db, &f.project, &deleted).unwrap();
     assert_eq!(indexer::binding(&f.db, id).unwrap()["paths"], json!([]));
     assert_eq!(fs::read(&path).unwrap(), bytes);
+    // Record the tombstone the service would return, then read the private catalog.
+    sync::apply_event(&f.db, &json!({"resource":deleted,"conflicts":[]})).unwrap();
     let catalog = crate::local_resources::catalog(&f.db, &f.project, "session").unwrap();
-    assert!(catalog["resources"]
+    let local = catalog["resources"]
         .as_array()
         .unwrap()
         .iter()
-        .any(|r| r["resourceId"] == json!(id)));
+        .find(|r| r["resourceId"] == json!(id))
+        .expect("Pi session remains in the private catalog");
+    assert_eq!(local["local"], true);
+    assert_eq!(local["revision"], 0);
 }
 
 #[test]
