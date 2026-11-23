@@ -18,6 +18,7 @@ import { ResourceIdentity } from "./resource-identity.js";
 import { useQueryClient } from "@tanstack/react-query";
 import { useWorkspaceScope } from "./workspace-cache.js";
 import { SessionMessagesQuery } from "./use-session-messages.js";
+import { UpdatedTime } from "./updated-time.js";
 
 const rootsPerPage = 40;
 
@@ -25,40 +26,6 @@ type RowAnchor = {
   id: string;
   parents?: ReadonlyMap<string, string | undefined>;
 };
-
-const shortDate = new Intl.DateTimeFormat(undefined, {
-  month: "short",
-  day: "numeric",
-});
-const shortDateWithYear = new Intl.DateTimeFormat(undefined, {
-  month: "short",
-  day: "numeric",
-  year: "numeric",
-});
-const dateTime = new Intl.DateTimeFormat(undefined, {
-  year: "numeric",
-  month: "numeric",
-  day: "numeric",
-  hour: "numeric",
-  minute: "numeric",
-  second: "numeric",
-});
-
-/** "23h ago" style labels for recent activity, calendar dates beyond a week. */
-function relativeUpdated(date: Date, now: number, year: number) {
-  if (Number.isNaN(date.getTime())) return date.toString();
-  const seconds = Math.max(0, Math.round((now - date.getTime()) / 1000));
-  if (seconds < 60) return "Just now";
-  const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.round(hours / 24);
-  if (days < 7) return `${days}d ago`;
-  return (date.getFullYear() === year ? shortDate : shortDateWithYear).format(
-    date,
-  );
-}
 
 /** Disambiguates repeated display titles without exposing full paths in the row. */
 function pathSuffix(resource: Resource) {
@@ -281,10 +248,6 @@ export function ResourceTable({
             );
           const { resource, depth } = row;
           const title = displayTitle(resource);
-          const updated = new Date(resource.updatedAt);
-          const updatedTooltip = Number.isNaN(updated.getTime())
-            ? updated.toString()
-            : dateTime.format(updated);
           const children = tree.children.get(resource.resourceId) ?? [];
           const open = filtered || expanded.has(resource.resourceId);
           const onMenuChange = (open: boolean) =>
@@ -416,16 +379,7 @@ export function ResourceTable({
                     <ResourceIdentity resource={resource} user={user} />
                   </td>
                   <td className="resource-table-updated">
-                    <time
-                      dateTime={resource.updatedAt}
-                      title={`Updated ${updatedTooltip}`}
-                    >
-                      {relativeUpdated(
-                        updated,
-                        now.getTime(),
-                        now.getFullYear(),
-                      )}
-                    </time>
+                    <UpdatedTime value={resource.updatedAt} now={now} />
                   </td>
                   <td className="resource-table-actions">
                     {actions.length > 0 ? (

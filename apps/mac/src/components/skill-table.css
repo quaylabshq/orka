@@ -25,6 +25,31 @@
   width: 52px;
 }
 
+.skill-table-col-agent {
+  width: 132px;
+}
+
+.skill-table-col-updated {
+  width: 124px;
+}
+
+/* Memories, Sessions, and Plans keep their own widths for shared columns. */
+.skill-table:not([data-kind="skill"]) .skill-table-col-repository {
+  width: 224px;
+}
+
+.skill-table:not([data-kind="skill"]) .skill-table-col-person {
+  width: 160px;
+}
+
+.skill-table:not([data-kind="skill"]) .skill-table-col-status {
+  width: 168px;
+}
+
+.skill-table:not([data-kind="skill"]) .skill-table-col-actions {
+  width: 44px;
+}
+
 .skill-table th,
 .skill-table td {
   height: 44px;
@@ -135,6 +160,16 @@
 
 .skill-table-repository-label > span {
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skill-table-agent .source-label {
+  display: flex;
+}
+
+.skill-table-updated {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -293,6 +328,53 @@
 @media (max-width: 1280px) {
   .skill-table-col-repository {
     width: 22%;
+  }
+}
+
+/* Default window: list agents and people become a logo and an avatar. */
+@media (max-width: 1280px) {
+  .skill-table-col-agent,
+  .skill-table:not([data-kind="skill"]) .skill-table-col-person {
+    width: 52px;
+  }
+
+  .skill-table:not([data-kind="skill"]) .skill-table-col-repository {
+    width: 150px;
+  }
+
+  .skill-table-col-updated {
+    width: 100px;
+  }
+
+  /* Hidden from sight only: the names still label the logo and the avatar. */
+  .skill-table-agent .source-label > span,
+  .skill-table-agent-heading .skill-table-heading-label,
+  .skill-table:not([data-kind="skill"]) .skill-table-person-name,
+  .skill-table:not([data-kind="skill"])
+    .skill-table-person-heading
+    .skill-table-heading-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
+
+/* Minimum window: list rows move Updated into the peek. */
+@media (max-width: 1000px) {
+  .skill-table:not([data-kind="skill"]) .skill-table-col-repository {
+    width: 112px;
+  }
+
+  .skill-table:not([data-kind="skill"]) .skill-table-col-actions {
+    width: 36px;
+  }
+
+  .skill-table-col-updated,
+  .skill-table-updated {
+    display: none;
   }
 }
 

@@ -8,7 +8,10 @@ import type {
 } from "../apps/mac/src/types.js";
 import { projectAttention } from "../apps/mac/src/components/sync-attention.js";
 import { defaultIndexFilters } from "../apps/mac/src/components/index-toolbar.js";
-import { applySkillFilters } from "../apps/mac/src/components/skill-index.js";
+import {
+  applyPageFilters,
+  indexPages,
+} from "../apps/mac/src/components/skill-index.js";
 import {
   skillBinding,
   skillReviewState,
@@ -351,9 +354,10 @@ await test("a scoped native skill read error overrides an update and matches the
   assert.equal(statusOf(unreadable)?.key, "could-not-read");
   assert.equal(statusOf(sameName), null);
   assert.deepEqual(
-    applySkillFilters(
+    applyPageFilters(
+      indexPages.skill,
       state.resources,
-      { ...defaultIndexFilters, statuses: ["could-not-read"] },
+      { ...defaultIndexFilters, picks: { statuses: ["could-not-read"] } },
       {
         displayTitle: (item) => item.title,
         memberName: (id) => id,

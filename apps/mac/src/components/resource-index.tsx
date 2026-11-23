@@ -18,18 +18,16 @@ import {
 import { ResourceTable } from "./resource-table.js";
 import { LoadingRegion } from "./loading-region.js";
 import { CollectionSkeleton } from "./collection-skeleton.js";
-import type { SkillSummaries } from "./use-skill-summaries.js";
-import { SkillTable } from "./skill-table.js";
+import { skillSummaryKey, type SkillSummaries } from "./use-skill-summaries.js";
+import { SkillPeek, SkillTable } from "./skill-table.js";
+import { SkillToolbar, useFilterCategories } from "./skill-toolbar.js";
 import {
-  SkillToolbar,
-  effectiveSkillFilters,
-  useSkillFilterCategories,
-} from "./skill-toolbar.js";
-import {
-  applySkillFilters,
-  clearSkillFilters,
-  skillSharedBy,
-  skillFiltersActive,
+  applyPageFilters,
+  clearFilterPicks,
+  creditedMember,
+  effectiveFilters,
+  filterPicksActive,
+  indexPages,
   sortDirection,
 } from "./skill-index.js";
 import type { SkillStatus } from "./skill-status.js";
@@ -73,6 +71,7 @@ export interface ResourceIndexProps {
 
 const noSkillStatus = () => null;
 const noSkills: Resource[] = [];
+const skillPage = indexPages.skill;
 
 /** The shared toolbar over a T1 table (memories, sessions) or the skills table. */
 export function ResourceIndex({
@@ -131,7 +130,8 @@ export function ResourceIndex({
   }, [discovering, discoveryResult, refreshRequest, kind, notify]);
   const ownership = kind === "skill" ? "all" : (filters.ownership ?? "all");
   const root = useRef<HTMLElement>(null);
-  const skillCategories = useSkillFilterCategories(
+  const skillCategories = useFilterCategories(
+    skillPage,
     kind === "skill" ? resources : noSkills,
     filters,
     user,
@@ -140,15 +140,13 @@ export function ResourceIndex({
   // Skills filter by the picks that still have an option behind them.
   const applied = useMemo(
     () =>
-      kind === "skill"
-        ? effectiveSkillFilters(filters, skillCategories)
-        : filters,
+      kind === "skill" ? effectiveFilters(filters, skillCategories) : filters,
     [kind, filters, skillCategories],
   );
   const visible = useMemo(
     () =>
       kind === "skill"
-        ? applySkillFilters(resources, applied, {
+        ? applyPageFilters(skillPage, resources, applied, {
             displayTitle,
             user,
             memberName,
@@ -161,7 +159,7 @@ export function ResourceIndex({
           }),
     [kind, resources, applied, displayTitle, user, memberName, skillStatus],
   );
-  const skillFiltered = kind === "skill" && skillFiltersActive(applied);
+  const skillFiltered = kind === "skill" && filterPicksActive(applied);
   const sources = useMemo(
     () => [...new Set(resources.map((r) => r.source))],
     [resources],
@@ -191,6 +189,7 @@ export function ResourceIndex({
     kind === "skill" ? (
       <SkillToolbar
         key="skill-toolbar"
+        page={skillPage}
         showTools={toolbarShown}
         categories={skillCategories}
         filters={filters}
@@ -359,7 +358,7 @@ export function ResourceIndex({
                     <Button
                       size="sm"
                       variant="tertiary"
-                      onClick={() => onFilters(clearSkillFilters(filters))}
+                      onClick={() => onFilters(clearFilterPicks(filters))}
                     >
                       Clear filters
                     </Button>
@@ -383,20 +382,26 @@ export function ResourceIndex({
           )
         ) : kind === "skill" ? (
           <SkillTable
-            skills={visible}
-            summaries={skillSummaries}
+            page={skillPage}
+            resources={visible}
             user={user}
             memberName={memberName}
             statusOf={skillStatus}
             displayTitle={displayTitle}
             showRepository={resources.some((skill) => skill.repositoryName)}
             // A project with nobody else in it has no one to credit.
-            showSharedBy={resources.some(
-              (skill) => skillSharedBy(skill, user) !== user,
+            showPerson={resources.some(
+              (skill) => creditedMember(skillPage, skill, user) !== user,
             )}
             sort={filters.sort}
             direction={sortDirection(filters)}
             onOpen={onOpen}
+            peek={(skill) => (
+              <SkillPeek
+                skill={skill}
+                summary={skillSummaries[skillSummaryKey(skill)]}
+              />
+            )}
           />
         ) : (
           <ResourceTable

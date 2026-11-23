@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type { ProjectResource } from "../types.js";
 import { defaultIndexFilters } from "./index-toolbar.js";
-import { applySkillFilters, sortDirection } from "./skill-index.js";
+import { listStatuses } from "./list-status.js";
+import {
+  applyPageFilters,
+  effectiveFilters,
+  filterCategories,
+  indexPages,
+  sortDirection,
+} from "./skill-index.js";
 import type { SkillReviewState } from "./skill-review-state.js";
 import type { AttentionItem } from "./sync-attention.js";
 import { skillStatus, skillStatuses } from "./skill-status.js";
@@ -50,6 +57,7 @@ const context = (statuses: Record<string, string> = {}) => ({
   statusOf: (item: ProjectResource) => status(statuses[item.title] ?? ""),
 });
 const titles = (items: ProjectResource[]) => items.map((item) => item.title);
+const skillPage = indexPages.skill;
 
 describe("skillStatus", () => {
   it("shows nothing for a plain shared skill or one only on this Mac", () => {
@@ -251,7 +259,7 @@ describe("skillStatus with sync attention", () => {
   });
 });
 
-describe("applySkillFilters", () => {
+describe("applyPageFilters on Skills", () => {
   const skills = [
     skill("release-notes", { sourceId: "api", repositoryName: "orka-api" }),
     skill("code-review", { sourceId: "app", repositoryName: "orka-public" }),
@@ -273,7 +281,7 @@ describe("applySkillFilters", () => {
   it("sorts by name by default and keeps same-name copies together", () => {
     const filters = { ...defaultIndexFilters, sort: "title" as const };
     expect(
-      applySkillFilters(skills, filters, context()).map(
+      applyPageFilters(skillPage, skills, filters, context()).map(
         (item) => `${item.title}@${item.repositoryName}`,
       ),
     ).toEqual([
@@ -288,11 +296,21 @@ describe("applySkillFilters", () => {
     const filters = { ...defaultIndexFilters, sort: "title" as const };
     expect(
       titles(
-        applySkillFilters(skills, { ...filters, query: "REVIEW" }, context()),
+        applyPageFilters(
+          skillPage,
+          skills,
+          { ...filters, query: "REVIEW" },
+          context(),
+        ),
       ),
     ).toEqual(["code-review", "code-review"]);
     expect(
-      applySkillFilters(skills, { ...filters, query: "SKILL.md" }, context()),
+      applyPageFilters(
+        skillPage,
+        skills,
+        { ...filters, query: "SKILL.md" },
+        context(),
+      ),
     ).toEqual([]);
   });
 
@@ -300,27 +318,30 @@ describe("applySkillFilters", () => {
     const filters = { ...defaultIndexFilters, sort: "title" as const };
     expect(
       titles(
-        applySkillFilters(
+        applyPageFilters(
+          skillPage,
           skills,
-          { ...filters, repositories: ["api"], sharedBy: ["mira"] },
+          { ...filters, picks: { repositories: ["api"], people: ["mira"] } },
           context(),
         ),
       ),
     ).toEqual(["code-review", "release-notes"]);
     expect(
       titles(
-        applySkillFilters(
+        applyPageFilters(
+          skillPage,
           skills,
-          { ...filters, locations: ["mac"] },
+          { ...filters, picks: { locations: ["mac"] } },
           context(),
         ),
       ),
     ).toEqual(["standup"]);
     expect(
       titles(
-        applySkillFilters(
+        applyPageFilters(
+          skillPage,
           skills,
-          { ...filters, statuses: ["conflict", "local-edits"] },
+          { ...filters, picks: { statuses: ["conflict", "local-edits"] } },
           context({ standup: "local-edits", "release-notes": "conflict" }),
         ),
       ),
@@ -331,7 +352,8 @@ describe("applySkillFilters", () => {
     const filters = { ...defaultIndexFilters, sort: "status" as const };
     expect(
       titles(
-        applySkillFilters(
+        applyPageFilters(
+          skillPage,
           skills,
           filters,
           context({ standup: "local-edits", "release-notes": "conflict" }),
@@ -343,13 +365,295 @@ describe("applySkillFilters", () => {
   it("reads Last updated newest first unless reversed", () => {
     const filters = { ...defaultIndexFilters, sort: "updated" as const };
     expect(sortDirection(filters)).toBe("desc");
-    expect(titles(applySkillFilters(skills, filters, context()))[0]).toBe(
-      "standup",
-    );
+    expect(
+      titles(applyPageFilters(skillPage, skills, filters, context()))[0],
+    ).toBe("standup");
     expect(
       titles(
-        applySkillFilters(skills, { ...filters, direction: "asc" }, context()),
+        applyPageFilters(
+          skillPage,
+          skills,
+          { ...filters, direction: "asc" },
+          context(),
+        ),
       ).at(-1),
     ).toBe("standup");
+  });
+});
+
+describe("the memory, session, and plan pages", () => {
+  const item = (
+    kind: "memory" | "session" | "plan",
+    title: string,
+    extra: Partial<ProjectResource> = {},
+  ) =>
+    ({
+      ...skill(title),
+      kind,
+      source: "claude",
+      logicalPath: title,
+      ...extra,
+    }) as ProjectResource;
+  const sessions = [
+    item("session", "deploy fix", {
+      owner: "mira",
+      source: "codex",
+      sourceId: "api",
+      repositoryName: "orka-api",
+      logicalPath: "codex/sessions/deploy.jsonl",
+      updatedAt: "2026-11-03T00:00:00Z",
+    }),
+    item("session", "deploy fix, continued", {
+      resourceId: "fork",
+      owner: "me",
+      sourceId: "app",
+      repositoryName: "orka-public",
+      nativeForkParentId: "deploy fix",
+      updatedAt: "2026-11-02T00:00:00Z",
+    }),
+    item("session", "token audit", {
+      local: true,
+      owner: "me",
+      sourceId: "app",
+      repositoryName: "orka-public",
+      fork: {
+        parentId: "x",
+        nativeId: null,
+        destination: "desktop",
+        createdAt: "2026-11-01T00:00:00Z",
+      },
+      updatedAt: "2026-11-05T00:00:00Z",
+    }),
+  ];
+  const memories = [
+    item("memory", "AGENTS.md", {
+      source: "shared",
+      logicalPath: "instructions/AGENTS.md",
+      owner: "me",
+      updatedBy: "mira",
+      updatedAt: "2026-11-04T00:00:00Z",
+    }),
+    item("memory", "MEMORY.md", {
+      resourceId: "claude-memory",
+      logicalPath: "claude/memory/MEMORY.md",
+      owner: "mira",
+      updatedBy: "dev",
+      updatedAt: "2026-11-06T00:00:00Z",
+    }),
+    item("memory", "MEMORY.md", {
+      resourceId: "codex-memory",
+      source: "codex",
+      logicalPath: "codex/memories/MEMORY.md",
+      local: true,
+      owner: "me",
+      updatedBy: "me",
+      updatedAt: "2026-11-01T00:00:00Z",
+    }),
+  ];
+  const opening = (kind: "memory" | "session" | "plan") => ({
+    ...defaultIndexFilters,
+    sort: indexPages[kind].defaultSort,
+  });
+  const run = (
+    kind: "memory" | "session" | "plan",
+    items: ProjectResource[],
+    extra: Partial<typeof defaultIndexFilters> = {},
+    statuses: Record<string, string> = {},
+  ) =>
+    applyPageFilters(
+      indexPages[kind],
+      items,
+      { ...opening(kind), ...extra },
+      {
+        ...context(),
+        statusOf: (resource) =>
+          listStatuses.plan.find(
+            ({ key }) => key === statuses[resource.resourceId],
+          ) ?? null,
+      },
+    ).map((resource) => resource.resourceId);
+  const categoryLabels = (
+    kind: keyof typeof indexPages,
+    items: ProjectResource[],
+  ) =>
+    filterCategories(indexPages[kind], items, defaultIndexFilters, {
+      user: "me",
+      memberName: (id) => (id === "me" ? "You" : id),
+    }).map(({ label }) => label);
+
+  it("opens on Last updated, newest first", () => {
+    expect(run("session", sessions)).toEqual([
+      "token audit",
+      "deploy fix",
+      "fork",
+    ]);
+    expect(run("session", sessions, { direction: "asc" })).toEqual([
+      "fork",
+      "deploy fix",
+      "token audit",
+    ]);
+  });
+
+  it("searches titles, paths, and agents, while Skills keeps names only", () => {
+    expect(run("session", sessions, { query: "CODEX" })).toEqual([
+      "deploy fix",
+    ]);
+    expect(run("session", sessions, { query: "deploy.jsonl" })).toEqual([
+      "deploy fix",
+    ]);
+    expect(run("memory", memories, { query: "instructions/" })).toEqual([
+      "AGENTS.md",
+    ]);
+    // A shared memory has no agent to match.
+    expect(run("memory", memories, { query: "shared" })).toEqual([]);
+    expect(
+      applyPageFilters(
+        skillPage,
+        [skill("deploy", { source: "codex" })],
+        { ...defaultIndexFilters, query: "codex" },
+        context(),
+      ),
+    ).toEqual([]);
+  });
+
+  it("offers each page its own categories in menu order", () => {
+    expect(categoryLabels("session", sessions)).toEqual([
+      "Status",
+      "Owner",
+      "Agent",
+      "Repository",
+      "Location",
+      "Forks",
+    ]);
+    expect(
+      categoryLabels(
+        "plan",
+        sessions.map(
+          (session) => ({ ...session, kind: "plan" }) as ProjectResource,
+        ),
+      ),
+    ).toEqual(["Status", "Owner", "Repository", "Location"]);
+    expect(categoryLabels("memory", memories)).toEqual([
+      "Status",
+      "Updated by",
+      "Agent",
+      "Location",
+      "Kind",
+    ]);
+    expect(
+      categoryLabels("skill", [skill("a"), skill("b", { owner: "me" })]),
+    ).toEqual(["Status", "Shared by", "Location"]);
+  });
+
+  it("offers Agent only with two agents present, never counting shared items", () => {
+    const [instructions, claude] = memories;
+    expect(categoryLabels("memory", [instructions, claude])).not.toContain(
+      "Agent",
+    );
+  });
+
+  it("filters by agent, fork, kind, and the person each page credits", () => {
+    expect(run("session", sessions, { picks: { agents: ["claude"] } })).toEqual(
+      ["token audit", "fork"],
+    );
+    expect(run("session", sessions, { picks: { forks: ["fork"] } })).toEqual([
+      "token audit",
+      "fork",
+    ]);
+    expect(
+      run("session", sessions, { picks: { forks: ["original"] } }),
+    ).toEqual(["deploy fix"]);
+    expect(
+      run("memory", memories, { picks: { kinds: ["instruction"] } }),
+    ).toEqual(["AGENTS.md"]);
+    expect(run("memory", memories, { picks: { kinds: ["memory"] } })).toEqual([
+      "claude-memory",
+      "codex-memory",
+    ]);
+    // Memories credit whoever updated them; items only on this Mac credit you.
+    expect(run("memory", memories, { picks: { people: ["mira"] } })).toEqual([
+      "AGENTS.md",
+    ]);
+    expect(run("memory", memories, { picks: { people: ["me"] } })).toEqual([
+      "codex-memory",
+    ]);
+    expect(run("session", sessions, { picks: { people: ["me"] } })).toEqual([
+      "token audit",
+      "fork",
+    ]);
+    // A page ignores a category it does not offer.
+    expect(run("plan", sessions, { picks: { forks: ["fork"] } })).toHaveLength(
+      3,
+    );
+  });
+
+  it("drops a pick whose option is gone", () => {
+    const shown = filterCategories(
+      indexPages.session,
+      sessions,
+      { ...defaultIndexFilters, picks: { repositories: ["removed"] } },
+      { user: "me", memberName: (id) => id },
+    );
+    expect(
+      run("session", sessions, effectiveFilters(defaultIndexFilters, shown)),
+    ).toHaveLength(3);
+  });
+
+  it("sorts by status with the most urgent first, and by the credited person", () => {
+    expect(
+      run(
+        "session",
+        sessions,
+        { sort: "status" },
+        { fork: "upload-failed", "token audit": "waiting-to-sync" },
+      ),
+    ).toEqual(["fork", "token audit", "deploy fix"]);
+    expect(run("memory", memories, { sort: "author" })).toEqual([
+      "claude-memory",
+      "AGENTS.md",
+      "codex-memory",
+    ]);
+  });
+
+  it("names each sort and its directions for the page", () => {
+    const sorts = (kind: keyof typeof indexPages) =>
+      indexPages[kind].sorts.map(({ label, directions }) => [
+        label,
+        ...directions,
+      ]);
+    const list = [
+      ["Last updated", "Oldest first", "Newest first"],
+      ["Name", "A to Z", "Z to A"],
+      ["Status", "Most urgent first", "Least urgent first"],
+      ["Repository", "A to Z", "Z to A"],
+    ];
+    expect(sorts("session")).toEqual([...list, ["Owner", "A to Z", "Z to A"]]);
+    expect(sorts("plan")).toEqual([...list, ["Owner", "A to Z", "Z to A"]]);
+    expect(sorts("memory")).toEqual([
+      ...list,
+      ["Updated by", "A to Z", "Z to A"],
+    ]);
+    expect(sorts("skill").map(([label]) => label)).toEqual([
+      "Name",
+      "Status",
+      "Repository",
+      "Shared by",
+      "Last updated",
+    ]);
+  });
+
+  it("groups list statuses by tone in the Filter menu", () => {
+    expect(indexPages.plan.statuses.map(({ group }) => group)).toEqual([
+      "red",
+      "red",
+      "red",
+      "amber",
+      "amber",
+      "neutral",
+      "neutral",
+    ]);
+    expect(indexPages.session.statuses.map(({ label }) => label)).not.toContain(
+      "Needs review",
+    );
   });
 });

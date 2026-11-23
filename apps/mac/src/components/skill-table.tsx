@@ -1,7 +1,9 @@
 import {
   ArrowDownIcon,
   ArrowUpIcon,
+  BotIcon,
   CircleCheckIcon,
+  ClockIcon,
   FileIcon,
   FolderIcon,
   LaptopIcon,
@@ -14,9 +16,16 @@ import type { IndexSort, IndexSortDirection } from "./index-toolbar.js";
 import { ItemMenuButton } from "./item-menu.js";
 import { useMemberPhoto } from "./member-names.js";
 import { ResourceItemMenu } from "./resource-menu.js";
-import { skillSharedBy } from "./skill-index.js";
-import type { SkillStatus } from "./skill-status.js";
-import { skillSummaryKey, type SkillSummaries } from "./use-skill-summaries.js";
+import {
+  agentOf,
+  creditedMember,
+  type IndexColumn,
+  type IndexPage,
+} from "./skill-index.js";
+import type { IndexStatus } from "./skill-status.js";
+import { SourceLabel, sourceName } from "./source-label.js";
+import { UpdatedTime } from "./updated-time.js";
+import type { SkillSummaries } from "./use-skill-summaries.js";
 import "./skill-table.css";
 
 /** How long the pointer rests on a row before its description opens. */
@@ -24,7 +33,41 @@ const PEEK_DELAY = 400;
 /** Room a description needs under its row before it opens upward instead. */
 const PEEK_ROOM = 144;
 
-function SharedBy({ id, name }: { id: string; name: string }) {
+const headings: Record<
+  IndexColumn,
+  {
+    sort?: IndexSort;
+    label: (page: IndexPage) => string;
+    icon: typeof FileIcon;
+    className?: string;
+  }
+> = {
+  agent: {
+    label: () => "Agent",
+    icon: BotIcon,
+    className: "skill-table-agent-heading",
+  },
+  repository: {
+    sort: "repository",
+    label: () => "Repository",
+    icon: FolderIcon,
+  },
+  person: {
+    sort: "author",
+    label: (page) => page.person.label,
+    icon: UserIcon,
+    className: "skill-table-person-heading",
+  },
+  updated: {
+    sort: "updated",
+    label: () => "Updated",
+    icon: ClockIcon,
+    className: "skill-table-updated",
+  },
+  status: { sort: "status", label: () => "Status", icon: CircleCheckIcon },
+};
+
+function Person({ id, name }: { id: string; name: string }) {
   const photo = useMemberPhoto(id);
   return (
     <span className="skill-table-person" title={name}>
@@ -49,7 +92,7 @@ function SharedBy({ id, name }: { id: string; name: string }) {
   );
 }
 
-export function SkillStatusPill({ status }: { status: SkillStatus }) {
+export function SkillStatusPill({ status }: { status: IndexStatus }) {
   return (
     <span className="skill-status-pill" data-tone={status.tone}>
       <status.icon size={12} aria-hidden="true" />
@@ -58,24 +101,16 @@ export function SkillStatusPill({ status }: { status: SkillStatus }) {
   );
 }
 
-function Peek({
-  id,
+/** A skill's peek: its description, and where it came from. */
+export function SkillPeek({
   skill,
   summary,
-  above,
 }: {
-  id: string;
   skill: Resource;
   summary: SkillSummaries[string] | undefined;
-  above: boolean;
 }) {
   return (
-    <span
-      id={id}
-      className="skill-table-peek"
-      data-side={above ? "above" : "below"}
-      role="tooltip"
-    >
+    <>
       {summary === undefined ? (
         <span
           className="skill-table-peek-loading loading-fade"
@@ -94,35 +129,41 @@ function Peek({
       {skill.global && (
         <span className="skill-table-peek-origin">From your global skills</span>
       )}
-    </span>
+    </>
   );
 }
 
 export function SkillTable({
-  skills,
-  summaries,
+  page,
+  resources,
   user,
   memberName,
   statusOf,
   displayTitle,
   showRepository,
-  showSharedBy,
+  showPerson,
   sort,
   direction,
   onOpen,
+  peek: peekContent,
+  titleTrailing,
 }: {
-  skills: Resource[];
-  summaries: SkillSummaries;
+  page: IndexPage;
+  resources: Resource[];
   user: string | null;
   memberName: (id: string) => string;
-  statusOf: (skill: Resource) => SkillStatus | null;
-  displayTitle: (skill: Resource) => string;
+  statusOf: (resource: Resource) => IndexStatus | null;
+  displayTitle: (resource: Resource) => string;
   /** Columns follow the whole collection, so filtering never moves them. */
   showRepository: boolean;
-  showSharedBy: boolean;
+  showPerson: boolean;
   sort: IndexSort;
   direction: IndexSortDirection;
   onOpen: (id: string) => void;
+  /** What a row's peek says after its pointer rests or it takes focus. */
+  peek: (resource: Resource) => React.ReactNode;
+  /** A marker right after a row's title, such as a session's fork. */
+  titleTrailing?: (resource: Resource) => React.ReactNode;
 }) {
   const peekId = useId();
   const [peek, setPeek] = useState<{ id: string; above: boolean }>();
@@ -165,16 +206,17 @@ export function SkillTable({
   useEffect(() => () => window.clearTimeout(timer.current), []);
   const SortArrow = direction === "asc" ? ArrowUpIcon : ArrowDownIcon;
   const heading = (
-    key: IndexSort,
+    key: IndexSort | undefined,
     label: string,
     Glyph: typeof FileIcon,
     className?: string,
   ) => (
     <th
+      key={label}
       scope="col"
       className={className}
       aria-sort={
-        sort === key
+        key && sort === key
           ? direction === "asc"
             ? "ascending"
             : "descending"
@@ -184,65 +226,123 @@ export function SkillTable({
       <span className="skill-table-heading">
         <Glyph size={14} aria-hidden="true" />
         <span className="skill-table-heading-label">{label}</span>
-        {sort === key && <SortArrow size={12} aria-hidden="true" />}
+        {key && sort === key && <SortArrow size={12} aria-hidden="true" />}
       </span>
     </th>
   );
+  const columns = page.columns.filter(
+    (column) =>
+      (column !== "repository" || showRepository) &&
+      (column !== "person" || showPerson),
+  );
+  const now = new Date();
+  const cell = (
+    column: IndexColumn,
+    resource: Resource,
+    status: IndexStatus | null,
+  ) => {
+    switch (column) {
+      case "agent": {
+        const agent = agentOf(resource);
+        return (
+          <td
+            key={column}
+            className="skill-table-agent"
+            title={agent && sourceName(agent)}
+          >
+            {agent && <SourceLabel source={agent} />}
+          </td>
+        );
+      }
+      case "repository":
+        return (
+          <td key={column} className="skill-table-repository">
+            {resource.repositoryName && (
+              <span
+                className="skill-table-repository-label"
+                title={resource.repositoryName}
+                aria-label={`Repository: ${resource.repositoryName}`}
+              >
+                <FolderIcon size={12} aria-hidden="true" />
+                <span>{resource.repositoryName}</span>
+              </span>
+            )}
+          </td>
+        );
+      case "person": {
+        const person = creditedMember(page, resource, user);
+        return (
+          <td key={column}>
+            <Person id={person} name={memberName(person)} />
+          </td>
+        );
+      }
+      case "updated":
+        return (
+          <td key={column} className="skill-table-updated">
+            <UpdatedTime value={resource.updatedAt} now={now} />
+          </td>
+        );
+      case "status":
+        return (
+          <td key={column}>{status && <SkillStatusPill status={status} />}</td>
+        );
+    }
+  };
   return (
     <table
       className="skill-table"
-      data-compact-people={showSharedBy || undefined}
+      data-kind={page.kind}
+      data-compact-people={showPerson || undefined}
     >
       <colgroup>
         <col />
-        {showRepository && <col className="skill-table-col-repository" />}
-        {showSharedBy && <col className="skill-table-col-person" />}
-        <col className="skill-table-col-status" />
+        {columns.map((column) => (
+          <col key={column} className={`skill-table-col-${column}`} />
+        ))}
         <col className="skill-table-col-actions" />
       </colgroup>
       <thead>
         <tr>
-          {heading("title", "Skill", FileIcon)}
-          {showRepository && heading("repository", "Repository", FolderIcon)}
-          {showSharedBy &&
-            heading(
-              "author",
-              "Shared by",
-              UserIcon,
-              "skill-table-person-heading",
-            )}
-          {heading("status", "Status", CircleCheckIcon)}
+          {heading("title", page.title, FileIcon)}
+          {columns.map((column) => {
+            const { sort: key, label, icon, className } = headings[column];
+            return heading(key, label(page), icon, className);
+          })}
           <th scope="col">
             <span className="sr-only">Actions</span>
           </th>
         </tr>
       </thead>
       <tbody>
-        {skills.map((skill) => {
-          const title = displayTitle(skill);
-          const status = statusOf(skill);
-          const sharedBy = skillSharedBy(skill, user);
-          const Leading = skill.local ? LaptopIcon : UsersIcon;
-          const peeking = peek?.id === skill.resourceId;
+        {resources.map((resource) => {
+          const title = displayTitle(resource);
+          const status = statusOf(resource);
+          const Leading = resource.local ? LaptopIcon : UsersIcon;
+          const peeking = peek?.id === resource.resourceId;
           return (
             <ResourceItemMenu
-              key={skill.resourceId}
-              resource={skill}
+              key={resource.resourceId}
+              resource={resource}
               flat
               onOpenChange={onMenu}
             >
               {(actions) => (
                 <tr
-                  onClick={() => onOpen(skill.resourceId)}
+                  onClick={() => onOpen(resource.resourceId)}
                   onPointerEnter={(event) =>
-                    openPeek(skill.resourceId, event.currentTarget, PEEK_DELAY)
+                    openPeek(
+                      resource.resourceId,
+                      event.currentTarget,
+                      PEEK_DELAY,
+                    )
                   }
                   onPointerLeave={closePeek}
                   onFocus={(event) => {
-                    // Keyboard focus only: returning from a skill or closing
-                    // a menu restores focus without opening the description.
+                    // Keyboard focus only: returning from an item or closing
+                    // a menu restores focus without opening the peek.
                     if (event.target.matches(":focus-visible"))
-                      openPeek(skill.resourceId, event.currentTarget, 0);
+                      openPeek(resource.resourceId, event.currentTarget, 0);
                   }}
                   onBlur={(event) => {
                     if (!event.currentTarget.contains(event.relatedTarget))
@@ -255,7 +355,7 @@ export function SkillTable({
                         size={14}
                         className="skill-table-leading"
                         aria-label={
-                          skill.local
+                          resource.local
                             ? "On this Mac"
                             : "Shared with the project"
                         }
@@ -263,46 +363,30 @@ export function SkillTable({
                       <button
                         type="button"
                         className="skill-table-open"
-                        data-resource-id={skill.resourceId}
-                        title={skill.title}
+                        data-resource-id={resource.resourceId}
+                        title={resource.title}
                         aria-describedby={peeking ? peekId : undefined}
                         onClick={(event) => {
                           event.stopPropagation();
-                          onOpen(skill.resourceId);
+                          onOpen(resource.resourceId);
                         }}
                       >
                         {title}
                       </button>
+                      {titleTrailing?.(resource)}
                     </span>
                     {peeking && (
-                      <Peek
+                      <span
                         id={peekId}
-                        skill={skill}
-                        summary={summaries[skillSummaryKey(skill)]}
-                        above={peek.above}
-                      />
+                        className="skill-table-peek"
+                        data-side={peek.above ? "above" : "below"}
+                        role="tooltip"
+                      >
+                        {peekContent(resource)}
+                      </span>
                     )}
                   </th>
-                  {showRepository && (
-                    <td className="skill-table-repository">
-                      {skill.repositoryName && (
-                        <span
-                          className="skill-table-repository-label"
-                          title={skill.repositoryName}
-                          aria-label={`Repository: ${skill.repositoryName}`}
-                        >
-                          <FolderIcon size={12} aria-hidden="true" />
-                          <span>{skill.repositoryName}</span>
-                        </span>
-                      )}
-                    </td>
-                  )}
-                  {showSharedBy && (
-                    <td>
-                      <SharedBy id={sharedBy} name={memberName(sharedBy)} />
-                    </td>
-                  )}
-                  <td>{status && <SkillStatusPill status={status} />}</td>
+                  {columns.map((column) => cell(column, resource, status))}
                   <td
                     className="skill-table-actions"
                     onClick={(event) => event.stopPropagation()}

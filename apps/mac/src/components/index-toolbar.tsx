@@ -17,9 +17,17 @@ import { memberLabel } from "./project-permissions.js";
 export type IndexSort =
   "updated" | "title" | "author" | "status" | "repository";
 export type IndexSortDirection = "asc" | "desc";
-export type SkillLocation = "mac" | "shared";
 export type OwnershipFilter = "all" | "mine" | "shared";
 export type SourceFilter = Resource["source"] | "all";
+/** A category in the Filter menu of a Skills-style index. */
+export type IndexFilterKey =
+  | "statuses"
+  | "people"
+  | "agents"
+  | "repositories"
+  | "locations"
+  | "forks"
+  | "kinds";
 
 /** Presentation-only view state for one collection; never touches stored data. */
 export interface IndexFilters {
@@ -30,11 +38,8 @@ export interface IndexFilters {
   ownership?: OwnershipFilter;
   /** Unset means the sort's natural order: newest first, or A to Z. */
   direction?: IndexSortDirection;
-  /** Skills index filters; an empty or missing list filters nothing. */
-  statuses?: string[];
-  sharedBy?: string[];
-  repositories?: string[];
-  locations?: SkillLocation[];
+  /** Filter menu picks by category; an empty or missing list filters nothing. */
+  picks?: Partial<Record<IndexFilterKey, string[]>>;
 }
 
 export const defaultIndexFilters: IndexFilters = {

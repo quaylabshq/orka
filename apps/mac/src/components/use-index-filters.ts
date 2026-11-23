@@ -1,13 +1,18 @@
 import { useCallback, useEffect, useState } from "react";
 import type { Resource } from "@portable/protocol";
 import { defaultIndexFilters, type IndexFilters } from "./index-toolbar.js";
+import { indexPages } from "./skill-index.js";
 
 type Kind = Resource["kind"];
+const opening = (kind: Kind): IndexFilters => ({
+  ...defaultIndexFilters,
+  sort: indexPages[kind].defaultSort,
+});
 const initial: Record<Kind, IndexFilters> = {
-  memory: defaultIndexFilters,
-  skill: { ...defaultIndexFilters, sort: "title" },
-  session: defaultIndexFilters,
-  plan: defaultIndexFilters,
+  memory: opening("memory"),
+  skill: opening("skill"),
+  session: opening("session"),
+  plan: opening("plan"),
 };
 
 /** The header repository selection is shared by the collections that use it. */
