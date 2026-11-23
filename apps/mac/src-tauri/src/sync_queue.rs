@@ -559,16 +559,24 @@ impl SyncQueue {
         interval: &Interval,
     ) -> Result<()> {
         let project = &job.project;
+        let tx = rusqlite::Transaction::new_unchecked(db, rusqlite::TransactionBehavior::Immediate)
+            .map_err(|e| e.to_string())?;
+        // A cancel that lands after the job's last check still stops it, and it
+        // stays recorded until the row is settled in this same transaction.
+        let result = if Self::cancelled(&tx, project)? {
+            &Ok(Outcome::Cancelled)
+        } else {
+            result
+        };
         // The job is over, so its claim and any cancel for it must not reach a
         // later request.
-        Self::clear(db, project)?;
+        Self::clear(&tx, project)?;
         match result {
-            Ok(Outcome::Skipped) => sql(db.execute(
+            Ok(Outcome::Skipped) => sql(tx.execute(
                 "DELETE FROM sync_queue WHERE project=?1 AND not_before=?2",
                 params![project, RUNNING],
-            )),
+            ))?,
             Ok(Outcome::Synced | Outcome::Cancelled | Outcome::Captured) => {
-                let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
                 sql(tx.execute(
                     "DELETE FROM sync_queue WHERE project=?1 AND not_before=?2",
                     params![project, RUNNING],
@@ -581,22 +589,18 @@ impl SyncQueue {
                 if project == WORKSPACE {
                     sql(tx.execute("DELETE FROM meta WHERE key=?", [OUTAGE]))?;
                 }
-                tx.commit().map_err(|e| e.to_string())?;
                 if matches!(result, Ok(Outcome::Synced | Outcome::Captured)) {
-                    self.synced.insert(job.project.clone(), now);
-                    sql(db.execute("DELETE FROM meta WHERE key=?", [cancelled_at_key(project)]))?;
+                    sql(tx.execute("DELETE FROM meta WHERE key=?", [cancelled_at_key(project)]))?;
                 }
-                Ok(())
             }
-            Ok(Outcome::Yielded) => sql(db.execute(
+            Ok(Outcome::Yielded) => sql(tx.execute(
                 "UPDATE sync_queue SET not_before=min(not_before,?2) WHERE project=?1",
                 params![project, job.not_before],
-            )),
+            ))?,
             Ok(Outcome::Deferred) | Err(_) => {
                 let attempts = job.attempts + 1;
                 let retry = interval.retry(attempts);
                 let not_before = now + millis(retry + jitter(&self.device, project, retry));
-                let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
                 sql(tx.execute(
                     "UPDATE sync_queue SET attempts=?2, not_before=min(not_before,?3) WHERE project=?1",
                     params![project, attempts, not_before],
@@ -617,9 +621,13 @@ impl SyncQueue {
                         params![attempts, not_before],
                     ))?;
                 }
-                tx.commit().map_err(|e| e.to_string())
             }
         }
+        tx.commit().map_err(|e| e.to_string())?;
+        if matches!(result, Ok(Outcome::Synced | Outcome::Captured)) {
+            self.synced.insert(job.project.clone(), now);
+        }
+        Ok(())
     }
 
     /// Runs the most urgent ready job under the workspace lock and releases the
