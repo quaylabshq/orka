@@ -423,6 +423,16 @@ fn own_pi_session_resumes_in_place_and_forks_every_raw_turn() {
     assert_eq!(&copied[1..], &raw[1..]);
     assert_eq!(fs::read(&original).unwrap(), continued);
     let fork_id = fork["resourceId"].as_str().unwrap();
+    // The new Pi file keeps the raw turns; Orka's stored snapshot is redacted
+    // and no raw session bytes reach its blob store.
+    assert!(fs::read_to_string(&copy).unwrap().contains(secret));
+    let stored = crate::local_resources::resource(&f.db, fork_id).unwrap();
+    let snapshot = json!(crate::history::resource_records(&stored).unwrap()).to_string();
+    assert!(!snapshot.contains(secret), "{snapshot}");
+    assert!(snapshot.contains("Later turn"));
+    for raw in [continued.clone(), fs::read(&copy).unwrap()] {
+        assert!(!db::blob_path(&db::digest(&raw)).unwrap().exists());
+    }
     assert_eq!(
         crate::resource_commands::paths(&f.db, &f.project, &json!({"resourceId":fork_id})).unwrap(),
         [copy.canonicalize().unwrap()]
@@ -446,6 +456,41 @@ fn own_pi_session_resumes_in_place_and_forks_every_raw_turn() {
     assert_eq!(reforked[0]["cwd"], json!(f.root));
     assert_eq!(&reforked[1..], &moved[1..]);
 
+    // A copy with an invalid Pi tree or exceeding the size cap falls back to
+    // the stored snapshot on explicit fork instead of copying invalid data.
+    fs::write(
+        &copy,
+        native::encode(&[
+            copied[0].clone(),
+            json!({"type":"message","id":"broken","parentId":"missing","message":{"role":"user","content":"Dangling branch"}}),
+        ]),
+    )
+    .unwrap();
+    let recovered_tree =
+        session_launcher::launch_with(fork_id, Tool::Pi, Destination::Terminal, true, &host)
+            .unwrap();
+    let recovered_tree_path = PathBuf::from(
+        host.calls.borrow().last().unwrap()["path"]
+            .as_str()
+            .unwrap(),
+    );
+    let recovered_tree_records =
+        native::complete_records(&fs::read(&recovered_tree_path).unwrap()).unwrap();
+    assert!(native::validate_session_import("pi", &recovered_tree_records).is_ok());
+    assert_ne!(recovered_tree["nativeId"], fork["nativeId"]);
+
+    fs::File::create(&copy)
+        .unwrap()
+        .set_len(crate::history::MAX_FILE + 1)
+        .unwrap();
+    assert!(
+        session_launcher::resume_with(fork_id, Tool::Pi, Destination::Terminal, &host).is_err()
+    );
+    let recovered_oversized =
+        session_launcher::launch_with(fork_id, Tool::Pi, Destination::Terminal, true, &host)
+            .unwrap();
+    assert_ne!(recovered_oversized["nativeId"], fork["nativeId"]);
+
     // A corrupt copy is preserved and an explicit fork recovers from the snapshot.
     fs::write(&copy, "invalid JSON\n").unwrap();
     let recovered =
@@ -453,6 +498,19 @@ fn own_pi_session_resumes_in_place_and_forks_every_raw_turn() {
             .unwrap();
     assert_ne!(recovered["nativeId"], fork["nativeId"]);
     assert_eq!(fs::read_to_string(&copy).unwrap(), "invalid JSON\n");
+
+    // An oversized own file cannot resume, but Fork still recovers from the snapshot.
+    fs::File::create(&original)
+        .unwrap()
+        .set_len(crate::history::MAX_FILE + 1)
+        .unwrap();
+    let options = json!(session_launcher::options_with(id, &host).unwrap());
+    assert_eq!(options[0]["available"], false);
+    assert_eq!(options[0]["forkAvailable"], true);
+    assert!(session_launcher::resume_with(id, Tool::Pi, Destination::Terminal, &host).is_err());
+    let rescued_oversized =
+        session_launcher::launch_with(id, Tool::Pi, Destination::Terminal, true, &host).unwrap();
+    assert_eq!(rescued_oversized["forked"], true);
 
     // A corrupt own file cannot resume, but Fork still recovers from the snapshot.
     fs::write(&original, "invalid JSON\n").unwrap();
@@ -610,6 +668,27 @@ fn pi_copies_survive_a_folder_disconnect_and_purge_and_read_from_the_snapshot() 
         .collect();
     assert_eq!(exported.len(), 1, "{exported:?}");
     assert!(!db::blob_path(&exported[0]).unwrap().exists());
+    // An oversized copy falls back to its stored snapshot instead of aborting export.
+    fs::File::create(&copy)
+        .unwrap()
+        .set_len(crate::history::MAX_FILE + 1)
+        .unwrap();
+    let fallback_zip = f._home.path().join("purged-project-fallback.zip");
+    crate::bundles::export_project(&db::CacheScope::current().unwrap(), project, &fallback_zip)
+        .unwrap();
+    let mut zip = zip::ZipArchive::new(fs::File::open(fallback_zip).unwrap()).unwrap();
+    let mut fallback_transcript = String::new();
+    std::io::Read::read_to_string(
+        &mut zip
+            .by_name(&format!("resources/{copy_id}/transcript.md"))
+            .unwrap(),
+        &mut fallback_transcript,
+    )
+    .unwrap();
+    assert!(
+        fallback_transcript.contains("Continue in Pi"),
+        "{fallback_transcript}"
+    );
     assert!(f.outbox().is_empty());
 }
 

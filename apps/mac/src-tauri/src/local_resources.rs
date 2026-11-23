@@ -425,7 +425,7 @@ pub fn native_binding(db: &Connection, resource: &Value) -> Result<Option<Value>
     {
         return Err("This session uses a different native home. Open the collection again.".into());
     }
-    let bytes = if resource["source"] == "codex" {
+    let bytes = if resource["source"] == "codex" || resource["source"] == "pi" {
         crate::history::read_session(path)?
     } else {
         std::fs::read(path).map_err(|e| e.to_string())?

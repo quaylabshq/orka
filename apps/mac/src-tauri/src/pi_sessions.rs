@@ -150,21 +150,42 @@ pub(crate) fn fork_snapshot(db: &rusqlite::Connection, resource: &Value) -> Resu
             .then(|| copy_location(&binding).ok())
             .flatten()
     };
-    let Some(path) = path else {
-        return Ok(resource.clone());
-    };
-    if !path.is_file() {
-        return Ok(resource.clone());
-    }
-    let bytes = history::read_session(&path)?;
-    let valid = native::complete_records(&bytes)
-        .is_ok_and(|records| records.first().is_some_and(|r| r["type"] == "session"));
-    if !valid {
-        return Ok(resource.clone());
-    }
     let mut snapshot = resource.clone();
-    snapshot["files"] = json!([{"path":"session.jsonl","hash":db::blob(&bytes)?,"size":bytes.len(),"executable":false}]);
+    if let Some(fields) = snapshot.as_object_mut() {
+        // Only this function names a local file; never trust one from a resource.
+        fields.remove(LOCAL_FILE);
+    }
+    if let Some(path) = path.filter(|path| path.is_file()) {
+        // `fork` reads the raw turns from the file itself, so unredacted
+        // content goes only into the new Pi file and never into Orka's blobs.
+        snapshot[LOCAL_FILE] = json!(path);
+    }
     Ok(snapshot)
+}
+
+/// Transient snapshot field naming the local Pi file a fork starts from.
+const LOCAL_FILE: &str = "piForkLocalFile";
+
+/// The raw records of a local Pi file under Pi's or Orka's session directory.
+/// None means the file has no valid session, so the fork uses the snapshot.
+fn local_records(path: &Path) -> Result<Option<Vec<Value>>> {
+    let allowed = [directory()?, copy_directory()?];
+    let Ok(actual) = path.canonicalize() else {
+        return Ok(None);
+    };
+    if !allowed
+        .iter()
+        .filter_map(|home| home.canonicalize().ok())
+        .any(|home| actual.starts_with(home))
+    {
+        return Ok(None);
+    }
+    let Ok(bytes) = history::read_session(path) else {
+        return Ok(None);
+    };
+    Ok(native::complete_records(&bytes)
+        .ok()
+        .filter(|records| native::validate_session_import("pi", records).is_ok()))
 }
 
 /// Keep copies of a deleted or inaccessible shared session as local-only work.
@@ -210,7 +231,11 @@ pub(crate) fn launch_in_use(path: &Path) -> bool {
 
 pub(crate) fn fork(project: &Value, resource: &Value) -> Result<Value> {
     let root = Path::new(project["path"].as_str().ok_or("Connect a folder first")?);
-    let mut records = history::resource_records(resource)?;
+    let local = match resource[LOCAL_FILE].as_str() {
+        Some(path) => local_records(Path::new(path))?,
+        None => None,
+    };
+    let mut records = local.map_or_else(|| history::resource_records(resource), Ok)?;
     let header = records[0]
         .as_object_mut()
         .ok_or("Missing Pi session header")?;
@@ -224,12 +249,17 @@ pub(crate) fn fork(project: &Value, resource: &Value) -> Result<Value> {
     fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))
         .map_err(|e| e.to_string())?;
     let path = directory.join(format!("{id}.jsonl"));
+    db::atomic(&path, &native::encode(&records))?;
+    // The stored snapshot, like every other cached session, is redacted.
+    records
+        .iter_mut()
+        .for_each(crate::session_redaction::SessionRedactor::redact);
     let bytes = native::encode(&records);
     let hash = db::blob(&bytes)?;
-    db::atomic(&path, &bytes)?;
     let mut base = resource.clone();
     let fields = base.as_object_mut().ok_or("Invalid Pi session resource")?;
     for key in [
+        LOCAL_FILE,
         "paths",
         "nativeId",
         "local",

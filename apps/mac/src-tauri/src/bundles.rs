@@ -40,14 +40,16 @@ pub fn export_project(cache: &db::CacheScope, project: &str, path: &Path) -> Res
         if !crate::pi_sessions::is_private_copy(&binding) {
             return Ok(resource);
         }
-        Ok(match crate::pi_sessions::live_copy_bytes(&binding)? {
-            Some(bytes) => {
+        // An oversized or unreadable copy exports its stored snapshot rather
+        // than blocking the rest of the recovery export.
+        Ok(match crate::pi_sessions::live_copy_bytes(&binding) {
+            Ok(Some(bytes)) => {
                 let hash = db::digest(&bytes);
                 let current = crate::pi_sessions::with_session_file(&resource, &bytes, &hash);
                 live_copies.insert(hash, bytes);
                 current
             }
-            None => resource,
+            Ok(None) | Err(_) => resource,
         })
     })
     .collect::<Result<Vec<_>>>()?;
