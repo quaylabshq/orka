@@ -152,7 +152,16 @@ fn pi_and_codex_sessions_with_the_same_native_id_keep_separate_identity() {
         .into_iter()
         .find(|r| r["resource"]["source"] == "codex")
         .unwrap();
-    let id = codex["nativeId"].as_str().unwrap();
+    let id = codex["nativeId"].as_str().unwrap().to_owned();
+    // A binding written by an ordinary scan must not let Pi adopt its identity.
+    db::upsert(
+        &f.db,
+        "bindings",
+        codex["resource"]["resourceId"].as_str().unwrap(),
+        f.project["id"].as_str().unwrap(),
+        &json!({"base":codex["resource"],"nativeId":id,"paths":[f.root.join("codex.jsonl")]}),
+    )
+    .unwrap();
     let folder = crate::pi_sessions::directory().unwrap();
     fs::create_dir_all(&folder).unwrap();
     let path = folder.join(format!("{id}.jsonl"));

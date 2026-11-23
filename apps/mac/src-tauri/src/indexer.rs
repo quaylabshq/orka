@@ -809,8 +809,9 @@ fn collect(
     if let Some(native_id) = native_id {
         if let Some(b) = db::rows(
             db,
-            "SELECT value FROM bindings WHERE project=? AND json_extract(value,'$.nativeId')=? AND coalesce(json_extract(value,'$.base.sourceId'),'')=?",
-            &[&project_id, &native_id, &project["sourceId"].as_str().unwrap_or("")],
+            // Legacy bindings predate the provider field and must keep matching.
+            "SELECT value FROM bindings WHERE project=? AND json_extract(value,'$.nativeId')=? AND coalesce(json_extract(value,'$.base.sourceId'),'')=? AND (json_extract(value,'$.base.source') IS NULL OR json_extract(value,'$.base.source')=?)",
+            &[&project_id, &native_id, &project["sourceId"].as_str().unwrap_or(""), &source],
         )?
         .first()
         {

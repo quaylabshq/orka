@@ -610,11 +610,25 @@ fn pi_shared_delete_preview_keeps_later_private_turns() {
         &binding,
     )
     .unwrap();
-    assert!(crate::repair::deletion_complete(&deleted, &binding).unwrap());
-    crate::repair::settle_deletion(&f.db, &f.project, &deleted, binding).unwrap();
+    // Drive the real materialization path that removes files for other providers.
+    f.project["sharing"]["session"] = json!(true);
+    db::upsert(
+        &f.db,
+        "projects",
+        f.project["id"].as_str().unwrap(),
+        f.project["id"].as_str().unwrap(),
+        &f.project,
+    )
+    .unwrap();
+    sync::materialize(&f.db, &f.project, &deleted).unwrap();
     assert_eq!(indexer::binding(&f.db, id).unwrap()["paths"], json!([]));
     assert_eq!(fs::read(&path).unwrap(), bytes);
-    assert!(crate::local_resources::catalog(&f.db, &f.project, "session").is_ok());
+    let catalog = crate::local_resources::catalog(&f.db, &f.project, "session").unwrap();
+    assert!(catalog["resources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|r| r["resourceId"] == json!(id)));
 }
 
 #[test]

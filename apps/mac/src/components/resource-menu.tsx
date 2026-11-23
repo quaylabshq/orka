@@ -924,7 +924,9 @@ function ResourceCommandDialog({
       }
       context.onNotice(
         kind === "delete"
-          ? "Shared item deleted. Local copies follow sync and review rules."
+          ? resource.source === "pi"
+            ? "Snapshot removed from shared history. The Pi session on its Mac is unchanged."
+            : "Shared item deleted. Local copies follow sync and review rules."
           : result.status === "published"
             ? "Snapshot shared"
             : result.status === "approval_required"

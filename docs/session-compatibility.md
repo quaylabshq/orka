@@ -22,6 +22,8 @@ per-invocation `--session-dir` paths unless they are part of that directory.
 The reader follows the last complete entry's branch and omits tool and setup
 records. Snapshots retain all complete branches and apply Orka's existing
 secret redaction. Discovery does not modify Pi files or enable sharing.
+Deleting a shared Pi snapshot removes only the shared history entry. The Pi
+session stays readable and private on the Mac that owns it.
 
 Use the existing snapshot preview to share one Pi session. The uploader checks
 for `piSessions: 1` before transferring any files. An older service leaves the
