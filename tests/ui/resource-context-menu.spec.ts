@@ -382,19 +382,14 @@ test("every shared session action has an icon in both menu entry points", async 
     "Copy session prompt",
     "Create copy",
     "Copy link",
-    "More actions",
+    "Download session (.zip)…",
+    "Show in Finder",
+    "Copy local path",
     "Remove from history…",
   ]);
   await expect(ownedMenu.locator("svg.item-menu-icon")).toHaveCount(
     actions.length,
   );
-  await ownedMenu
-    .getByRole("menuitem", { name: "More actions", exact: true })
-    .press("ArrowRight");
-  const submenu = page.getByRole("menu", { name: "More actions", exact: true });
-  await expect(submenu.locator("svg.item-menu-icon")).toHaveCount(3);
-  await page.keyboard.press("ArrowLeft");
-  await expect(submenu).toBeHidden();
   await page.keyboard.press("Escape");
   await resourceRow(page, "My shared session")
     .getByRole("button", { name: "Actions for My shared session", exact: true })
@@ -453,9 +448,7 @@ test("the session launcher stays compact while checking apps and keeps its split
         : original(command, args);
   });
   await collection(page, "Sessions");
-  await page
-    .getByRole("button", { name: "Shared with me", exact: true })
-    .click();
+  await page.getByRole("searchbox", { name: "Search sessions" }).fill(title);
   await page
     .getByRole("button", { name: "Collapse sidebar", exact: true })
     .click();
@@ -1427,9 +1420,11 @@ test("removing shared history from Home refreshes a cached collection for newly 
   await expect(dialog).toHaveCount(0);
   await collection(page, "Sessions");
   await expect.poll(scans).toBe(2);
-  await expect(resourceRow(page, "New private session notes")).toContainText(
-    "Local Only",
-  );
+  await expect(
+    resourceRow(page, "New private session notes").getByLabel("On this Mac", {
+      exact: true,
+    }),
+  ).toBeVisible();
   await expect(resourceRow(page, "My shared session")).toHaveCount(0);
   expect(await resourceCalls(page, "delete")).toHaveLength(1);
 });

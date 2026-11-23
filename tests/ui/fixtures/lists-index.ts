@@ -436,11 +436,13 @@ export async function listsIndexFixture(page: Page, scene: ListsScene = {}) {
       all.filter(({ row }) => row.path).map(({ row }) => [row.id, row.path]),
     );
     Object.assign(window, {
+      listsCalls: [],
       isTauri: true,
       __TAURI_INTERNALS__: {
         transformCallback: () => 1,
         unregisterCallback: () => {},
         invoke: async (name: string, args: Record<string, any> = {}) => {
+          (window as any).listsCalls.push({ name, args });
           if (name === "snapshot")
             return {
               user,

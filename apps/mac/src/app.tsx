@@ -565,14 +565,9 @@ function WorkspaceApp({
     tab === "home" || tab === "env" || tab === "members" || tab === "reviews"
       ? undefined
       : index.filters[tab];
-  const collectionRepository = tab === "session" ? repository : "all";
   const filters = useMemo(
-    () => ({
-      ...defaultIndexFilters,
-      ...collectionFilters,
-      repository: collectionRepository,
-    }),
-    [collectionFilters, collectionRepository],
+    () => ({ ...defaultIndexFilters, ...collectionFilters }),
+    [collectionFilters],
   );
   const projectPath = selectedProject?.path;
   const localCatalog = useLocalResources({
@@ -630,17 +625,6 @@ function WorkspaceApp({
       ),
     [sessionTitles.previews, skillSummaries, projectPath],
   );
-  const duplicateTitles = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const item of resources) {
-      if (item.kind === "session" || item.kind === "skill") continue;
-      const title = displayTitle(item).toLocaleLowerCase();
-      counts.set(title, (counts.get(title) ?? 0) + 1);
-    }
-    return new Set(
-      [...counts].filter(([, count]) => count > 1).map(([title]) => title),
-    );
-  }, [resources, displayTitle]);
   const conflicted = useMemo(
     () => new Set(state.conflicts.map((c) => c.resourceId)),
     [state.conflicts],
@@ -1207,8 +1191,8 @@ function WorkspaceApp({
               selectedProject &&
               !inactiveProject &&
               repositories.length > 1 &&
-              // Indexed collections filter by repository in their Filter menu.
-              (tab === "env" || tab === "session") ? (
+              // Collections filter by repository in their own Filter menu.
+              tab === "env" ? (
                 <RepositoryFilter
                   key={`${workspaceScope}:${project}`}
                   repositories={repositories}
@@ -1505,8 +1489,6 @@ function WorkspaceApp({
                     onFilters={(next) => index.set(tab, next)}
                     user={state.user}
                     displayTitle={displayTitle}
-                    duplicateTitles={duplicateTitles}
-                    conflicted={conflicted}
                     statusOf={statusOf}
                     multiRepository={repositories.length > 1}
                     connected={hasConnectedSource(selectedProject)}

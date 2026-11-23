@@ -694,12 +694,14 @@ for (const [width, height, memberCatalog] of [
         const row = page.getByRole("row").filter({
           has: page.getByRole("button", { name: title, exact: true }),
         });
-        await expect(
-          row.getByRole("img", {
-            name: `${collection === "Memories" ? "Claude · Updated by" : "Claude ·"} ${author}`,
-            exact: true,
-          }),
-        ).toBeVisible();
+        // Every plan here is yours, so Plans have no one else to credit.
+        if (collection === "Plans")
+          await expect(row.locator(".skill-table-person")).toHaveCount(0);
+        else
+          await expect(row.locator(".skill-table-person")).toHaveAttribute(
+            "title",
+            author,
+          );
       }
       await page
         .getByRole("button", {
@@ -751,24 +753,19 @@ for (const [width, height, memberCatalog] of [
 test("author sorting follows displayed member names", async ({ page }) => {
   await detailFixture(page, { memberCatalog: "cached" });
   await page.getByRole("button", { name: /^Memories \d/ }).click();
+  await page.getByRole("button", { name: /^Sort/ }).click();
   await page
-    .getByRole("button", { name: "Sort by Recently updated", exact: true })
-    .click();
-  await page
-    .getByRole("menuitemradio", { name: "Author", exact: true })
+    .getByRole("menuitemradio", { name: "Updated by", exact: true })
     .click();
   await expect
     .poll(() =>
       page
-        .locator(".resource-identity")
-        .evaluateAll((identities) =>
-          identities.map((identity) => identity.getAttribute("aria-label")),
+        .locator(".skill-table-person")
+        .evaluateAll((people) =>
+          people.map((person) => person.getAttribute("title")),
         ),
     )
-    .toEqual([
-      "Claude · Updated by Mira Shah",
-      "Codex · Updated by Saket Rao (you)",
-    ]);
+    .toEqual(["Mira Shah", "Saket Rao (you)"]);
 });
 
 test("unavailable member names use readable fallbacks", async ({ page }) => {
@@ -777,12 +774,12 @@ test("unavailable member names use readable fallbacks", async ({ page }) => {
   await expect
     .poll(() =>
       page
-        .locator(".resource-identity")
-        .evaluateAll((identities) =>
-          identities.map((identity) => identity.getAttribute("aria-label")),
+        .locator(".skill-table-person")
+        .evaluateAll((people) =>
+          people.map((person) => person.getAttribute("title")),
         ),
     )
-    .toEqual(["Codex · Updated by You", "Claude · Updated by Member 22222222"]);
+    .toEqual(["You", "Member 22222222"]);
   await expect(page.locator("body")).not.toContainText(
     "22222222-2222-4222-8222-222222222222",
   );
@@ -872,7 +869,7 @@ test("a conflict panel sits above the session content with its actions", async (
     ]);
 });
 
-test("Plans supports both providers, source filters, Markdown, editor actions, and search", async ({
+test("Plans supports both providers, Markdown, editor actions, and search", async ({
   page,
 }) => {
   await detailFixture(page);
@@ -889,7 +886,9 @@ test("Plans supports both providers, source filters, Markdown, editor actions, a
   await expect(
     index.getByRole("button", { name: "Claude release plan", exact: true }),
   ).toBeVisible();
-  await page.getByRole("button", { name: "Codex", exact: true }).click();
+  await page
+    .getByRole("searchbox", { name: "Search plans" })
+    .fill("implementation");
   await expect(
     index.getByRole("button", { name: "Claude release plan", exact: true }),
   ).toHaveCount(0);
@@ -967,14 +966,9 @@ test("Plans supports both providers, source filters, Markdown, editor actions, a
   await page
     .getByRole("button", { name: "Back to Plans", exact: true })
     .click();
-  await page.getByRole("button", { name: "Claude", exact: true }).click();
   await page
     .getByRole("searchbox", { name: "Search plans" })
     .fill("Claude release plan");
-  await page
-    .getByRole("group", { name: "Filter by source" })
-    .getByRole("button", { name: "All", exact: true })
-    .click();
   await page
     .getByRole("button", { name: "Claude release plan", exact: true })
     .click();
@@ -1114,7 +1108,6 @@ for (const size of [
   }) => {
     await page.setViewportSize(size);
     await detailFixture(page);
-    // Memories still sorts from an action popover; Skills uses a menu.
     await page.getByRole("button", { name: /^Memories/ }).click();
     await page.evaluate(() => {
       (window as any).popoverExits = 0;
@@ -1123,15 +1116,14 @@ for (const size of [
           (window as any).popoverExits += 1;
       });
     });
-    const sort = page.getByRole("button", { name: /^Sort by/ });
-    const sortMenu = page.getByRole("dialog", { name: "Sort by", exact: true });
+    const sort = page.getByRole("button", { name: /^Sort/ });
     await sort.click();
-    await expect(sortMenu).toHaveCSS("animation-duration", "0.16s");
-    await sortMenu.getByRole("menuitemradio", { name: "Title" }).click();
-    await expect(sortMenu).toHaveCount(0);
-    await expect(sort).toHaveAccessibleName("Sort by Title");
+    await page
+      .getByRole("menuitemradio", { name: "Name", exact: true })
+      .click();
+    await expect(page.getByRole("menu")).toHaveCount(0);
+    await expect(sort).toContainText("Name");
     await expect(sort).toBeFocused();
-    expect(await page.evaluate(() => (window as any).popoverExits)).toBe(1);
 
     await page.getByRole("button", { name: /^Skills/ }).click();
     await page
@@ -1199,10 +1191,16 @@ test("switching project clears the index filters", async ({ page }) => {
   await detailFixture(page);
   await page.getByRole("button", { name: /^Memories/ }).click();
   const search = page.getByRole("searchbox", { name: "Search memories" });
-  const sources = page.getByRole("group", { name: "Filter by source" });
+  const rows = page.locator(".skill-table tbody tr");
   await search.fill("archi");
-  await sources.getByRole("button", { name: "Claude", exact: true }).click();
-  await expect(page.getByText("1 memory", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: /^Filter/ }).click();
+  await page.getByRole("menuitem", { name: "Agent" }).click();
+  await page
+    .getByRole("menuitemcheckbox", { name: "Claude", exact: true })
+    .click();
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape");
+  await expect(rows).toHaveCount(1);
   const selector = page.getByRole("combobox", { name: "Select project" });
   await selector.click();
   await page.getByRole("option", { name: "Studio" }).click();
@@ -1210,10 +1208,10 @@ test("switching project clears the index filters", async ({ page }) => {
   await selector.click();
   await page.getByRole("option", { name: "Orka" }).click();
   await expect(search).toHaveValue("");
-  await expect(
-    sources.getByRole("button", { name: "All", exact: true }),
-  ).toHaveAttribute("aria-pressed", "true");
-  await expect(page.getByText("2 memories", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("group", { name: "Active filters" })).toHaveCount(
+    0,
+  );
+  await expect(rows).toHaveCount(2);
 });
 
 test("a project-only deep link shows that project's index instead of the open detail", async ({
@@ -1648,32 +1646,19 @@ async function chooseTerminal(page: Page, name: string) {
   await page.getByRole("option", { name, exact: true }).click();
 }
 
-test("fork groups expand, paginate, filter and restore focus on nested sessions", async ({
+test("forks list flat with a marker, filter, and restore focus on nested sessions", async ({
   page,
 }) => {
   await detailFixture(page, { forks: 7 });
   await page.getByRole("button", { name: /^Sessions/ }).click();
-  const expand = page.getByRole("button", {
-    name: "Expand 7 forks of Polish navigation",
-  });
-  await expect(
-    page.getByRole("button", { name: "Fork 1", exact: true }),
-  ).toHaveCount(0);
-  await expand.focus();
-  await page.keyboard.press("Enter");
-  await expect(
-    page.getByRole("button", { name: "Fork 1", exact: true }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: "Fork 7", exact: true }),
-  ).toHaveCount(0);
-  await page
-    .getByRole("button", { name: "Show more forks of Polish navigation" })
-    .click();
-  await expect(
-    page.getByRole("button", { name: "Fork 7", exact: true }),
-  ).toBeVisible();
-  await page.getByRole("button", { name: "Expand 1 fork of Fork 1" }).click();
+  const rows = page.locator(".skill-table tbody tr");
+  for (const title of ["Fork 1", "Fork 7", "Fork 8"])
+    await expect(
+      page.getByRole("row", { name: new RegExp(title) }).getByRole("img", {
+        name: "Forked session",
+      }),
+    ).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Expand/ })).toHaveCount(0);
   await page.getByRole("button", { name: "Fork 8", exact: true }).click();
   await expect(
     page.getByRole("button", { name: "Open in Codex", exact: true }),
@@ -1682,19 +1667,25 @@ test("fork groups expand, paginate, filter and restore focus on nested sessions"
   await expect(
     page.getByRole("button", { name: "Fork 8", exact: true }),
   ).toBeFocused();
+  await page.getByRole("button", { name: /^Filter/ }).click();
+  await page.getByRole("menuitem", { name: "Forks" }).click();
   await page
-    .getByRole("button", { name: "Show more forks of Polish navigation" })
+    .getByRole("menuitemcheckbox", { name: "Originals", exact: true })
     .click();
-  await page.getByRole("button", { name: "Fork 7", exact: true }).click();
-  await page.getByRole("button", { name: "Back to Sessions" }).click();
-  await expect(
-    page.getByRole("button", { name: "Fork 7", exact: true }),
-  ).toBeFocused();
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("img", { name: "Forked session" })).toHaveCount(
+    0,
+  );
+  await page
+    .getByRole("group", { name: "Active filters" })
+    .getByRole("button", { name: "Remove Forks filter" })
+    .click();
   await page.getByRole("searchbox").fill("Fork 7");
+  await expect(rows).toHaveCount(1);
   await expect(
     page.getByRole("button", { name: "Fork 7", exact: true }),
   ).toBeVisible();
-  await expect(page.locator(".resource-table tbody tr")).toHaveCount(1);
 });
 
 test("opening retains the existing fork and only the explicit action creates another", async ({
@@ -1712,9 +1703,6 @@ test("opening retains the existing fork and only the explicit action creates ano
     .getByRole("button", { name: "Open in Codex", exact: true })
     .click();
   await page.getByRole("button", { name: "Back to Sessions" }).click();
-  await page
-    .getByRole("button", { name: "Expand 1 fork of Polish navigation" })
-    .click();
   await page.getByRole("button", { name: "Fork 1", exact: true }).click();
   await page
     .getByRole("button", { name: "Open in Codex", exact: true })
@@ -1741,9 +1729,9 @@ test("opening retains the existing fork and only the explicit action creates ano
     fork: true,
   });
   await page.getByRole("button", { name: "Back to Sessions" }).click();
-  await expect(
-    page.getByRole("button", { name: "Expand 1 fork of Fork 1" }),
-  ).toBeVisible();
+  await expect(page.getByRole("img", { name: "Forked session" })).toHaveCount(
+    2,
+  );
 });
 
 test("explicit forks can use the selected terminal without changing the opening default", async ({
@@ -1775,24 +1763,23 @@ for (const viewport of [
   { width: 1160, height: 800 },
   { width: 900, height: 640 },
 ]) {
-  test(`expanded fork rows fit and remain accessible at ${viewport.width}×${viewport.height}`, async ({
+  test(`fork rows fit and remain accessible at ${viewport.width}×${viewport.height}`, async ({
     page,
   }) => {
     await page.setViewportSize(viewport);
     await page.emulateMedia({ reducedMotion: "reduce" });
     await detailFixture(page, { forks: 3 });
     await page.getByRole("button", { name: /^Sessions/ }).click();
-    await page
-      .getByRole("button", { name: "Expand 3 forks of Polish navigation" })
-      .click();
-    await page.getByRole("button", { name: "Expand 1 fork of Fork 1" }).click();
+    await expect(page.getByRole("img", { name: "Forked session" })).toHaveCount(
+      4,
+    );
     expect(
       await page.evaluate(
         () => document.documentElement.scrollWidth <= innerWidth,
       ),
     ).toBe(true);
     const results = await new AxeBuilder({ page })
-      .include(".resource-table")
+      .include(".skill-table")
       .analyze();
     expect(results.violations).toEqual([]);
     await page.screenshot({

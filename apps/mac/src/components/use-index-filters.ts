@@ -15,7 +15,7 @@ const initial: Record<Kind, IndexFilters> = {
   plan: opening("plan"),
 };
 
-/** The header repository selection is shared by the collections that use it. */
+/** Each collection's filters, and the header repository selection for ENVs. */
 export function useIndexFilters(scope: string) {
   const [stored, setStored] = useState({
     scope,
@@ -31,18 +31,11 @@ export function useIndexFilters(scope: string) {
   }, [scope]);
   const set = useCallback(
     (kind: Kind, next: IndexFilters) => {
-      const { repository = "all", ...collection } = next;
-      setStored((stored) => ({
-        scope,
-        repository:
-          kind !== "session" && stored.scope === scope
-            ? stored.repository
-            : repository,
-        filters: {
-          ...(stored.scope === scope ? stored.filters : initial),
-          [kind]: collection,
-        },
-      }));
+      setStored((stored) =>
+        stored.scope === scope
+          ? { ...stored, filters: { ...stored.filters, [kind]: next } }
+          : { scope, repository: "all", filters: { ...initial, [kind]: next } },
+      );
     },
     [scope],
   );

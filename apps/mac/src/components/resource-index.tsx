@@ -1,21 +1,22 @@
-import { LockIcon, RefreshCwIcon, TriangleAlertIcon } from "lucide-react";
+import {
+  GitForkIcon,
+  LockIcon,
+  RefreshCwIcon,
+  TriangleAlertIcon,
+} from "lucide-react";
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import type { ProjectResource as Resource } from "../types.js";
-import { SegmentedControl } from "./segmented-control.js";
 import { IconButton } from "./icon-button.js";
 import { Button } from "./button.js";
 import { Icon } from "./icon.js";
 import { EmptyState } from "./empty-state.js";
 import { useToasts } from "./toasts.js";
 import {
-  IndexToolbar,
-  applyIndexFilters,
   collectionNoun,
   defaultIndexFilters,
   type IndexFilters,
-  type OwnershipFilter,
 } from "./index-toolbar.js";
-import { ResourceTable } from "./resource-table.js";
 import { LoadingRegion } from "./loading-region.js";
 import { CollectionSkeleton } from "./collection-skeleton.js";
 import { skillSummaryKey, type SkillSummaries } from "./use-skill-summaries.js";
@@ -28,10 +29,13 @@ import {
   effectiveFilters,
   filterPicksActive,
   indexPages,
+  isFork,
   sortDirection,
 } from "./skill-index.js";
 import type { IndexStatus } from "./skill-status.js";
 import { useMemberLabel } from "./member-names.js";
+import { SessionMessagesQuery } from "./use-session-messages.js";
+import { useWorkspaceScope } from "./workspace-cache.js";
 
 export interface ResourceIndexProps {
   skillSummaries: SkillSummaries;
@@ -42,10 +46,6 @@ export interface ResourceIndexProps {
   onFilters: (filters: IndexFilters) => void;
   user: string | null;
   displayTitle: (resource: Resource) => string;
-  /** Lowercased display titles that repeat in the collection. */
-  duplicateTitles: Set<string>;
-  /** Resource IDs with an unresolved conflict. */
-  conflicted: Set<string>;
   /** The one status each row shows. */
   statusOf?: (resource: Resource) => IndexStatus | null;
   /** Lists name each row's repository only when the project has several. */
@@ -72,9 +72,8 @@ export interface ResourceIndexProps {
 }
 
 const noStatus = () => null;
-const noResources: Resource[] = [];
 
-/** The shared toolbar over a T1 table (memories, sessions) or the skills table. */
+/** Search, Filter, and Sort over one collection's table. */
 export function ResourceIndex({
   skillSummaries,
   kind,
@@ -83,8 +82,6 @@ export function ResourceIndex({
   onFilters,
   user,
   displayTitle,
-  duplicateTitles,
-  conflicted,
   statusOf = noStatus,
   multiRepository = false,
   connected,
@@ -101,6 +98,8 @@ export function ResourceIndex({
   onOpen,
 }: ResourceIndexProps) {
   const memberName = useMemberLabel(user);
+  const client = useQueryClient();
+  const scope = useWorkspaceScope();
   const { notify } = useToasts();
   const discoveryErrors = discoveryResult?.errors ?? [];
   const discoveryFailed = !resources.length && discoveryErrors.length > 0;
@@ -131,50 +130,32 @@ export function ResourceIndex({
       });
   }, [discovering, discoveryResult, refreshRequest, kind, notify]);
   const page = indexPages[kind];
-  const paged = kind !== "session";
-  const ownership = paged ? "all" : (filters.ownership ?? "all");
   const root = useRef<HTMLElement>(null);
   const categories = useFilterCategories(
     page,
-    paged ? resources : noResources,
+    resources,
     filters,
     user,
     memberName,
   );
   // Filter by the picks that still have an option behind them.
   const applied = useMemo(
-    () => (paged ? effectiveFilters(filters, categories) : filters),
-    [paged, filters, categories],
+    () => effectiveFilters(filters, categories),
+    [filters, categories],
   );
   const visible = useMemo(
     () =>
-      paged
-        ? applyPageFilters(page, resources, applied, {
-            displayTitle,
-            user,
-            memberName,
-            statusOf,
-          })
-        : applyIndexFilters(resources, applied, {
-            displayTitle,
-            user,
-            memberName,
-          }),
-    [paged, page, resources, applied, displayTitle, user, memberName, statusOf],
+      applyPageFilters(page, resources, applied, {
+        displayTitle,
+        user,
+        memberName,
+        statusOf,
+      }),
+    [page, resources, applied, displayTitle, user, memberName, statusOf],
   );
-  const picked = paged && filterPicksActive(applied);
+  const picked = filterPicksActive(applied);
   const searched = filters.query.trim();
-  const sources = useMemo(
-    () => [...new Set(resources.map((r) => r.source))],
-    [resources],
-  );
-  const filtered = paged
-    ? Boolean(searched) || picked
-    : Boolean(
-        searched ||
-        filters.source !== "all" ||
-        (filters.repository && filters.repository !== "all"),
-      );
+  const filtered = Boolean(searched) || picked;
   const toolbarShown = resources.length > 0 || filtered;
   /** Skills carry their primary action in the toolbar once there is one. */
   const toolbarAction = kind === "skill" && toolbarShown;
@@ -199,7 +180,7 @@ export function ResourceIndex({
     />
   );
   // Keep the popover mounted when the first import moves its trigger into the toolbar.
-  const toolbar = paged ? (
+  const toolbar = (
     <SkillToolbar
       key="index-toolbar"
       page={page}
@@ -214,20 +195,17 @@ export function ResourceIndex({
           : floatingAction
       }
     />
-  ) : null;
+  );
   const clearFilters = () => {
     onFilters({
       ...defaultIndexFilters,
-      ownership,
       sort: filters.sort,
       direction: filters.direction,
     });
-    const focusTarget = resources.length
-      ? root.current?.querySelector<HTMLElement>('input[type="search"]')
-      : root.current?.querySelector<HTMLElement>(
-          '.resource-ownership-tabs [aria-pressed="true"]',
-        );
-    (focusTarget ?? root.current)?.focus();
+    (
+      root.current?.querySelector<HTMLElement>('input[type="search"]') ??
+      root.current
+    )?.focus();
   };
   useEffect(() => {
     if (!focusResource) return;
@@ -248,25 +226,6 @@ export function ResourceIndex({
       {status}
       <div className="resource-index-body">
         {accessRequest}
-        {!paged && (
-          <div className="resource-ownership-toolbar">
-            <SegmentedControl
-              className="resource-ownership-tabs"
-              label="Filter by ownership"
-              value={ownership}
-              options={[
-                {
-                  value: "all",
-                  label: "All",
-                },
-                { value: "mine", label: "Mine" },
-                { value: "shared", label: "Shared with me" },
-              ]}
-              onChange={(ownership) => onFilters({ ...filters, ownership })}
-            />
-            {refreshButton}
-          </div>
-        )}
         {discovering && resources.length > 0 && (
           <span className="sr-only" role="status">
             Refreshing {collectionNoun(kind)}…
@@ -313,15 +272,6 @@ export function ResourceIndex({
           </div>
         )}
         {toolbarShown && toolbar}
-        {toolbarShown && !paged && (
-          <IndexToolbar
-            kind={kind}
-            count={visible.length}
-            sources={sources}
-            filters={filters}
-            onChange={onFilters}
-          />
-        )}
         {discovering && !resources.length ? (
           <LoadingRegion
             id={`collection:${kind}`}
@@ -337,7 +287,7 @@ export function ResourceIndex({
               illustration="search"
               size="compact"
               title={
-                paged && searched
+                searched
                   ? `No ${collectionNoun(kind)} match “${searched}”${picked ? " with these filters" : ""}`
                   : `No ${collectionNoun(kind)} match`
               }
@@ -369,7 +319,7 @@ export function ResourceIndex({
                   </>
                 ) : (
                   <Button size="sm" variant="secondary" onClick={clearFilters}>
-                    {paged && !picked ? "Clear search" : "Clear filters"}
+                    {picked ? "Clear filters" : "Clear search"}
                   </Button>
                 )
               }
@@ -377,12 +327,11 @@ export function ResourceIndex({
           ) : (
             <ResourceEmptyState
               kind={kind}
-              ownership={ownership}
               connected={connected}
-              restricted={noAccess && ownership !== "mine"}
+              restricted={noAccess}
             />
           )
-        ) : paged ? (
+        ) : (
           <SkillTable
             page={page}
             resources={visible}
@@ -403,6 +352,23 @@ export function ResourceIndex({
             direction={sortDirection(filters)}
             busy={kind === "skill" ? undefined : loading}
             onOpen={onOpen}
+            onRowIntent={
+              kind === "session"
+                ? (session) =>
+                    void SessionMessagesQuery.prefetch(client, scope, session)
+                : undefined
+            }
+            titleTrailing={(resource) =>
+              kind === "session" &&
+              isFork(resource) && (
+                <GitForkIcon
+                  size={12}
+                  className="skill-table-fork"
+                  role="img"
+                  aria-label="Forked session"
+                />
+              )
+            }
             peek={
               kind === "skill"
                 ? (skill) => (
@@ -414,25 +380,8 @@ export function ResourceIndex({
                 : undefined
             }
           />
-        ) : (
-          <ResourceTable
-            resources={visible}
-            label={page.title}
-            user={user}
-            displayTitle={displayTitle}
-            duplicateTitles={duplicateTitles}
-            conflicted={conflicted}
-            loading={loading}
-            focusResource={focusResource}
-            pageKey={JSON.stringify(filters)}
-            filtered={filtered || ownership !== "all"}
-            onOpen={onOpen}
-          />
         )}
         {!toolbarShown && toolbar}
-        {kind !== "skill" && floatingAction && (
-          <div className="resource-index-action">{floatingAction}</div>
-        )}
       </div>
     </section>
   );
@@ -447,12 +396,10 @@ const emptyDescriptions: Record<Resource["kind"], string> = {
 
 function ResourceEmptyState({
   kind,
-  ownership,
   connected,
   restricted,
 }: {
   kind: Resource["kind"];
-  ownership: OwnershipFilter;
   connected: boolean;
   restricted?: boolean;
 }) {
@@ -467,20 +414,9 @@ function ResourceEmptyState({
       />
     );
   }
-  if (ownership === "shared") {
-    return (
-      <EmptyState
-        title={`No ${noun} shared with you yet`}
-        illustration={kind}
-        announce
-      />
-    );
-  }
   return (
     <EmptyState
-      title={
-        ownership === "mine" ? `No ${noun} of your own yet` : `No ${noun} yet`
-      }
+      title={`No ${noun} yet`}
       description={
         connected
           ? emptyDescriptions[kind]

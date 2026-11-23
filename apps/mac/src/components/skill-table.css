@@ -145,6 +145,12 @@
   outline-offset: 2px;
 }
 
+.skill-table-fork {
+  flex-shrink: 0;
+  margin-left: -2px;
+  color: var(--blue-text);
+}
+
 .skill-table-repository-label {
   display: flex;
   min-width: 0;

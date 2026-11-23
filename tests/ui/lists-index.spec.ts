@@ -36,7 +36,7 @@ const pages = [
       "Upload refused",
       "Couldn’t read",
     ],
-    review: "Conflicts panel handoff",
+    find: ["Needs review", "Conflicts panel handoff"],
   },
   {
     label: "Memories",
@@ -67,7 +67,22 @@ const pages = [
       "Couldn’t read",
       "Upload refused",
     ],
-    review: "AGENTS.md",
+    find: ["Needs review", "AGENTS.md"],
+  },
+  {
+    label: "Sessions",
+    noun: "Session",
+    person: "Owner",
+    headings: ["Session", "Agent", "Repository", "Owner", "Updated", "Status"],
+    filters: ["Status", "Owner", "Agent", "Repository", "Location", "Forks"],
+    pills: [
+      "Local edits",
+      "Conflict",
+      "Upload failed",
+      "Waiting to sync",
+      "Upload refused",
+    ],
+    find: ["Upload refused", "Token audit for the Skills table"],
   },
 ];
 
@@ -84,9 +99,9 @@ for (const scene of pages) {
     await filter(page).click();
     await expect(page.getByRole("menuitem")).toHaveText(scene.filters);
     await page.keyboard.press("Escape");
-    await pick(page, "Status", "Needs review");
+    await pick(page, "Status", scene.find[0]);
     await expect(rows(page)).toHaveCount(1);
-    await expect(rows(page)).toContainText(scene.review);
+    await expect(rows(page)).toContainText(scene.find[1]);
   });
 
   test(`${scene.label} open newest first, and a sort by status puts the most urgent first`, async ({
@@ -176,4 +191,65 @@ test("at 1160 the agent is a logo whose name stays available on hover and to ass
   expect(await name.evaluate((element) => element.clientWidth)).toBeGreaterThan(
     1,
   );
+});
+
+test("Sessions list forks flat with a marker after the title, and the Forks filter finds them", async ({
+  page,
+}) => {
+  await open(page, "Sessions");
+  const forks = [
+    "Skills index redesign review, second pass",
+    "Governance spec flake on CI, retry",
+    "Unify detail pages on one layout",
+  ];
+  const marked = rows(page).filter({
+    has: page.getByRole("img", { name: "Forked session" }),
+  });
+  await expect(marked.locator(".skill-table-open")).toHaveText(forks);
+  const marker = marked.first().getByRole("img", { name: "Forked session" });
+  const title = marked.first().locator(".skill-table-open");
+  const [markerBox, titleBox] = [
+    (await marker.boundingBox())!,
+    (await title.boundingBox())!,
+  ];
+  expect(markerBox.width).toBe(12);
+  expect(markerBox.x).toBeGreaterThan(titleBox.x + titleBox.width);
+  expect(markerBox.x - (titleBox.x + titleBox.width)).toBeLessThan(10);
+  await pick(page, "Forks", "Forks");
+  await expect(page.locator(".skill-table-open")).toHaveText(forks);
+  await pick(page, "Forks", "Originals");
+  await expect(rows(page)).toHaveCount(16);
+});
+
+test("hovering or focusing a session row prefetches its messages", async ({
+  page,
+}) => {
+  await open(page, "Sessions");
+  const prefetched = () =>
+    page.evaluate(() =>
+      (window as any).listsCalls
+        .filter(({ name }: { name: string }) => name === "session_messages")
+        .map(({ args }: { args: { id: string } }) => args.id),
+    );
+  await rows(page).nth(4).hover();
+  await expect.poll(prefetched).toContain("session-4");
+  await page.locator(".skill-table-open").nth(6).focus();
+  await expect.poll(prefetched).toContain("session-6");
+  expect(await prefetched()).not.toContain("session-9");
+});
+
+test("several hundred sessions list without a pager and scroll under a fixed toolbar", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1160, height: 800 });
+  await open(page, "Sessions", { sessions: 500 });
+  await expect(rows(page)).toHaveCount(516);
+  await expect(page.getByRole("navigation", { name: /pages$/ })).toHaveCount(0);
+  const body = page.locator(".resource-index-body");
+  await body.evaluate((element) => element.scrollTo(0, element.scrollHeight));
+  await expect(rows(page).last()).toBeInViewport();
+  await expect(
+    page.getByRole("searchbox", { name: "Search sessions" }),
+  ).toBeInViewport();
+  await expect(rows(page).first()).not.toBeInViewport();
 });

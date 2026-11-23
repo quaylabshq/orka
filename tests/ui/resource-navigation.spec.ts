@@ -320,10 +320,12 @@ test("sessions list in a table, open a reading view, and page turns on demand", 
   await page.getByRole("button", { name: /^Sessions/ }).click();
   const table = page.getByRole("table");
   await expect(table.getByRole("row")).toHaveCount(2);
-  await expect(table).toContainText("Polish navigation");
   await expect(
-    table.getByRole("img", { name: "Codex · You", exact: true }),
-  ).toBeVisible();
+    table
+      .getByRole("row", { name: /Polish navigation/ })
+      .locator("td")
+      .first(),
+  ).toHaveText("Codex");
   await expect(page.locator(".inspector")).toHaveCount(0);
   await table
     .getByRole("button", { name: "Polish navigation", exact: true })

@@ -10,7 +10,14 @@ import {
   UserIcon,
   UsersIcon,
 } from "lucide-react";
-import React, { useCallback, useEffect, useId, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import type { ProjectResource as Resource } from "../types.js";
 import type { IndexSort, IndexSortDirection } from "./index-toolbar.js";
 import { ItemMenuButton } from "./item-menu.js";
@@ -146,6 +153,7 @@ export function SkillTable({
   direction,
   busy,
   onOpen,
+  onRowIntent,
   peek: peekContent,
   titleTrailing,
 }: {
@@ -163,6 +171,8 @@ export function SkillTable({
   /** Row titles are still loading. */
   busy?: boolean;
   onOpen: (id: string) => void;
+  /** A pointer or focus arriving on a row, such as to prefetch it. */
+  onRowIntent?: (resource: Resource) => void;
   /** What a row's peek says after its pointer rests or it takes focus. */
   peek?: (resource: Resource) => React.ReactNode;
   /** A marker right after a row's title, such as a session's fork. */
@@ -172,10 +182,11 @@ export function SkillTable({
   const [peek, setPeek] = useState<{ id: string; above: boolean }>();
   const timer = useRef(0);
   // An open row menu owns the row; the description stays out of its way.
-  const menuOpen = useRef(false);
+  const menuOpen = useRef<string | undefined>(undefined);
+  const body = useRef<HTMLTableSectionElement>(null);
   const openPeek = (id: string, row: HTMLElement, delay: number) => {
     window.clearTimeout(timer.current);
-    if (menuOpen.current || !peekContent) return;
+    if (menuOpen.current !== undefined || !peekContent) return;
     timer.current = window.setTimeout(() => {
       // A row near the bottom of the visible list opens its description upward.
       const view = row.closest(".resource-index-body");
@@ -190,10 +201,22 @@ export function SkillTable({
     window.clearTimeout(timer.current);
     setPeek(undefined);
   }, []);
-  const onMenu = (open: boolean) => {
-    menuOpen.current = open;
+  const onMenu = (id: string, open: boolean) => {
+    menuOpen.current = open ? id : undefined;
     if (open) closePeek();
   };
+  // A late title can re-sort the list; the row being acted on stays in view.
+  useLayoutEffect(() => {
+    const rows = body.current;
+    const active = document.activeElement;
+    const row =
+      (menuOpen.current !== undefined &&
+        rows?.querySelector(
+          `[data-resource-id="${CSS.escape(menuOpen.current)}"]`,
+        )) ||
+      (active && rows?.contains(active) ? active : null);
+    row?.closest("tr")?.scrollIntoView({ block: "nearest" });
+  }, [resources]);
   useEffect(() => {
     if (!peek) return;
     const dismiss = (event: KeyboardEvent) => {
@@ -318,7 +341,7 @@ export function SkillTable({
           </th>
         </tr>
       </thead>
-      <tbody>
+      <tbody ref={body}>
         {resources.map((resource) => {
           const title = displayTitle(resource);
           const status = statusOf(resource);
@@ -329,20 +352,22 @@ export function SkillTable({
               key={resource.resourceId}
               resource={resource}
               flat
-              onOpenChange={onMenu}
+              onOpenChange={(open) => onMenu(resource.resourceId, open)}
             >
               {(actions) => (
                 <tr
                   onClick={() => onOpen(resource.resourceId)}
-                  onPointerEnter={(event) =>
+                  onPointerEnter={(event) => {
+                    onRowIntent?.(resource);
                     openPeek(
                       resource.resourceId,
                       event.currentTarget,
                       PEEK_DELAY,
-                    )
-                  }
+                    );
+                  }}
                   onPointerLeave={closePeek}
                   onFocus={(event) => {
+                    onRowIntent?.(resource);
                     // Keyboard focus only: returning from an item or closing
                     // a menu restores focus without opening the peek.
                     if (event.target.matches(":focus-visible"))
@@ -399,7 +424,9 @@ export function SkillTable({
                       <ItemMenuButton
                         actions={actions}
                         label={`Actions for ${title}`}
-                        onOpenChange={onMenu}
+                        onOpenChange={(open) =>
+                          onMenu(resource.resourceId, open)
+                        }
                       />
                     )}
                   </td>
