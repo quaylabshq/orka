@@ -742,7 +742,7 @@ Declared licenses are upstream metadata. Preserve the actual license notices and
 | [const-oid](https://crates.io/crates/const-oid/0.9.6) | 0.9.6 | Apache-2.0 OR MIT |
 | [const-random](https://crates.io/crates/const-random/0.1.18) | 0.1.18 | MIT OR Apache-2.0 |
 | [const-random-macro](https://crates.io/crates/const-random-macro/0.1.16) | 0.1.16 | MIT OR Apache-2.0 |
-| [cookie](https://crates.io/crates/cookie/0.18.2) | 0.18.2 | MIT OR Apache-2.0 |
+| [cookie](https://crates.io/crates/cookie/0.18.3) | 0.18.3 | MIT OR Apache-2.0 |
 | [cookie-factory](https://crates.io/crates/cookie-factory/0.3.3) | 0.3.3 | MIT |
 | [core-foundation](https://crates.io/crates/core-foundation/0.10.1) | 0.10.1 | MIT OR Apache-2.0 |
 | [core-foundation](https://crates.io/crates/core-foundation/0.9.4) | 0.9.4 | MIT OR Apache-2.0 |
@@ -1052,7 +1052,7 @@ Declared licenses are upstream metadata. Preserve the actual license notices and
 | [rust-ini](https://crates.io/crates/rust-ini/0.21.3) | 0.21.3 | MIT |
 | [rustc_version](https://crates.io/crates/rustc_version/0.4.1) | 0.4.1 | MIT OR Apache-2.0 |
 | [rustc-hash](https://crates.io/crates/rustc-hash/2.1.3) | 2.1.3 | Apache-2.0 OR MIT |
-| [rustix](https://crates.io/crates/rustix/1.1.5) | 1.1.5 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| [rustix](https://crates.io/crates/rustix/1.1.6) | 1.1.6 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | [rustls](https://crates.io/crates/rustls/0.23.46) | 0.23.46 | Apache-2.0 OR ISC OR MIT |
 | [rustls-pki-types](https://crates.io/crates/rustls-pki-types/1.15.1) | 1.15.1 | MIT OR Apache-2.0 |
 | [rustls-webpki](https://crates.io/crates/rustls-webpki/0.103.16) | 0.103.16 | ISC |
