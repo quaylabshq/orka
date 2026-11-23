@@ -30,7 +30,7 @@ import {
   ItemMenuButton,
   type ItemMenuAction,
 } from "./item-menu.js";
-import { connectProject } from "./use-project-setup.js";
+import { useConnectProject } from "./use-project-setup.js";
 import {
   RepositoryPicker,
   type RepositorySource,
@@ -81,6 +81,7 @@ export function RepositoryConnections({
   onClose?: () => void;
   onConnecting?: () => void;
 }) {
+  const connectProject = useConnectProject();
   const controller = useRepositories(project, state, refresh);
   const {
     call,

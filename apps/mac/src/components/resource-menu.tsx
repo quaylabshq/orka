@@ -55,6 +55,13 @@ import { ArtifactLinkDialog } from "./artifact-link-dialog.js";
 type ResourceRequest =
   "share" | "delete" | "launch" | "retry-upload" | "public-link";
 
+const shareEvents = {
+  memory: "feature:memory_shared",
+  skill: "feature:skill_shared",
+  plan: "feature:plan_shared",
+  session: "feature:session_shared",
+} as const;
+
 interface ResourceMenuContextValue {
   scope: string;
   state: Snapshot;
@@ -899,7 +906,8 @@ function ResourceCommandDialog({
   }, [kind, attempt, accountId, serviceOrigin, projectId, resourceId]);
   const submit = async () => {
     if (busy || !preview || stale) return;
-    const recordShared = startFeature("feature:memory_shared");
+    const recordShared =
+      kind === "share" ? startFeature(shareEvents[resource.kind]) : undefined;
     setBusy(true);
     setError("");
     setProgress({
@@ -918,12 +926,7 @@ function ResourceCommandDialog({
         input: { ...input, previewToken: preview.previewToken },
         onProgress,
       });
-      if (
-        kind === "share" &&
-        resource.kind === "memory" &&
-        result.status === "published"
-      )
-        recordShared();
+      if (result.status === "published") recordShared?.();
       if (!active.current) return;
       if (kind === "delete" && result.status !== "deleted") {
         setError(

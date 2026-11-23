@@ -32,18 +32,84 @@ pub(crate) enum UsageEvent {
     Members,
     #[serde(rename = "screen:settings")]
     Settings,
+    #[serde(rename = "screen:envs")]
+    Envs,
+    #[serde(rename = "screen:logs")]
+    Logs,
     #[serde(rename = "feature:session_resumed")]
     SessionResumed,
     #[serde(rename = "feature:skill_imported")]
     SkillImported,
     #[serde(rename = "feature:memory_shared")]
     MemoryShared,
+    #[serde(rename = "feature:settings_saved")]
+    SettingsSaved,
+    #[serde(rename = "feature:skill_shared")]
+    SkillShared,
+    #[serde(rename = "feature:plan_shared")]
+    PlanShared,
+    #[serde(rename = "feature:session_shared")]
+    SessionShared,
+    #[serde(rename = "feature:source_connected")]
+    SourceConnected,
+    #[serde(rename = "feature:review_decided")]
+    ReviewDecided,
+    #[serde(rename = "feature:session_forked")]
+    SessionForked,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UsageSupport {
+    Disabled,
+    Standard,
+    Expanded,
+}
+
+impl UsageSupport {
+    fn from_instance(value: &Value) -> Self {
+        if value["version"] != 1
+            || !value["auth"].is_object()
+            || value["mode"] != "cloud"
+            || value["desktopUsageAnalytics"] != 1
+        {
+            return Self::Disabled;
+        }
+        if value["desktopUsageEventSet"]
+            .as_u64()
+            .is_some_and(|set| set >= 2)
+        {
+            Self::Expanded
+        } else {
+            Self::Standard
+        }
+    }
+
+    fn accepts(self, event: UsageEvent) -> bool {
+        match self {
+            Self::Disabled => false,
+            Self::Standard => matches!(
+                event,
+                UsageEvent::Projects
+                    | UsageEvent::Sessions
+                    | UsageEvent::Memories
+                    | UsageEvent::Plans
+                    | UsageEvent::Skills
+                    | UsageEvent::Reviews
+                    | UsageEvent::Members
+                    | UsageEvent::Settings
+                    | UsageEvent::SessionResumed
+                    | UsageEvent::SkillImported
+                    | UsageEvent::MemoryShared
+            ),
+            Self::Expanded => true,
+        }
+    }
 }
 
 struct Capability {
     origin: String,
     until: Instant,
-    supported: bool,
+    support: UsageSupport,
 }
 
 #[derive(Default)]
@@ -61,14 +127,7 @@ static CLIENT: LazyLock<Option<reqwest::Client>> = LazyLock::new(|| {
         .ok()
 });
 
-fn supports_usage(value: &Value) -> bool {
-    value["version"] == 1
-        && value["auth"].is_object()
-        && value["mode"] == "cloud"
-        && value["desktopUsageAnalytics"] == 1
-}
-
-async fn probe_usage(origin: &str) -> Option<bool> {
+async fn probe_usage(origin: &str) -> Option<UsageSupport> {
     let mut response = CLIENT
         .as_ref()?
         .get(format!("{}/v2/instance", origin.trim_end_matches('/')))
@@ -76,7 +135,7 @@ async fn probe_usage(origin: &str) -> Option<bool> {
         .await
         .ok()?;
     if matches!(response.status().as_u16(), 401 | 404) {
-        return Some(false);
+        return Some(UsageSupport::Disabled);
     }
     if !response.status().is_success()
         || response
@@ -93,31 +152,31 @@ async fn probe_usage(origin: &str) -> Option<bool> {
         body.extend_from_slice(&chunk);
     }
     let capabilities = serde_json::from_slice(&body).ok()?;
-    Some(supports_usage(&capabilities))
+    Some(UsageSupport::from_instance(&capabilities))
 }
 
 impl UsageTransport {
-    fn remember(&mut self, origin: &str, supported: bool, ttl: Duration) {
+    fn remember(&mut self, origin: &str, support: UsageSupport, ttl: Duration) {
         self.capability = Some(Capability {
             origin: origin.to_owned(),
             until: Instant::now() + ttl,
-            supported,
+            support,
         });
     }
 
-    async fn available(&mut self, origin: &str) -> bool {
+    async fn support(&mut self, origin: &str) -> UsageSupport {
         if let Some(capability) = &self.capability {
             if capability.origin == origin && capability.until > Instant::now() {
-                return capability.supported;
+                return capability.support;
             }
         }
-        let (supported, ttl) = match probe_usage(origin).await {
-            Some(true) => (true, SUPPORTED_TTL),
-            Some(false) => (false, UNAVAILABLE_TTL),
-            None => (false, FAILURE_COOLDOWN),
+        let (support, ttl) = match probe_usage(origin).await {
+            Some(UsageSupport::Disabled) => (UsageSupport::Disabled, UNAVAILABLE_TTL),
+            Some(support) => (support, SUPPORTED_TTL),
+            None => (UsageSupport::Disabled, FAILURE_COOLDOWN),
         };
-        self.remember(origin, supported, ttl);
-        supported
+        self.remember(origin, support, ttl);
+        support
     }
 }
 
@@ -125,7 +184,11 @@ fn valid_batch(events: &[UsageEvent]) -> bool {
     (1..=BATCH_LIMIT).contains(&events.len())
 }
 
-async fn submit_usage(events: Vec<UsageEvent>, account_id: String, service_origin: String) -> bool {
+async fn submit_usage(
+    mut events: Vec<UsageEvent>,
+    account_id: String,
+    service_origin: String,
+) -> bool {
     if !valid_batch(&events)
         || !db::matches_cloud_account(&account_id, &service_origin).unwrap_or(false)
         || db::validate_url(&service_origin).is_err()
@@ -138,7 +201,10 @@ async fn submit_usage(events: Vec<UsageEvent>, account_id: String, service_origi
     let Ok(mut transport) = TRANSPORT.try_lock() else {
         return false;
     };
-    if !transport.available(&service_origin).await {
+    let support = transport.support(&service_origin).await;
+    // An older server rejects a whole batch if it sees an unsupported signal.
+    events.retain(|event| support.accepts(*event));
+    if events.is_empty() {
         return false;
     }
 
@@ -166,7 +232,7 @@ async fn submit_usage(events: Vec<UsageEvent>, account_id: String, service_origi
         .await
         .is_ok_and(|response| response.status() == reqwest::StatusCode::NO_CONTENT);
     if !sent {
-        transport.remember(&service_origin, false, FAILURE_COOLDOWN);
+        transport.remember(&service_origin, UsageSupport::Disabled, FAILURE_COOLDOWN);
     }
     sent
 }
@@ -240,9 +306,17 @@ mod tests {
 
     #[test]
     fn desktop_usage_requires_the_cloud_capability_version() {
-        assert!(supports_usage(
-            &json!({"version":1,"auth":{},"mode":"cloud","desktopUsageAnalytics":1})
-        ));
+        let mut capability =
+            json!({"version":1,"auth":{},"mode":"cloud","desktopUsageAnalytics":1});
+        assert_eq!(
+            UsageSupport::from_instance(&capability),
+            UsageSupport::Standard
+        );
+        capability["desktopUsageEventSet"] = json!(2);
+        assert_eq!(
+            UsageSupport::from_instance(&capability),
+            UsageSupport::Expanded
+        );
         for capability in [
             json!({"version":1,"auth":{},"mode":"self-hosted","desktopUsageAnalytics":1}),
             json!({"version":1,"auth":{},"mode":"cloud","desktopUsageAnalytics":true}),
@@ -250,9 +324,32 @@ mod tests {
             json!({"version":1,"auth":{},"mode":"cloud"}),
             json!({"version":0,"auth":{},"mode":"cloud","desktopUsageAnalytics":1}),
             json!({"version":1,"mode":"cloud","desktopUsageAnalytics":1}),
+            json!({"version":1,"auth":{},"mode":"cloud","desktopUsageEventSet":2}),
         ] {
-            assert!(!supports_usage(&capability));
+            assert_eq!(
+                UsageSupport::from_instance(&capability),
+                UsageSupport::Disabled
+            );
         }
+    }
+
+    #[test]
+    fn desktop_usage_omits_only_expanded_signals_for_an_older_api() {
+        let batch = [
+            UsageEvent::Settings,
+            UsageEvent::SettingsSaved,
+            UsageEvent::Members,
+            UsageEvent::Envs,
+            UsageEvent::SessionForked,
+        ];
+        let legacy: Vec<_> = batch
+            .into_iter()
+            .filter(|event| UsageSupport::Standard.accepts(*event))
+            .collect();
+        assert_eq!(json!(legacy), json!(["screen:settings", "screen:members"]));
+        assert!(batch
+            .into_iter()
+            .all(|event| UsageSupport::Expanded.accepts(event)));
     }
 
     #[tokio::test]
@@ -262,17 +359,17 @@ mod tests {
         )
         .await;
         let mut transport = UsageTransport::default();
-        assert!(transport.available(&managed).await);
+        assert_eq!(transport.support(&managed).await, UsageSupport::Standard);
         first_request.await.unwrap();
         // The one-shot service is gone. A fresh connection would now fail.
-        assert!(transport.available(&managed).await);
+        assert_eq!(transport.support(&managed).await, UsageSupport::Standard);
 
         let (legacy, next_request) =
             instance_fixture(json!({"version":1,"auth":{},"mode":"cloud"})).await;
-        assert!(!transport.available(&legacy).await);
+        assert_eq!(transport.support(&legacy).await, UsageSupport::Disabled);
         next_request.await.unwrap();
         let until = transport.capability.as_ref().unwrap().until;
-        assert!(!transport.available(&legacy).await);
+        assert_eq!(transport.support(&legacy).await, UsageSupport::Disabled);
         assert_eq!(transport.capability.as_ref().unwrap().until, until);
     }
 
@@ -298,12 +395,22 @@ mod tests {
             "screen:reviews",
             "screen:members",
             "screen:settings",
+            "screen:envs",
+            "screen:logs",
             "feature:session_resumed",
             "feature:skill_imported",
-            "feature:memory_shared"
+            "feature:memory_shared",
+            "feature:settings_saved",
+            "feature:skill_shared",
+            "feature:plan_shared",
+            "feature:session_shared",
+            "feature:source_connected",
+            "feature:review_decided",
+            "feature:session_forked"
         ]);
         let events: Vec<UsageEvent> = serde_json::from_value(known.clone()).unwrap();
-        assert!(valid_batch(&events));
+        assert!(valid_batch(&events[..BATCH_LIMIT]));
+        assert!(!valid_batch(&events));
         assert_eq!(serde_json::to_value(&events).unwrap(), known);
         assert!(!valid_batch(&[]));
         assert!(!valid_batch(&[UsageEvent::Projects; BATCH_LIMIT + 1]));

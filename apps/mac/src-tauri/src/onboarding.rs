@@ -13,6 +13,7 @@ use std::{
     io::ErrorKind,
     path::{Path, PathBuf},
 };
+use tauri::ipc::{Channel, JavaScriptChannelId};
 fn draft_path() -> Result<PathBuf> {
     Ok(db::root()?.join("onboarding.json"))
 }
@@ -415,7 +416,7 @@ async fn connect(input: Value, expected: Option<(&str, &str)>) -> Result<Value> 
     {
         return Err("Choose which repository this folder should connect to before syncing".into());
     }
-    crate::sources::connect_sources(
+    let newly_connected = crate::sources::connect_sources(
         id.clone(),
         vec![path.to_string_lossy().into()],
         source_id,
@@ -444,7 +445,7 @@ async fn connect(input: Value, expected: Option<(&str, &str)>) -> Result<Value> 
             }
         }
     }
-    Ok(json!({"id":id}))
+    Ok(json!({"id":id,"newlyConnected":newly_connected}))
 }
 fn project_sync_status(
     db: &rusqlite::Connection,
@@ -618,6 +619,7 @@ async fn batch_sync(
     retry: bool,
     connections_only: bool,
     expected: Option<(&str, &str)>,
+    mut completion: Option<Channel<bool>>,
 ) -> Result<Value> {
     let lock = sync_lock()?;
     lock.try_lock_exclusive()
@@ -712,11 +714,18 @@ async fn batch_sync(
             input["sourceId"] = json!(source);
         }
         match busy_retry(|| connect(input.clone(), Some(scope))).await {
-            Ok(result) => patch_project(
-                scope,
-                path,
-                json!({"projectId":result["id"],"status":"scanning"}),
-            )?,
+            Ok(result) => {
+                patch_project(
+                    scope,
+                    path,
+                    json!({"projectId":result["id"],"status":"scanning"}),
+                )?;
+                if result["newlyConnected"] == true {
+                    if let Some(completion) = completion.take() {
+                        let _ = completion.send(true);
+                    }
+                }
+            }
             Err(e) => patch_project(scope, path, json!({"status":"error","error":e}))?,
         }
     }
@@ -865,7 +874,7 @@ pub async fn resume_pending_connections() -> Result<()> {
     let service = saved["service"]
         .as_str()
         .ok_or("Configure a service first")?;
-    batch_sync(true, true, Some((owner, service)))
+    batch_sync(true, true, Some((owner, service)), None)
         .await
         .map(|_| ())
 }
@@ -969,7 +978,7 @@ pub fn resume_sync() {
                 .enable_all()
                 .build(),
         ) {
-            let _ = runtime.block_on(batch_sync(true, false, Some((owner, service))));
+            let _ = runtime.block_on(batch_sync(true, false, Some((owner, service)), None));
         }
         RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
     });
@@ -1007,11 +1016,34 @@ fn check_discovered_folder(path: &Path) -> Option<bool> {
     }
 }
 
-#[tauri::command]
-pub async fn onboarding_command(
+#[tauri::command(rename = "onboarding_command")]
+pub async fn onboarding_command_view(
     action: String,
     input: Value,
     context: Option<Value>,
+    on_connection_confirmed: Option<JavaScriptChannelId>,
+    webview: tauri::Webview,
+) -> Result<Value> {
+    let completion = on_connection_confirmed
+        .filter(|_| webview.label() == "main" && action == "batch-sync" && input["retry"] != true)
+        .map(|id| id.channel_on(webview));
+    run_onboarding_command(action, input, context, completion).await
+}
+
+#[cfg(any(debug_assertions, test))]
+pub(crate) async fn onboarding_command(
+    action: String,
+    input: Value,
+    context: Option<Value>,
+) -> Result<Value> {
+    run_onboarding_command(action, input, context, None).await
+}
+
+async fn run_onboarding_command(
+    action: String,
+    input: Value,
+    context: Option<Value>,
+    completion: Option<Channel<bool>>,
 ) -> Result<Value> {
     tauri::async_runtime::spawn_blocking(move || {
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -1090,7 +1122,9 @@ pub async fn onboarding_command(
             "review" => runtime.block_on(review(input)),
             "connect" => runtime.block_on(connect(input, scope)),
             "sync" => runtime.block_on(synchronize(input, scope)),
-            "batch-sync" => runtime.block_on(batch_sync(input["retry"] == true, false, scope)),
+            "batch-sync" => {
+                runtime.block_on(batch_sync(input["retry"] == true, false, scope, completion))
+            }
             "progress" => Ok(read_draft()?["draft"].clone()),
             "save-profile" => {
                 let _lock = crate::projects::lock()?;

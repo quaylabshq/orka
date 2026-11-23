@@ -131,7 +131,7 @@ import { useAccount } from "./components/use-account.js";
 import { MemberNamesProvider } from "./components/member-names.js";
 import { LoadingProvider } from "./components/loading-region.js";
 import {
-  connectProject,
+  useConnectProject,
   useProjectSetup,
 } from "./components/use-project-setup.js";
 import {
@@ -164,13 +164,15 @@ const pageLabels: Record<ProjectPage, string> = {
   plan: "plans",
 };
 
-const projectUsageScreens: Partial<Record<ProjectPage, DesktopScreen>> = {
+const projectUsageScreens: Record<ProjectPage, DesktopScreen> = {
   home: "screen:projects",
   session: "screen:sessions",
   memory: "screen:memories",
   skill: "screen:skills",
   plan: "screen:plans",
   reviews: "screen:reviews",
+  env: "screen:envs",
+  members: "screen:logs",
 };
 
 export function App() {
@@ -256,6 +258,7 @@ function WorkspaceApp({
   const account = useAccount(state.config, !state.user);
   useBackgroundRepositoryAccess(state);
   const [repositorySetup, setRepositorySetup] = useState("");
+  const connectProject = useConnectProject();
   const setup = useProjectSetup(
     setProject,
     setError,
@@ -897,6 +900,10 @@ function WorkspaceApp({
         : selectedProject
           ? undefined
           : "screen:projects";
+  const projectUsagePage =
+    tab === "home" || tab === "reviews" || tab === "env" || tab === "members"
+      ? tab
+      : (selected?.kind ?? tab);
   const resourceLabel = pageLabels[tab];
   const collectionLabel =
     resourceLabel.charAt(0).toUpperCase() + resourceLabel.slice(1);
@@ -1376,8 +1383,8 @@ function WorkspaceApp({
               >
                 <DesktopUsageScreen
                   screen={
-                    trackScreen && !review && (tab === "home" || !selected)
-                      ? projectUsageScreens[tab]
+                    trackScreen
+                      ? projectUsageScreens[projectUsagePage]
                       : undefined
                   }
                 />

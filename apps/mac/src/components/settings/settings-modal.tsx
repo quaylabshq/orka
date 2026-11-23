@@ -16,8 +16,9 @@ import { Switch } from "../switch.js";
 import { SegmentedControl } from "../segmented-control.js";
 import { ActivityIndicator } from "../activity-indicator.js";
 import { LoadingRegion } from "../loading-region.js";
+import { useDesktopFeature } from "../desktop-usage.js";
 import { legacySharing, ProjectSharingChoices } from "../project-sharing.js";
-import { connectProject } from "../use-project-setup.js";
+import { useConnectProject } from "../use-project-setup.js";
 import {
   SettingsNavigation,
   type SettingsSection,
@@ -151,6 +152,17 @@ export const SettingsModal = forwardRef<
     locked = useRef(false),
     active = useRef(true),
     heading = useRef<HTMLDivElement>(null);
+  const startFeature = useDesktopFeature();
+  const connectProject = useConnectProject();
+  const settingsSaveRecorded = useRef(false);
+  const startSettingsSave = () => {
+    const record = startFeature("feature:settings_saved");
+    return () => {
+      if (!settingsSaveRecorded.current && record()) {
+        settingsSaveRecorded.current = true;
+      }
+    };
+  };
   useEffect(() => {
     active.current = true;
     return () => {
@@ -415,6 +427,7 @@ export const SettingsModal = forwardRef<
           throw new Error(result ?? "This editor is unavailable.");
       });
     if (!dirty()) return true;
+    const record = startSettingsSave();
     if (section === "general") {
       if (!project) {
         setError(
@@ -467,6 +480,7 @@ export const SettingsModal = forwardRef<
                   : {}),
               },
             });
+            record();
             if (active.current) setNameDraft(null);
             completed.push("Project name saved.");
           }
@@ -475,6 +489,7 @@ export const SettingsModal = forwardRef<
               action: "sharing",
               input: { projectId, sharing },
             });
+            record();
             if (active.current) setSavedSharing(sharing);
             completed.push("Sharing choices saved.");
           }
@@ -510,6 +525,7 @@ export const SettingsModal = forwardRef<
             await invoke("configure", {
               config: { ...state.config, syncMinutes: Number(sync.minutes) },
             });
+            record();
             if (active.current)
               setSavedSync((current) => ({
                 ...current,
@@ -519,6 +535,7 @@ export const SettingsModal = forwardRef<
           }
           if (sync.background !== savedSync.background) {
             await invoke("background_agent", { enabled: sync.background });
+            record();
             if (active.current)
               setSavedSync((current) => ({
                 ...current,
@@ -919,6 +936,7 @@ export const SettingsModal = forwardRef<
                   <SettingsProfile
                     ref={editor}
                     state={state}
+                    startSettingsSave={startSettingsSave}
                     onSignedOut={onSignedOut}
                     onSignOut={() =>
                       request(() => setConfirmation({ action: "signout" }))
@@ -943,6 +961,7 @@ export const SettingsModal = forwardRef<
                     ref={editor}
                     state={state}
                     project={project}
+                    startSettingsSave={startSettingsSave}
                   />
                 )}
               </>

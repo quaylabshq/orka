@@ -61,6 +61,7 @@ export async function settingsFixture(
     saveDelay?: number;
     failSharing?: boolean;
     failBackground?: boolean;
+    failSnapshotAfterConfigure?: boolean;
     failRename?: boolean;
     failSourceRemoval?: boolean;
     cancelPicker?: boolean;
@@ -294,6 +295,7 @@ export async function settingsFixture(
     const operations = new Map<string, unknown>();
     let failedSharing = false,
       failedBackground = false,
+      failedSnapshot = false,
       failedRename = false,
       policyFailed = false;
     const controls = {
@@ -342,7 +344,15 @@ export async function settingsFixture(
         },
         unregisterCallback: () => {},
         invoke: async (command: string, args: any = {}) => {
-          if (command === "snapshot")
+          if (command === "snapshot") {
+            if (
+              options.failSnapshotAfterConfigure &&
+              !failedSnapshot &&
+              calls.some((call) => call.command === "configure")
+            ) {
+              failedSnapshot = true;
+              throw new Error("Workspace refresh unavailable");
+            }
             return structuredClone({
               ...state,
               inactive: [...archivedProjects, ...deletedProjects],
@@ -353,6 +363,7 @@ export async function settingsFixture(
                 ...disabledProjects.map((item) => ({ ...item, hidden: true })),
               ],
             });
+          }
           if (command === "sync_progress")
             return { user: state.user, progress: null };
           calls.push({ command, args: structuredClone(args) });

@@ -31,7 +31,7 @@ import { Icon } from "./icon.js";
 import { activeSources, repositoryLabel } from "./project-sources.js";
 import { readSkillMarkdown } from "./skill-markdown.js";
 import { useToastEscape, useToasts } from "./toasts.js";
-import { connectProject } from "./use-project-setup.js";
+import { useConnectProject } from "./use-project-setup.js";
 import "./item-menu.css";
 import "./global-skill-import.css";
 
@@ -224,6 +224,7 @@ function AddSkills({
   onClose: () => void;
 }) {
   const { notify } = useToasts();
+  const connectProject = useConnectProject();
   const startFeature = useDesktopFeature();
   const repositories = useMemo(
     () => activeSources(project.sources ?? []).filter((source) => source.path),

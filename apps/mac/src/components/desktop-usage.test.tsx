@@ -15,12 +15,15 @@ import {
   type DesktopScreen,
 } from "./desktop-usage.js";
 import { useResourceActions } from "./use-resource-actions.js";
+import { useConnectProject } from "./use-project-setup.js";
 
 const native = vi.hoisted(() => ({
   invoke: vi.fn(),
   isTauri: vi.fn(),
+  open: vi.fn(),
 }));
 vi.mock("@tauri-apps/api/core", () => native);
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: native.open }));
 
 const origin = "https://api.tryorka.ai";
 const alice = {
@@ -44,6 +47,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   native.invoke.mockReset();
   native.isTauri.mockReset();
+  native.open.mockReset();
 });
 
 async function advance(ms: number) {
@@ -184,6 +188,70 @@ test("limits an account to 60 events across sign-outs and resets at UTC midnight
   expect(batches().at(-1)?.events).toEqual(["feature:memory_shared"]);
 });
 
+test("reserves room for successful actions after an account reaches its screen limit", async () => {
+  const state = { ...alice, user: "frequent-navigation" };
+  function Visit({ screen }: { screen: DesktopScreen }) {
+    const startFeature = useDesktopFeature();
+    return (
+      <>
+        <DesktopUsageScreen screen={screen} />
+        <button
+          type="button"
+          onClick={() => startFeature("feature:settings_saved")()}
+        >
+          Save
+        </button>
+      </>
+    );
+  }
+  const visit = (screen: DesktopScreen) => (
+    <DesktopUsageProvider state={state}>
+      <Visit screen={screen} />
+    </DesktopUsageProvider>
+  );
+  const app = render(visit("screen:logs"));
+  await advance(3_000);
+  for (let i = 1; i < 50; i += 1) {
+    app.rerender(visit(i % 2 ? "screen:envs" : "screen:logs"));
+    await advance(3_000);
+  }
+  fireEvent.click(app.getByRole("button", { name: "Save" }));
+  await advance(1_250);
+  const events = batches().flatMap(({ events }) => events);
+  expect(events).toHaveLength(46);
+  expect(events.at(-1)).toBe("feature:settings_saved");
+});
+
+test("reports a source connection only after native confirms a new local binding", async () => {
+  const app = renderHook(() => useConnectProject(), {
+    wrapper: ({ children }: { children: ReactNode }) => (
+      <DesktopUsageProvider state={alice}>{children}</DesktopUsageProvider>
+    ),
+  });
+  native.open.mockResolvedValueOnce(null);
+  expect(await app.result.current("private-project")).toBe(false);
+  expect(native.invoke).not.toHaveBeenCalled();
+
+  native.open.mockResolvedValue("/private/folder");
+  native.invoke
+    .mockResolvedValueOnce(false)
+    .mockRejectedValueOnce(new Error("Rejected source path"))
+    .mockResolvedValueOnce(true);
+  expect(await app.result.current("private-project")).toBe(true);
+  await expect(app.result.current("private-project")).rejects.toThrow(
+    "Rejected source path",
+  );
+  expect(await app.result.current("private-project")).toBe(true);
+  await advance(1_250);
+  expect(batches()).toEqual([
+    {
+      accountId: "alice",
+      serviceOrigin: origin,
+      events: ["feature:source_connected"],
+    },
+  ]);
+});
+
 const resource = {
   kind: "session",
   resourceId: "private-session",
@@ -238,7 +306,7 @@ test("records a confirmed launch when the reader changes before it finishes", as
 });
 
 test.each([
-  [{ opened: true }, undefined, false, true],
+  [{ opened: true }, undefined, false, "feature:session_resumed"],
   [
     { opened: false, manualCommand: "private command" },
     undefined,
@@ -248,8 +316,10 @@ test.each([
   [{ opened: true, handoff: "private path" }, undefined, false, false],
   [{ opened: true }, "iterm2", false, false],
   [{ opened: true }, undefined, true, false],
+  [{ opened: true, forked: true }, undefined, true, "feature:session_forked"],
+  [{ opened: true, forked: true }, undefined, false, "feature:session_resumed"],
 ] as const)(
-  "only reports a confirmed session resume from the foreground",
+  "only reports a confirmed session resume or explicit fork from the foreground",
   async (reply, destination, fork, reported) => {
     native.invoke.mockImplementation(async (command) => {
       if (command === "resume_session") {
@@ -288,7 +358,7 @@ test.each([
             {
               accountId: "alice",
               serviceOrigin: origin,
-              events: ["feature:session_resumed"],
+              events: [reported],
             },
           ]
         : [],

@@ -15,6 +15,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
+use tauri::ipc::{Channel, JavaScriptChannelId};
 use tokio::io::AsyncReadExt;
 use uuid::Uuid;
 use zeroize::Zeroizing;
@@ -320,7 +321,7 @@ pub(crate) fn binding_matches(source: &Value, repository_id: &str, revision: u64
             .is_none_or(|cached| cached == revision)
 }
 
-async fn attach(context: &Context, job: &Value) -> Result<()> {
+async fn attach(context: &Context, job: &Value) -> Result<bool> {
     let project = job["projectId"].as_str().ok_or("Missing project")?;
     let source_id = job["sourceId"].as_str().ok_or("Missing source")?;
     let repository_id = job["repositoryId"]
@@ -382,8 +383,13 @@ async fn attach(context: &Context, job: &Value) -> Result<()> {
     .await
 }
 
-async fn clone_job(context: Context, mut job: Value, canceled: Arc<AtomicBool>) {
-    let result: Result<()> = async {
+async fn clone_job(
+    context: Context,
+    mut job: Value,
+    canceled: Arc<AtomicBool>,
+    completion: Option<Channel<bool>>,
+) {
+    let result: Result<bool> = async {
         let project = job["projectId"].as_str().ok_or("Missing project")?.to_owned();
         let source_id = job["sourceId"].as_str().ok_or("Missing source")?.to_owned();
         let mut response = context.api("clone-credentials", json!({"projectId":project,"sourceId":source_id})).await?;
@@ -419,11 +425,12 @@ async fn clone_job(context: Context, mut job: Value, canceled: Arc<AtomicBool>) 
             job["state"] = json!("connecting");
             job["message"] = json!("Clone complete; connecting this source"); save(&context, &job)?;
         }
-        attach(&context, &job).await?;
+        let connected = attach(&context, &job).await?;
         job["state"] = json!("connected");
         job["message"] = json!(if incomplete { "Connected. Review submodule or Git LFS setup before using this checkout." } else { "Cloned and connected" });
-        Ok(())
+        Ok(connected)
     }.await;
+    let connected = result.as_ref().is_ok_and(|connected| *connected);
     if let Err(error) = result {
         job["state"] = json!(if canceled.load(Ordering::Relaxed) {
             "canceled"
@@ -432,14 +439,45 @@ async fn clone_job(context: Context, mut job: Value, canceled: Arc<AtomicBool>) 
         });
         job["message"] = json!(error);
     }
-    let _ = save(&context, &job);
+    if save(&context, &job).is_ok() && connected {
+        if let Some(completion) = completion {
+            let _ = completion.send(true);
+        }
+    }
     JOBS.lock()
         .unwrap_or_else(|e| e.into_inner())
         .remove(job["id"].as_str().unwrap_or(""));
 }
 
-#[tauri::command]
-pub async fn repository_command(action: String, input: Value, context: Context) -> Result<Value> {
+#[tauri::command(rename = "repository_command")]
+pub async fn repository_command_view(
+    action: String,
+    input: Value,
+    context: Context,
+    on_clone_connected: Option<JavaScriptChannelId>,
+    webview: tauri::Webview,
+) -> Result<Value> {
+    let completion = on_clone_connected
+        .filter(|_| webview.label() == "main" && action == "clone")
+        .map(|id| id.channel_on(webview));
+    run_repository_command(action, input, context, completion).await
+}
+
+#[cfg(any(debug_assertions, test))]
+pub(crate) async fn repository_command(
+    action: String,
+    input: Value,
+    context: Context,
+) -> Result<Value> {
+    run_repository_command(action, input, context, None).await
+}
+
+async fn run_repository_command(
+    action: String,
+    input: Value,
+    context: Context,
+    completion: Option<Channel<bool>>,
+) -> Result<Value> {
     context.check()?;
     if action == "capabilities" {
         return sync::api_at(&context.user, &context.service, "GET", "/v2/instance", None)
@@ -594,7 +632,7 @@ pub async fn repository_command(action: String, input: Value, context: Context) 
                 .remove(job["id"].as_str().unwrap_or(""));
             return Err(error);
         }
-        tokio::spawn(clone_job(context, job.clone(), canceled));
+        tokio::spawn(clone_job(context, job.clone(), canceled, completion));
         return Ok(job);
     }
     if matches!(action.as_str(), "bind" | "unlink" | "add-source") {

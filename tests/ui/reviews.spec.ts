@@ -556,6 +556,15 @@ test("R15 after approving, the next opens", async ({ page }) => {
     page.getByRole("navigation", { name: "Requests" }),
   ).toContainText("1 of 2");
   await expect(page.getByText("Approved release-checklist")).toBeVisible();
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        (
+          window as unknown as { reviewUsageSignals: string[] }
+        ).reviewUsageSignals.filter((event) => event.startsWith("feature:")),
+      ),
+    )
+    .toEqual(["feature:review_decided"]);
   await shot(
     page,
     "R15-next-opens",

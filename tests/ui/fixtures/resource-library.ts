@@ -37,6 +37,7 @@ export async function resourceLibraryFixture(
     deferredTitleId?: string;
     publicLinks?: boolean;
     piSession?: boolean;
+    localSkill?: boolean;
   } = {},
 ) {
   await page.emulateMedia({ reducedMotion: "reduce" });
@@ -55,7 +56,7 @@ export async function resourceLibraryFixture(
       syncMinutes: 1,
     };
     const resource = (
-      kind: "memory" | "session" | "plan",
+      kind: "memory" | "session" | "plan" | "skill",
       id: string,
       title: string,
       owner: string,
@@ -70,7 +71,12 @@ export async function resourceLibraryFixture(
       title,
       files: [
         {
-          path: kind === "session" ? "session.jsonl" : "content.md",
+          path:
+            kind === "session"
+              ? "session.jsonl"
+              : kind === "skill"
+                ? "SKILL.md"
+                : "content.md",
           hash: `${kind}-${id}`,
           size: 20,
           executable: false,
@@ -125,7 +131,7 @@ export async function resourceLibraryFixture(
               ]
             : []),
         ]);
-    const local = (kind: "memory" | "session" | "plan") =>
+    const local = (kind: ProjectResource["kind"]) =>
       options.emptyLocal
         ? []
         : [
@@ -134,7 +140,12 @@ export async function resourceLibraryFixture(
               revision: 0,
               files: [
                 {
-                  path: kind === "session" ? "session.jsonl" : "content.md",
+                  path:
+                    kind === "session"
+                      ? "session.jsonl"
+                      : kind === "skill"
+                        ? "SKILL.md"
+                        : "content.md",
                   hash: `private-${library.tail}`,
                   size: 20,
                   executable: false,
@@ -236,6 +247,7 @@ export async function resourceLibraryFixture(
                 },
               ],
               resources: shared,
+              localSkills: options.localSkill ? local("skill") : [],
               governance: [
                 {
                   projectId: "project",
@@ -280,13 +292,13 @@ export async function resourceLibraryFixture(
             if (args.refresh === false)
               return {
                 resources: options.cachedLocal
-                  ? local(args.kind as "memory" | "session" | "plan")
+                  ? local(args.kind as ProjectResource["kind"])
                   : [],
                 errors: [],
               };
             if (library.busyCatalog)
               return {
-                resources: local(args.kind as "memory" | "session" | "plan"),
+                resources: local(args.kind as ProjectResource["kind"]),
                 errors: [],
                 refreshPending: true,
               };
@@ -297,7 +309,7 @@ export async function resourceLibraryFixture(
                 )
               : undefined;
             const result = {
-              resources: local(args.kind as "memory" | "session" | "plan"),
+              resources: local(args.kind as ProjectResource["kind"]),
               errors: [...library.catalogErrors],
             };
             if (library.deferCatalog)

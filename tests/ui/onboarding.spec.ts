@@ -643,6 +643,12 @@ async function fixture(
                   supported: true,
                 };
               if (action === "batch-sync") {
+                if (args.onConnectionConfirmed) {
+                  Object.assign(window, {
+                    confirmOnboardingConnection: () =>
+                      args.onConnectionConfirmed.onmessage(true),
+                  });
+                }
                 if (options.pauseSync) return new Promise(() => {});
                 draft = {
                   ...draft,
@@ -1018,6 +1024,39 @@ test("sync can continue inside Orka after dismissing the progress overlay", asyn
   expect(
     (await calls(page)).filter((c) => c.args.action === "complete"),
   ).toHaveLength(1);
+});
+
+test("onboarding records one confirmed folder attachment after leaving progress", async ({
+  page,
+}) => {
+  await fixture(page, { step: "select", pauseSync: true });
+  await page.getByRole("button", { name: "Proceed", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Start Syncing", exact: true })
+    .click();
+  await expect(page.getByRole("dialog")).toContainText("Syncing your projects");
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "Open Orka", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "Syncing your projects", exact: true }),
+  ).toHaveCount(0);
+  const features = async () =>
+    (await calls(page))
+      .filter(({ command }) => command === "record_desktop_usage")
+      .flatMap(({ args }) =>
+        (args.events as string[]).filter((event) =>
+          event.startsWith("feature:"),
+        ),
+      );
+  expect(await features()).toEqual([]);
+  await page.evaluate(() => {
+    const confirm = (
+      window as unknown as { confirmOnboardingConnection: () => void }
+    ).confirmOnboardingConnection;
+    confirm();
+    confirm();
+  });
+  await expect.poll(features).toEqual(["feature:source_connected"]);
 });
 
 test("a failed profile save preserves edits and does not advance", async ({

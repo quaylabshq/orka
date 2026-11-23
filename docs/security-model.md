@@ -34,17 +34,21 @@ and the app version for desktop sync registrations. Event payloads exclude
 project content, names, paths, emails, IP addresses, and device identifiers.
 Self-hosted Orka servers leave this capability disabled.
 
-Compatible Mac builds also report foreground visits to Projects, Sessions,
-Memories, Skills, Plans, Reviews, Members, and Settings. A screen has to settle
-before Orka counts the visit. The Mac also counts successful session resumes,
-local skill imports, and published memory shares. Imports count once per
-completed operation, including when sharing the imported skills is queued
-separately.
+Compatible Mac builds report foreground visits to Projects, Sessions, Memories,
+Skills, Plans, ENVs, Reviews, Logs, Members, and Settings. Reading a resource or
+review from a direct link counts toward its section. Orka waits for the screen
+to settle before counting it.
+
+Orka counts confirmed session resumes and forks, skill imports, published
+snapshot shares, source connections, review decisions, and the first successful
+Settings save per visit. The event contains a fixed action name. It omits
+preferences, account details, and permission values.
 
 The Mac sends fixed screen and action names through the signed-in Cloud
 connection. The API attaches the app version, a capture time, and the same
 pseudonymous account ID as sync registration. Short in-memory batches,
 per-account and service budgets, and best-effort delivery keep capture bounded.
+The screen-view limit leaves room for successful actions later the same day.
 
 ## Environment-variable sets
 

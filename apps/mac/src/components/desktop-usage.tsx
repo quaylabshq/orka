@@ -17,12 +17,21 @@ export type DesktopScreen =
   | "screen:plans"
   | "screen:reviews"
   | "screen:members"
+  | "screen:envs"
+  | "screen:logs"
   | "screen:settings";
 
 type DesktopFeature =
   | "feature:session_resumed"
+  | "feature:session_forked"
   | "feature:skill_imported"
-  | "feature:memory_shared";
+  | "feature:memory_shared"
+  | "feature:skill_shared"
+  | "feature:plan_shared"
+  | "feature:session_shared"
+  | "feature:source_connected"
+  | "feature:review_decided"
+  | "feature:settings_saved";
 
 type DesktopUsageEvent = DesktopScreen | DesktopFeature;
 type Scope = { accountId: string; serviceOrigin: string };
@@ -30,9 +39,10 @@ type Scope = { accountId: string; serviceOrigin: string };
 const screenDwellMs = 750;
 const batchDelayMs = 1_250;
 const batchLimit = 16;
+const dailyScreenLimit = 45;
 const dailyLimit = 60;
 const utcDayMs = 86_400_000;
-const dailyCounts = new Map<string, number>();
+const dailyCounts = new Map<string, { total: number; screens: number }>();
 let budgetDay = Math.floor(Date.now() / utcDayMs);
 
 const isForeground = () => !document.hidden && document.hasFocus();
@@ -67,7 +77,7 @@ class DesktopUsage {
   }
 
   feature(feature: DesktopFeature) {
-    this.enqueue(feature);
+    return this.enqueue(feature);
   }
 
   private enqueue(event: DesktopUsageEvent) {
@@ -78,9 +88,16 @@ class DesktopUsage {
       budgetDay = day;
       dailyCounts.clear();
     }
-    const count = dailyCounts.get(this.budgetKey) ?? 0;
-    if (count >= dailyLimit) return false;
-    dailyCounts.set(this.budgetKey, count + 1);
+    const count = dailyCounts.get(this.budgetKey) ?? { total: 0, screens: 0 };
+    const screen = event.startsWith("screen:");
+    if (
+      count.total >= dailyLimit ||
+      (screen && count.screens >= dailyScreenLimit)
+    )
+      return false;
+    count.total += 1;
+    if (screen) count.screens += 1;
+    dailyCounts.set(this.budgetKey, count);
     this.pending.push(event);
     this.schedule();
     return true;
@@ -176,9 +193,9 @@ export function useDesktopFeature() {
       const current = isForeground() ? usage : undefined;
       let recorded = false;
       return () => {
-        if (recorded) return;
+        if (recorded) return false;
         recorded = true;
-        current?.feature(feature);
+        return current?.feature(feature) ?? false;
       };
     },
     [usage],

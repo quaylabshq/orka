@@ -5,9 +5,10 @@ import {
   useRef,
   useState,
 } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { useQuery } from "@tanstack/react-query";
 import type { Project, Snapshot } from "../types.js";
+import { useDesktopFeature } from "./desktop-usage.js";
 import { activeSources } from "./project-sources.js";
 import { useWorkspaceScope } from "./workspace-cache.js";
 
@@ -46,11 +47,16 @@ export function useRepositoryCommand(state: Snapshot) {
   const user = state.user,
     service = state.config?.apiUrl;
   return useCallback(
-    <T>(action: string, input: unknown = {}) =>
+    <T>(
+      action: string,
+      input: unknown = {},
+      onCloneConnected?: Channel<boolean>,
+    ) =>
       invoke<T>("repository_command", {
         action,
         input,
         context: { user, service },
+        ...(onCloneConnected && { onCloneConnected }),
       }),
     [user, service],
   );
@@ -105,6 +111,7 @@ export function useRepositories(
   state: Snapshot,
   refresh: () => Promise<unknown>,
 ) {
+  const startFeature = useDesktopFeature();
   const call = useRepositoryCommand(state);
   const scope = useWorkspaceScope();
   const capabilities = useQuery({
@@ -391,12 +398,15 @@ export function useRepositories(
     directory: string,
     folderName: string,
   ) => {
-    const job = await call<CloneJob>("clone", {
-      projectId: project.id,
-      sourceId,
-      directory,
-      folderName,
+    const recordConnected = startFeature("feature:source_connected");
+    const connected = new Channel<boolean>((confirmed) => {
+      if (confirmed === true) recordConnected();
     });
+    const job = await call<CloneJob>(
+      "clone",
+      { projectId: project.id, sourceId, directory, folderName },
+      connected,
+    );
     setJobs((values) => [
       job,
       ...values.filter((value) => value.id !== job.id),

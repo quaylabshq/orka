@@ -119,13 +119,16 @@ export function useResourceActions({
       ) => {
         if (launching.current) return Promise.resolve();
         launching.current = true;
-        const recordResumed = startFeature("feature:session_resumed");
+        const recordLaunch = startFeature(
+          fork ? "feature:session_forked" : "feature:session_resumed",
+        );
         return act(
           async () => {
             setLaunchFailure(null);
             const r = await invoke<{
               instruction?: string;
               opened?: boolean;
+              forked?: boolean;
               handoff?: string;
               manualCommand?: string;
               destinationLabel?: string;
@@ -142,14 +145,12 @@ export function useResourceActions({
               throw error;
             });
             if (!r) return;
-            if (
+            const resumed =
               r.opened === true &&
               !r.manualCommand &&
               !r.handoff &&
-              !fork &&
-              target?.destination !== "iterm2"
-            )
-              recordResumed();
+              target?.destination !== "iterm2";
+            if (fork ? r.forked === true : resumed) recordLaunch();
             if (activeKey.current !== commandKey) return;
             if (r.manualCommand) {
               setManualCommand({

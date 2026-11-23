@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { Snapshot } from "../../types.js";
+import { useDesktopFeature } from "../desktop-usage.js";
 import {
   destinationCandidates,
   initialDraft,
@@ -15,8 +16,14 @@ export const onboardingCommand = <T>(
   action: string,
   input: unknown = {},
   context?: { user: string | null; service?: string },
+  onConnectionConfirmed?: Channel<boolean>,
 ) =>
-  invoke<T>("onboarding_command", { action, input, context: context ?? null });
+  invoke<T>("onboarding_command", {
+    action,
+    input,
+    context: context ?? null,
+    ...(onConnectionConfirmed && { onConnectionConfirmed }),
+  });
 
 function ranked(projects: DiscoveredProject[]) {
   return [...projects].sort(
@@ -113,10 +120,15 @@ export function useOnboarding(
   refresh: () => Promise<void>,
   onComplete: (projectId: string) => void,
 ) {
+  const startFeature = useDesktopFeature();
   const scope = useRef({ user: state.user, service: state.config?.apiUrl });
   const command = useCallback(
-    <T>(action: string, input: unknown = {}) =>
-      onboardingCommand<T>(action, input, scope.current),
+    <T>(
+      action: string,
+      input: unknown = {},
+      onConnectionConfirmed?: Channel<boolean>,
+    ) =>
+      onboardingCommand<T>(action, input, scope.current, onConnectionConfirmed),
     [],
   );
   const [draft, setDraft] = useState<OnboardingDraft>(() => {
@@ -496,7 +508,10 @@ export function useOnboarding(
         reviewed: false,
       });
     });
-  const sync = (retry = false) =>
+  const sync = (retry = false) => {
+    const recordConnected = retry
+      ? undefined
+      : startFeature("feature:source_connected");
     void run(async () => {
       if (!retry) {
         // From here the native batch reads selected as the approved set to connect.
@@ -511,7 +526,12 @@ export function useOnboarding(
           sharing: { ...current.current.sharing, env: false },
         });
       } else await checkpoint({ step: "retrying" });
-      void command<OnboardingDraft>("batch-sync", { retry })
+      const connected = recordConnected
+        ? new Channel<boolean>((confirmed) => {
+            if (confirmed === true) recordConnected();
+          })
+        : undefined;
+      void command<OnboardingDraft>("batch-sync", { retry }, connected)
         .then(async (next) => {
           if (active.current) {
             applyDraft(next);
@@ -522,6 +542,7 @@ export function useOnboarding(
           if (active.current) setError(String(e));
         });
     });
+  };
   const complete = (projectId?: string, defer = false) =>
     void run(async () => {
       await command("complete", { defer });

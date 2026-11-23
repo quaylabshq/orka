@@ -1,9 +1,17 @@
-import { test, expect, type Locator } from "@playwright/test";
+import { test, expect, type Locator, type Page } from "@playwright/test";
 import { writeFile } from "node:fs/promises";
 import { AxeBuilder } from "@axe-core/playwright";
 import { settingsFixture, settingsCalls } from "./fixtures/settings.js";
 const button = (scope: Locator, name: string) =>
   scope.getByRole("button", { name, exact: true });
+const usageSignals = async (page: Page): Promise<string[]> =>
+  (await settingsCalls(page))
+    .filter((call) => call.command === "record_desktop_usage")
+    .flatMap((call) => call.args.events);
+const settingsSaveCount = async (page: Page) =>
+  (await usageSignals(page)).filter(
+    (signal) => signal === "feature:settings_saved",
+  ).length;
 async function choose(scope: Locator, label: string, value: string) {
   await scope.getByRole("combobox", { name: label, exact: true }).click();
   await scope.page().getByRole("option", { name: value, exact: true }).click();
@@ -65,6 +73,73 @@ test("all nine destinations and no-project account and Mac settings stay usable"
     "aria-pressed",
     "true",
   );
+});
+
+test("reports only one confirmed settings save per visit", async ({ page }) => {
+  const settings = await settingsFixture(page, { failBackground: true });
+  await expect.poll(() => usageSignals(page)).toContain("screen:settings");
+  await button(settings, "Sync & startup").click();
+  await settings.getByRole("switch", { name: "Background sync" }).uncheck();
+  await button(settings, "Save changes").click();
+  await expect(settings.getByRole("alert")).toContainText(
+    "Couldn’t change startup",
+  );
+
+  await button(settings, "Members").click();
+  await page.getByRole("button", { name: "Discard", exact: true }).click();
+  await expect.poll(() => usageSignals(page)).toContain("screen:members");
+  expect(await settingsSaveCount(page)).toBe(0);
+
+  await button(settings, "Sync & startup").click();
+  await button(settings, "5 min").click();
+  await button(settings, "Save changes").click();
+  await expect(settings.getByRole("status")).toContainText(
+    "Sync preferences saved.",
+  );
+  await expect.poll(() => settingsSaveCount(page)).toBe(1);
+
+  await button(settings, "1 min").click();
+  await button(settings, "Save changes").click();
+  await expect(button(settings, "Save changes")).toBeDisabled();
+  const screenCount = (await usageSignals(page)).filter((event) =>
+    event.startsWith("screen:"),
+  ).length;
+  await page.keyboard.press("Escape");
+  await expect(settings).toBeHidden();
+  await expect
+    .poll(
+      async () =>
+        (await usageSignals(page)).filter((event) =>
+          event.startsWith("screen:"),
+        ).length,
+    )
+    .toBeGreaterThan(screenCount);
+  expect(await settingsSaveCount(page)).toBe(1);
+
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await settings
+    .getByRole("textbox", { name: "Display name", exact: true })
+    .fill("Changed in this visit");
+  await button(settings, "Save profile").click();
+  await expect(
+    settings.getByText("Profile saved.", { exact: true }),
+  ).toBeVisible();
+  await expect.poll(() => settingsSaveCount(page)).toBe(2);
+});
+
+test("reports an acknowledged save when the workspace refresh fails", async ({
+  page,
+}) => {
+  const settings = await settingsFixture(page, {
+    failSnapshotAfterConfigure: true,
+  });
+  await button(settings, "Sync & startup").click();
+  await button(settings, "5 min").click();
+  await button(settings, "Save changes").click();
+  await expect(settings.getByRole("alert")).toContainText(
+    "Workspace refresh unavailable",
+  );
+  await expect.poll(() => settingsSaveCount(page)).toBe(1);
 });
 
 test("profile edits persist, empty name fails safely, and email is read-only", async ({
@@ -707,6 +782,7 @@ test("permission edit/revert, eight-field locking, and duplicate-click suppressi
   for (const selector of await settings.getByRole("combobox").all())
     await expect(selector).toBeDisabled();
   await expect(settings.getByText("Permissions saved.")).toBeVisible();
+  await expect.poll(() => settingsSaveCount(page)).toBe(1);
   await expect(button(settings, "Save changes")).toBeDisabled();
   expect(
     (await settingsCalls(page)).filter(
