@@ -1,26 +1,10 @@
-import { PanelLeftCloseIcon, PanelLeftOpenIcon } from "lucide-react";
+import { PanelLeftIcon } from "lucide-react";
 import React from "react";
-import { motion, useReducedMotion } from "motion/react";
 import { Button } from "./button.js";
-import { spring } from "../lib/springs.js";
-
-const shown = { opacity: 1, scale: 1, filter: "blur(0px)" };
-const hidden = { opacity: 0, scale: 0.6, filter: "blur(4px)" };
-const enter = {
-  type: "tween" as const,
-  duration: spring.fast.duration,
-  ease: "easeOut" as const,
-};
-const leave = {
-  type: "tween" as const,
-  ...spring.fast.exit,
-  ease: "easeIn" as const,
-};
 
 export interface WorkspaceHeaderProps {
   title: string;
   collapsed: boolean;
-  instant?: boolean;
   onToggle: (instant: boolean) => void;
   status?: React.ReactNode;
   repositoryFilter?: React.ReactNode;
@@ -34,15 +18,12 @@ export interface WorkspaceHeaderProps {
 export function WorkspaceHeader({
   title,
   collapsed,
-  instant,
   onToggle,
   status,
   repositoryFilter,
   navigation,
   leading,
 }: WorkspaceHeaderProps) {
-  const reduced = useReducedMotion();
-  const instantTransition = reduced || instant ? { duration: 0 } : null;
   return (
     <header
       className={`workspace-header${leading ? " workspace-header--detail" : ""}`}
@@ -50,7 +31,6 @@ export function WorkspaceHeader({
       data-tauri-drag-region
     >
       <div className="workspace-heading" data-tauri-drag-region>
-        {leading}
         <Button
           className="ui-icon-button sidebar-toggle"
           aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
@@ -60,23 +40,9 @@ export function WorkspaceHeader({
           variant="tertiary"
           size="sm"
         >
-          <span className="sidebar-toggle-icons" aria-hidden="true">
-            <motion.span
-              initial={false}
-              animate={collapsed ? hidden : shown}
-              transition={instantTransition ?? (collapsed ? leave : enter)}
-            >
-              <PanelLeftCloseIcon size={16} />
-            </motion.span>
-            <motion.span
-              initial={false}
-              animate={collapsed ? shown : hidden}
-              transition={instantTransition ?? (collapsed ? enter : leave)}
-            >
-              <PanelLeftOpenIcon size={16} />
-            </motion.span>
-          </span>
+          <PanelLeftIcon size={16} aria-hidden="true" />
         </Button>
+        {leading}
         <h1 data-tauri-drag-region className={leading ? "sr-only" : undefined}>
           {title}
         </h1>
