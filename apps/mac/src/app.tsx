@@ -27,6 +27,11 @@ import React, {
 import { motion, useReducedMotion } from "motion/react";
 import { spring } from "./lib/springs.js";
 import { ResourceMenuProvider } from "./components/resource-menu.js";
+import {
+  DesktopUsageProvider,
+  DesktopUsageScreen,
+  type DesktopScreen,
+} from "./components/desktop-usage.js";
 import type { ItemMenuAction } from "./components/item-menu.js";
 import type { IconGlyph } from "./components/icons.js";
 import { useWebViewMenuPolicy } from "./hooks/use-web-view-menu-policy.js";
@@ -159,6 +164,15 @@ const pageLabels: Record<ProjectPage, string> = {
   plan: "plans",
 };
 
+const projectUsageScreens: Partial<Record<ProjectPage, DesktopScreen>> = {
+  home: "screen:projects",
+  session: "screen:sessions",
+  memory: "screen:memories",
+  skill: "screen:skills",
+  plan: "screen:plans",
+  reviews: "screen:reviews",
+};
+
 export function App() {
   useWebViewMenuPolicy();
   const workspace = useWorkspace();
@@ -204,7 +218,9 @@ export function App() {
             state={workspace.state}
             projectId={workspace.project}
           >
-            <WorkspaceApp workspace={workspace} />
+            <DesktopUsageProvider state={workspace.state}>
+              <WorkspaceApp workspace={workspace} />
+            </DesktopUsageProvider>
           </MemberNamesProvider>
         </ToastProvider>
       </LoadingProvider>
@@ -865,6 +881,22 @@ function WorkspaceApp({
             item.kind === "skill",
         )
       : undefined;
+  const trackScreen = !(
+    state.onboarding?.active ||
+    setup.dialog ||
+    connectorDialog ||
+    governance ||
+    deleteTarget ||
+    (repositorySetupProject && !alreadyConnectedRepositories)
+  );
+  const workspaceUsageScreen =
+    settings === "members"
+      ? "screen:members"
+      : settings
+        ? "screen:settings"
+        : selectedProject
+          ? undefined
+          : "screen:projects";
   const resourceLabel = pageLabels[tab];
   const collectionLabel =
     resourceLabel.charAt(0).toUpperCase() + resourceLabel.slice(1);
@@ -1257,6 +1289,9 @@ function WorkspaceApp({
               />
             }
           />
+          <DesktopUsageScreen
+            screen={trackScreen ? workspaceUsageScreen : undefined}
+          />
           {settings ? (
             <SettingsModal
               ref={settingsNavigation}
@@ -1339,6 +1374,13 @@ function WorkspaceApp({
                   </p>
                 }
               >
+                <DesktopUsageScreen
+                  screen={
+                    trackScreen && !review && (tab === "home" || !selected)
+                      ? projectUsageScreens[tab]
+                      : undefined
+                  }
+                />
                 {tab === "reviews" ? (
                   <ReviewsPage
                     key={projectScope}

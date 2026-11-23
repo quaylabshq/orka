@@ -793,6 +793,14 @@ test("adding locks the popover until the one request finishes", async ({
   await expect(page.getByText("2 skills added to Orka")).toBeVisible();
   expect(await calls(page, "add_global_skills")).toHaveLength(1);
   expect(await calls(page, "add_global_skill")).toHaveLength(0);
+  await expect
+    .poll(async () =>
+      (await calls(page, "record_desktop_usage")).flatMap(
+        ({ args }: { args: { events: string[] } }) =>
+          args.events.filter((event) => event.startsWith("feature:")),
+      ),
+    )
+    .toEqual(["feature:skill_imported"]);
   await plans.click();
   await expect(
     page.getByRole("heading", { name: "Plans", exact: true }),

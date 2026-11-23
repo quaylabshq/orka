@@ -738,6 +738,41 @@ test("snapshot sharing requires review and submits the exact frozen token withou
   ).toEqual([]);
 });
 
+test("a published memory snapshot records one successful share", async ({
+  page,
+}) => {
+  await menuFixture(page);
+  await collection(page, "Memories");
+  await page.evaluate(() => {
+    (window as unknown as MenuWindow).resourceMenu.shareStatus = "published";
+  });
+  await resourceMenu(
+    page,
+    "Private memory notes",
+    "Share snapshot with project…",
+  );
+  await page
+    .getByRole("button", { name: "Share this snapshot", exact: true })
+    .click();
+  await expect(
+    page.getByText("Snapshot shared", { exact: true }),
+  ).toBeVisible();
+
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        (window as unknown as MenuWindow).library.calls
+          .filter(({ command }) => command === "record_desktop_usage")
+          .flatMap(({ args }) =>
+            (args.events as string[]).filter((event) =>
+              event.startsWith("feature:"),
+            ),
+          ),
+      ),
+    )
+    .toEqual(["feature:memory_shared"]);
+});
+
 for (const viewport of [
   { width: 1160, height: 800 },
   { width: 900, height: 640 },

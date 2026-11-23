@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
+import { useDesktopFeature } from "./desktop-usage.js";
 import type {
   SessionSnapshotDownload,
   WorkspaceResource as Resource,
@@ -57,6 +58,7 @@ export function useResourceActions({
   scope: string;
 }) {
   const { resourceId: id, source, owner, title, kind } = resource;
+  const startFeature = useDesktopFeature();
   const commandKey = JSON.stringify([
     scope,
     id,
@@ -117,11 +119,14 @@ export function useResourceActions({
       ) => {
         if (launching.current) return Promise.resolve();
         launching.current = true;
+        const recordResumed = startFeature("feature:session_resumed");
         return act(
           async () => {
             setLaunchFailure(null);
             const r = await invoke<{
               instruction?: string;
+              opened?: boolean;
+              handoff?: string;
               manualCommand?: string;
               destinationLabel?: string;
             }>("resume_session", {
@@ -136,7 +141,16 @@ export function useResourceActions({
               setLaunchFailure({ key: commandKey, message: String(error) });
               throw error;
             });
-            if (!r || activeKey.current !== commandKey) return;
+            if (!r) return;
+            if (
+              r.opened === true &&
+              !r.manualCommand &&
+              !r.handoff &&
+              !fork &&
+              target?.destination !== "iterm2"
+            )
+              recordResumed();
+            if (activeKey.current !== commandKey) return;
             if (r.manualCommand) {
               setManualCommand({
                 key: commandKey,
@@ -235,6 +249,7 @@ export function useResourceActions({
       launchError,
       manualResume,
       resource.revision,
+      startFeature,
     ],
   );
 }

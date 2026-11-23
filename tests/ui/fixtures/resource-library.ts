@@ -175,11 +175,20 @@ export async function resourceLibraryFixture(
     Object.assign(window, {
       library,
       isTauri: true,
+      __TAURI_EVENT_PLUGIN_INTERNALS__: { unregisterListener: () => {} },
       __TAURI_INTERNALS__: {
         transformCallback: () => 1,
         unregisterCallback: () => {},
         invoke: async (command: string, args: Record<string, unknown> = {}) => {
           library.calls.push({ command, args });
+          if (command === "governance_command" && args.action === "catalog")
+            return {
+              requests: [],
+              members: [],
+              governed: options.restricted ?? false,
+              owner: !options.restricted,
+              role: options.restricted ? "member" : "owner",
+            };
           if (command === "snapshot")
             return {
               user: library.user,

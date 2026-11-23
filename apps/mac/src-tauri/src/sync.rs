@@ -19,7 +19,7 @@ use std::{
 const PLAN_REVISION_CONFLICT: &str =
     "409: Resource changed; refresh and review the exact version again";
 const PLAN_REVIEW_PENDING: &str = "Queued plan upload needs review";
-const DESKTOP_VERSION_HEADER: &str = "X-Orka-Desktop-Version";
+pub(crate) const DESKTOP_VERSION_HEADER: &str = "X-Orka-Desktop-Version";
 
 pub async fn api(method: &str, path: &str, body: Option<&Value>) -> Result<Value> {
     let owner = db::get(&db::open()?, "user")?;

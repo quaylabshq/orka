@@ -210,6 +210,22 @@ fn global_setting(key: &str) -> Result<Value> {
         Err(e) => Err(e.to_string()),
     }
 }
+
+pub(crate) fn service_config() -> Result<Value> {
+    global_setting("config")
+}
+
+pub(crate) fn matches_cloud_account(account: &str, origin: &str) -> Result<bool> {
+    if Uuid::parse_str(account).is_err() || origin.is_empty() {
+        return Ok(false);
+    }
+    let config = service_config()?;
+    // A pre-mode profile can still connect to Cloud, subject to its live capability.
+    Ok(config["apiUrl"] == origin
+        && (config["mode"].is_null() || config["mode"] == "cloud")
+        && fs::read_to_string(root()?.join("account")).is_ok_and(|selected| selected == account))
+}
+
 pub fn get(db: &Connection, key: &str) -> Result<Value> {
     if key == "config" || key == "background" {
         return global_setting(key);

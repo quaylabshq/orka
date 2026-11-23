@@ -26,6 +26,7 @@ import * as Popover from "@radix-ui/react-popover";
 import { invoke } from "@tauri-apps/api/core";
 import type { Project } from "../types.js";
 import { Button } from "./button.js";
+import { useDesktopFeature } from "./desktop-usage.js";
 import { Icon } from "./icon.js";
 import { activeSources, repositoryLabel } from "./project-sources.js";
 import { readSkillMarkdown } from "./skill-markdown.js";
@@ -223,6 +224,7 @@ function AddSkills({
   onClose: () => void;
 }) {
   const { notify } = useToasts();
+  const startFeature = useDesktopFeature();
   const repositories = useMemo(
     () => activeSources(project.sources ?? []).filter((source) => source.path),
     [project.sources],
@@ -433,6 +435,7 @@ function AddSkills({
     });
   const add = async () => {
     if (locked || !target || !chosen.length) return;
+    const recordImported = startFeature("feature:skill_imported");
     setPending(true);
     onAdding(true);
     setRetry("");
@@ -456,6 +459,9 @@ function AddSkills({
         );
         answered = true;
         const added = results.filter((item) => item.result);
+        // Native installs both local mirrors before returning a result. Its
+        // queued status applies to publishing those files, not the import.
+        if (added.length) recordImported();
         let stale = results.filter((item) => item.error === STALE_SKILL);
         const dead = results.filter(
           (item) => item.error && item.error !== STALE_SKILL,

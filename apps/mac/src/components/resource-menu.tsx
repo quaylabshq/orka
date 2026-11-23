@@ -40,6 +40,7 @@ import {
 } from "./item-menu.js";
 import { Overlay } from "./overlay.js";
 import { Button } from "./button.js";
+import { useDesktopFeature } from "./desktop-usage.js";
 import { Icon } from "./icon.js";
 import { IconButton } from "./icon-button.js";
 import { MarkdownMarkIcon } from "./icons.js";
@@ -830,6 +831,7 @@ function ResourceCommandDialog({
   const project = context.state.projects.find(
     (item) => item.id === resource.projectId,
   );
+  const startFeature = useDesktopFeature();
   const [preview, setPreview] = useState<CommandPreview | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -897,6 +899,7 @@ function ResourceCommandDialog({
   }, [kind, attempt, accountId, serviceOrigin, projectId, resourceId]);
   const submit = async () => {
     if (busy || !preview || stale) return;
+    const recordShared = startFeature("feature:memory_shared");
     setBusy(true);
     setError("");
     setProgress({
@@ -915,6 +918,12 @@ function ResourceCommandDialog({
         input: { ...input, previewToken: preview.previewToken },
         onProgress,
       });
+      if (
+        kind === "share" &&
+        resource.kind === "memory" &&
+        result.status === "published"
+      )
+        recordShared();
       if (!active.current) return;
       if (kind === "delete" && result.status !== "deleted") {
         setError(
