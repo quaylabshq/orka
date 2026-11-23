@@ -519,6 +519,101 @@ fn pi_origin_tombstone_keeps_descendants_as_local_only_copies() {
 }
 
 #[test]
+fn pi_copies_survive_a_folder_disconnect_and_purge_and_read_from_the_snapshot() {
+    let f = Fixture::new();
+    let project = f.project["id"].as_str().unwrap();
+    let mut source = session(&f, "pi", true);
+    source["logicalPath"] = json!(format!("pi/{}", source["resourceId"].as_str().unwrap()));
+    let id = source["resourceId"].as_str().unwrap();
+    db::upsert(&f.db, "resources", id, project, &source).unwrap();
+    let host = FakeHost::default();
+    let first = session_launcher::resume_with(id, Tool::Pi, Destination::Terminal, &host).unwrap();
+    let copy_id = first["resourceId"].as_str().unwrap();
+    let copy = PathBuf::from(host.calls.borrow()[0]["path"].as_str().unwrap());
+
+    crate::commands::disconnect_project(project.into()).unwrap();
+    assert_eq!(indexer::binding(&f.db, id).unwrap(), json!({}));
+    assert!(crate::pi_sessions::is_private_copy(
+        &indexer::binding(&f.db, copy_id).unwrap()
+    ));
+    crate::governance::reset(&f.db, project, &json!([{"resource":source}])).unwrap();
+    assert!(crate::local_resources::resource(&f.db, copy_id).is_ok());
+
+    // Reconnecting the same folder reopens the same copy.
+    db::upsert(&f.db, "projects", project, project, &f.project).unwrap();
+    let reopened =
+        session_launcher::resume_with(copy_id, Tool::Pi, Destination::Terminal, &host).unwrap();
+    assert_eq!(reopened["nativeId"], first["nativeId"]);
+
+    // Reading a copy uses its file even after the checkout moved, and falls
+    // back to the stored snapshot only when the file is unreadable.
+    let stored = crate::local_resources::resource(&f.db, copy_id).unwrap();
+    let mut records = native::complete_records(&fs::read(&copy).unwrap()).unwrap();
+    records[0]["cwd"] = json!("/moved/checkout");
+    records.push(json!({"type":"message","id":"copy-turn","parentId":"request","message":{"role":"user","content":"Turn in the copy"}}));
+    fs::write(&copy, native::encode(&records)).unwrap();
+    let current = crate::session_forks::current_resource(&f.db, &stored).unwrap();
+    assert_eq!(
+        crate::history::resource_records(&current)
+            .unwrap()
+            .last()
+            .unwrap()["message"]["content"],
+        "Turn in the copy"
+    );
+    let live = fs::read(&copy).unwrap();
+    fs::write(&copy, "invalid JSON\n").unwrap();
+    assert_eq!(
+        crate::session_forks::current_resource(&f.db, &stored).unwrap(),
+        stored
+    );
+    fs::write(&copy, &live).unwrap();
+
+    // A purge with a grace period keeps the project while a copy remains.
+    let mut doomed = f.project.clone();
+    doomed["purgeAfter"] = json!(db::now());
+    db::upsert(&f.db, "projects", project, project, &doomed).unwrap();
+    f.db.purge_local(project).unwrap();
+    // Like local drafts, the copy's records and file are kept for recovery.
+    assert!(crate::pi_sessions::is_private_copy(
+        &indexer::binding(&f.db, copy_id).unwrap()
+    ));
+    assert_eq!(
+        db::rows(&f.db, "SELECT value FROM resources WHERE id=?", &[&copy_id])
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(copy.is_file());
+    // The recovery export carries the copy's later turns, read straight from
+    // the file rather than from a blob an earlier read stored.
+    let mut records = native::complete_records(&fs::read(&copy).unwrap()).unwrap();
+    records.push(json!({"type":"message","id":"export-turn","parentId":"copy-turn","message":{"role":"user","content":"Turn only on disk"}}));
+    fs::write(&copy, native::encode(&records)).unwrap();
+    let path = f._home.path().join("purged-project.zip");
+    crate::bundles::export_project(&db::CacheScope::current().unwrap(), project, &path).unwrap();
+    let mut zip = zip::ZipArchive::new(fs::File::open(path).unwrap()).unwrap();
+    let mut transcript = String::new();
+    std::io::Read::read_to_string(
+        &mut zip
+            .by_name(&format!("resources/{copy_id}/transcript.md"))
+            .unwrap(),
+        &mut transcript,
+    )
+    .unwrap();
+    assert!(transcript.contains("Turn only on disk"), "{transcript}");
+    let prefix = format!("resources/{copy_id}/blobs/");
+    let exported: Vec<String> = (0..zip.len())
+        .filter_map(|index| {
+            let name = zip.by_index(index).unwrap().name().unwrap().into_owned();
+            name.strip_prefix(&prefix).map(str::to_owned)
+        })
+        .collect();
+    assert_eq!(exported.len(), 1, "{exported:?}");
+    assert!(!db::blob_path(&exported[0]).unwrap().exists());
+    assert!(f.outbox().is_empty());
+}
+
+#[test]
 fn pi_terminal_script_opens_the_exact_copy_and_blocks_an_overlapping_launch() {
     let f = Fixture::new();
     let input = f.root.join("copy 'with spaces'.jsonl");

@@ -37,7 +37,8 @@ connected checkout as its working directory; reopening reuses that copy. Choose
 **Fork and open in Pi** to make another copy, including when a previous copy was
 removed. A fork starts from the session's local file when one exists, so it
 keeps every turn. If the shared session is deleted or you lose access, your
-copies stay available as local-only sessions. Orka does not launch a model turn
+copies stay available as local-only sessions. Disconnecting the folder keeps
+them, and they reappear when you reconnect it. Orka does not launch a model turn
 or change a teammate's session. Orka blocks a second Orka launch of the same
 file, but it cannot detect a Pi process you started yourself on that file.
 Automatic Pi sharing and cross-provider launch to or from Pi are not included.

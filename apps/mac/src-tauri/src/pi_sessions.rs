@@ -41,6 +41,12 @@ pub(crate) fn is_private_copy(binding: &Value) -> bool {
     binding.get("piCopyOrigin").is_some() && binding["base"]["source"] == "pi"
 }
 
+/// SQL condition for a private Pi copy's binding, which is its only record.
+pub(crate) const COPY_BINDING: &str = " AND json_type(value,'$.piCopyOrigin') IS NOT NULL";
+
+/// Folder disconnects keep private Pi copies so they reappear on reconnect.
+pub(crate) const KEEP_COPY_BINDINGS: &str = " AND NOT (json_extract(value,'$.base.source')='pi' AND json_type(value,'$.piCopyOrigin') IS NOT NULL)";
+
 pub(crate) fn copy_location(binding: &Value) -> Result<PathBuf> {
     let id = binding["nativeId"]
         .as_str()
@@ -57,6 +63,45 @@ pub(crate) fn copy_location(binding: &Value) -> Result<PathBuf> {
         );
     }
     Ok(path)
+}
+
+/// The redacted bytes of a private copy as its file now reads, independent of
+/// the checkout path. None means the file is missing or has no valid session,
+/// so callers use the stored snapshot; other read errors are returned.
+pub(crate) fn live_copy_bytes(binding: &Value) -> Result<Option<Vec<u8>>> {
+    let Ok(path) = copy_location(binding) else {
+        return Ok(None);
+    };
+    // Same size cap as every other session read.
+    let bytes = history::read_session(&path)?;
+    let Ok(mut records) = native::complete_records(&bytes) else {
+        return Ok(None);
+    };
+    if !records
+        .first()
+        .is_some_and(|record| record["type"] == "session")
+    {
+        return Ok(None);
+    }
+    records
+        .iter_mut()
+        .for_each(crate::session_redaction::SessionRedactor::redact);
+    Ok(Some(native::encode(&records)))
+}
+
+pub(crate) fn with_session_file(resource: &Value, bytes: &[u8], hash: &str) -> Value {
+    let mut current = resource.clone();
+    current["files"] =
+        json!([{"path":"session.jsonl","hash":hash,"size":bytes.len(),"executable":false}]);
+    current
+}
+
+/// A private copy as its file now reads, for the reading view and handoffs.
+pub(crate) fn live_copy(binding: &Value, resource: &Value) -> Result<Value> {
+    Ok(match live_copy_bytes(binding)? {
+        Some(bytes) => with_session_file(resource, &bytes, &db::blob(&bytes)?),
+        None => resource.clone(),
+    })
 }
 
 pub(crate) fn copy_path(binding: &Value, root: &Path) -> Result<PathBuf> {
@@ -108,11 +153,10 @@ pub(crate) fn fork_snapshot(db: &rusqlite::Connection, resource: &Value) -> Resu
     let Some(path) = path else {
         return Ok(resource.clone());
     };
-    let bytes = match fs::read(&path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(resource.clone()),
-        Err(error) => return Err(error.to_string()),
-    };
+    if !path.is_file() {
+        return Ok(resource.clone());
+    }
+    let bytes = history::read_session(&path)?;
     let valid = native::complete_records(&bytes)
         .is_ok_and(|records| records.first().is_some_and(|r| r["type"] == "session"));
     if !valid {

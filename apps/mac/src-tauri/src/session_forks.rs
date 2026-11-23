@@ -348,6 +348,9 @@ pub fn current_resource(db: &Connection, resource: &Value) -> Result<Value> {
         db,
         resource["resourceId"].as_str().ok_or("Missing session")?,
     )?;
+    if crate::pi_sessions::is_private_copy(&binding) {
+        return crate::pi_sessions::live_copy(&binding, resource);
+    }
     if resource["source"] == "codex" && !has_native_file(&binding) {
         if let Ok(resolved) = self::binding(db, resource) {
             binding = resolved;
@@ -368,20 +371,10 @@ pub fn current_resource(db: &Connection, resource: &Value) -> Result<Value> {
         .as_ref()
         .and_then(|s| s["path"].as_str())
         .map(std::path::Path::new);
-    let pi_path = if crate::pi_sessions::is_private_copy(&binding) {
-        Some(crate::pi_sessions::copy_path(
-            &binding,
-            root.ok_or("Connect a folder first")?,
-        )?)
-    } else {
-        None
-    };
     let mut current = resource.clone();
     current["files"] = json!(crate::history::session_files(
         resource["source"].as_str().ok_or("Missing tool")?,
-        pi_path
-            .as_deref()
-            .unwrap_or_else(|| std::path::Path::new(path)),
+        std::path::Path::new(path),
         root
     )?);
     Ok(current)
