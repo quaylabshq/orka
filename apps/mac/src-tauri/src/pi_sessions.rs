@@ -8,13 +8,39 @@ pub(crate) fn directory() -> Result<PathBuf> {
         return Ok(db::home()?.join(".pi/agent/sessions"));
     }
     if let Some(path) = std::env::var_os("PI_CODING_AGENT_SESSION_DIR").filter(|p| !p.is_empty()) {
-        return Ok(path.into());
+        return Ok(expand_home(path.into(), &db::home()?));
     }
     let agent_dir = std::env::var_os("PI_CODING_AGENT_DIR")
         .filter(|p| !p.is_empty())
         .map(PathBuf::from)
-        .map_or_else(|| db::home().map(|home| home.join(".pi/agent")), Ok)?;
+        .map_or_else(
+            || db::home().map(|home| home.join(".pi/agent")),
+            |path| Ok(expand_home(path, &db::home()?)),
+        )?;
     Ok(agent_dir.join("sessions"))
+}
+
+fn expand_home(path: PathBuf, home: &std::path::Path) -> PathBuf {
+    match path.strip_prefix("~") {
+        Ok(relative) if relative.as_os_str().is_empty() => home.to_path_buf(),
+        Ok(relative) => home.join(relative),
+        Err(_) => path,
+    }
+}
+
+#[test]
+fn pi_directory_overrides_expand_only_a_leading_home_component() {
+    use std::path::Path;
+    let home = Path::new("/Users/pi");
+    assert_eq!(
+        expand_home("~/custom/sessions".into(), home),
+        home.join("custom/sessions")
+    );
+    assert_eq!(expand_home("~".into(), home), home);
+    assert_eq!(
+        expand_home("~other/sessions".into(), home),
+        Path::new("~other/sessions")
+    );
 }
 
 pub(crate) fn branch(records: &[Value]) -> Result<Vec<&Value>> {

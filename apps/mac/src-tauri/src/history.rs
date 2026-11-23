@@ -777,8 +777,12 @@ pub fn session_files(tool: &str, path: &Path, scope: Option<&Path>) -> Result<Ve
     let mut records = native::complete_records(&read(path, None)?)?;
     if tool == "pi" {
         let (_, cwd, _) = native::session_info(tool, &records)?;
-        if scope.is_some_and(|root| !cwd.starts_with(root)) {
-            return Err("Pi session belongs to a different repository".into());
+        if let Some(root) = scope {
+            let cwd = cwd.canonicalize().unwrap_or(cwd);
+            let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+            if !cwd.starts_with(root) {
+                return Err("Pi session belongs to a different repository".into());
+            }
         }
     }
     records

@@ -569,3 +569,30 @@ fn selected_publication_continues_from_its_revision_when_automation_is_later_ena
     assert_ne!(change["resource"]["files"], resource["files"]);
     assert_eq!(fs::read(source).unwrap(), bytes);
 }
+
+#[test]
+fn discovers_pi_session_when_its_cwd_is_a_symlink_to_the_project() {
+    let mut f = Fixture::new();
+    prepare(&mut f);
+    f.db = db::open().unwrap();
+    let link = f._home.path().join("linked-project");
+    std::os::unix::fs::symlink(&f.root, &link).unwrap();
+    let directory = crate::pi_sessions::directory().unwrap();
+    fs::create_dir_all(&directory).unwrap();
+    let id = uuid::Uuid::new_v4().to_string();
+    fs::write(
+        directory.join(format!("{id}.jsonl")),
+        native::encode(&[
+            json!({"type":"session","version":3,"id":id,"cwd":link}),
+            json!({"type":"message","id":"a","parentId":null,"message":{"role":"user","content":"Symlinked project"}}),
+        ]),
+    )
+    .unwrap();
+    let pi: Vec<_> = indexer::discover(&f.db, &f.project, "session")
+        .unwrap()
+        .into_iter()
+        .filter(|item| item["resource"]["source"] == "pi")
+        .collect();
+    assert_eq!(pi.len(), 1);
+    assert_eq!(pi[0]["nativeId"], id);
+}

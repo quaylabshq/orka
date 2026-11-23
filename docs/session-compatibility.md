@@ -15,9 +15,12 @@ The implementation follows four boundaries:
 
 Orka lists Pi's version 2 and 3 JSONL sessions with standard UUIDs in the private
 Sessions collection for their recorded working directory. It scans
-`~/.pi/agent/sessions` or the directory specified by `PI_CODING_AGENT_DIR` or
-`PI_CODING_AGENT_SESSION_DIR` in Orka's environment. Orka does not discover
-per-invocation `--session-dir` paths unless they are part of that directory.
+`~/.pi/agent/sessions` by default. Set `PI_CODING_AGENT_DIR` in Orka's environment
+for a different Pi agent directory, or `PI_CODING_AGENT_SESSION_DIR` to override
+its `sessions` subdirectory. Orka expands a leading `~` in both paths. It does
+not read Pi's `sessionDir` setting or per-invocation `--session-dir` flags; set
+the session-directory override to scan those locations. Custom non-UUID
+`--session-id` values are not discovered.
 
 The reader follows the last complete entry's branch and omits tool and setup
 records. Snapshots retain all complete branches and apply Orka's existing
