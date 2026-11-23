@@ -91,6 +91,15 @@ struct RecoveryTests {
     }
 
     static func launchTests(_ scratch: URL) throws {
+        for command in ["--orka-claude-worktree-plugin", "--orka-claude-worktree-hook"] {
+            try require(Launcher.isHeadless(arguments: [command]),
+                        "\(command) keeps standard input and output attached to the desktop process")
+            try require(Launcher.isHeadless(arguments: ["--profile", "worktree-qa", command]),
+                        "\(command) also runs headless with an explicit profile")
+        }
+        try require(!Launcher.isHeadless(arguments: ["--profile", "worktree-qa"]),
+                    "a profile without a command still launches the desktop window")
+
         let session = UUID().uuidString
         let gui = try LaunchPreflight(arguments: ["123", session, "0"], parentPID: 123)
         try require(gui.pid == 123 && gui.session == session && !gui.bypass,
