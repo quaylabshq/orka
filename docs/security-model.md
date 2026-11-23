@@ -49,6 +49,10 @@ connection. The API attaches the app version, a capture time, and the same
 pseudonymous account ID as sync registration. Short in-memory batches,
 per-account and service budgets, and best-effort delivery keep capture bounded.
 The screen-view limit leaves room for successful actions later the same day.
+For signed-in usage, Orka Cloud sends the verified account email to update the
+PostHog person profile. The stable account pseudonym connects the profile to
+usage history. PostHog can expose profile properties alongside events.
+[PostHog event storage](https://posthog.com/blog/changing-event-storage#what-properties-expire-after-60-days)
 
 ## Environment-variable sets
 
