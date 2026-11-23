@@ -108,15 +108,29 @@ pub(crate) fn with_session_file(resource: &Value, bytes: &[u8], hash: &str) -> V
     let mut current = resource.clone();
     current["files"] =
         json!([{"path":"session.jsonl","hash":hash,"size":bytes.len(),"executable":false}]);
+    current["hash"] = json!(crate::indexer::manifest_hash(&current["files"]));
     current
+}
+
+pub(crate) fn copy_snapshot_bytes(
+    binding: &Value,
+    resource: &Value,
+    read_blob: &impl Fn(&str) -> Result<Vec<u8>>,
+) -> Result<Vec<u8>> {
+    if let Some(bytes) = live_copy_bytes(binding) {
+        return Ok(bytes);
+    }
+    let mut records = history::resource_records_with(resource, read_blob)?;
+    records
+        .iter_mut()
+        .for_each(crate::session_redaction::SessionRedactor::redact);
+    Ok(native::encode(&records))
 }
 
 /// A private copy as its file now reads, for the reading view and handoffs.
 pub(crate) fn live_copy(binding: &Value, resource: &Value) -> Result<Value> {
-    Ok(match live_copy_bytes(binding) {
-        Some(bytes) => with_session_file(resource, &bytes, &db::blob(&bytes)?),
-        None => resource.clone(),
-    })
+    let bytes = copy_snapshot_bytes(binding, resource, &db::blob_read)?;
+    Ok(with_session_file(resource, &bytes, &db::blob(&bytes)?))
 }
 
 pub(crate) fn copy_path(binding: &Value, root: &Path) -> Result<PathBuf> {
@@ -154,32 +168,32 @@ pub(crate) fn launch_path(binding: &Value, root: &Path) -> Result<PathBuf> {
 /// Fork from the session's own local file when there is one, so a copy keeps
 /// every turn and unredacted content. Shared or unreadable sessions fall back to
 /// the stored snapshot.
-pub(crate) fn fork_snapshot(db: &rusqlite::Connection, resource: &Value) -> Result<Value> {
+fn fork_records(db: &rusqlite::Connection, resource: &Value) -> Result<Vec<Value>> {
     // An unusable own file falls back to the snapshot like a missing copy does.
-    let path = if let Ok(Some(native)) = crate::local_resources::native_binding(db, resource) {
-        native["paths"][0].as_str().map(PathBuf::from)
-    } else {
-        let id = resource["resourceId"].as_str().ok_or("Missing session")?;
-        let binding = crate::indexer::binding(db, id)?;
-        is_private_copy(&binding)
-            .then(|| copy_location(&binding).ok())
-            .flatten()
-    };
-    let mut snapshot = resource.clone();
-    if let Some(fields) = snapshot.as_object_mut() {
-        // Only this function names a local file; never trust one from a resource.
-        fields.remove(LOCAL_FILE);
+    let (path, binding) =
+        if let Ok(Some(binding)) = crate::local_resources::native_binding(db, resource) {
+            (binding["paths"][0].as_str().map(PathBuf::from), binding)
+        } else {
+            let id = resource["resourceId"].as_str().ok_or("Missing session")?;
+            let binding = crate::indexer::binding(db, id)?;
+            let path = is_private_copy(&binding)
+                .then(|| copy_location(&binding).ok())
+                .flatten();
+            (path, binding)
+        };
+    if let Some(path) = path {
+        if let Some(records) =
+            local_records(&path)?.filter(|records| records[0]["id"] == binding["nativeId"])
+        {
+            return Ok(records);
+        }
     }
-    if let Some(path) = path.filter(|path| path.is_file()) {
-        // `fork` reads the raw turns from the file itself, so unredacted
-        // content goes only into the new Pi file and never into Orka's blobs.
-        snapshot[LOCAL_FILE] = json!(path);
-    }
-    Ok(snapshot)
+    let mut records = history::resource_records(resource)?;
+    records
+        .iter_mut()
+        .for_each(crate::session_redaction::SessionRedactor::redact);
+    Ok(records)
 }
-
-/// Transient snapshot field naming the local Pi file a fork starts from.
-const LOCAL_FILE: &str = "piForkLocalFile";
 
 /// The raw records of a local Pi file under Pi's or Orka's session directory.
 /// None means the file has no valid session, so the fork uses the snapshot.
@@ -246,13 +260,9 @@ pub(crate) fn launch_in_use(path: &Path) -> bool {
     }
 }
 
-pub(crate) fn fork(project: &Value, resource: &Value) -> Result<Value> {
+pub(crate) fn fork(db: &rusqlite::Connection, project: &Value, resource: &Value) -> Result<Value> {
     let root = Path::new(project["path"].as_str().ok_or("Connect a folder first")?);
-    let local = match resource[LOCAL_FILE].as_str() {
-        Some(path) => local_records(Path::new(path))?,
-        None => None,
-    };
-    let mut records = local.map_or_else(|| history::resource_records(resource), Ok)?;
+    let mut records = fork_records(db, resource)?;
     let header = records[0]
         .as_object_mut()
         .ok_or("Missing Pi session header")?;
@@ -276,7 +286,6 @@ pub(crate) fn fork(project: &Value, resource: &Value) -> Result<Value> {
     let mut base = resource.clone();
     let fields = base.as_object_mut().ok_or("Invalid Pi session resource")?;
     for key in [
-        LOCAL_FILE,
         "paths",
         "nativeId",
         "local",

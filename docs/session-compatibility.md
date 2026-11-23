@@ -42,9 +42,10 @@ connected checkout as its working directory; reopening reuses that copy. Choose
 **Fork and open in Pi** to make another copy. If there is a readable local
 session or private copy, the fork includes its later turns. If the local file is
 missing or unreadable, the fork uses the stored, redacted snapshot instead.
-If the shared session is deleted or you lose access, your
-copies stay available as local-only sessions. Disconnecting the folder keeps
-them, and they reappear when you reconnect it. Orka does not launch a model turn
+If the shared session is deleted or becomes inaccessible in an active project,
+your copies stay available as local-only sessions. If you lose project membership,
+you can recover your copies through project export. Disconnecting the folder
+keeps copies so they reappear when you reconnect it. Orka does not launch a model turn
 or change a teammate's session. Orka blocks a second Orka launch of the same
 file. It cannot reliably detect Pi processes started outside Orka. If Pi uses
 Node.js, make sure `node` is on the PATH available to Orka; shell-only version

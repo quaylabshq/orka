@@ -44,7 +44,7 @@ impl Host for FakeHost {
             db::set(db, "user", &json!(uuid::Uuid::new_v4().to_string()))?;
         }
         if resource["source"] == "pi" {
-            return crate::pi_sessions::fork(project, resource);
+            return crate::pi_sessions::fork(db, project, resource);
         }
         let native_id = uuid::Uuid::new_v4().to_string();
         let home = if resource["source"] == "codex" {
@@ -553,7 +553,7 @@ fn pi_origin_tombstone_keeps_descendants_as_local_only_copies() {
     let nested =
         session_launcher::launch_with(first_id, Tool::Pi, Destination::Terminal, true, &host)
             .unwrap();
-    let pending = crate::pi_sessions::fork(&f.project, &parent).unwrap();
+    let pending = crate::pi_sessions::fork(&f.db, &f.project, &parent).unwrap();
     let mut deletion = source.clone();
     deletion["revision"] = json!(2);
     deletion["deleted"] = json!(true);
@@ -2474,4 +2474,71 @@ fn forking_a_shared_pi_session_reuses_an_existing_copy_turns() {
             .any(|r| r["message"]["content"] == "Turn in the existing copy"),
         "fork lost the existing copy turn: {forked_records:?}"
     );
+}
+
+#[test]
+fn pi_recovery_export_redacts_new_and_legacy_snapshots() {
+    let f = Fixture::new();
+    let project = f.project["id"].as_str().unwrap();
+    let resource = session(&f, "pi", true);
+    let id = resource["resourceId"].as_str().unwrap();
+    let host = FakeHost::default();
+    let first = session_launcher::resume_with(id, Tool::Pi, Destination::Terminal, &host).unwrap();
+    let copy = PathBuf::from(host.calls.borrow()[0]["path"].as_str().unwrap());
+    let mut records = native::complete_records(&fs::read(&copy).unwrap()).unwrap();
+    const TOKEN: &str = "synthetic-pi-token-for-recovery-test";
+    records.push(json!({
+        "type":"message","id":"note","parentId":"request",
+        "message":{"role":"user","content":format!("Bearer {TOKEN}")}
+    }));
+    fs::write(&copy, native::encode(&records)).unwrap();
+    let fork = session_launcher::launch_with(
+        first["resourceId"].as_str().unwrap(),
+        Tool::Pi,
+        Destination::Terminal,
+        true,
+        &host,
+    )
+    .unwrap();
+    let fork_id = fork["resourceId"].as_str().unwrap();
+    let fork_path = PathBuf::from(host.calls.borrow()[1]["path"].as_str().unwrap());
+    let raw = fs::read(&fork_path).unwrap();
+    assert!(String::from_utf8_lossy(&raw).contains(TOKEN));
+
+    let stored = crate::local_resources::resource(&f.db, fork_id).unwrap();
+    let snapshot = db::blob_read(stored["files"][0]["hash"].as_str().unwrap()).unwrap();
+    assert!(!String::from_utf8_lossy(&snapshot).contains(TOKEN));
+    assert!(String::from_utf8_lossy(&snapshot).contains("[REDACTED]"));
+
+    // Simulate a private copy created by the earlier build with a raw cache.
+    let legacy = crate::pi_sessions::with_session_file(&stored, &raw, &db::blob(&raw).unwrap());
+    db::upsert(&f.db, "resources", fork_id, project, &legacy).unwrap();
+    fs::remove_file(fork_path).unwrap();
+    let current = crate::session_forks::current_resource(&f.db, &legacy).unwrap();
+    assert_eq!(current, stored);
+
+    let path = f._home.path().join("recovery.zip");
+    crate::bundles::export_project(&db::CacheScope::current().unwrap(), project, &path).unwrap();
+    let mut zip = zip::ZipArchive::new(fs::File::open(path).unwrap()).unwrap();
+    let manifest: Value = serde_json::from_reader(
+        zip.by_name(&format!("resources/{fork_id}/resource.json"))
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(manifest["files"], stored["files"]);
+    assert_eq!(manifest["hash"], stored["hash"]);
+    let raw_hash = legacy["files"][0]["hash"].as_str().unwrap();
+    assert!(zip
+        .by_name(&format!("resources/{fork_id}/blobs/{raw_hash}"))
+        .is_err());
+    let expected_hash = stored["files"][0]["hash"].as_str().unwrap();
+    let mut exported = Vec::new();
+    std::io::Read::read_to_end(
+        &mut zip
+            .by_name(&format!("resources/{fork_id}/blobs/{expected_hash}"))
+            .unwrap(),
+        &mut exported,
+    )
+    .unwrap();
+    assert_eq!(exported, snapshot);
 }

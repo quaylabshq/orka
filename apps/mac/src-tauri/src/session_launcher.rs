@@ -477,7 +477,7 @@ struct MacHost;
 impl Host for MacHost {
     fn fork(&self, db: &Connection, project: &Value, resource: &Value) -> Result<Value> {
         if resource["source"] == "pi" {
-            crate::pi_sessions::fork(project, resource)
+            crate::pi_sessions::fork(db, project, resource)
         } else {
             native::fork_session(db, project, resource)
         }
@@ -1075,13 +1075,15 @@ pub(crate) fn launch_with(
     let forked = existing.is_none();
     let binding = if let Some(resource) = &existing {
         session_forks::binding(&db, resource)?
+    } else if tool == Tool::Pi {
+        let local = session_forks::resumable(&db, &session.resource)?;
+        host.fork(
+            &db,
+            &source_project,
+            local.as_ref().unwrap_or(&session.resource),
+        )?
     } else {
-        let snapshot = if tool == Tool::Pi {
-            let local = session_forks::resumable(&db, &session.resource)?;
-            crate::pi_sessions::fork_snapshot(&db, local.as_ref().unwrap_or(&session.resource))?
-        } else {
-            session_forks::current_resource(&db, &session.resource)?
-        };
+        let snapshot = session_forks::current_resource(&db, &session.resource)?;
         host.fork(&db, &source_project, &snapshot)?
     };
     revalidate(&db, &scope, &session)?;
