@@ -1728,6 +1728,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_cancel_after_the_last_check_still_stops_the_job() {
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("ORKA_TEST_HOME", home.path());
+        let db = db::open().unwrap();
+        let mut queue = SyncQueue::new(0);
+        let interval = interval();
+        // The job found no cancel at its last check, so it returns its own
+        // result; Cancel lands before the worker settles it.
+        for result in [
+            Ok(Outcome::Deferred),
+            Ok(Outcome::Yielded),
+            Err("Cloud unavailable; local work stays queued".to_string()),
+        ] {
+            SyncQueue::enqueue(&db, "a", Priority::Timer, "timer", 0).unwrap();
+            let ran = queue
+                .run_next(&interval, async |db, _| {
+                    SyncQueue::cancel(db, "a").unwrap();
+                    result
+                })
+                .await;
+            assert!(ran.unwrap());
+            assert!(rows(&db).is_empty());
+            assert_eq!(SyncQueue::next(&db, i64::MAX - 1).unwrap(), None);
+            assert!(db::get(&db, OUTAGE).unwrap().is_null());
+        }
+    }
+
+    #[test]
+    fn a_cancelled_job_stays_cancelled_when_settling_fails() {
+        let (_root, db) = queue_db(&["a"]);
+        let mut queue = SyncQueue::new(0);
+        SyncQueue::enqueue(&db, "a", Priority::Timer, "timer", 0).unwrap();
+        let job = SyncQueue::claim(&db, 0).unwrap().unwrap();
+        SyncQueue::cancel(&db, "a").unwrap();
+        // Removing the row fails, as if the process died before that write.
+        db.execute_batch(
+            "CREATE TEMP TRIGGER fail BEFORE DELETE ON sync_queue
+             BEGIN SELECT RAISE(ABORT, 'disk I/O error'); END",
+        )
+        .unwrap();
+        assert!(queue
+            .settle(&db, job, &Ok(Outcome::Cancelled), 1, &interval())
+            .is_err());
+        db.execute_batch("DROP TRIGGER fail").unwrap();
+        // The next start still finds the cancel, so the job does not run again.
+        SyncQueue::recover(&db, 2).unwrap();
+        assert!(rows(&db).is_empty());
+        assert_eq!(SyncQueue::next(&db, 2).unwrap(), None);
+    }
+
+    #[tokio::test]
     async fn foreground_work_takes_the_lock_between_jobs() {
         let home = tempfile::tempdir().unwrap();
         std::env::set_var("ORKA_TEST_HOME", home.path());
