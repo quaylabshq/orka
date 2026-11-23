@@ -19,7 +19,8 @@ The authenticated `/v2/projects/capabilities` response advertises `rolePolicies:
 For projects with role-based permissions, open **Settings → Permissions** to
 set **Default memory access** for Admins and Members. **Reader** can use shared
 memories. **Contributor** can also add and update them. This access also applies
-to project instructions.
+to project instructions. Previously saved **Add only** access stays active until
+an Owner chooses a replacement.
 
 A policy save includes all eight Admin/Member choices, the expected policy revision, and one logical operation UUID. Uncertain outcomes keep selectors locked and reconcile that UUID. Reconnection never applies a permission draft automatically. Conflicts require an explicit comparison and preserve unrelated newer values. Account, service, and project scopes bind drafts and responses; signing out clears draft and Skullet shape memory.
 

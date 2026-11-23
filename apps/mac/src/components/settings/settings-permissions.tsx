@@ -180,6 +180,7 @@ export function RoleTables({
                               <PermissionSelect
                                 label={`${role === "admin" ? "Admin" : "Member"} ${controlLabel}`}
                                 value={value}
+                                valueLabel={accessLabel(value, category)}
                                 options={accessOptions(category)}
                                 disabled={locked || pending}
                                 onChange={(value) => {
