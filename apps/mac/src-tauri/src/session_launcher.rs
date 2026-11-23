@@ -66,6 +66,7 @@ impl Tool {
 
 #[derive(Clone, Copy)]
 pub(crate) enum LaunchIntent<'a> {
+    Start,
     Resume(&'a str),
     Handoff(&'a str),
 }
@@ -73,6 +74,7 @@ pub(crate) enum LaunchIntent<'a> {
 impl LaunchIntent<'_> {
     fn arguments(self, tool: Tool) -> String {
         match self {
+            Self::Start => String::new(),
             Self::Resume(id) => format!(
                 "{} {}",
                 if tool == Tool::Codex {
@@ -840,6 +842,18 @@ fn launch_terminal(
         )));
     }
     Err("Terminal opened but did not start the session. Check Terminal, then try again.".into())
+}
+
+pub(crate) fn open_codex_in_terminal(root: &Path) -> Result<()> {
+    let binary = native::binary("codex")?;
+    launch_terminal(
+        Destination::Terminal,
+        Tool::Codex,
+        LaunchIntent::Start,
+        root,
+        &binary,
+    )?;
+    Ok(())
 }
 
 pub fn resume(id: &str, tool: Tool, destination: Destination) -> Result<Value> {

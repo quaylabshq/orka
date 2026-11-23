@@ -147,6 +147,8 @@ pub fn initialize(args: &mut Vec<String>) -> Result<Option<LaunchGuard>> {
             "--orka-sync",
             "--orka-doctor",
             "--orka-hook",
+            "--orka-claude-worktree-hook",
+            "--orka-claude-worktree-plugin",
             "--orka-context",
             "--orka-env-test",
             "--orka-test",

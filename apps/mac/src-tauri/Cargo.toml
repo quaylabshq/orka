@@ -1,6 +1,6 @@
 [package]
 name = "portable-workspace-mac"
-version = "0.3.18"
+version = "0.3.19"
 edition = "2021"
 license = "GPL-3.0-only"
 repository = "https://github.com/whysosaket/orka"
@@ -35,6 +35,7 @@ base64 = "0.23"
 zeroize = { version = "1", features = ["derive"] }
 zstd = { version = "0.14.3", default-features = false }
 ignore = "0.4"
+notify = "8.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"

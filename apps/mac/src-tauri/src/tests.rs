@@ -11,14 +11,21 @@ use std::{
 pub(crate) static SERIAL: Mutex<()> = Mutex::new(());
 #[path = "attention_tests.rs"]
 mod attention_tests;
+#[path = "claude_memory_tests.rs"]
+mod claude_memory_tests;
 #[path = "codex_rollout_tests.rs"]
 mod codex_rollout_tests;
+#[path = "codex_trust_live_tests.rs"]
+mod codex_trust_live_tests;
 #[path = "context_sharing_tests.rs"]
 mod context_sharing_tests;
 #[path = "sync_request_tests.rs"]
 mod sync_request_tests;
+#[path = "worktree_tests.rs"]
+mod worktree_tests;
 mod doctor_tests {
     use super::*;
+    use crate::codex_trust::{Report, Trust};
     use crate::doctor::Doctor;
     struct Setup;
     impl Setup {
@@ -37,14 +44,41 @@ mod doctor_tests {
                     &format!("hookSeen:{tool}"),
                     json!("2001-01-01T00:00:00Z"),
                 );
+                Self::seen(&f, tool, &f.project);
             }
             (f, session)
+        }
+        fn seen(f: &Fixture, tool: &str, source: &Value) {
+            let key = native::hook_seen_key(tool, source).unwrap();
+            Self::set(f, &key, json!("2001-01-01T00:00:00Z"));
         }
         fn set(f: &Fixture, key: &str, value: Value) {
             db::set(&f.db, key, &value).unwrap();
         }
         fn check(f: &Fixture, session: db::Result<Value>) -> Doctor {
-            let report = Doctor::collect(Some(&f.db), session);
+            Self::check_codex(f, session, |_| Trust::Trusted)
+        }
+        /// Runs doctor against a fake Codex that reports `trust` per folder.
+        fn check_codex(
+            f: &Fixture,
+            session: db::Result<Value>,
+            trust: impl Fn(&Path) -> Trust,
+        ) -> Doctor {
+            Self::check_report(f, session, |roots: &[PathBuf]| {
+                Report::Folders(
+                    roots
+                        .iter()
+                        .map(|root| (root.clone(), trust(root)))
+                        .collect(),
+                )
+            })
+        }
+        fn check_report(
+            f: &Fixture,
+            session: db::Result<Value>,
+            codex: impl Fn(&[PathBuf]) -> Report,
+        ) -> Doctor {
+            let report = Doctor::collect_with(Some(&f.db), session, &codex);
             for secret in ["SECRET_ACCESS", "SECRET_REFRESH", "SECRET_ERROR"] {
                 assert!(!report.output.contains(secret));
             }
@@ -133,14 +167,17 @@ mod doctor_tests {
         assert_eq!(report.code, 0);
         assert!(report.output.contains("PASS claude hooks"));
         assert!(report.output.contains("PASS codex hooks"));
-        assert!(report.output.contains("2001-01-01"));
-        assert!(report.output.contains("tool-wide, not per folder"));
+        assert!(report
+            .output
+            .contains("last seen in this folder 2001-01-01"));
+        assert!(report.output.contains("trusted by Codex"));
         assert_eq!(fs::read(path).unwrap(), before);
     }
     #[test]
     fn doctor_reports_unseen_missing_and_malformed_hooks_and_keeps_checking() {
         let (f, session) = Setup::fixture();
-        Setup::set(&f, "hookSeen:claude", Value::Null);
+        let key = native::hook_seen_key("claude", &f.project).unwrap();
+        Setup::set(&f, &key, Value::Null);
         let report = Setup::check(&f, Ok(session.clone()));
         assert_eq!(report.code, 2);
         assert!(report.output.contains("WARN claude hooks"));
@@ -189,6 +226,9 @@ mod doctor_tests {
         ]);
         let id = project["id"].as_str().unwrap();
         db::upsert(&f.db, "projects", id, "", &project).unwrap();
+        for tool in ["claude", "codex"] {
+            Setup::seen(&f, tool, &json!({"sourceId":"connected"}));
+        }
         let report = Setup::check(&f, Ok(session));
         assert_eq!(report.code, 0, "{}", report.output);
         assert_eq!(report.output.matches("PASS claude hooks:").count(), 1);
@@ -234,6 +274,93 @@ mod doctor_tests {
         let report = Setup::check(&f, Ok(session));
         assert_eq!(report.code, 2);
         assert!(report.output.contains("No connected source folders"));
+    }
+    #[test]
+    fn doctor_fails_codex_hooks_that_codex_skips_with_the_reason() {
+        let (f, session) = Setup::fixture();
+        for (trust, expected) in [
+            (Trust::FolderNotTrusted, "the folder isn't trusted in Codex"),
+            (Trust::FolderUntrusted, "it's marked untrusted in Codex"),
+            (
+                Trust::HooksNotApproved,
+                "Orka's hooks haven't been approved",
+            ),
+            (
+                Trust::HooksChanged,
+                "Orka's hooks changed since they were approved",
+            ),
+            (Trust::HooksDisabled, "Codex hooks are turned off"),
+        ] {
+            let report = Setup::check_codex(&f, Ok(session.clone()), |_| trust.clone());
+            assert_eq!(report.code, 1, "{}", report.output);
+            assert!(
+                report.output.contains("FAIL codex hooks:"),
+                "{}",
+                report.output
+            );
+            assert!(report.output.contains(expected), "{}", report.output);
+            assert!(report.output.contains("PASS claude hooks"));
+            // An old tool-wide record never stands in for this folder.
+            let codex = report
+                .output
+                .lines()
+                .find(|l| l.contains("codex hooks:"))
+                .unwrap();
+            assert!(!codex.contains("last seen"), "{codex}");
+        }
+        let unknown = Setup::check_codex(&f, Ok(session.clone()), |_| Trust::Unknown("x".into()));
+        assert_eq!(unknown.code, 2);
+        assert!(unknown.output.contains("WARN codex hooks"));
+        for (codex, expected) in [
+            (Report::Unsupported, "this Codex version can't report"),
+            (
+                Report::Unavailable("Install codex".into()),
+                "couldn't ask Codex",
+            ),
+        ] {
+            let report = Setup::check_report(&f, Ok(session.clone()), |_| match &codex {
+                Report::Unsupported => Report::Unsupported,
+                Report::Unavailable(reason) => Report::Unavailable(reason.clone()),
+                Report::Folders(_) => unreachable!(),
+            });
+            assert_eq!(report.code, 2, "{}", report.output);
+            assert!(report.output.contains(expected), "{}", report.output);
+        }
+    }
+    #[test]
+    fn doctor_asks_codex_once_and_only_about_folders_with_correct_codex_hooks() {
+        let (f, session) = Setup::fixture();
+        let second = f.root.join("second");
+        fs::create_dir(&second).unwrap();
+        native::Hooks::install(&second).unwrap();
+        fs::write(second.join(".codex/hooks.json"), "[").unwrap();
+        let mut project = f.project.clone();
+        project["path"] = Value::Null;
+        project["sources"] = json!([{"id":"one","path":f.root},{"id":"two","path":second}]);
+        let id = project["id"].as_str().unwrap();
+        db::upsert(&f.db, "projects", id, "", &project).unwrap();
+        let calls = std::cell::RefCell::new(Vec::new());
+        let report = Setup::check_report(&f, Ok(session), |roots: &[PathBuf]| {
+            calls.borrow_mut().push(roots.to_vec());
+            Report::Folders(
+                roots
+                    .iter()
+                    .map(|root| (root.clone(), Trust::Trusted))
+                    .collect(),
+            )
+        });
+        assert_eq!(*calls.borrow(), vec![vec![f.root.clone()]]);
+        assert!(report
+            .output
+            .contains("FAIL codex hooks: malformed configuration"));
+        // Activity is per folder: neither source has recorded any yet.
+        assert_eq!(
+            report
+                .output
+                .matches("no activity recorded in this folder yet")
+                .count(),
+            3
+        );
     }
 }
 #[path = "global_skill_tests.rs"]
@@ -1254,8 +1381,11 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
+        Self::with_home(tempfile::tempdir().unwrap())
+    }
+
+    fn with_home(home: tempfile::TempDir) -> Self {
         let lock = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-        let home = tempfile::tempdir().unwrap();
         std::env::set_var("ORKA_TEST_HOME", home.path());
         std::env::set_var("CODEX_HOME", home.path().join(".codex"));
         std::env::set_var("CLAUDE_CONFIG_DIR", home.path().join(".claude"));

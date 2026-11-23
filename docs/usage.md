@@ -37,6 +37,18 @@ Storage starts fresh at `~/Library/Application Support/com.orka.v1/`. Older deve
 
 Developer worktrees can use isolated local state through the CLI. This is not exposed in the app. See [development setup](development.md#multiple-profiles-and-worktrees).
 
+## First-prompt context in T3 Code
+
+For a T3 Code provider running Claude on the same Mac as Orka, set up the launch plugin once. Sign in to Orka and connect the main checkout, then run:
+
+```sh
+/Applications/Orka.app/Contents/MacOS/portable-workspace-mac --orka-claude-worktree-plugin
+```
+
+In T3 Code, open **Settings → Providers → Claude → Launch arguments**, and add `--plugin-dir "<printed directory>"` alongside any existing arguments. Repeat the Orka command if you move the app. When you change Orka accounts or services, run it again and replace the prior Orka plugin path in Launch arguments.
+
+T3 Code loads the plugin when a Claude session starts. In a registered worktree of a connected source, the hook adds authorized Orka context before Claude processes the first prompt. It uses the user's existing Claude configuration and respects settings that disable hooks. New worktrees use the configured provider automatically. The launch plugin delivers context without editing Claude's settings files. Separately, background worktree setup still copies skills and installs hooks in eligible worktrees while preserving user-owned settings files.
+
 ## Project names
 
 **Settings → General** has one **Project name** field. For the owner, editing it

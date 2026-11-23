@@ -837,7 +837,7 @@ fn project_memory(project: &Value, resource: &Value) -> Result<(PathBuf, PathBuf
                 .ok_or("Invalid instruction path")?,
         )?)
     } else if resource["source"] == "claude" {
-        let memory = indexer::claude_memory(&root)?;
+        let memory = indexer::claude_memory_target(&root)?;
         return Ok((
             memory.clone(),
             memory.join(packages::safe_relative(
@@ -975,6 +975,25 @@ fn guard_unbound_destinations(
         .any(|hash| hash != &empty && hash != &incoming)
     {
         return Err("Unindexed local files preserved; incoming version staged. Review or index the local files in Orka before applying this update.".into());
+    }
+    Ok(())
+}
+
+fn check_claude_memory_claim(
+    db: &rusqlite::Connection,
+    project_id: &str,
+    id: &str,
+    path: &Path,
+) -> Result<()> {
+    let claimed: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM bindings, json_each(bindings.value,'$.paths') AS paths WHERE bindings.project=?1 AND bindings.id<>?2 AND paths.value=?3 AND coalesce(json_extract(bindings.value,'$.base.deleted'),0)=0)",
+        params![project_id, id, path.to_str().ok_or("Invalid memory path")?],
+        |row| row.get(0),
+    ).map_err(|e| e.to_string())?;
+    if claimed {
+        return Err(
+            "Claude memory path belongs to another synced item; local file preserved".into(),
+        );
     }
     Ok(())
 }
@@ -1177,6 +1196,35 @@ fn materialize_install(
             if let Some(n) = b["nativeId"].as_str() {
                 native::Rpc::connect()?.call("thread/archive", json!({"threadId":n}))?;
             }
+        } else if kind == "memory" && resource["source"] == "claude" {
+            for path in b["paths"].as_array().into_iter().flatten() {
+                let path = Path::new(path.as_str().ok_or("Invalid memory path")?);
+                let (base, expected) =
+                    if project["governed"] == true && !crate::governance::protected(resource) {
+                        project_memory(project, resource)?
+                    } else {
+                        let base = indexer::claude_memory_base(&root, path)?;
+                        let relative = resource["logicalPath"]
+                            .as_str()
+                            .and_then(|p| p.strip_prefix("claude/"))
+                            .ok_or("Invalid Claude memory path")?;
+                        let expected = base.join(packages::safe_relative(relative)?);
+                        (base, expected)
+                    };
+                if path != expected {
+                    return Err("Unexpected Claude memory deletion path".into());
+                }
+                check_claude_memory_claim(db, project_id, id, path)?;
+                match fs::symlink_metadata(path) {
+                    Ok(meta) if meta.is_file() => {
+                        packages::safe_directory(&base, path.parent().ok_or("Missing parent")?)?;
+                        fs::remove_file(path).map_err(|e| e.to_string())?;
+                    }
+                    Ok(_) => return Err("Claude memory deletion requires a regular file".into()),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
+                    Err(e) => return Err(e.to_string()),
+                }
+            }
         } else if let Some(paths) = b["paths"].as_array() {
             for p in paths {
                 let p = Path::new(p.as_str().ok_or("Invalid path")?);
@@ -1188,8 +1236,6 @@ fn materialize_install(
                     )?
                 } else if p.starts_with(&root) {
                     root.clone()
-                } else if resource["source"] == "claude" && kind == "memory" {
-                    indexer::claude_memory(&root)?
                 } else {
                     native::claude_home()?
                 };
@@ -1264,13 +1310,22 @@ fn materialize_install(
                 && b["paths"].is_array()
                 && resource["source"] == "claude"
             {
-                (
-                    indexer::claude_memory(&root)?,
-                    PathBuf::from(b["paths"][0].as_str().ok_or("Invalid memory path")?),
-                )
+                let path = PathBuf::from(b["paths"][0].as_str().ok_or("Invalid memory path")?);
+                let base = indexer::claude_memory_base(&root, &path)?;
+                let relative = resource["logicalPath"]
+                    .as_str()
+                    .and_then(|p| p.strip_prefix("claude/"))
+                    .ok_or("Invalid Claude memory path")?;
+                if path != base.join(packages::safe_relative(relative)?) {
+                    return Err("Unexpected Claude memory write path".into());
+                }
+                (base, path)
             } else {
                 project_memory(project, resource)?
             };
+            if resource["source"] == "claude" {
+                check_claude_memory_claim(db, project_id, id, &path)?;
+            }
             guard_unbound_destinations(&b, resource, &root, std::slice::from_ref(&path))?;
             fs::create_dir_all(&base).map_err(|e| e.to_string())?;
             packages::write_file(&base, &path, files.first().ok_or("Missing memory file")?)?;
@@ -1649,6 +1704,32 @@ fn preflight_project(db: &rusqlite::Connection, project: &Value, retry_only: boo
     Ok(())
 }
 
+fn scan_off_runtime<T: Send + 'static>(
+    db: &rusqlite::Connection,
+    project: &Value,
+    scan: impl FnOnce(&rusqlite::Connection, &Value) -> Result<T> + Send + 'static,
+) -> impl std::future::Future<Output = Result<T>> + Send + 'static {
+    let root = db
+        .path()
+        .and_then(|path| Path::new(path).parent())
+        .filter(|root| !root.as_os_str().is_empty());
+    let work = if let Some(root) = root {
+        // Use the job's database, not whichever account is current when the worker starts.
+        let (root, project) = (root.to_path_buf(), project.clone());
+        Ok(tokio::task::spawn_blocking(move || {
+            scan(&db::open_at(&root)?, &project)
+        }))
+    } else {
+        Err(scan(db, project))
+    };
+    async move {
+        match work {
+            Ok(worker) => worker.await.map_err(|e| e.to_string())?,
+            Err(result) => result,
+        }
+    }
+}
+
 /// Each sync stage either carries on or breaks so the cycle yields the
 /// workspace lock to a waiting foreground operation.
 type Stage = Result<ControlFlow<()>>;
@@ -1728,7 +1809,7 @@ impl<'a> SyncPass<'a> {
         if boundary(self.db, project)?.is_break()
             || self.prepare_project(p)?.is_break()
             || boundary(self.db, project)?.is_break()
-            || self.preflight(p, waiting)?.is_break()
+            || self.preflight(p, waiting).await?.is_break()
             || boundary(self.db, project)?.is_break()
         {
             return Ok(Break(()));
@@ -1761,7 +1842,7 @@ impl<'a> SyncPass<'a> {
     /// files into the outbox, with no authorization, upload, pull or other
     /// request. Governed edits become drafts whose automatic sharing waits for
     /// a restore.
-    fn capture_project(&mut self, p: &Value) -> Stage {
+    async fn capture_project(&mut self, p: &Value) -> Stage {
         let project = p["id"].as_str().ok_or("Missing project")?;
         if boundary(self.db, project)?.is_break() || self.prepare_project(p)?.is_break() {
             return Ok(Break(()));
@@ -1769,7 +1850,7 @@ impl<'a> SyncPass<'a> {
         if crate::projects::foreground_waiting()? || boundary(self.db, project)?.is_break() {
             return Ok(Break(()));
         }
-        match scan_held(self.db, p) {
+        match scan_off_runtime(self.db, p, scan_held).await {
             Ok(_) => {
                 self.db
                     .execute("DELETE FROM errors WHERE source=?", [project])
@@ -1823,7 +1904,7 @@ impl<'a> SyncPass<'a> {
     }
 
     /// Scans (or, for a retry, validates) one project's local files.
-    fn preflight(&mut self, p: &Value, waiting: Option<i64>) -> Stage {
+    async fn preflight(&mut self, p: &Value, waiting: Option<i64>) -> Stage {
         let db = &mut *self.db;
         let retry_only = self.mode == ProjectMode::RetryOnly;
         if crate::projects::foreground_waiting()? {
@@ -1836,7 +1917,7 @@ impl<'a> SyncPass<'a> {
             0,
             None,
         )?;
-        match preflight_project(db, p, retry_only) {
+        match scan_off_runtime(db, p, move |db, p| preflight_project(db, p, retry_only)).await {
             Ok(()) => {
                 if !retry_only && waiting.is_none() {
                     db::set(
@@ -2185,7 +2266,7 @@ impl<'a> SyncPass<'a> {
             None,
         )?;
         let project = p["id"].as_str().ok_or("Missing project")?;
-        let scan = preflight_project(db, p, retry_only);
+        let scan = scan_off_runtime(db, p, move |db, p| preflight_project(db, p, retry_only)).await;
         let scanned = scan.is_ok();
         record_result(db, project, scan)?;
         // A failed project preflight must not run permission-reset filesystem
@@ -2340,7 +2421,7 @@ async fn sync_workspace(
     .map(|project| sync_ready_view(pass.db, &project))
     .collect::<Result<Vec<_>>>()?;
     for (p, waiting) in &local {
-        if pass.preflight(p, *waiting)?.is_break() {
+        if pass.preflight(p, *waiting).await?.is_break() {
             return Ok(WorkspaceSync::Yielded);
         }
     }
@@ -2354,7 +2435,7 @@ async fn sync_workspace(
             &[],
         )?;
         for p in &held {
-            if pass.capture_project(p)?.is_break() {
+            if pass.capture_project(p).await?.is_break() {
                 return Ok(WorkspaceSync::Yielded);
             }
         }
@@ -2486,7 +2567,7 @@ async fn sync_job(db: &mut rusqlite::Connection, job: &crate::sync_queue::Job) -
         (Some(p), _) => pass.sync_project(p).await?,
         // Deleted but restorable: capture locally and send nothing.
         (None, Some(p)) => {
-            let flow = pass.capture_project(p)?;
+            let flow = pass.capture_project(p).await?;
             return Ok(if SyncQueue::cancelled(pass.db, &job.project)? {
                 Outcome::Cancelled
             } else if flow.is_break() {
@@ -2921,6 +3002,7 @@ async fn run_mode(foreground: bool) {
     let mut queue = SyncQueue::new(SyncQueue::now());
     let mut beat = Instant::now();
     let mut network_poll = Instant::now();
+    let _worktrees = crate::worktree_integration::Poll::start();
     let mut network = String::new();
     loop {
         if !foreground && crate::updates::installation_pending() {

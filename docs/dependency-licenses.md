@@ -896,6 +896,8 @@ Declared licenses are upstream metadata. Preserve the actual license notices and
 | [indexmap](https://crates.io/crates/indexmap/1.9.3) | 1.9.3 | Apache-2.0 OR MIT |
 | [indexmap](https://crates.io/crates/indexmap/2.14.2) | 2.14.2 | Apache-2.0 OR MIT |
 | [infer](https://crates.io/crates/infer/0.22.0) | 0.22.0 | MIT |
+| [inotify](https://crates.io/crates/inotify/0.11.5) | 0.11.5 | ISC |
+| [inotify-sys](https://crates.io/crates/inotify-sys/0.1.8) | 0.1.8 | ISC |
 | [inout](https://crates.io/crates/inout/0.1.4) | 0.1.4 | MIT OR Apache-2.0 |
 | [intl_pluralrules](https://crates.io/crates/intl_pluralrules/7.0.2) | 7.0.2 | Apache-2.0/MIT |
 | [intl-memoizer](https://crates.io/crates/intl-memoizer/0.5.3) | 0.5.3 | Apache-2.0 OR MIT |
@@ -921,6 +923,8 @@ Declared licenses are upstream metadata. Preserve the actual license notices and
 | [kem](https://crates.io/crates/kem/0.3.0-pre.0) | 0.3.0-pre.0 | Apache-2.0 OR MIT |
 | [keyboard-types](https://crates.io/crates/keyboard-types/0.8.3) | 0.8.3 | MIT OR Apache-2.0 |
 | [keyring](https://crates.io/crates/keyring/3.6.3) | 3.6.3 | MIT OR Apache-2.0 |
+| [kqueue](https://crates.io/crates/kqueue/1.2.1) | 1.2.1 | MIT |
+| [kqueue-sys](https://crates.io/crates/kqueue-sys/1.1.2) | 1.1.2 | MIT |
 | [lazy_static](https://crates.io/crates/lazy_static/1.5.1) | 1.5.1 | MIT OR Apache-2.0 |
 | [libappindicator](https://crates.io/crates/libappindicator/0.9.0) | 0.9.0 | Apache-2.0 OR MIT |
 | [libappindicator-sys](https://crates.io/crates/libappindicator-sys/0.9.0) | 0.9.0 | Apache-2.0 OR MIT |
@@ -950,6 +954,8 @@ Declared licenses are upstream metadata. Preserve the actual license notices and
 | [new_debug_unreachable](https://crates.io/crates/new_debug_unreachable/1.0.6) | 1.0.6 | MIT |
 | [nix](https://crates.io/crates/nix/0.31.3) | 0.31.3 | MIT |
 | [nom](https://crates.io/crates/nom/8.0.0) | 8.0.0 | MIT |
+| [notify](https://crates.io/crates/notify/8.2.2) | 8.2.2 | CC0-1.0 |
+| [notify-types](https://crates.io/crates/notify-types/2.3.1) | 2.3.1 | MIT OR Apache-2.0 |
 | [num_enum](https://crates.io/crates/num_enum/0.7.6) | 0.7.6 | BSD-3-Clause OR MIT OR Apache-2.0 |
 | [num_enum_derive](https://crates.io/crates/num_enum_derive/0.7.6) | 0.7.6 | BSD-3-Clause OR MIT OR Apache-2.0 |
 | [num-conv](https://crates.io/crates/num-conv/0.2.2) | 0.2.2 | MIT OR Apache-2.0 |
@@ -962,6 +968,7 @@ Declared licenses are upstream metadata. Preserve the actual license notices and
 | [objc2-core-graphics](https://crates.io/crates/objc2-core-graphics/0.3.2) | 0.3.2 | Zlib OR Apache-2.0 OR MIT |
 | [objc2-core-image](https://crates.io/crates/objc2-core-image/0.3.2) | 0.3.2 | Zlib OR Apache-2.0 OR MIT |
 | [objc2-core-location](https://crates.io/crates/objc2-core-location/0.3.2) | 0.3.2 | Zlib OR Apache-2.0 OR MIT |
+| [objc2-core-services](https://crates.io/crates/objc2-core-services/0.3.2) | 0.3.2 | Zlib OR Apache-2.0 OR MIT |
 | [objc2-core-text](https://crates.io/crates/objc2-core-text/0.3.2) | 0.3.2 | Zlib OR Apache-2.0 OR MIT |
 | [objc2-encode](https://crates.io/crates/objc2-encode/4.1.0) | 4.1.0 | MIT |
 | [objc2-exception-helper](https://crates.io/crates/objc2-exception-helper/0.1.1) | 0.1.1 | Zlib OR Apache-2.0 OR MIT |
