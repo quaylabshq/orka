@@ -162,6 +162,7 @@ fn local_library_lists_and_reads_private_categories_without_publishing() {
                 resource["resourceId"].as_str().unwrap().into(),
                 resource["files"][0]["path"].as_str().unwrap().into(),
                 None,
+                None,
             )
             .unwrap();
             assert!(read["content"]
@@ -913,7 +914,8 @@ fn local_library_reads_saved_memory_candidates_and_selected_memory_aliases() {
         .iter()
         .any(|r| r["resourceId"] == candidate_id));
     assert_eq!(
-        commands::inspect_resource(candidate_id, "content.md".into(), None).unwrap()["content"],
+        commands::inspect_resource(candidate_id, "content.md".into(), None, None).unwrap()
+            ["content"],
         "Saved private candidate"
     );
 }

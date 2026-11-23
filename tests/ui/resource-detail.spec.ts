@@ -2549,6 +2549,53 @@ test("session conversations render Mermaid while transcripts stay literal and la
   await expect(page.locator(".mermaid-diagram")).toHaveCount(0);
 });
 
+test("an oversized transcript offers a download instead of rendering", async ({
+  page,
+}) => {
+  await detailFixture(page, { savePath: "/test/export/session.zip" });
+  await page.evaluate(() => {
+    const w = window as any;
+    const original = w.__TAURI_INTERNALS__.invoke;
+    w.__TAURI_INTERNALS__.invoke = async (name: string, args: any) => {
+      const value = await original(name, args);
+      if (name === "inspect_resource" && args.id === "session-c")
+        return {
+          content: null,
+          previous: null,
+          paths: null,
+          tooLarge: true,
+          size: 44_500_000,
+        };
+      return value;
+    };
+  });
+  await page.getByRole("button", { name: /^Sessions/ }).click();
+  await page
+    .getByRole("button", { name: "Polish navigation", exact: true })
+    .click();
+  await page.getByRole("button", { name: "Transcript", exact: true }).click();
+  const state = page.locator(".session-view .reader-state");
+  await expect(state).toContainText("Transcript too large to show here");
+  await expect(state).toContainText("44.5 MB");
+  await expect(page.locator(".session-view pre.content")).toHaveCount(0);
+  const read = (await calls(page, "inspect_resource")).find(
+    (args: any) => args.id === "session-c",
+  );
+  expect(read.maxBytes).toBe(4 * 1024 * 1024);
+  await state
+    .getByRole("button", { name: "Download session", exact: true })
+    .click();
+  await expect
+    .poll(async () =>
+      (await calls(page, "export_bundle")).map((args: any) => args.path),
+    )
+    .toEqual(["/test/export/session.zip"]);
+  const axe = await new AxeBuilder({ page })
+    .include(".resource-detail")
+    .analyze();
+  expect(axe.violations).toEqual([]);
+});
+
 test("invalid Mermaid retains readable source without leaving error DOM behind", async ({
   page,
 }) => {

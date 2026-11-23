@@ -1989,23 +1989,46 @@ fn session_conflict_inspection_shows_both_preserved_versions() {
     )
     .unwrap();
     assert!(
-        crate::commands::inspect_resource(id.clone(), "session.jsonl".into(), None).unwrap()
+        crate::commands::inspect_resource(id.clone(), "session.jsonl".into(), None, None).unwrap()
             ["content"]
             .as_str()
             .unwrap()
             .contains("shared version")
     );
-    assert!(
-        crate::commands::inspect_resource(id, "session.jsonl".into(), Some(conflict.clone()))
-            .unwrap()["content"]
-            .as_str()
-            .unwrap()
-            .contains("incoming version")
-    );
+    let full = crate::commands::inspect_resource(id.clone(), "session.jsonl".into(), None, None)
+        .unwrap()["content"]
+        .as_str()
+        .unwrap()
+        .len();
+    let within =
+        crate::commands::inspect_resource(id.clone(), "session.jsonl".into(), None, Some(full))
+            .unwrap();
+    assert!(within["content"]
+        .as_str()
+        .unwrap()
+        .contains("shared version"));
+    assert!(within["tooLarge"].is_null() && within["messages"].is_null());
+    let over =
+        crate::commands::inspect_resource(id.clone(), "session.jsonl".into(), None, Some(full - 1))
+            .unwrap();
+    assert!(over["content"].is_null());
+    assert_eq!(over["tooLarge"], true);
+    assert_eq!(over["size"], full);
+    assert!(crate::commands::inspect_resource(
+        id,
+        "session.jsonl".into(),
+        Some(conflict.clone()),
+        None
+    )
+    .unwrap()["content"]
+        .as_str()
+        .unwrap()
+        .contains("incoming version"));
     assert!(crate::commands::inspect_resource(
         uuid::Uuid::new_v4().to_string(),
         "session.jsonl".into(),
-        Some(conflict)
+        Some(conflict),
+        None
     )
     .is_err());
 }
@@ -2137,6 +2160,7 @@ fn paginated_snapshots_preserve_exact_ancestry_and_export_without_sources() {
     let inspected = crate::commands::inspect_resource(
         resource["resourceId"].as_str().unwrap().into(),
         "session.jsonl".into(),
+        None,
         None,
     )
     .unwrap();

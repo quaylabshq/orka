@@ -4,6 +4,13 @@ import { invoke } from "@tauri-apps/api/core";
 import type { Resource, SessionConflict } from "@portable/protocol";
 import type { Inspection } from "../types.js";
 
+/**
+ * The largest transcript the reader renders. WebKit lays out a single text
+ * block on the main thread: about 0.8 s at 4 MB, 3 s at 17 MB and 8 s at 44 MB
+ * of transcript text. Larger transcripts offer a download instead.
+ */
+export const TRANSCRIPT_RENDER_LIMIT = 4 * 1024 * 1024;
+
 export interface ResourceView {
   /** The inspected file: SKILL.md for skills, otherwise the first file. */
   file: string;
@@ -96,6 +103,7 @@ export function useResourceView(
         id,
         file,
         conflictId: preview || null,
+        maxBytes: kind === "session" ? TRANSCRIPT_RENDER_LIMIT : null,
       });
       // Native IPC itself cannot be aborted. Consuming the signal lets Query
       // discard a response after selection or scope changes.

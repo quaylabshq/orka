@@ -184,6 +184,10 @@ export interface Inspection {
   content: string | null;
   previous: string | null;
   paths: string[] | null;
+  /** Set when a transcript exceeds the reader's render budget; content is null. */
+  tooLarge?: boolean;
+  /** The transcript's size in bytes when it is too large to render. */
+  size?: number;
 }
 export interface SessionMessage {
   index: number;

@@ -9,6 +9,7 @@ import { ConflictPanel } from "./conflict-panel.js";
 import { CopyLinkButton } from "./copy-link-button.js";
 import {
   ResourceMenuButton,
+  fileSize,
   resourceViewMenuActions,
 } from "./resource-menu.js";
 import { useDetailLayout } from "./detail-layout.js";
@@ -84,6 +85,23 @@ export function SessionDetail({
           onRetry={view.retryInspection}
           changes={false}
           markdown={false}
+          tooLarge={(size) => (
+            <ReaderState
+              illustration="preview-unavailable"
+              title="Transcript too large to show here"
+              message={`This transcript is ${fileSize(size)}. Download the session to read the full transcript.`}
+              action={
+                <Button
+                  size="sm"
+                  variant="tertiary"
+                  disabled={busy}
+                  onClick={() => void actions.exportZip()}
+                >
+                  Download session
+                </Button>
+              }
+            />
+          )}
           errorState={
             <ReaderState
               tone={offline ? "status" : "alert"}

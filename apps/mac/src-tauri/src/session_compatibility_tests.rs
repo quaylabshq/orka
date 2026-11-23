@@ -106,9 +106,13 @@ fn synced_codex_sessions_stay_cached_through_updates_scans_and_deletion() {
                 let cached = native::transcript(&History::resource(&resource).unwrap().records());
                 assert!(cached.starts_with(&transcript));
                 assert_eq!(cached.contains("New synced turn"), revision == 2);
-                let inspected =
-                    crate::commands::inspect_resource(id.clone(), "session.jsonl".into(), None)
-                        .unwrap();
+                let inspected = crate::commands::inspect_resource(
+                    id.clone(),
+                    "session.jsonl".into(),
+                    None,
+                    None,
+                )
+                .unwrap();
                 assert_eq!(
                     inspected["content"]
                         .as_str()

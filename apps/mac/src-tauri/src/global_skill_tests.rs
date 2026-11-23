@@ -639,7 +639,7 @@ fn global_skills_local_catalog_inspects_imports_and_counts_usage_without_publish
     assert_eq!(skill["revision"], 0);
     assert!(skill["updatedAt"].is_string());
     let inspection =
-        crate::commands::inspect_resource(rid.into(), "SKILL.md".into(), None).unwrap();
+        crate::commands::inspect_resource(rid.into(), "SKILL.md".into(), None, None).unwrap();
     assert!(inspection["content"]
         .as_str()
         .unwrap()
@@ -792,7 +792,7 @@ fn global_skills_fresh_import_of_a_previously_deleted_skill_is_readable_locally(
         1
     );
     let inspection =
-        crate::commands::inspect_resource(rid.clone(), "SKILL.md".into(), None).unwrap();
+        crate::commands::inspect_resource(rid.clone(), "SKILL.md".into(), None, None).unwrap();
     assert!(inspection["content"]
         .as_str()
         .unwrap()

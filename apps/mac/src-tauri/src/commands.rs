@@ -836,8 +836,17 @@ pub async fn session_messages(
     .await
     .map_err(|error| error.to_string())?
 }
+/// Reads a resource file for display or copying. `max_bytes` is the reader's
+/// render budget for a session transcript: above it, no text crosses the bridge
+/// and the reader offers a download instead. Callers that need the whole text,
+/// such as Copy content, omit it.
 #[tauri::command]
-pub fn inspect_resource(id: String, file: String, conflict_id: Option<String>) -> Result<Value> {
+pub fn inspect_resource(
+    id: String,
+    file: String,
+    conflict_id: Option<String>,
+    max_bytes: Option<usize>,
+) -> Result<Value> {
     let db = db::open()?;
     let r = inspected_resource(&db, &id, conflict_id)?;
     if r["deleted"] == true {
@@ -861,6 +870,19 @@ pub fn inspect_resource(id: String, file: String, conflict_id: Option<String>) -
         .and_then(|b| String::from_utf8(b).ok());
     let (content, messages, conversation) = if r["kind"] == "session" && file == "session.jsonl" {
         let records = crate::history::resource_records(&r)?;
+        if let Some(limit) = max_bytes {
+            // The reader renders only the transcript text, so the message and
+            // conversation copies would double the payload for nothing.
+            let transcript = native::transcript(&records);
+            if transcript.len() > limit {
+                return Ok(
+                    json!({"content":null,"previous":null,"paths":null,"tooLarge":true,"size":transcript.len()}),
+                );
+            }
+            return Ok(
+                json!({"content":transcript,"previous":previous,"paths":if r["paths"].is_array() { &r["paths"] } else { &binding["paths"] }}),
+            );
+        }
         (
             Some(native::transcript(&records)),
             Some(native::transcript_messages(&records)),
