@@ -131,7 +131,9 @@ export const SettingsModal = forwardRef<
   const [focusTarget, setFocusTarget] = useState<{
     section: SettingsSection;
   } | null>(() =>
-    initialSection === "folder" || initialSection === "sharing"
+    initialSection === "folder" ||
+    initialSection === "sharing" ||
+    initialSection === "projects"
       ? { section: initialSection }
       : null,
   );

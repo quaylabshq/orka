@@ -252,15 +252,22 @@ test("account recovery is independent of selected project role and fits long nam
   });
   await settings.getByRole("button", { name: "Projects", exact: true }).click();
   const recent = settings.getByRole("region", { name: "Recently deleted" });
+  const details = recent.getByRole("button", { name: "Details", exact: true });
   const restore = recent.getByRole("button", { name: "Restore", exact: true });
   const purge = recent.getByRole("button", { name: "Delete now", exact: true });
+  await recent.scrollIntoViewIfNeeded();
+  await expect(details).toBeInViewport();
   await expect(restore).toBeInViewport();
   await expect(purge).toBeInViewport();
   const bounds = await recent.boundingBox();
-  for (const button of [restore, purge]) {
+  for (const button of [details, restore, purge]) {
     const box = await button.boundingBox();
     expect(box!.x + box!.width).toBeLessThanOrEqual(bounds!.x + bounds!.width);
   }
+  const deadline = await recent.getByText(/Restorable until/).boundingBox();
+  expect(deadline!.y + deadline!.height).toBeLessThanOrEqual(
+    (await restore.boundingBox())!.y,
+  );
 });
 
 test("delete uses configured restore policy and old services cannot delete", async ({

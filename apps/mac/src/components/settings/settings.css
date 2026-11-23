@@ -457,10 +457,10 @@
     @apply flex min-w-0 flex-wrap items-center justify-between gap-3 px-4 py-4;
   }
   .settings-project-summary {
-    @apply min-w-0 flex-1;
+    @apply min-w-0 flex-1 basis-44;
   }
   .settings-project-row > .settings-inline-actions {
-    @apply shrink-0 gap-2;
+    @apply ml-auto shrink-0 gap-2;
   }
   .settings-project-row + .settings-project-row {
     @apply border-t border-line;

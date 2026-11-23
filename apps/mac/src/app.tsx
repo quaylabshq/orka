@@ -273,6 +273,14 @@ function WorkspaceApp({
   }, [settings]);
   const settingsNavigation = useRef<SettingsNavigationHandle>(null);
   const projectPickerTrigger = useRef<HTMLButtonElement>(null);
+  const focusInactiveBack = useRef<string | null>(null);
+  const focusSettingsTrigger = useCallback(() => {
+    document
+      .querySelector<HTMLButtonElement>(
+        '.sidebar-bottom button[aria-label="Settings"]',
+      )
+      ?.focus();
+  }, []);
   const [projectLifecycle, setProjectLifecycle] = useState<{
     id: string;
     scope: string;
@@ -972,6 +980,7 @@ function WorkspaceApp({
               projectId={project}
               collapsed={sidebarCollapsed}
               triggerRef={projectPickerTrigger}
+              onEmptyAutoFocus={focusSettingsTrigger}
               projectActions={(target) => {
                 const open: ItemMenuAction = {
                   id: "open",
@@ -1098,6 +1107,15 @@ function WorkspaceApp({
                 </Button>
               ) : !settings && inactiveProject ? (
                 <Button
+                  ref={(button) => {
+                    if (
+                      button &&
+                      focusInactiveBack.current === inactiveProject.id
+                    ) {
+                      focusInactiveBack.current = null;
+                      button.focus();
+                    }
+                  }}
                   size="sm"
                   variant="tertiary"
                   onClick={() => openSettings("projects")}
@@ -1249,6 +1267,7 @@ function WorkspaceApp({
               initialSection={settings}
               onSectionChange={setSettings}
               onViewInactiveProject={(id) => {
+                focusInactiveBack.current = id;
                 setProject(id);
                 setResource("");
                 setEnvSet("");
@@ -1279,13 +1298,7 @@ function WorkspaceApp({
               }}
               onClose={() => {
                 setSettings(null);
-                requestAnimationFrame(() =>
-                  document
-                    .querySelector<HTMLButtonElement>(
-                      '.sidebar-bottom button[aria-label="Settings"]',
-                    )
-                    ?.focus(),
-                );
+                requestAnimationFrame(focusSettingsTrigger);
               }}
             />
           ) : inactiveProject ? (

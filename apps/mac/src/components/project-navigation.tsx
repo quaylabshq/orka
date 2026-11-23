@@ -97,6 +97,7 @@ export function ProjectPicker({
   projectId,
   collapsed,
   onProjectChange,
+  onEmptyAutoFocus,
   triggerRef,
   projectActions,
 }: {
@@ -104,15 +105,27 @@ export function ProjectPicker({
   projectId: string;
   collapsed: boolean;
   onProjectChange: (id: string) => void;
+  onEmptyAutoFocus: () => void;
   triggerRef?: React.Ref<HTMLButtonElement>;
   projectActions?: (project: Project) => ItemMenuAction[];
 }) {
   const selected = projects.find((p) => p.id === projectId);
   const label = selected ? projectLabel(selected) : "Select project";
-  const [open, setOpen] = React.useState(false);
+  const [requestedOpen, setOpen] = React.useState(false);
+  const hasProjects = projects.length > 0;
+  const open = requestedOpen && hasProjects;
   const [keyboard, setKeyboard] = React.useState(false);
   const reduced = useReducedMotion();
   const listRef = React.useRef<HTMLDivElement>(null);
+  React.useLayoutEffect(() => {
+    if (!requestedOpen || hasProjects) return;
+    setOpen(false);
+    if (
+      document.activeElement === document.body ||
+      listRef.current?.contains(document.activeElement)
+    )
+      onEmptyAutoFocus();
+  }, [hasProjects, requestedOpen, onEmptyAutoFocus]);
   const focusEdge = React.useRef<"first" | "last" | null>(null);
   const actionAfterClose = React.useRef<(() => void) | null>(null);
   const typeahead = React.useRef({ text: "", time: 0 });
@@ -194,7 +207,7 @@ export function ProjectPicker({
             aria-expanded={open}
             className="project-selector"
             data-selected={Boolean(selected)}
-            disabled={!projects.length}
+            disabled={!hasProjects}
             aria-label={
               collapsed ? "Select project: " + label : "Select project"
             }
