@@ -1077,7 +1077,8 @@ pub(crate) fn launch_with(
         session_forks::binding(&db, resource)?
     } else {
         let snapshot = if tool == Tool::Pi {
-            crate::pi_sessions::fork_snapshot(&db, &session.resource)?
+            let local = session_forks::resumable(&db, &session.resource)?;
+            crate::pi_sessions::fork_snapshot(&db, local.as_ref().unwrap_or(&session.resource))?
         } else {
             session_forks::current_resource(&db, &session.resource)?
         };

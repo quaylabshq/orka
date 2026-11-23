@@ -43,13 +43,13 @@ pub fn export_project(cache: &db::CacheScope, project: &str, path: &Path) -> Res
         // An oversized or unreadable copy exports its stored snapshot rather
         // than blocking the rest of the recovery export.
         Ok(match crate::pi_sessions::live_copy_bytes(&binding) {
-            Ok(Some(bytes)) => {
+            Some(bytes) => {
                 let hash = db::digest(&bytes);
                 let current = crate::pi_sessions::with_session_file(&resource, &bytes, &hash);
                 live_copies.insert(hash, bytes);
                 current
             }
-            Ok(None) | Err(_) => resource,
+            None => resource,
         })
     })
     .collect::<Result<Vec<_>>>()?;

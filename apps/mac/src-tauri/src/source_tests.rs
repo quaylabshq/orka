@@ -282,6 +282,76 @@ fn removed_sources_disconnect_without_deleting_files_or_shared_history() {
 }
 
 #[test]
+fn connects_folders_with_git_protected_hooks_without_changing_them() {
+    for multi_source in [true, false] {
+        let f = Fixture::new();
+        let mut project = f.project.clone();
+        let id = project["id"].as_str().unwrap().to_owned();
+        let path = f.root.to_str().unwrap().to_owned();
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("/usr/bin/git")
+                .current_dir(&f.root)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init", "--quiet"]);
+        let codex = f.root.join(".codex/hooks.json");
+        let claude = f.root.join(".claude/settings.local.json");
+        let source_id = Uuid::new_v4().to_string();
+        project["path"] = Value::Null;
+        if multi_source {
+            project["sources"] = json!([{"id":source_id,"name":"project","path":null}]);
+            fs::create_dir_all(codex.parent().unwrap()).unwrap();
+            fs::write(&codex, "{ invalid foreign config").unwrap();
+            git(&["add", "-f", "--", ".codex/hooks.json"]);
+        } else {
+            fs::write(f.root.join(".gitignore"), "!.claude/settings.local.json\n").unwrap();
+            fs::create_dir_all(claude.parent().unwrap()).unwrap();
+            fs::write(&claude, "{ invalid foreign config").unwrap();
+        }
+        db::upsert(&f.db, "projects", &id, &id, &project).unwrap();
+
+        if multi_source {
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(sources::connect_project_sources(
+                    id.clone(),
+                    vec![path.clone()],
+                    Some(source_id.clone()),
+                ))
+                .unwrap();
+            assert_eq!(
+                fs::read_to_string(&codex).unwrap(),
+                "{ invalid foreign config"
+            );
+            assert!(!codex.with_extension("json.orka-backup").exists());
+            assert!(claude.is_file());
+        } else {
+            crate::commands::connect_project(id.clone(), path.clone()).unwrap();
+            assert_eq!(
+                fs::read_to_string(&claude).unwrap(),
+                "{ invalid foreign config"
+            );
+            assert!(!claude.with_extension("json.orka-backup").exists());
+            assert!(codex.is_file());
+        }
+        let saved = crate::governance::project(&f.db, &id).unwrap();
+        let source = sources::select(&saved, multi_source.then_some(source_id.as_str())).unwrap();
+        assert_eq!(source["path"], path);
+        assert_eq!(
+            source["folderIdentity"],
+            indexer::folder_identity(&f.root).unwrap()
+        );
+    }
+}
+
+#[test]
 fn source_removal_keeps_queued_changes_until_they_are_synced() {
     let f = Fixture::new();
     let mut project = multi_source(&f);

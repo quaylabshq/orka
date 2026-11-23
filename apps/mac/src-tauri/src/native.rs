@@ -793,7 +793,7 @@ impl Hooks {
         let base = root.canonicalize().map_err(|e| e.to_string())?;
         let executable = crate::updates::executable().map_err(|e| e.to_string())?;
         use crate::{
-            git_artifacts::{self, Excludes},
+            git_artifacts::{self, Excludes, ProtectionError},
             onboarding::discovery,
         };
         let home = crate::worktrees::home()?;
@@ -809,24 +809,26 @@ impl Hooks {
         let mut failures = Vec::new();
         for (tool, relative) in Self::FILES {
             let path = base.join(relative);
-            let result = (|| -> Result<()> {
-                packages::safe_directory(&base, path.parent().ok_or("Missing parent")?)?;
-                let old = match fs::symlink_metadata(&path) {
-                    Ok(metadata) if metadata.is_file() => {
-                        Some(fs::read(&path).map_err(|e| e.to_string())?)
+            let result = (|| -> std::result::Result<(), ProtectionError> {
+                let prepared = (|| -> Result<_> {
+                    packages::safe_directory(&base, path.parent().ok_or("Missing parent")?)?;
+                    let old = match fs::symlink_metadata(&path) {
+                        Ok(metadata) if metadata.is_file() => {
+                            Some(fs::read(&path).map_err(|e| e.to_string())?)
+                        }
+                        Ok(_) => return Err("Hook destination is not a regular file".into()),
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                        Err(error) => return Err(error.to_string()),
+                    };
+                    let mut cfg: Value = old
+                        .as_deref()
+                        .map(serde_json::from_slice)
+                        .transpose()
+                        .map_err(|e| e.to_string())?
+                        .unwrap_or_else(|| json!({}));
+                    if Self::state(&cfg, &executable, tool) == HookState::Configured {
+                        return Ok((old, None));
                     }
-                    Ok(_) => return Err("Hook destination is not a regular file".into()),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-                    Err(error) => return Err(error.to_string()),
-                };
-                let mut cfg: Value = old
-                    .as_deref()
-                    .map(serde_json::from_slice)
-                    .transpose()
-                    .map_err(|e| e.to_string())?
-                    .unwrap_or_else(|| json!({}));
-                let configured = Self::state(&cfg, &executable, tool) == HookState::Configured;
-                if !configured {
                     // The explicit source installer has always repaired malformed event values.
                     if let Some(events) = cfg.get_mut("hooks").and_then(Value::as_object_mut) {
                         for event in Self::EVENTS {
@@ -837,21 +839,29 @@ impl Hooks {
                     }
                     Self::strip_orka(&mut cfg, tool)?;
                     Self::configure(&mut cfg, &executable, tool);
-                }
+                    let bytes = serde_json::to_vec_pretty(&cfg).map_err(|e| e.to_string())?;
+                    Ok((old, Some(bytes)))
+                })();
                 if let Some((checkout, excludes)) = &mut git {
-                    excludes.protect(
-                        checkout,
-                        path.strip_prefix(checkout.as_path())
-                            .map_err(|e| e.to_string())?,
-                        true,
-                    )?;
+                    // Tracked and explicitly re-included files are user-owned even when malformed.
+                    let relative = path
+                        .strip_prefix(checkout.as_path())
+                        .map_err(|e| e.to_string())?;
+                    if prepared.is_ok() {
+                        excludes.protect(checkout, relative, true)?;
+                    } else {
+                        git_artifacts::check_hook_ownership(checkout, relative)?;
+                    }
                 }
-                if configured {
+                let (old, Some(bytes)) = prepared? else {
                     return Ok(());
-                }
-                let mut save = |path: &Path, bytes: &[u8], replacing| {
+                };
+                let mut save = |path: &Path,
+                                bytes: &[u8],
+                                replacing|
+                 -> std::result::Result<(), ProtectionError> {
                     let Some((checkout, excludes)) = &mut git else {
-                        return db::atomic(path, bytes);
+                        return db::atomic(path, bytes).map_err(Into::into);
                     };
                     let relative = path
                         .strip_prefix(checkout.as_path())
@@ -866,7 +876,7 @@ impl Hooks {
                     {
                         excludes.release(&scratch)?;
                     }
-                    result
+                    result.map_err(Into::into)
                 };
                 let backup = path.with_extension("json.orka-backup");
                 if let Some(old) = &old {
@@ -875,17 +885,19 @@ impl Hooks {
                         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                             save(&backup, old, false)?
                         }
-                        Err(error) => return Err(error.to_string()),
+                        Err(error) => return Err(error.to_string().into()),
                     }
                 }
-                save(
-                    &path,
-                    &serde_json::to_vec_pretty(&cfg).map_err(|e| e.to_string())?,
-                    old.is_some(),
-                )
+                save(&path, &bytes, old.is_some())
             })();
-            if let Err(error) = result {
-                failures.push(format!("{}: {error}", path.display()));
+            match result {
+                Ok(()) => (),
+                Err(ProtectionError::Refused(reason)) => {
+                    eprintln!("Skipped {tool} hook setup at {}: {reason}", path.display());
+                }
+                Err(ProtectionError::Failed(error)) => {
+                    failures.push(format!("{}: {error}", path.display()));
+                }
             }
         }
         if failures.is_empty() {

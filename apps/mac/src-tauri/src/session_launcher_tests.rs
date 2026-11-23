@@ -466,6 +466,9 @@ fn own_pi_session_resumes_in_place_and_forks_every_raw_turn() {
         ]),
     )
     .unwrap();
+    let snapshot = crate::local_resources::resource(&f.db, fork_id).unwrap();
+    let current = crate::session_forks::current_resource(&f.db, &snapshot).unwrap();
+    assert_eq!(current["files"], snapshot["files"]);
     let recovered_tree =
         session_launcher::launch_with(fork_id, Tool::Pi, Destination::Terminal, true, &host)
             .unwrap();
@@ -486,6 +489,8 @@ fn own_pi_session_resumes_in_place_and_forks_every_raw_turn() {
     assert!(
         session_launcher::resume_with(fork_id, Tool::Pi, Destination::Terminal, &host).is_err()
     );
+    let current = crate::session_forks::current_resource(&f.db, &snapshot).unwrap();
+    assert_eq!(current["files"], snapshot["files"]);
     let recovered_oversized =
         session_launcher::launch_with(fork_id, Tool::Pi, Destination::Terminal, true, &host)
             .unwrap();
@@ -2443,4 +2448,30 @@ fn claude_desktop_capability_rejects_api_auth_and_missing_subscription_without_e
             assert!(!message.contains("private-address"));
         }
     }
+}
+
+#[test]
+fn forking_a_shared_pi_session_reuses_an_existing_copy_turns() {
+    let f = Fixture::new();
+    let resource = session(&f, "pi", true);
+    let id = resource["resourceId"].as_str().unwrap();
+    let host = FakeHost::default();
+    let first =
+        session_launcher::launch_with(id, Tool::Pi, Destination::Terminal, false, &host).unwrap();
+    let path = std::path::PathBuf::from(host.calls.borrow()[0]["path"].as_str().unwrap());
+    let mut records = native::complete_records(&fs::read(&path).unwrap()).unwrap();
+    let leaf = records.last().unwrap()["id"].as_str().unwrap().to_owned();
+    records.push(json!({"type":"message","id":"copy-turn","parentId":leaf,"message":{"role":"user","content":"Turn in the existing copy"}}));
+    fs::write(&path, native::encode(&records)).unwrap();
+    let forked =
+        session_launcher::launch_with(id, Tool::Pi, Destination::Terminal, true, &host).unwrap();
+    assert_ne!(forked["nativeId"], first["nativeId"]);
+    let forked_path = std::path::PathBuf::from(host.calls.borrow()[1]["path"].as_str().unwrap());
+    let forked_records = native::complete_records(&fs::read(&forked_path).unwrap()).unwrap();
+    assert!(
+        forked_records
+            .iter()
+            .any(|r| r["message"]["content"] == "Turn in the existing copy"),
+        "fork lost the existing copy turn: {forked_records:?}"
+    );
 }

@@ -113,6 +113,11 @@ async fn pi_session_discovery_reads_the_saved_branch_and_queues_only_an_explicit
     request["kind"] = json!("session");
     request["resourceId"] = json!(resource_id);
     let preview = selective_sharing::preview(&f.db, &f.project, &request).unwrap();
+    assert!(preview["note"]
+        .as_str()
+        .unwrap()
+        .contains("abandoned branches"));
+    assert!(preview["note"].as_str().unwrap().contains("tool records"));
     request["previewToken"] = preview["previewToken"].clone();
     assert_eq!(
         selective_sharing::queue(&f.db, &f.project, &request).unwrap()["status"],
@@ -136,6 +141,82 @@ async fn pi_session_discovery_reads_the_saved_branch_and_queues_only_an_explicit
     assert_eq!(cached["base"]["files"], incoming["files"]);
     assert_eq!(cached["paths"], json!([]));
     assert_eq!(fs::read(&path).unwrap(), original);
+}
+
+#[test]
+fn pi_and_codex_sessions_with_the_same_native_id_keep_separate_identity() {
+    let mut f = Fixture::new();
+    prepare(&mut f);
+    let codex = indexer::discover(&f.db, &f.project, "session")
+        .unwrap()
+        .into_iter()
+        .find(|r| r["resource"]["source"] == "codex")
+        .unwrap();
+    let id = codex["nativeId"].as_str().unwrap().to_owned();
+    // A binding written by an ordinary scan must not let Pi adopt its identity.
+    db::upsert(
+        &f.db,
+        "bindings",
+        codex["resource"]["resourceId"].as_str().unwrap(),
+        f.project["id"].as_str().unwrap(),
+        &json!({"base":codex["resource"],"nativeId":id,"paths":[f.root.join("codex.jsonl")]}),
+    )
+    .unwrap();
+    let folder = crate::pi_sessions::directory().unwrap();
+    fs::create_dir_all(&folder).unwrap();
+    let path = folder.join(format!("{id}.jsonl"));
+    fs::write(&path, native::encode(&[
+        json!({"type":"session","version":3,"id":id,"cwd":f.root}),
+        json!({"type":"message","id":"a","parentId":null,"message":{"role":"user","content":"Different Pi chat"}}),
+    ])).unwrap();
+    assert_eq!(
+        crate::history::session_route_prefix(&path, "pi"),
+        Some((Some(id.to_owned()), f.root.clone()))
+    );
+    let entries = indexer::discover(&f.db, &f.project, "session").unwrap();
+    let pi = entries
+        .iter()
+        .find(|r| r["resource"]["source"] == "pi")
+        .unwrap();
+    let found = entries
+        .iter()
+        .find(|r| r["resource"]["source"] == "codex")
+        .unwrap();
+    assert_eq!(
+        found["resource"]["resourceId"],
+        codex["resource"]["resourceId"]
+    );
+    assert_ne!(
+        pi["resource"]["resourceId"],
+        found["resource"]["resourceId"]
+    );
+    // A pre-provider binding must keep serving older tools but never Pi.
+    let legacy = json!({"base":{"resourceId":codex["resource"]["resourceId"],"owner":f.project["id"],"projectId":f.project["id"]},"nativeId":id,"paths":[f.root.join("codex.jsonl")]});
+    db::upsert(
+        &f.db,
+        "bindings",
+        codex["resource"]["resourceId"].as_str().unwrap(),
+        f.project["id"].as_str().unwrap(),
+        &legacy,
+    )
+    .unwrap();
+    let entries = indexer::discover(&f.db, &f.project, "session").unwrap();
+    let pi = entries
+        .iter()
+        .find(|r| r["resource"]["source"] == "pi")
+        .unwrap();
+    let found = entries
+        .iter()
+        .find(|r| r["resource"]["source"] == "codex")
+        .unwrap();
+    assert_eq!(
+        found["resource"]["resourceId"],
+        codex["resource"]["resourceId"]
+    );
+    assert_ne!(
+        pi["resource"]["resourceId"],
+        found["resource"]["resourceId"]
+    );
 }
 
 #[test]
@@ -487,4 +568,31 @@ fn selected_publication_continues_from_its_revision_when_automation_is_later_ena
     assert_eq!(change["baseRevision"], 1);
     assert_ne!(change["resource"]["files"], resource["files"]);
     assert_eq!(fs::read(source).unwrap(), bytes);
+}
+
+#[test]
+fn discovers_pi_session_when_its_cwd_is_a_symlink_to_the_project() {
+    let mut f = Fixture::new();
+    prepare(&mut f);
+    f.db = db::open().unwrap();
+    let link = f._home.path().join("linked-project");
+    std::os::unix::fs::symlink(&f.root, &link).unwrap();
+    let directory = crate::pi_sessions::directory().unwrap();
+    fs::create_dir_all(&directory).unwrap();
+    let id = uuid::Uuid::new_v4().to_string();
+    fs::write(
+        directory.join(format!("{id}.jsonl")),
+        native::encode(&[
+            json!({"type":"session","version":3,"id":id,"cwd":link}),
+            json!({"type":"message","id":"a","parentId":null,"message":{"role":"user","content":"Symlinked project"}}),
+        ]),
+    )
+    .unwrap();
+    let pi: Vec<_> = indexer::discover(&f.db, &f.project, "session")
+        .unwrap()
+        .into_iter()
+        .filter(|item| item["resource"]["source"] == "pi")
+        .collect();
+    assert_eq!(pi.len(), 1);
+    assert_eq!(pi[0]["nativeId"], id);
 }

@@ -157,12 +157,12 @@ impl Installed {
         Ok(())
     }
 
-    fn finish(&mut self, db: &Connection, file: &File) -> Result<()> {
+    fn finish(&mut self, db: &Connection, file: &File, fingerprint: String) -> Result<()> {
         self.pending = None;
         self.protected = true;
         self.device = file.device;
         self.inode = file.inode;
-        self.fingerprint.clone_from(&file.hash);
+        self.fingerprint = fingerprint;
         self.save(db)
     }
 }
@@ -218,8 +218,25 @@ struct File {
 }
 
 impl File {
-    fn identity(&self) -> (u64, u64, &str) {
-        (self.device, self.inode, &self.hash)
+    fn identity(&self) -> (u64, u64, u32, &str) {
+        (self.device, self.inode, self.mode, &self.hash)
+    }
+
+    fn matches(&self, fingerprint: &str) -> bool {
+        // Existing entries use the content hash alone. New skill entries also
+        // track the executable mode so a local chmod is treated as an edit.
+        fingerprint == self.hash
+            || (self.mode & 0o011 == 0
+                && fingerprint.strip_prefix(skill_fingerprint_prefix(self.mode))
+                    == Some(self.hash.as_str()))
+    }
+}
+
+fn skill_fingerprint_prefix(mode: u32) -> &'static str {
+    if mode & 0o100 == 0 {
+        "skill:non-executable:"
+    } else {
+        "skill:executable:"
     }
 }
 
@@ -327,7 +344,7 @@ fn skills(root: &Path) -> Result<BTreeMap<PathBuf, SkillFile>> {
                     SkillFile {
                         bytes: file.bytes,
                         hash: file.hash,
-                        mode: file.mode & 0o100 | 0o600,
+                        mode: if file.mode & 0o111 == 0 { 0o600 } else { 0o700 },
                     },
                 );
             }
@@ -450,12 +467,13 @@ fn install(
 ) -> Result<()> {
     let replacing = existing.is_some();
     let hook_config;
-    let (bytes, hash, mode) = match destination.artifact {
+    let (bytes, fingerprint, mode) = match destination.artifact {
         Artifact::Skill(skill) => {
             if replacing && !owned {
                 return Err("Existing skill file is not managed by Orka".into());
             }
-            (skill.bytes.as_slice(), skill.hash.clone(), skill.mode)
+            let fingerprint = format!("{}{}", skill_fingerprint_prefix(skill.mode), skill.hash);
+            (skill.bytes.as_slice(), fingerprint, skill.mode)
         }
         Artifact::Hook(tool) => {
             if existing
@@ -475,7 +493,7 @@ fn install(
             (hook_config.as_slice(), hash, 0o600)
         }
     };
-    if owned && entry.fingerprint == hash && entry.protected {
+    if owned && entry.fingerprint == fingerprint && entry.protected {
         return Ok(());
     }
     let path = entry.checkout.join(&entry.relative);
@@ -485,14 +503,14 @@ fn install(
         .relative
         .with_file_name(format!(".orka-{}.pending", uuid::Uuid::new_v4()));
     entry.pending = Some(Pending {
-        fingerprint: hash.clone(),
+        fingerprint: fingerprint.clone(),
         scratch: scratch.clone(),
         restoring: false,
     });
     entry.save(db)?;
     excludes.protect(&entry.checkout, &entry.relative, false)?;
-    if let Some(file) = existing.as_ref().filter(|file| file.hash == hash) {
-        return entry.finish(db, file);
+    if let Some(file) = existing.as_ref().filter(|file| file.matches(&fingerprint)) {
+        return entry.finish(db, file, fingerprint);
     }
     excludes.protect(&entry.checkout, &scratch, false)?;
     let parent = path.parent().ok_or("Missing integration parent")?;
@@ -507,10 +525,10 @@ fn install(
     let file = read_file(&path)
         .map_err(|e| e.to_string())?
         .ok_or("Published integration file disappeared")?;
-    if file.hash != hash {
+    if !file.matches(&fingerprint) {
         return Err("Published integration file changed".into());
     }
-    entry.finish(db, &file)
+    entry.finish(db, &file, fingerprint)
 }
 
 fn checked_parent(checkout: &Path, path: &Path) -> Result<()> {
@@ -541,7 +559,7 @@ fn recover_pending(
     };
     let scratch = entry.checkout.join(&pending.scratch);
     match read_file(&scratch).map_err(|e| e.to_string())? {
-        Some(file) if file.hash == pending.fingerprint => {
+        Some(file) if file.matches(&pending.fingerprint) => {
             if registered {
                 git_artifacts::untracked(&entry.checkout, &pending.scratch)?;
             }
@@ -554,7 +572,7 @@ fn recover_pending(
     }
     let mut excludes = Excludes::open(entry.common()?)?;
     excludes.release(&pending.scratch)?;
-    if let Some(file) = file.filter(|file| file.hash == pending.fingerprint) {
+    if let Some(file) = file.filter(|file| file.matches(&pending.fingerprint)) {
         if pending.restoring {
             entry.pending = None;
             entry.retired = true;
@@ -563,7 +581,7 @@ fn recover_pending(
         if registered {
             excludes.protect(&entry.checkout, &entry.relative, false)?;
         }
-        entry.finish(db, file)?;
+        entry.finish(db, file, pending.fingerprint.clone())?;
     } else {
         entry.pending = None;
         entry.save(db)?;
@@ -586,7 +604,7 @@ fn reconcile_entry(
         return Ok(());
     }
     let owned = file.as_ref().is_some_and(|file| {
-        file.hash == entry.fingerprint
+        file.matches(&entry.fingerprint)
             && ((registered && !file.hash.starts_with("link:"))
                 || (file.device, file.inode) == (entry.device, entry.inode))
     });

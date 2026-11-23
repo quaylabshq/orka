@@ -17,7 +17,7 @@ pub(crate) fn directory() -> Result<PathBuf> {
         return Ok(db::home()?.join(".pi/agent/sessions"));
     }
     if let Some(path) = std::env::var_os("PI_CODING_AGENT_SESSION_DIR").filter(|p| !p.is_empty()) {
-        return Ok(path.into());
+        return Ok(expand_home(path.into(), &db::home()?));
     }
     Ok(agent_directory()?.join("sessions"))
 }
@@ -30,7 +30,32 @@ pub(crate) fn agent_directory() -> Result<PathBuf> {
     std::env::var_os("PI_CODING_AGENT_DIR")
         .filter(|p| !p.is_empty())
         .map(PathBuf::from)
-        .map_or_else(|| db::home().map(|home| home.join(".pi/agent")), Ok)
+        .map_or_else(
+            || db::home().map(|home| home.join(".pi/agent")),
+            |path| Ok(expand_home(path, &db::home()?)),
+        )
+}
+
+fn expand_home(path: PathBuf, home: &Path) -> PathBuf {
+    match path.strip_prefix("~") {
+        Ok(relative) if relative.as_os_str().is_empty() => home.to_path_buf(),
+        Ok(relative) => home.join(relative),
+        Err(_) => path,
+    }
+}
+
+#[test]
+fn pi_directory_overrides_expand_only_a_leading_home_component() {
+    let home = Path::new("/Users/pi");
+    assert_eq!(
+        expand_home("~/custom/sessions".into(), home),
+        home.join("custom/sessions")
+    );
+    assert_eq!(expand_home("~".into(), home), home);
+    assert_eq!(
+        expand_home("~other/sessions".into(), home),
+        Path::new("~other/sessions")
+    );
 }
 
 pub(crate) fn copy_directory() -> Result<PathBuf> {
@@ -66,27 +91,17 @@ pub(crate) fn copy_location(binding: &Value) -> Result<PathBuf> {
 }
 
 /// The redacted bytes of a private copy as its file now reads, independent of
-/// the checkout path. None means the file is missing or has no valid session,
-/// so callers use the stored snapshot; other read errors are returned.
-pub(crate) fn live_copy_bytes(binding: &Value) -> Result<Option<Vec<u8>>> {
-    let Ok(path) = copy_location(binding) else {
-        return Ok(None);
-    };
-    // Same size cap as every other session read.
-    let bytes = history::read_session(&path)?;
-    let Ok(mut records) = native::complete_records(&bytes) else {
-        return Ok(None);
-    };
-    if !records
-        .first()
-        .is_some_and(|record| record["type"] == "session")
-    {
-        return Ok(None);
+/// the checkout path. Unreadable or invalid files fall back to the stored snapshot.
+pub(crate) fn live_copy_bytes(binding: &Value) -> Option<Vec<u8>> {
+    let path = copy_location(binding).ok()?;
+    let mut records = valid_records(&path)?;
+    if records[0]["id"] != binding["nativeId"] {
+        return None;
     }
     records
         .iter_mut()
         .for_each(crate::session_redaction::SessionRedactor::redact);
-    Ok(Some(native::encode(&records)))
+    Some(native::encode(&records))
 }
 
 pub(crate) fn with_session_file(resource: &Value, bytes: &[u8], hash: &str) -> Value {
@@ -98,7 +113,7 @@ pub(crate) fn with_session_file(resource: &Value, bytes: &[u8], hash: &str) -> V
 
 /// A private copy as its file now reads, for the reading view and handoffs.
 pub(crate) fn live_copy(binding: &Value, resource: &Value) -> Result<Value> {
-    Ok(match live_copy_bytes(binding)? {
+    Ok(match live_copy_bytes(binding) {
         Some(bytes) => with_session_file(resource, &bytes, &db::blob(&bytes)?),
         None => resource.clone(),
     })
@@ -180,12 +195,14 @@ fn local_records(path: &Path) -> Result<Option<Vec<Value>>> {
     {
         return Ok(None);
     }
-    let Ok(bytes) = history::read_session(path) else {
-        return Ok(None);
-    };
-    Ok(native::complete_records(&bytes)
-        .ok()
-        .filter(|records| native::validate_session_import("pi", records).is_ok()))
+    Ok(valid_records(&actual))
+}
+
+fn valid_records(path: &Path) -> Option<Vec<Value>> {
+    let bytes = history::read_session(path).ok()?;
+    let records = native::complete_records(&bytes).ok()?;
+    native::validate_session_import("pi", &records).ok()?;
+    Some(records)
 }
 
 /// Keep copies of a deleted or inaccessible shared session as local-only work.

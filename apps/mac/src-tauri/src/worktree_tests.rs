@@ -564,6 +564,47 @@ fn delivery_preserves_user_files_and_only_removes_owned_artifacts() {
 }
 
 #[test]
+fn worktree_skill_copies_update_source_modes_and_preserve_local_mode_edits() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    let f = Fixture::new();
+    init(&f.root);
+    let tree = crate::worktrees::home().unwrap().join("skill-mode");
+    worktree(&f.root, &tree);
+    write(&f.root.join(".claude/skills/example/SKILL.md"), "example");
+    let relative = ".claude/skills/example/scripts/example.sh";
+    let source = f.root.join(relative);
+    let copy = tree.join(relative);
+    write(&source, "#!/bin/sh\n");
+    let set_mode = |path: &Path, mode| {
+        fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+    };
+    let executable_mode = |path: &Path| fs::metadata(path).unwrap().mode() & 0o111;
+    let reconcile = || worktree_integration::reconcile(&f.db, Path::new("/fixture/orka"));
+
+    set_mode(&source, 0o600);
+    reconcile().unwrap();
+    assert_eq!(executable_mode(&copy), 0);
+    set_mode(&source, 0o610);
+    reconcile().unwrap();
+    assert_eq!(executable_mode(&copy), 0o100);
+
+    set_mode(&copy, 0o710);
+    fs::write(&source, "#!/bin/sh\necho updated\n").unwrap();
+    assert!(reconcile().unwrap_err().contains("changed or removed"));
+    assert_eq!(executable_mode(&copy), 0o110);
+    assert_eq!(fs::read_to_string(&copy).unwrap(), "#!/bin/sh\n");
+
+    let mut disconnected = f.project.clone();
+    disconnected["path"] = Value::Null;
+    set_project(&f, &disconnected);
+    reconcile().unwrap();
+    assert_eq!(fs::read_to_string(&copy).unwrap(), "#!/bin/sh\n");
+    git(&tree, &["add", "-A"]);
+    assert!(git(&tree, &["status", "--porcelain"]).is_empty());
+}
+
+#[test]
 fn repairs_older_hooks_and_leaves_foreign_hooks_after_disconnect() {
     let f = Fixture::new();
     init(&f.root);
@@ -618,13 +659,10 @@ fn git_protection_rejects_tracked_paths_and_negations_for_both_installers() {
     );
     let tree = crate::worktrees::home().unwrap().join("tracked");
     worktree(&f.root, &tree);
-    for error in [
-        native::Hooks::install(&f.root).unwrap_err(),
-        worktree_integration::reconcile(&f.db, Path::new("/fixture/orka")).unwrap_err(),
-    ] {
-        assert!(error.contains("tracked by Git"), "{error}");
-        assert!(error.contains("not ignored by Git"), "{error}");
-    }
+    native::Hooks::install(&f.root).unwrap();
+    let error = worktree_integration::reconcile(&f.db, Path::new("/fixture/orka")).unwrap_err();
+    assert!(error.contains("tracked by Git"), "{error}");
+    assert!(error.contains("not ignored by Git"), "{error}");
     for checkout in [&f.root, &tree] {
         assert_eq!(fs::read_to_string(checkout.join(claude)).unwrap(), old);
         assert!(!checkout.join(codex).exists());

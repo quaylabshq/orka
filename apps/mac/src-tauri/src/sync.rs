@@ -2067,7 +2067,7 @@ impl<'a> SyncPass<'a> {
                 .iter()
                 .filter(|q| {
                     let error = q["error"].as_str().unwrap_or("");
-                    consolidation_pending(q, error) || error.starts_with("Local upload: ")
+                    defer_upload(q, error)
                 })
                 .map(|q| q["id"].clone()),
         );
@@ -2231,7 +2231,7 @@ impl<'a> SyncPass<'a> {
                         held.insert(project.to_string());
                         return Ok(Continue(()));
                     }
-                    if consolidation_pending(&q, &error) || error.starts_with("Local upload: ") {
+                    if defer_upload(&q, &error) {
                         deferred.insert(q["id"].clone());
                     } else if terminal_error(&error) {
                         deferred.remove(&q["id"]);
@@ -2737,6 +2737,15 @@ pub(crate) fn service_error(error: &str) -> bool {
         || error.ends_with(": Sync service returned an unreadable response")
         || error.starts_with("Account ")
         || error.starts_with("Service changed")
+}
+
+// Deferred rows stay queued without blocking the rest of the project's work.
+fn defer_upload(queued: &Value, error: &str) -> bool {
+    consolidation_pending(queued, error)
+        || error.starts_with("Local upload: ")
+        || (queued["path"] == crate::selective_sharing::QUEUE_PATH
+            && queued["value"]["resource"]["source"] == "pi"
+            && error == crate::selective_sharing::PI_SERVICE_UPGRADE)
 }
 
 // Match only the packaged backend's resource-local MemoryUnavailable contract.
@@ -3748,6 +3757,21 @@ mod queue_tests {
 
     fn queued(sequence: i64, resource: &str) -> Value {
         json!({"sequence":sequence,"id":format!("request-{sequence}"),"project":"project","path":"/v2/sync/push","value":{"resource":{"resourceId":resource,"kind":"memory"}}})
+    }
+
+    #[test]
+    fn only_selected_pi_shares_defer_when_the_server_needs_an_upgrade() {
+        let mut pi = queued(1, "session");
+        pi["path"] = json!(crate::selective_sharing::QUEUE_PATH);
+        pi["value"]["resource"]["source"] = json!("pi");
+        let upgrade = crate::selective_sharing::PI_SERVICE_UPGRADE;
+        assert!(defer_upload(&pi, upgrade));
+        assert!(!defer_upload(&pi, "Service unreachable"));
+        pi["path"] = json!("/v2/sync/push");
+        assert!(!defer_upload(&pi, upgrade));
+        pi["path"] = json!(crate::selective_sharing::QUEUE_PATH);
+        pi["value"]["resource"]["source"] = json!("codex");
+        assert!(!defer_upload(&pi, upgrade));
     }
 
     #[test]
