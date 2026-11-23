@@ -117,6 +117,7 @@ The sidebar is 240px expanded and 88px collapsed. The collapsed rail centers its
 navigation and footer icons and leaves room for the native traffic lights at their
 normal spacing. Tauri's fixed `trafficLightPosition` owns native placement across
 sidebar changes, redraws, and fullscreen transitions. The 32px sidebar toggle stays
-in the workspace header, 8px before the page title, and travels horizontally with
-the content panel. Keyboard activation and reduced motion change the width
+first in the workspace header, 8px before the page title or a detail page's Back
+action, and travels horizontally with the content panel. It is always visible and
+keeps the same position on index and detail pages. Keyboard activation and reduced motion change the width
 instantly while retaining focus.
