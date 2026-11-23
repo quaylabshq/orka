@@ -742,7 +742,7 @@ Declared licenses are upstream metadata. Preserve the actual license notices and
 | [const-oid](https://crates.io/crates/const-oid/0.9.6) | 0.9.6 | Apache-2.0 OR MIT |
 | [const-random](https://crates.io/crates/const-random/0.1.18) | 0.1.18 | MIT OR Apache-2.0 |
 | [const-random-macro](https://crates.io/crates/const-random-macro/0.1.16) | 0.1.16 | MIT OR Apache-2.0 |
-| [cookie](https://crates.io/crates/cookie/0.18.2) | 0.18.2 | MIT OR Apache-2.0 |
+| [cookie](https://crates.io/crates/cookie/0.18.3) | 0.18.3 | MIT OR Apache-2.0 |
 | [cookie-factory](https://crates.io/crates/cookie-factory/0.3.3) | 0.3.3 | MIT |
 | [core-foundation](https://crates.io/crates/core-foundation/0.10.1) | 0.10.1 | MIT OR Apache-2.0 |
 | [core-foundation](https://crates.io/crates/core-foundation/0.9.4) | 0.9.4 | MIT OR Apache-2.0 |
