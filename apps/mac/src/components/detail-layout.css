@@ -187,11 +187,6 @@
 .detail-compact-notes:empty {
   display: none;
 }
-.detail-layout[data-layout="compact"] .markdown-content pre code {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  word-break: break-all;
-}
 .detail-compact-actions {
   display: flex;
   flex-wrap: wrap;
@@ -278,9 +273,6 @@
   .ui-button[aria-pressed="true"]:disabled {
   color: var(--text-tertiary);
 }
-.detail-document .markdown-content {
-  line-height: 20px;
-}
 .detail-comparison {
   display: flex;
   align-items: stretch;
@@ -310,46 +302,6 @@
   content: "";
   flex: 1 1 auto;
   border-left: 1px dashed var(--border-default);
-}
-.detail-document .markdown-content h1 {
-  font-family: "Orka Display Inter", "Inter Variable", sans-serif;
-  font-optical-sizing: auto;
-  font-size: 24px;
-  line-height: 30px;
-  letter-spacing: -0.01em;
-}
-.detail-document .markdown-content h2 {
-  font-family: "Orka Display Inter", "Inter Variable", sans-serif;
-  font-optical-sizing: auto;
-  font-size: 20px;
-  line-height: 30px;
-  letter-spacing: -0.01em;
-  margin-top: 48px;
-}
-.detail-document .markdown-content pre {
-  margin: 16px 0;
-  padding: 12px 16px;
-  line-height: 20px;
-  background: var(--surface-tertiary);
-}
-.detail-document .markdown-content p + p {
-  margin-top: 32px;
-}
-.detail-document .markdown-content p + ul,
-.detail-document .markdown-content p + ol {
-  margin-top: 24px;
-}
-.detail-document .markdown-content h2 + ul,
-.detail-document .markdown-content h2 + ol {
-  margin-top: 32px;
-}
-.detail-document .markdown-content code {
-  font-size: 16px;
-  line-height: 20px;
-}
-.detail-document .markdown-content li {
-  min-height: 24px;
-  margin-block: 8px;
 }
 .skill-content-skeleton {
   display: flex;

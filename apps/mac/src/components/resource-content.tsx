@@ -1,11 +1,18 @@
 import React from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import Markdown, { type Components } from "react-markdown";
-import remarkGfm from "remark-gfm";
 import { diffLines } from "diff";
 import type { Inspection } from "../types.js";
 import { Button } from "./button.js";
-import { MermaidDiagram } from "./mermaid-diagram.js";
+import {
+  MarkdownProperties,
+  readMarkdownProperties,
+} from "./markdown-properties.js";
+import {
+  MarkdownCallout,
+  MarkdownPre,
+  markdownRemarkPlugins,
+} from "./markdown-blocks.js";
 import { LoadingRegion } from "./loading-region.js";
 import { useToasts } from "./toasts.js";
 
@@ -49,21 +56,8 @@ function MarkdownWebLink({
 
 /** Shared Markdown element overrides for synced content and session turns. */
 export const markdownComponents: Components = {
-  pre: ({ children }) => {
-    const code = React.Children.toArray(children)[0];
-    if (
-      React.isValidElement<{ className?: string; children?: React.ReactNode }>(
-        code,
-      ) &&
-      code.props.className?.split(/\s+/).includes("language-mermaid")
-    )
-      return (
-        <MermaidDiagram
-          source={String(code.props.children ?? "").replace(/\n$/, "")}
-        />
-      );
-    return <pre>{children}</pre>;
-  },
+  aside: MarkdownCallout,
+  pre: MarkdownPre,
   li: ({ children, className }) => (
     <li className={className}>
       {className?.includes("task-list-item") ? (
@@ -195,10 +189,29 @@ function LoadedResourceContent({
   }
   const content = inspection.content;
   if (!markdown) return <pre className="content">{content}</pre>;
+  return <FormattedFileMarkdown content={content} />;
+}
+
+/** File frontmatter is independent of the Markdown in individual chat turns. */
+export function FormattedFileMarkdown({
+  content,
+  showProperties = true,
+}: {
+  content: string;
+  showProperties?: boolean;
+}) {
+  const frontmatter = React.useMemo(
+    () => (showProperties ? readMarkdownProperties(content) : null),
+    [content, showProperties],
+  );
   return (
     <article className="markdown-content" aria-label="Rendered Markdown">
-      <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-        {content}
+      {frontmatter && <MarkdownProperties rows={frontmatter.rows} />}
+      <Markdown
+        remarkPlugins={markdownRemarkPlugins}
+        components={markdownComponents}
+      >
+        {frontmatter?.body ?? content}
       </Markdown>
     </article>
   );

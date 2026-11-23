@@ -2,7 +2,13 @@ import React, { useEffect, useState } from "react";
 import { renderMermaid } from "./mermaid-renderer.js";
 
 /** Fenced Mermaid blocks become diagrams only in the formatted reader. */
-export function MermaidDiagram({ source }: { source: string }) {
+export function MermaidDiagram({
+  source,
+  fallback,
+}: {
+  source: string;
+  fallback: React.ReactNode;
+}) {
   const [result, setResult] = useState<{
     source: string;
     svg?: string;
@@ -28,20 +34,25 @@ export function MermaidDiagram({ source }: { source: string }) {
       <div
         className="mermaid-diagram"
         role="img"
+        tabIndex={0}
         aria-label="Mermaid diagram"
         dangerouslySetInnerHTML={{ __html: current.svg }}
       />
     );
   return (
     <div className="mermaid-fallback">
-      {current?.failed && (
-        <p className="mermaid-status" role="status">
-          Diagram unavailable. Showing source.
-        </p>
+      {current?.failed ? (
+        <>
+          <p className="mermaid-status" role="status">
+            Diagram unavailable. Showing source.
+          </p>
+          {fallback}
+        </>
+      ) : (
+        <pre tabIndex={0} role="group" aria-label="Mermaid source">
+          <code className="language-mermaid">{source}</code>
+        </pre>
       )}
-      <pre>
-        <code className="language-mermaid">{source}</code>
-      </pre>
     </div>
   );
 }

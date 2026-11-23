@@ -34,7 +34,7 @@ Compact dialogs and gallery sections use `heading-xs`. Page titles, navigation, 
 
 Sidebar status text uses `body-xs`, switching to `body-2xs` at the compact breakpoint. There is no 9px or 11px exception.
 
-Resource reading uses `body-md` (16px/24px), including raw content, Markdown body, code, and tables. Preserve whitespace in raw content. Markdown H1 uses `heading-sm`, H2 uses `heading-xs`, and H3–H6 use `label-md`; HTML heading levels retain the document outline. Reader text uses primary color, with secondary reserved for supporting descriptions and blockquotes. Emphasis inside content may use the shared medium/semibold weight tokens without changing its size, line height, or tracking.
+Formatted Markdown uses Inter at `body-md` (16px/24px) with a maximum line length of 68ch. H1 uses `heading-md`, H2 uses `heading-xs`, and H3–H6 use semibold at `label-md` size. Code uses IBM Plex Mono: 0.88em inline and 14px/22px in blocks. Preserve indentation and allow wide blocks and tables to scroll within the reader. Raw Markdown retains the source text.
 
 `typography.css` provides opt-in classes. Inter Variable must already be loaded by the consumer. CSS expresses letter spacing in `em`: −0.5% becomes `-0.005em`.
 
