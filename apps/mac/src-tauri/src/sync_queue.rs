@@ -1,13 +1,13 @@
 //! The background sync queue: at most one pending job per project, plus a `*`
 //! job for the workspace-wide steps. One worker runs one job at a time and
-//! holds the workspace lock only for that job, so foreground work can take the
-//! lock between jobs instead of waiting for a whole cycle.
+//! holds its project or workspace lock only for that job, so workspace-wide
+//! foreground work can proceed between jobs.
 use crate::{
     db::{self, Result},
     projects::CAPTURE_ONLY,
     sync_schedule::{jitter, Interval},
 };
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde_json::{json, Value};
 use std::{collections::HashMap, sync::LazyLock, time::Duration};
 
@@ -519,29 +519,36 @@ impl SyncQueue {
         .map_err(|e| e.to_string())
     }
 
-    /// Marks the most urgent ready job as running. Its row stays queued until
-    /// the job finishes, so a crash leaves it to run again. Its unique claim
-    /// identity remains active when a concurrent request lowers not_before.
+    #[cfg(test)]
     fn claim(db: &Connection, now: i64) -> Result<Option<Job>> {
+        Self::claim_next(db, now, None)
+    }
+
+    /// Claims the highest-priority ready job if it still matches the lock held
+    /// by the caller. The row remains queued for crash recovery.
+    fn claim_next(db: &Connection, now: i64, locked_project: Option<&str>) -> Result<Option<Job>> {
         let tx = rusqlite::Transaction::new_unchecked(db, rusqlite::TransactionBehavior::Immediate)
             .map_err(|e| e.to_string())?;
-        let job = Self::next(&tx, now)?;
-        if let Some(job) = &job {
-            let claim = json!(uuid::Uuid::new_v4().to_string());
-            sql(tx.execute(
-                "UPDATE sync_queue SET not_before=?1 WHERE project=?2",
-                params![RUNNING, job.project],
-            ))?;
-            db::set(&tx, &claim_key(&job.project), &claim)?;
-            db::set(&tx, "syncProgress", &Value::Null)?;
-            db::set(
-                &tx,
-                PROGRESS_CLAIM,
-                &json!({"project":job.project,"claim":claim,"owner":PROGRESS_OWNER.as_str()}),
-            )?;
+        let Some(job) = Self::next(&tx, now)? else {
+            return Ok(None);
+        };
+        if locked_project.is_some_and(|project| project != job.project) {
+            return Ok(None);
         }
+        let claim = json!(uuid::Uuid::new_v4().to_string());
+        sql(tx.execute(
+            "UPDATE sync_queue SET not_before=?1 WHERE project=?2",
+            params![RUNNING, job.project],
+        ))?;
+        db::set(&tx, &claim_key(&job.project), &claim)?;
+        db::set(&tx, "syncProgress", &Value::Null)?;
+        db::set(
+            &tx,
+            PROGRESS_CLAIM,
+            &json!({"project":job.project,"claim":claim,"owner":PROGRESS_OWNER.as_str()}),
+        )?;
         tx.commit().map_err(|e| e.to_string())?;
-        Ok(job)
+        Ok(Some(job))
     }
 
     /// Success removes the job and restarts the project's timer, a cancel does
@@ -630,9 +637,9 @@ impl SyncQueue {
         Ok(())
     }
 
-    /// Runs the most urgent ready job under the workspace lock and releases the
-    /// lock before returning. Returns false when no job ran: nothing was ready,
-    /// foreground work is waiting, or another operation holds the lock.
+    /// Runs the most urgent ready job under its project or workspace lock.
+    /// Returns false if no job is ready, foreground work is waiting, or the
+    /// required lock is busy. A busy job stays queued without retry backoff.
     pub(crate) async fn run_next(
         &mut self,
         interval: &Interval,
@@ -641,16 +648,39 @@ impl SyncQueue {
         if crate::projects::foreground_waiting()? {
             return Ok(false);
         }
-        let Some(_lock) = crate::projects::try_lock()? else {
+        let scope = db::CacheScope::current()?;
+        let Some(candidate) = Self::next(&scope.open_read_only()?, Self::now())? else {
             return Ok(false);
         };
-        let mut db = db::open()?;
-        let Some(job) = Self::claim(&db, Self::now())? else {
+        let Some((mut db, job, _guard)) = Self::lock_and_claim(&scope, &candidate.project)? else {
             return Ok(false);
         };
+        if job.project != WORKSPACE {
+            // Another project's deletion can commit to the same WAL database.
+            // Acquire the writer before reading so a write transaction can wait.
+            db.set_transaction_behavior(TransactionBehavior::Immediate);
+        }
         let result = run(&mut db, &job).await;
         self.settle(&db, job, &result, Self::now(), interval)?;
         Ok(true)
+    }
+
+    fn lock_and_claim(
+        scope: &db::CacheScope,
+        project: &str,
+    ) -> Result<Option<(Connection, Job, crate::projects::OperationLock)>> {
+        let Some(guard) =
+            crate::projects::try_lock_scope((project != WORKSPACE).then_some(project))?
+        else {
+            return Ok(None);
+        };
+        // The first read only selects a lock. Check the account and service
+        // again under that lock before claiming a job or using the cache.
+        if &db::CacheScope::current()? != scope {
+            return Ok(None);
+        }
+        let db = scope.open()?;
+        Ok(Self::claim_next(&db, Self::now(), Some(project))?.map(|job| (db, job, guard)))
     }
 }
 
@@ -1733,6 +1763,103 @@ mod tests {
         assert!(!SyncQueue::running(&db, "a").unwrap());
         assert!(!SyncQueue::running(&db, "b").unwrap());
         assert!(!SyncQueue::cancelled(&db, "b").unwrap());
+    }
+
+    #[test]
+    fn a_service_switch_invalidates_a_job_selected_before_locking() {
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("ORKA_TEST_HOME", home.path());
+        db::profile(&uuid::Uuid::new_v4().to_string()).unwrap();
+        let db = db::open().unwrap();
+        db::set(&db, "config", &json!({"apiUrl":"https://old.example"})).unwrap();
+        let scope = db::CacheScope::current().unwrap();
+        let old = scope.open().unwrap();
+        SyncQueue::enqueue(&old, "a", Priority::User, "old service", 0).unwrap();
+        let candidate = SyncQueue::next(&old, 0).unwrap().unwrap();
+        {
+            let _workspace = crate::projects::lock().unwrap();
+            db::set(&old, "config", &json!({"apiUrl":"https://new.example"})).unwrap();
+        }
+        let new = db::open().unwrap();
+        SyncQueue::enqueue(&new, "a", Priority::User, "new service", 0).unwrap();
+
+        assert!(SyncQueue::lock_and_claim(&scope, &candidate.project)
+            .unwrap()
+            .is_none());
+        assert_eq!(SyncQueue::next(&old, 0).unwrap(), Some(candidate));
+        assert_eq!(
+            SyncQueue::next(&new, 0).unwrap().unwrap().reason,
+            "new service"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_project_operation_leaves_conflicting_sync_jobs_unclaimed() {
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("ORKA_TEST_HOME", home.path());
+        let db = db::open().unwrap();
+        let mut queue = SyncQueue::new(0);
+        for project in ["a", WORKSPACE] {
+            SyncQueue::enqueue(&db, project, Priority::User, "fixture", 0).unwrap();
+            let original = SyncQueue::next(&db, 0).unwrap().unwrap();
+            let operation = crate::projects::try_lock_scope(Some("a")).unwrap().unwrap();
+            assert!(!queue
+                .run_next(&interval(), async |_, _| unreachable!())
+                .await
+                .unwrap());
+            assert_eq!(SyncQueue::next(&db, 0).unwrap(), Some(original));
+            assert!(!SyncQueue::running(&db, project).unwrap());
+            drop(operation);
+            assert!(queue
+                .run_next(&interval(), async |_, job| {
+                    assert_eq!(job.project, project);
+                    Ok(Outcome::Synced)
+                })
+                .await
+                .unwrap());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_project_sync_records_its_receipt_during_another_projects_deletion() {
+        use crate::projects::{self, ProjectLifecycle};
+
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("ORKA_TEST_HOME", home.path());
+        let db = db::open().unwrap();
+        for id in ["a", "b"] {
+            db::upsert(&db, "projects", id, id, &json!({"id":id})).unwrap();
+        }
+        SyncQueue::enqueue(&db, "a", Priority::User, "fixture", 0).unwrap();
+        let deletion = db::open().unwrap();
+        let ran = SyncQueue::new(0)
+            .run_next(&interval(), async |db, job| {
+                assert_eq!(job.project, "a");
+                let _delete = projects::try_lock_scope(Some("b")).unwrap().unwrap();
+                deletion.execute_batch("BEGIN IMMEDIATE").unwrap();
+                deletion.mark_deleted("b", &json!({})).unwrap();
+                // Finish the deletion when sync requests the writer lock. A
+                // deferred read-to-write upgrade can instead fail immediately.
+                db.busy_handler(Some(move |attempt| {
+                    attempt == 0 && deletion.execute_batch("COMMIT").is_ok()
+                }))
+                .unwrap();
+                let tx = db.transaction().unwrap();
+                let receipt = json!({"resource":{"resourceId":"uploaded","projectId":"a","revision":1},"conflicts":[]});
+                crate::sync::apply_event(&tx, &receipt).unwrap();
+                tx.commit().unwrap();
+                Ok(Outcome::Synced)
+            })
+            .await
+            .unwrap();
+        assert!(ran);
+        assert!(projects::active(&db, "a").is_ok());
+        assert!(projects::active(&db, "b").is_err());
+        assert_eq!(
+            db::rows(&db, "SELECT value FROM resources WHERE id='uploaded'", &[]).unwrap()[0]
+                ["revision"],
+            1
+        );
     }
 
     #[tokio::test]

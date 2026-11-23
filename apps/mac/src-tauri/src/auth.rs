@@ -401,7 +401,7 @@ pub async fn complete(callback: Option<String>, code: Option<String>) -> Result<
     cancel()?;
     Ok(json!({"signedIn":true}))
 }
-pub async fn token_for_service(owner: &str, base: &str) -> Result<String> {
+fn session_for_service(owner: &str, base: &str) -> Result<(Value, Value)> {
     let value = session()?;
     let config = db::get(&db::open()?, "config")?;
     // Old sessions are bound to the legacy origin on first upgrade.
@@ -411,11 +411,41 @@ pub async fn token_for_service(owner: &str, base: &str) -> Result<String> {
     if value["user"]["id"] != owner || bound != base || config["apiUrl"] != base {
         return Err("Account or service changed; sync will restart with its own cache".into());
     }
-    if value["expires_at"].as_i64().unwrap_or(0) > chrono::Utc::now().timestamp() + 60 {
-        return value["access_token"]
-            .as_str()
-            .map(str::to_string)
-            .ok_or("Session is invalid".into());
+    Ok((value, config))
+}
+
+fn fresh_access_token(session: &Value) -> Result<Option<String>> {
+    if session["expires_at"].as_i64().unwrap_or(0) <= chrono::Utc::now().timestamp() + 60 {
+        return Ok(None);
+    }
+    session["access_token"]
+        .as_str()
+        .map(|token| Some(token.to_owned()))
+        .ok_or("Session is invalid".into())
+}
+
+pub async fn token_for_service(owner: &str, base: &str) -> Result<String> {
+    if let Some(token) = fresh_access_token(&session_for_service(owner, base)?.0)? {
+        return Ok(token);
+    }
+    // The desktop and daemon share one rotating refresh token. The loser of
+    // the lock must reread the session instead of rotating the old token again.
+    let _refresh = tokio::task::spawn_blocking(|| -> Result<std::fs::File> {
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(db::root()?.join("auth-refresh.lock"))
+            .map_err(|e| e.to_string())?;
+        fs2::FileExt::lock_exclusive(&file).map_err(|e| e.to_string())?;
+        Ok(file)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    let (value, config) = session_for_service(owner, base)?;
+    if let Some(token) = fresh_access_token(&value)? {
+        return Ok(token);
     }
     let refreshed = request(
         &config,

@@ -6,7 +6,7 @@ use crate::{
     sync_schedule::Interval,
 };
 use fs2::FileExt;
-use rusqlite::params;
+use rusqlite::{params, Transaction, TransactionBehavior};
 use serde_json::{json, Value};
 use std::{
     collections::HashSet,
@@ -614,8 +614,9 @@ fn rebuild_unredacted_outbox_for(db: &rusqlite::Connection, project: Option<&str
     if db::get(db, &key)? == true {
         return Ok(());
     }
-    let tx = db
-        .unchecked_transaction()
+    // The project or workspace lock keeps the scanned rows stable. Prepare
+    // replacement blobs before acquiring the SQLite writer for the migration.
+    let tx = Transaction::new_unchecked(db, TransactionBehavior::Deferred)
         .map_err(|error| error.to_string())?;
     let previously_rebuilt = db::get(&tx, "sessionOutboxRedacted")? == true;
     let rows = db::rows(
@@ -623,6 +624,7 @@ fn rebuild_unredacted_outbox_for(db: &rusqlite::Connection, project: Option<&str
         "SELECT json_object('id',id,'project',project,'path',path,'value',json(value),'error',error) FROM outbox WHERE (?1 IS NULL OR project=?1) AND (path='/v2/sessions/copy' OR (path='/v2/sync/push' AND json_extract(value,'$.resource.kind')='session')) ORDER BY rowid",
         &[&project],
     )?;
+    let mut replacements = Vec::new();
     for row in rows {
         let project_id = row["project"].as_str().ok_or("Missing project")?;
         // A project job may have completed this migration before the first
@@ -656,7 +658,13 @@ fn rebuild_unredacted_outbox_for(db: &rusqlite::Connection, project: Option<&str
             Ok(()) => continue,
             Err(_) => json!({"drop":true}),
         };
-        db::set(&tx, &outbox_redaction_key(id), &replacement)?;
+        replacements.push((outbox_redaction_key(id), replacement));
+    }
+    tx.commit().map_err(|error| error.to_string())?;
+    let tx = Transaction::new_unchecked(db, TransactionBehavior::Immediate)
+        .map_err(|error| error.to_string())?;
+    for (key, replacement) in replacements {
+        db::set(&tx, &key, &replacement)?;
     }
     db::set(&tx, &key, &json!(true))?;
     tx.commit().map_err(|error| error.to_string())?;
@@ -1755,7 +1763,10 @@ fn scan_off_runtime<T: Send + 'static>(
         // Use the job's database, not whichever account is current when the worker starts.
         let (root, project) = (root.to_path_buf(), project.clone());
         Ok(tokio::task::spawn_blocking(move || {
-            scan(&db::open_at(&root)?, &project)
+            let mut db = db::open_at(&root)?;
+            // Scans also read and write, so acquire the writer before taking a snapshot.
+            db.set_transaction_behavior(TransactionBehavior::Immediate);
+            scan(&db, &project)
         }))
     } else {
         Err(scan(db, project))
@@ -2506,8 +2517,8 @@ async fn sync_workspace(
     ))
 }
 
-/// Runs ready queue jobs one at a time, releasing the shared sync slot and the
-/// workspace lock between jobs, until none is ready or foreground work waits.
+/// Runs ready queue jobs one at a time, releasing the shared sync slot and
+/// each job's locks before moving on or yielding to foreground work.
 async fn drain_queue(queue: &mut SyncQueue, interval: &Interval) {
     let Ok(base) = db::base_root() else { return };
     loop {

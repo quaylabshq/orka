@@ -240,15 +240,56 @@ fn lock_file(name: &str) -> Result<File> {
         .map_err(|e| e.to_string())
 }
 
+const LOCK_BUSY: &str =
+    "A sync or project operation is in progress. Wait for it to finish and try again.";
+
 pub fn lock() -> Result<File> {
-    try_lock()?.ok_or_else(|| {
-        "A sync or project operation is in progress. Wait for it to finish and try again.".into()
-    })
+    try_lock()?.ok_or_else(|| LOCK_BUSY.into())
 }
 
 pub fn try_lock() -> Result<Option<File>> {
-    let file = lock_file("workspace.lock")?;
-    match file.try_lock_exclusive() {
+    try_lock_file("workspace.lock", false)
+}
+
+pub(crate) struct OperationLock {
+    _project: Option<File>,
+    _workspace: File,
+}
+
+/// Workspace operations exclude all projects. Project operations share the
+/// workspace gate but exclude competing operations on the same project.
+pub(crate) fn try_lock_scope(project: Option<&str>) -> Result<Option<OperationLock>> {
+    let Some(workspace) = try_lock_file("workspace.lock", project.is_some())? else {
+        return Ok(None);
+    };
+    let project = if let Some(id) = project {
+        // Queue keys aren't necessarily UUIDs and must not be used as paths.
+        let key = uuid::Uuid::parse_str(id).map_or_else(
+            |_| db::digest(id.as_bytes()),
+            |id| db::digest(id.as_bytes()),
+        );
+        let name = format!("project-{key}.lock");
+        let Some(project) = try_lock_file(&name, false)? else {
+            return Ok(None);
+        };
+        Some(project)
+    } else {
+        None
+    };
+    Ok(Some(OperationLock {
+        _project: project,
+        _workspace: workspace,
+    }))
+}
+
+fn try_lock_file(name: &str, shared: bool) -> Result<Option<File>> {
+    let file = lock_file(name)?;
+    let result = if shared {
+        FileExt::try_lock_shared(&file)
+    } else {
+        FileExt::try_lock_exclusive(&file)
+    };
+    match result {
         Ok(()) => Ok(Some(file)),
         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
         Err(error) => Err(format!("Cannot access the project lock: {error}")),
@@ -596,18 +637,16 @@ pub fn remove_local(db: &Connection, id: &str) -> Result<()> {
 
 #[tauri::command]
 pub async fn project_command(action: String, input: Value) -> Result<Value> {
-    let db = db::open()?;
-    let owner = db::get(&db, "user")?
-        .as_str()
-        .ok_or("Sign in first")?
-        .to_string();
-    if action == "capabilities" {
-        return sync::api_as(&owner, "GET", "/v2/projects/capabilities", None).await;
-    }
-    if action == "list" {
-        let capable =
-            sync::api_as(&owner, "GET", "/v2/projects/capabilities", None).await?["lifecycle"] == 1;
-        let list = sync::api_as(&owner, "GET", CATALOG_PATH, None).await?;
+    if matches!(action.as_str(), "capabilities" | "list") {
+        let db = db::open()?;
+        let owner = db::get(&db, "user")?;
+        let owner = owner.as_str().ok_or("Sign in first")?;
+        let capabilities = sync::api_as(owner, "GET", "/v2/projects/capabilities", None).await?;
+        if action == "capabilities" {
+            return Ok(capabilities);
+        }
+        let capable = capabilities["lifecycle"] == 1;
+        let list = sync::api_as(owner, "GET", CATALOG_PATH, None).await?;
         let _lock = lock()?;
         merge_catalog(&db, &list)?;
         return Ok(
@@ -615,12 +654,22 @@ pub async fn project_command(action: String, input: Value) -> Result<Value> {
         );
     }
     let id = input["projectId"].as_str().ok_or("Choose a project")?;
-    uuid::Uuid::parse_str(id).map_err(|_| "Invalid project")?;
+    let uuid = uuid::Uuid::parse_str(id).map_err(|_| "Invalid project")?;
+    let canonical = (action == "delete").then(|| uuid.to_string());
+    let id = canonical.as_deref().unwrap_or(id);
     if action == "local_name" {
+        let db = db::open()?;
+        db::get(&db, "user")?.as_str().ok_or("Sign in first")?;
         set_local_name(&db, id, input.get("name").ok_or("Enter a project name")?)?;
         return Ok(json!({"ok":true}));
     }
-    let _lock = lock()?;
+    let _lock = try_lock_scope((action == "delete").then_some(id))?.ok_or(LOCK_BUSY)?;
+    // Resolve the account after taking the lock that prevents a service switch.
+    let db = db::open()?;
+    let owner = db::get(&db, "user")?
+        .as_str()
+        .ok_or("Sign in first")?
+        .to_string();
     match action.as_str() {
         "reset-source-remote" => {
             active(&db, id)?;

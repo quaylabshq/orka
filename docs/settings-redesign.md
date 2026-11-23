@@ -16,6 +16,12 @@ React renders drafts and invokes existing Tauri commands. Rust owns local prefer
 
 The authenticated `/v2/projects/capabilities` response advertises `rolePolicies: 1`, `policyOperations: 1`, and optional `deviceHardware: 1`. Without both policy capabilities, Permissions explains that the service needs an update and stays read-only. Existing projects keep legacy enforcement until an Owner confirms the exact migration diff.
 
+For projects with role-based permissions, open **Settings → Permissions** to
+set **Default memory access** for Admins and Members. **Reader** can use shared
+memories. **Contributor** can also add and update them. This access also applies
+to project instructions. Previously saved **Add only** access stays active until
+an Owner chooses a replacement.
+
 A policy save includes all eight Admin/Member choices, the expected policy revision, and one logical operation UUID. Uncertain outcomes keep selectors locked and reconcile that UUID. Reconnection never applies a permission draft automatically. Conflicts require an explicit comparison and preserve unrelated newer values. Account, service, and project scopes bind drafts and responses; signing out clears draft and Skullet shape memory.
 
 The desktop consumes role-policy types, categories, allowed access values, and defaults from the checksummed protocol 0.5.3 release in `vendor/`. API source remains canonical; the manifest pins the published release commit and package checksum.

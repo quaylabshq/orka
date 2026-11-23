@@ -2,7 +2,7 @@ use crate::{
     db::{self, Result},
     governance, indexer, packages, sources, sync,
 };
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, Transaction, TransactionBehavior};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
@@ -139,8 +139,10 @@ pub fn reconcile_project(db: &Connection, project: &Value, apply: bool) -> Resul
     let mut instructions = 0;
     let mut archived = 0;
     let mut preserved = 0;
-    let tx = db
-        .unchecked_transaction()
+    let mut updates = Vec::new();
+    // The caller holds the project or workspace lock. Check the files on a
+    // read snapshot, then reserve the writer only to apply the staged changes.
+    let tx = Transaction::new_unchecked(db, TransactionBehavior::Deferred)
         .map_err(|error| error.to_string())?;
     for resource in db::rows(
         &tx,
@@ -151,11 +153,12 @@ pub fn reconcile_project(db: &Connection, project: &Value, apply: bool) -> Resul
             continue;
         };
         let id = resource["resourceId"].as_str().ok_or("Missing resource")?;
-        let binding = indexer::binding(&tx, id)?;
+        let mut binding = indexer::binding(&tx, id)?;
         if let Ok(Some(next)) = matching_instruction(&tx, &source, &resource, &binding) {
             instructions += 1;
             if apply {
-                db::upsert(&tx, "bindings", id, project_id, &next)?;
+                updates.push(("bindings", id.to_owned(), next.clone()));
+                binding = next;
             }
         }
         let drafts = db::rows(
@@ -166,7 +169,6 @@ pub fn reconcile_project(db: &Connection, project: &Value, apply: bool) -> Resul
         if drafts.is_empty() {
             continue;
         }
-        let binding = indexer::binding(&tx, id)?;
         let eligible = resource["kind"] == "skill"
             && crate::projects::sharing_allowed(&source, "skill")
             && resource["deleted"] != true
@@ -197,17 +199,21 @@ pub fn reconcile_project(db: &Connection, project: &Value, apply: bool) -> Resul
                 draft["dismissalReason"] = json!("superseded");
                 draft["supersededByRevision"] = resource["revision"].clone();
                 draft["archivedAt"] = json!(db::now());
-                db::upsert(
-                    &tx,
+                updates.push((
                     "drafts",
-                    draft["id"].as_str().ok_or("Missing draft")?,
-                    project_id,
-                    &draft,
-                )?;
+                    draft["id"].as_str().ok_or("Missing draft")?.to_owned(),
+                    draft,
+                ));
             }
         }
     }
-    if apply {
+    tx.commit().map_err(|error| error.to_string())?;
+    if !updates.is_empty() {
+        let tx = Transaction::new_unchecked(db, TransactionBehavior::Immediate)
+            .map_err(|error| error.to_string())?;
+        for (table, id, value) in updates {
+            db::upsert(&tx, table, &id, project_id, &value)?;
+        }
         tx.commit().map_err(|error| error.to_string())?;
     }
     Ok(
