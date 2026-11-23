@@ -206,6 +206,30 @@ fn item_paths_resolve_discovered_codex_learning_and_reject_symlink_escapes() {
     assert!(actions::paths(&f.db, &f.project, &input).is_err());
     fs::remove_file(&path).unwrap();
     fs::write(&path, &text).unwrap();
+
+    let v2 = crate::native::codex_home()
+        .unwrap()
+        .join("memories_v2/rollout_summaries");
+    fs::create_dir_all(&v2).unwrap();
+    let v2_path = v2.join("v2-context-menu.md");
+    fs::write(&v2_path, &text).unwrap();
+    let catalog = crate::local_resources::catalog(&f.db, &f.project, "memory").unwrap();
+    let summary = catalog["resources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|resource| resource["logicalPath"] == "codex/summaries/v2-context-menu.md")
+        .unwrap();
+    input["resourceId"] = summary["resourceId"].clone();
+    assert_eq!(
+        actions::paths(&f.db, &f.project, &input).unwrap(),
+        vec![v2_path.canonicalize().unwrap()]
+    );
+    fs::remove_file(&v2_path).unwrap();
+    std::os::unix::fs::symlink(&outside, &v2_path).unwrap();
+    assert!(actions::paths(&f.db, &f.project, &input).is_err());
+    fs::remove_file(&v2_path).unwrap();
+
     let durable = memories.join("MEMORY.md");
     fs::write(&durable,"# Durable context\n\n- rollout_summaries/context-menu.md\n\nKeep object actions consistent.\n").unwrap();
     let catalog = crate::local_resources::catalog(&f.db, &f.project, "memory").unwrap();

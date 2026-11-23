@@ -24,7 +24,6 @@ import {
 } from "../hooks/use-fluid-hover.js";
 import { FluidHoverHighlight } from "./fluid-hover-highlight.js";
 import { ItemContextMenu, type ItemMenuAction } from "./item-menu.js";
-import { inactiveBadge } from "./project-inactive.js";
 import type { LocalKind } from "./use-local-resources.js";
 
 const sections = [
@@ -65,7 +64,6 @@ function ProjectOption({
 }) {
   const ref = React.useRef<HTMLButtonElement>(null);
   useRegisterFluidHoverItem(registerItem, index, ref);
-  const badge = inactiveBadge(project);
   return (
     <ItemContextMenu
       actions={actions}
@@ -77,16 +75,11 @@ function ProjectOption({
         role="option"
         aria-selected={selected}
         tabIndex={selected ? 0 : -1}
-        className={`project-menu-item${badge ? " project-menu-item-inactive" : ""}`}
+        className="project-menu-item"
         onClick={onChoose}
       >
         <FolderIcon size={16} aria-hidden="true" />
         <span>{projectLabel(project)}</span>
-        {badge && (
-          <small className="project-menu-badge" title={badge}>
-            {badge}
-          </small>
-        )}
         {selected && (
           <CheckIcon
             className="project-menu-selected"
@@ -104,6 +97,7 @@ export function ProjectPicker({
   projectId,
   collapsed,
   onProjectChange,
+  onEmptyAutoFocus,
   triggerRef,
   projectActions,
 }: {
@@ -111,15 +105,31 @@ export function ProjectPicker({
   projectId: string;
   collapsed: boolean;
   onProjectChange: (id: string) => void;
-  triggerRef?: React.Ref<HTMLButtonElement>;
+  onEmptyAutoFocus: () => void;
+  triggerRef?: React.RefObject<HTMLButtonElement | null>;
   projectActions?: (project: Project) => ItemMenuAction[];
 }) {
   const selected = projects.find((p) => p.id === projectId);
   const label = selected ? projectLabel(selected) : "Select project";
-  const [open, setOpen] = React.useState(false);
+  const [requestedOpen, setOpen] = React.useState(false);
+  const hasProjects = projects.length > 0;
+  const open = requestedOpen && hasProjects;
+  const hadProjects = React.useRef(hasProjects);
   const [keyboard, setKeyboard] = React.useState(false);
   const reduced = useReducedMotion();
   const listRef = React.useRef<HTMLDivElement>(null);
+  React.useLayoutEffect(() => {
+    const becameEmpty = hadProjects.current && !hasProjects;
+    hadProjects.current = hasProjects;
+    if (!becameEmpty) return;
+    setOpen(false);
+    if (
+      document.activeElement === document.body ||
+      document.activeElement === triggerRef?.current ||
+      listRef.current?.contains(document.activeElement)
+    )
+      onEmptyAutoFocus();
+  }, [hasProjects, onEmptyAutoFocus, triggerRef]);
   const focusEdge = React.useRef<"first" | "last" | null>(null);
   const actionAfterClose = React.useRef<(() => void) | null>(null);
   const typeahead = React.useRef({ text: "", time: 0 });
@@ -201,7 +211,7 @@ export function ProjectPicker({
             aria-expanded={open}
             className="project-selector"
             data-selected={Boolean(selected)}
-            disabled={!projects.length}
+            disabled={!hasProjects}
             aria-label={
               collapsed ? "Select project: " + label : "Select project"
             }
@@ -253,10 +263,20 @@ export function ProjectPicker({
               onPointerDownCapture={() => setKeyboard(false)}
               onCloseAutoFocus={(event) => {
                 const action = actionAfterClose.current;
-                if (!action) return;
-                actionAfterClose.current = null;
-                event.preventDefault();
-                action();
+                if (action) {
+                  actionAfterClose.current = null;
+                  event.preventDefault();
+                  action();
+                  return;
+                }
+                // Exit can finish after navigation has already moved focus.
+                const focused = document.activeElement;
+                if (
+                  focused &&
+                  focused !== document.body &&
+                  !listRef.current?.contains(focused)
+                )
+                  event.preventDefault();
               }}
               onOpenAutoFocus={(event) => {
                 event.preventDefault();

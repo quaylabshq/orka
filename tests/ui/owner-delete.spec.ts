@@ -2,6 +2,73 @@ import { mkdir } from "node:fs/promises";
 import { test, expect } from "@playwright/test";
 import { settingsFixture, settingsCalls } from "./fixtures/settings.js";
 
+test("Settings lists active and disabled projects and can add a project back to this Mac", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 900, height: 640 });
+  const settings = await settingsFixture(page, {
+    disabledProjects: [
+      {
+        id: "hidden",
+        name: "Field notes",
+        localName: "Notes",
+        role: "member",
+      },
+    ],
+  });
+  const projects = settings.getByRole("button", {
+    name: "Projects",
+    exact: true,
+  });
+  await projects.click();
+  const active = settings.getByRole("region", { name: "Active projects" });
+  const disabled = settings.getByRole("region", {
+    name: "Disabled on this Mac",
+  });
+  await expect(active.getByRole("listitem")).toHaveCount(2);
+  await expect(disabled.getByText("Notes", { exact: true })).toBeVisible();
+  const picker = page.getByRole("combobox", {
+    name: "Select project",
+    exact: true,
+  });
+  await picker.click();
+  await expect(
+    page.getByRole("option", { name: "Notes", exact: true }),
+  ).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await expect(picker).toBeFocused();
+
+  await disabled
+    .getByRole("button", { name: "Add to this Mac", exact: true })
+    .press("Enter");
+  await expect(disabled).toHaveCount(0);
+  await expect(active.getByText("Notes", { exact: true })).toBeVisible();
+  await expect(
+    settings.getByRole("heading", { name: "Projects", exact: true }),
+  ).toBeFocused();
+  await picker.click();
+  await expect(
+    page.getByRole("option", { name: "Notes", exact: true }),
+  ).toBeVisible();
+  await page.keyboard.press("Escape");
+  await active
+    .getByRole("listitem")
+    .filter({ hasText: "Notes" })
+    .getByRole("button", { name: "Manage", exact: true })
+    .click();
+  await expect(
+    settings.getByRole("group", { name: "Project settings for Notes" }),
+  ).toBeVisible();
+  await expect(
+    settings.getByRole("button", { name: "Leave project", exact: true }),
+  ).toBeVisible();
+  await expect(picker).toContainText("Orka");
+  expect(
+    (await settingsCalls(page)).find((call) => call.args.action === "show")
+      ?.args,
+  ).toEqual({ action: "show", input: { projectId: "hidden" } });
+});
+
 test("owner sees the danger zone and confirms project deletion by name", async ({
   page,
 }) => {
@@ -153,11 +220,17 @@ test("account recovery remains reachable without active projects", async ({
     exact: true,
   });
   await expect(projects).toBeEnabled();
+  const picker = page.getByRole("combobox", {
+    name: "Select project",
+    exact: true,
+  });
+  await expect(picker).toBeDisabled();
   await projects.click();
   const recent = settings.getByRole("region", { name: "Recently deleted" });
   await expect(recent).toContainText("Owned project");
   await recent.getByRole("button", { name: "Restore", exact: true }).click();
   await expect(recent).toHaveCount(0);
+  await expect(picker).toBeEnabled();
 });
 
 test("account recovery is independent of selected project role and fits long names", async ({
@@ -179,15 +252,22 @@ test("account recovery is independent of selected project role and fits long nam
   });
   await settings.getByRole("button", { name: "Projects", exact: true }).click();
   const recent = settings.getByRole("region", { name: "Recently deleted" });
+  const details = recent.getByRole("button", { name: "Details", exact: true });
   const restore = recent.getByRole("button", { name: "Restore", exact: true });
   const purge = recent.getByRole("button", { name: "Delete now", exact: true });
+  await recent.scrollIntoViewIfNeeded();
+  await expect(details).toBeInViewport();
   await expect(restore).toBeInViewport();
   await expect(purge).toBeInViewport();
   const bounds = await recent.boundingBox();
-  for (const button of [restore, purge]) {
+  for (const button of [details, restore, purge]) {
     const box = await button.boundingBox();
     expect(box!.x + box!.width).toBeLessThanOrEqual(bounds!.x + bounds!.width);
   }
+  const deadline = await recent.getByText(/Restorable until/).boundingBox();
+  expect(deadline!.y + deadline!.height).toBeLessThanOrEqual(
+    (await restore.boundingBox())!.y,
+  );
 });
 
 test("delete uses configured restore policy and old services cannot delete", async ({
@@ -299,7 +379,10 @@ for (const kind of ["archived", "deleted"] as const) {
     await settings
       .getByRole("button", { name: "Projects", exact: true })
       .click();
-    const row = settings.getByRole("listitem").filter({
+    const recoveryList = settings.getByRole("region", {
+      name: kind === "deleted" ? "Recently deleted" : "Archived projects",
+    });
+    const row = recoveryList.getByRole("listitem").filter({
       hasText:
         kind === "deleted" ? "Recovery project 03" : "Recovery project 00",
     });
@@ -311,6 +394,11 @@ for (const kind of ["archived", "deleted"] as const) {
     });
     await row.getByRole("button", { name: "Restore", exact: true }).click();
     await expect(row).toHaveCount(0);
+    await expect(
+      settings.getByRole("region", { name: "Active projects" }),
+    ).toContainText(
+      kind === "deleted" ? "Recovery project 03" : "Recovery project 00",
+    );
   });
 }
 

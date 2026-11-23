@@ -11,7 +11,6 @@ export function inactiveReason(project: Project): InactiveReason | null {
   return null;
 }
 
-/** Use the same restore deadline format in the banner and sidebar badge. */
 function restoreDeadline(project: Project): string | null {
   const value = project.purgeAfter;
   if (!value) return null;
@@ -28,27 +27,6 @@ function changeCount(count = 0): number {
   return Number.isFinite(count) && count > 0 ? Math.floor(count) : 0;
 }
 
-/** Sidebar badge: what happened, and the date a restore still works. */
-export function inactiveBadge(project: Project): string | null {
-  switch (inactiveReason(project)) {
-    case "archived":
-      return "Archived by owner";
-    case "deleted": {
-      const deadline = restoreDeadline(project);
-      return deadline
-        ? `Deleted by owner, restorable until ${deadline}`
-        : "Deleted by owner";
-    }
-    case "purged":
-      return "Deleted";
-    case "removed":
-      return "Access removed";
-    default:
-      return null;
-  }
-}
-
-/** Banner sentence: the same reason, said once, without a badge. */
 export function inactiveMessage(project: Project): string {
   switch (inactiveReason(project)) {
     case "archived":

@@ -1,4 +1,5 @@
 import { expect, type Page } from "@playwright/test";
+import type { Project } from "../../../apps/mac/src/types.js";
 
 interface UpdateStatus {
   installedVersion: string;
@@ -13,6 +14,7 @@ export async function settingsFixture(
   page: Page,
   options: {
     noProjects?: boolean;
+    disabledProjects?: Project[];
     openSettings?: boolean;
     websiteRole?: "owner" | "admin" | "member";
     emailInvites?: boolean;
@@ -216,6 +218,7 @@ export async function settingsFixture(
         ];
     const deletedProjects = (options.deletedProjects ?? []) as any[];
     const archivedProjects = (options.archivedProjects ?? []) as any[];
+    const disabledProjects = [...(options.disabledProjects ?? [])];
     const state = {
       user,
       profile: "settings-test",
@@ -343,6 +346,12 @@ export async function settingsFixture(
             return structuredClone({
               ...state,
               inactive: [...archivedProjects, ...deletedProjects],
+              managedProjects: [
+                ...projects,
+                ...archivedProjects,
+                ...deletedProjects,
+                ...disabledProjects.map((item) => ({ ...item, hidden: true })),
+              ],
             });
           if (command === "sync_progress")
             return { user: state.user, progress: null };
@@ -699,6 +708,18 @@ export async function settingsFixture(
             }
             if (args.action === "list")
               return { supported: true, projects: structuredClone(projects) };
+            if (args.action === "show") {
+              const index = disabledProjects.findIndex(
+                (item) => item.id === args.input.projectId,
+              );
+              if (index < 0) throw new Error("Project not found");
+              const [shown] = disabledProjects.splice(index, 1);
+              projects.push({
+                ...shown,
+                hidden: false,
+              } as (typeof projects)[number]);
+              return { ok: true };
+            }
             const project = (projects.find(
               (project) => project.id === args.input.projectId,
             ) ??

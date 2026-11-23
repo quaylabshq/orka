@@ -63,8 +63,15 @@ const renderDanger = (
   return render(
     <SettingsDanger
       project={options.project}
-      deletedProjects={options.deletedProjects ?? []}
-      archivedProjects={options.archivedProjects ?? []}
+      catalog={{
+        state: {
+          projects: [],
+          deletedProjects: options.deletedProjects,
+          archivedProjects: options.archivedProjects,
+        },
+        onManage: vi.fn(),
+        onViewInactive: vi.fn(),
+      }}
       members={options.members ?? null}
       busy={false}
       run={run}

@@ -124,7 +124,10 @@ fn checked_paths(resource: &Value, source: &Value, binding: &Value) -> Result<Ve
                 indexer::claude_memory_read_base(root, &path)?
             }
             Some("memory") if !path.starts_with(root) && resource["source"] == "codex" => {
-                crate::native::codex_home()?.join("memories")
+                crate::native::codex_memory_stores(&crate::native::codex_home()?)
+                    .into_iter()
+                    .find(|store| path.starts_with(store))
+                    .ok_or("Item path is outside its source")?
             }
             Some("memory" | "skill") => root.to_path_buf(),
             _ => return Err("This item has no supported local location".into()),

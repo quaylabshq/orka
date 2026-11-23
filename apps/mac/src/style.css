@@ -475,31 +475,6 @@
     outline: 1px solid var(--border-focus);
     outline-offset: -1px;
   }
-  .project-menu-item-inactive {
-    @apply text-muted;
-    display: grid;
-    grid-template-columns: 16px minmax(0, 1fr) auto;
-    align-items: center;
-    column-gap: 8px;
-    row-gap: 2px;
-  }
-  .project-menu-item-inactive > svg:first-child {
-    grid-area: 1 / 1;
-  }
-  .project-menu-item-inactive > span {
-    grid-area: 1 / 2;
-  }
-  .project-menu-item-inactive > .project-menu-selected {
-    grid-area: 1 / 3;
-  }
-  .project-menu-badge {
-    @apply shrink-0 text-body-xs;
-    grid-column: 2 / -1;
-    justify-self: start;
-    max-width: 100%;
-    color: var(--text-tertiary);
-    overflow-wrap: anywhere;
-  }
   .project-menu-folder {
     @apply shrink-0 text-secondary;
   }

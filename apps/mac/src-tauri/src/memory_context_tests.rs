@@ -518,3 +518,100 @@ fn codex_discovery_uses_stable_thread_identity_and_durable_evidence() {
         .unwrap()
         .starts_with("codex/entries/"));
 }
+
+#[test]
+fn codex_discovery_imports_scoped_v2_summaries_and_deduplicates_dual_writes() {
+    let f = Fixture::new();
+    let codex = crate::native::codex_home().unwrap();
+    let v1 = codex.join("memories/rollout_summaries");
+    let v2 = codex.join("memories_v2/rollout_summaries");
+    fs::create_dir_all(&v2).unwrap();
+    let shared_thread = uuid::Uuid::new_v4();
+    let v2_thread = uuid::Uuid::new_v4();
+    let dated = |thread, date, cwd: &Path, text| {
+        format!(
+            "thread_id: {thread}\nupdated_at: {date}\nrollout_path: /codex/sessions/rollout.jsonl\ncwd: {}\n\n{text}\n",
+            cwd.display()
+        )
+    };
+    let shared_v2 = v2.join("dual-write.md");
+    let v2_only = v2.join("overlap.md");
+    let v2_text = dated(v2_thread, "2026-11-23", &f.root, "V2-only fact");
+    fs::write(&v2_only, &v2_text).unwrap();
+    fs::write(
+        &shared_v2,
+        dated(shared_thread, "2026-11-23", &f.root, "V2 copy"),
+    )
+    .unwrap();
+    fs::write(
+        v2.join("foreign.md"),
+        dated(
+            uuid::Uuid::new_v4(),
+            "2026-11-23",
+            Path::new("/other/repo"),
+            "Private",
+        ),
+    )
+    .unwrap();
+    fs::write(
+        codex.join("memories_v2/memory_summary.md"),
+        "## User profile\nGlobal preferences\n- rollout_summaries/overlap.md\n",
+    )
+    .unwrap();
+
+    let discover = || indexer::discover(&f.db, &f.project, "memory").unwrap();
+    let unreadable = v2.join("unreadable.md");
+    fs::write(&unreadable, [0xff]).unwrap();
+    let v2_catalog = discover();
+    assert_eq!(v2_catalog.len(), 2);
+    fs::remove_file(&unreadable).unwrap();
+    let dual_id = |items: &[Value]| {
+        items
+            .iter()
+            .find(|item| {
+                item["resource"]["logicalPath"] == format!("codex/summaries/{shared_thread}.md")
+            })
+            .unwrap()["resource"]["resourceId"]
+            .clone()
+    };
+    let shared_id = dual_id(&v2_catalog);
+    indexer::scan(&f.db, &f.project).unwrap();
+    assert_eq!(f.outbox().len(), 2);
+
+    fs::create_dir_all(&v1).unwrap();
+    let shared_v1 = v1.join("overlap.md");
+    fs::write(
+        &shared_v1,
+        dated(shared_thread, "2026-11-23", &f.root, "V1 copy"),
+    )
+    .unwrap();
+    let both = discover();
+    assert_eq!(both.len(), 2);
+    assert_eq!(dual_id(&both), shared_id);
+    assert!(both.iter().any(|item| item["paths"] == json!([shared_v1])));
+
+    fs::write(
+        &shared_v2,
+        dated(shared_thread, "2026-11-24", &f.root, "Newer V2 copy"),
+    )
+    .unwrap();
+    let newer = discover();
+    assert_eq!(newer.len(), 2);
+    assert_eq!(dual_id(&newer), shared_id);
+    assert!(newer.iter().any(|item| item["paths"] == json!([shared_v2])));
+
+    let durable = codex.join("memories/MEMORY.md");
+    fs::write(&durable, [0xff]).unwrap();
+    assert_eq!(discover().len(), 2);
+    fs::write(
+        &durable,
+        "# Curated\n- rollout_summaries/overlap.md\n\nV1 curated fact\n# Wrong store\n- rollout_summaries/dual-write.md\n\nExclude this\n",
+    )
+    .unwrap();
+    let curated = discover();
+    assert_eq!(curated.len(), 2);
+    assert!(curated
+        .iter()
+        .any(|item| item["resource"]["title"] == "Curated"));
+    assert!(curated.iter().any(|item| item["paths"] == json!([v2_only])));
+}

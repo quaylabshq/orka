@@ -362,7 +362,7 @@ test("member role cannot access owner context actions", async ({ page }) => {
   ).toHaveCount(0);
 });
 
-test("owners archive and restore the project from the picker without changing the selected project", async ({
+test("archiving from the picker removes the option until an owner restores it in Settings", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 900, height: 640 });
@@ -382,20 +382,19 @@ test("owners archive and restore the project from the picker without changing th
 
   await expect(picker).toContainText("Orka");
   await picker.click();
-  const archived = page.getByRole("option", {
-    name: /Website.*Archived by owner/,
-  });
-  await archived.press("Shift+F10");
-  await expect(
-    menu.getByRole("menuitem", { name: "Delete project…" }),
-  ).toHaveCount(0);
-  await menu
-    .getByRole("menuitem", { name: "Restore project", exact: true })
-    .click();
-  await expect(
-    page.getByText("Project restored", { exact: true }),
-  ).toBeVisible();
+  await expect(page.getByRole("option", { name: "Website" })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await page.getByRole("button", { name: "Projects", exact: true }).click();
+  const archived = page.getByRole("region", { name: "Archived projects" });
+  await expect(archived).toContainText("Website");
+  await archived.getByRole("button", { name: "Restore", exact: true }).click();
+  await expect(archived).toHaveCount(0);
   await expect(picker).toContainText("Orka");
+  await picker.click();
+  await expect(
+    page.getByRole("option", { name: "Website", exact: true }),
+  ).toBeVisible();
   expect(
     (await settingsCalls(page))
       .filter((call) => ["archive", "restore"].includes(call.args.action))
@@ -494,18 +493,20 @@ for (const role of ["admin", "member"] as const) {
     await expect(active.getByRole("menuitem", { name: action })).toHaveCount(0);
     await page.keyboard.press("Escape");
     await picker.click();
-    await page
-      .getByRole("option", { name: /Archived workspace.*Archived by owner/ })
-      .click({ button: "right" });
-    const archived = page.getByRole("menu", {
-      name: "Actions for Archived workspace",
-    });
     await expect(
-      archived.getByRole("menuitem", { name: "Open project" }),
+      page.getByRole("option", { name: "Archived workspace" }),
+    ).toHaveCount(0);
+    await page.keyboard.press("Escape");
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
+    await page.getByRole("button", { name: "Projects", exact: true }).click();
+    const archived = page.getByRole("region", { name: "Archived projects" });
+    await expect(archived).toContainText("Archived workspace");
+    await expect(
+      archived.getByRole("button", { name: "Details" }),
     ).toBeVisible();
-    await expect(archived.getByRole("menuitem", { name: action })).toHaveCount(
-      0,
-    );
+    await expect(
+      archived.getByRole("button", { name: /Archive|Delete|Restore/ }),
+    ).toHaveCount(0);
   });
 }
 

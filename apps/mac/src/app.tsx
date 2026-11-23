@@ -5,7 +5,6 @@ import {
   FolderOpenIcon,
   LinkIcon,
   PencilIcon,
-  RotateCcwIcon,
   SettingsIcon,
   ShieldUserIcon,
   Trash2Icon,
@@ -55,7 +54,6 @@ import {
   projectLabel,
 } from "./components/project-navigation.js";
 import { InactiveProject } from "./components/inactive-project.js";
-import { inactiveReason } from "./components/project-inactive.js";
 import {
   changeProjectArchive,
   SettingsDanger,
@@ -275,17 +273,22 @@ function WorkspaceApp({
   }, [settings]);
   const settingsNavigation = useRef<SettingsNavigationHandle>(null);
   const projectPickerTrigger = useRef<HTMLButtonElement>(null);
+  const focusInactiveBack = useRef<string | null>(null);
+  const focusSettingsTrigger = useCallback(() => {
+    document
+      .querySelector<HTMLButtonElement>(
+        '.sidebar-bottom button[aria-label="Settings"]',
+      )
+      ?.focus();
+  }, []);
   const [projectLifecycle, setProjectLifecycle] = useState<{
     id: string;
     scope: string;
-    action: "archive" | "restore" | "delete";
+    action: "archive" | "delete";
   } | null>(null);
   const lifecycleTarget =
     projectLifecycle?.scope === workspaceScope
-      ? (projectLifecycle.action === "restore"
-          ? state.inactive
-          : state.projects
-        )?.find(
+      ? state.projects.find(
           (item) => item.id === projectLifecycle.id && item.role === "owner",
         )
       : undefined;
@@ -298,16 +301,10 @@ function WorkspaceApp({
     const { action } = projectLifecycle;
     if (action === "delete") return;
     setProjectLifecycle(null);
-    if (action === "restore" && inactiveReason(lifecycleTarget) !== "archived")
-      return;
     // A settings save can advance the revision before the requested action.
     void act(() => changeProjectArchive(lifecycleTarget, action), {
-      successTitle:
-        action === "archive" ? "Project archived" : "Project restored",
-      errorTitle:
-        action === "archive"
-          ? "Couldn’t archive project"
-          : "Couldn’t restore project",
+      successTitle: "Project archived",
+      errorTitle: "Couldn’t archive project",
     });
   }, [act, projectLifecycle, lifecycleTarget]);
   const deleteTarget =
@@ -979,10 +976,11 @@ function WorkspaceApp({
               onJoin={() => leaveSettings(() => setup.show("join"))}
             />
             <ProjectPicker
-              projects={[...state.projects, ...(state.inactive ?? [])]}
+              projects={state.projects}
               projectId={project}
               collapsed={sidebarCollapsed}
               triggerRef={projectPickerTrigger}
+              onEmptyAutoFocus={focusSettingsTrigger}
               projectActions={(target) => {
                 const open: ItemMenuAction = {
                   id: "open",
@@ -996,24 +994,6 @@ function WorkspaceApp({
                       setTab("home");
                     }),
                 };
-                const archiveAction = (
-                  action: "archive" | "restore",
-                ): ItemMenuAction => ({
-                  id: action,
-                  label:
-                    action === "archive"
-                      ? "Archive project"
-                      : "Restore project",
-                  icon: action === "archive" ? ArchiveIcon : RotateCcwIcon,
-                  separator: true,
-                  disabled: busy,
-                  onSelect: () => requestProjectLifecycle(target.id, action),
-                });
-                if (!state.projects.some((item) => item.id === target.id))
-                  return target.role === "owner" &&
-                    inactiveReason(target) === "archived"
-                    ? [open, archiveAction("restore")]
-                    : [open];
                 const settingsAction = (
                   id: string,
                   label: string,
@@ -1076,16 +1056,27 @@ function WorkspaceApp({
                     ),
                   );
                 if (target.role === "owner")
-                  actions.push(archiveAction("archive"), {
-                    id: "delete",
-                    label: "Delete project…",
-                    icon: Trash2Icon,
-                    danger: true,
-                    disabled: busy,
-                    restoreFocus: false,
-                    onSelect: () =>
-                      requestProjectLifecycle(target.id, "delete"),
-                  });
+                  actions.push(
+                    {
+                      id: "archive",
+                      label: "Archive project",
+                      icon: ArchiveIcon,
+                      separator: true,
+                      disabled: busy,
+                      onSelect: () =>
+                        requestProjectLifecycle(target.id, "archive"),
+                    },
+                    {
+                      id: "delete",
+                      label: "Delete project…",
+                      icon: Trash2Icon,
+                      danger: true,
+                      disabled: busy,
+                      restoreFocus: false,
+                      onSelect: () =>
+                        requestProjectLifecycle(target.id, "delete"),
+                    },
+                  );
                 return actions;
               }}
               onProjectChange={(id) => {
@@ -1113,6 +1104,23 @@ function WorkspaceApp({
                   onClick={() => setReview(null)}
                 >
                   <Icon icon={ArrowLeftIcon} /> Back to Reviews
+                </Button>
+              ) : !settings && inactiveProject ? (
+                <Button
+                  ref={(button) => {
+                    if (
+                      button &&
+                      focusInactiveBack.current === inactiveProject.id
+                    ) {
+                      focusInactiveBack.current = null;
+                      button.focus();
+                    }
+                  }}
+                  size="sm"
+                  variant="tertiary"
+                  onClick={() => openSettings("projects")}
+                >
+                  <Icon icon={ArrowLeftIcon} /> Back to Projects
                 </Button>
               ) : !settings && selected ? (
                 <Button size="sm" variant="tertiary" onClick={closeDetail}>
@@ -1258,6 +1266,16 @@ function WorkspaceApp({
               initialProjectId={settingsProject ?? project}
               initialSection={settings}
               onSectionChange={setSettings}
+              onViewInactiveProject={(id) => {
+                focusInactiveBack.current = id;
+                setProject(id);
+                setResource("");
+                setEnvSet("");
+                setReview(null);
+                setGovernance(null);
+                setTab("home");
+                setSettings(null);
+              }}
               onManage={(id, section) => {
                 setProject(id);
                 openManagement(section, "open", id);
@@ -1280,13 +1298,7 @@ function WorkspaceApp({
               }}
               onClose={() => {
                 setSettings(null);
-                requestAnimationFrame(() =>
-                  document
-                    .querySelector<HTMLButtonElement>(
-                      '.sidebar-bottom button[aria-label="Settings"]',
-                    )
-                    ?.focus(),
-                );
+                requestAnimationFrame(focusSettingsTrigger);
               }}
             />
           ) : inactiveProject ? (
