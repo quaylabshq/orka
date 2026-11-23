@@ -737,11 +737,13 @@ pub async fn session_display_title(id: String) -> Result<Option<String>> {
     .map_err(|error| error.to_string())?
 }
 
+const CONFLICT_PREVIEW_MISSING: &str = "Conflict changed; refresh before inspecting";
+
 /// The stored resource, or a conflict's incoming candidate when previewing one.
 fn inspected_resource(
     db: &rusqlite::Connection,
     id: &str,
-    conflict_id: Option<String>,
+    conflict_id: Option<&str>,
 ) -> Result<Value> {
     let resource = match crate::local_resources::resource(db, id) {
         Ok(resource) if resource["deleted"] == true => {
@@ -753,18 +755,23 @@ fn inspected_resource(
     let Some(conflict_id) = conflict_id else {
         return crate::session_forks::current_resource(db, &resource);
     };
+    let project_id = resource["projectId"].as_str().ok_or("Missing project")?;
     let conflict = db::rows(
         db,
-        "SELECT value FROM conflicts WHERE id=?",
-        &[&conflict_id],
+        "SELECT value FROM conflicts WHERE id=? AND project=?",
+        &[&conflict_id, &project_id],
     )?
     .into_iter()
     .next()
-    .ok_or("Conflict changed; refresh before inspecting")?;
-    if conflict["resourceId"] != id {
+    .ok_or(CONFLICT_PREVIEW_MISSING)?;
+    let candidate = &conflict["candidate"];
+    if conflict["resourceId"] != id
+        || candidate["resourceId"] != id
+        || candidate["projectId"] != project_id
+    {
         return Err("Conflict belongs to another resource".into());
     }
-    Ok(conflict["candidate"].clone())
+    Ok(candidate.clone())
 }
 
 /// Parsed conversations for the few sessions a reader pages through at once.
@@ -808,7 +815,7 @@ pub async fn session_messages(
 ) -> Result<Value> {
     tauri::async_runtime::spawn_blocking(move || {
         let db = db::open()?;
-        let resource = inspected_resource(&db, &id, conflict_id.clone())?;
+        let resource = inspected_resource(&db, &id, conflict_id.as_deref())?;
         if resource["deleted"] == true {
             return Ok(json!({"messages":[],"total":0,"offset":0,"removed":true}));
         }
@@ -848,11 +855,27 @@ pub fn inspect_resource(
     max_bytes: Option<usize>,
 ) -> Result<Value> {
     let db = db::open()?;
-    let r = inspected_resource(&db, &id, conflict_id)?;
+    let r = inspected_resource(&db, &id, conflict_id.as_deref())?;
     if r["deleted"] == true {
         return Ok(
             json!({"content":"This version removes the session from shared history.","previous":null,"paths":null}),
         );
+    }
+    if let Some(limit) = max_bytes.filter(|_| r["kind"] == "session" && file == "session.jsonl") {
+        // The reader only uses the transcript. Avoid reading the previous
+        // revision or building secondary representations for this request.
+        let records = crate::history::resource_records(&r)?;
+        let transcript = native::transcript(&records);
+        if transcript.len() > limit {
+            let session_snapshot = SessionSnapshotDownload {
+                conflict_id,
+                snapshot_hash: session_snapshot_hash(&r),
+            };
+            return Ok(
+                json!({"content":null,"previous":null,"paths":null,"tooLarge":true,"size":transcript.len(),"sessionSnapshot":session_snapshot}),
+            );
+        }
+        return Ok(json!({"content":transcript,"previous":null,"paths":null}));
     }
     let f = r["files"]
         .as_array()
@@ -870,19 +893,6 @@ pub fn inspect_resource(
         .and_then(|b| String::from_utf8(b).ok());
     let (content, messages, conversation) = if r["kind"] == "session" && file == "session.jsonl" {
         let records = crate::history::resource_records(&r)?;
-        if let Some(limit) = max_bytes {
-            // The reader renders only the transcript text, so the message and
-            // conversation copies would double the payload for nothing.
-            let transcript = native::transcript(&records);
-            if transcript.len() > limit {
-                return Ok(
-                    json!({"content":null,"previous":null,"paths":null,"tooLarge":true,"size":transcript.len()}),
-                );
-            }
-            return Ok(
-                json!({"content":transcript,"previous":previous,"paths":if r["paths"].is_array() { &r["paths"] } else { &binding["paths"] }}),
-            );
-        }
         (
             Some(native::transcript(&records)),
             Some(native::transcript_messages(&records)),
@@ -1032,9 +1042,62 @@ pub async fn resume_session(
     .await
     .map_err(|error| error.to_string())?
 }
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionSnapshotDownload {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    conflict_id: Option<String>,
+    snapshot_hash: String,
+}
+
+const SESSION_SNAPSHOT_CHANGED: &str = "session_snapshot_changed";
+
+/// A fork can materialize new history without changing its catalog revision.
+/// Compare the actual session files and provider; title or timestamp edits do
+/// not change the transcript or its ancestry.
+fn session_snapshot_hash(session: &Value) -> String {
+    let mut files = session["files"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|file| (file["path"].as_str(), file["hash"].as_str()))
+        .collect::<Vec<_>>();
+    files.sort_by_key(|file| file.0);
+    let snapshot = json!([
+        session["projectId"],
+        session["resourceId"],
+        session["source"],
+        files
+    ]);
+    db::digest(snapshot.to_string().as_bytes())
+}
+
 #[tauri::command]
-pub fn export_bundle(id: String, path: String) -> Result<()> {
-    bundles::export(&db::open()?, &id, &PathBuf::from(path))
+pub fn export_bundle(
+    id: String,
+    path: String,
+    session_snapshot: Option<SessionSnapshotDownload>,
+) -> Result<()> {
+    let db = db::open()?;
+    let path = PathBuf::from(path);
+    let Some(snapshot) = session_snapshot else {
+        return bundles::export(&db, &id, &path);
+    };
+    let resource =
+        inspected_resource(&db, &id, snapshot.conflict_id.as_deref()).map_err(|error| {
+            if error == CONFLICT_PREVIEW_MISSING {
+                SESSION_SNAPSHOT_CHANGED.into()
+            } else {
+                error
+            }
+        })?;
+    if resource["kind"] != "session" {
+        return Err("Choose a session version to download".into());
+    }
+    if session_snapshot_hash(&resource) != snapshot.snapshot_hash {
+        return Err(SESSION_SNAPSHOT_CHANGED.into());
+    }
+    bundles::export_snapshot(&db, &resource, &path)
 }
 /// Exports the authorized snapshot, returning true when fresh capture was
 /// unavailable for a restorable deleted project.

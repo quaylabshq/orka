@@ -15,6 +15,7 @@ type Options = {
   exportError?: boolean;
   manualResume?: boolean;
   sessionTitle?: string;
+  sessionLineageFirst?: boolean;
   sessionLinkError?: boolean;
   sessionMessages?: [string, string];
   deepLink?: string;
@@ -81,6 +82,12 @@ async function detailFixture(page: Page, options: Options = {}) {
         projectId: "one",
         kind: "session",
         title: "Imported session",
+        files: options.sessionLineageFirst
+          ? [
+              "lineage/00000000-0000-4000-8000-000000000001/1.jsonl",
+              "session.jsonl",
+            ]
+          : undefined,
       },
       {
         resourceId: "session-m",
@@ -2121,6 +2128,11 @@ test("a failed session download reports the write error without success", async 
     .click();
   await expect(page.getByRole("alert")).toContainText("Couldn’t export ZIP");
   await expect(
+    page
+      .locator("[data-orka-toast]")
+      .getByRole("button", { name: "Try again" }),
+  ).toBeVisible();
+  await expect(
     page.getByRole("status").filter({ hasText: "Download saved" }),
   ).toHaveCount(0);
   expect(await calls(page, "export_bundle")).toEqual([
@@ -2552,19 +2564,29 @@ test("session conversations render Mermaid while transcripts stay literal and la
 test("an oversized transcript offers a download instead of rendering", async ({
   page,
 }) => {
-  await detailFixture(page, { savePath: "/test/export/session.zip" });
+  await detailFixture(page, {
+    savePath: "/test/export/session.zip",
+    sessionLineageFirst: true,
+  });
   await page.evaluate(() => {
     const w = window as any;
     const original = w.__TAURI_INTERNALS__.invoke;
     w.__TAURI_INTERNALS__.invoke = async (name: string, args: any) => {
       const value = await original(name, args);
-      if (name === "inspect_resource" && args.id === "session-c")
+      if (
+        name === "inspect_resource" &&
+        args.id === "session-c" &&
+        args.file === "session.jsonl"
+      )
         return {
           content: null,
           previous: null,
           paths: null,
           tooLarge: true,
           size: 44_500_000,
+          sessionSnapshot: args.conflictId
+            ? { conflictId: args.conflictId, snapshotHash: "incoming-snapshot" }
+            : { snapshotHash: "shared-snapshot" },
         };
       return value;
     };
@@ -2581,19 +2603,111 @@ test("an oversized transcript offers a download instead of rendering", async ({
   const read = (await calls(page, "inspect_resource")).find(
     (args: any) => args.id === "session-c",
   );
-  expect(read.maxBytes).toBe(4 * 1024 * 1024);
+  expect(read).toMatchObject({
+    file: "session.jsonl",
+    maxBytes: 4 * 1024 * 1024,
+  });
   await state
     .getByRole("button", { name: "Download session", exact: true })
     .click();
+  const download = { id: "session-c", path: "/test/export/session.zip" };
+  const sharedDownload = {
+    ...download,
+    sessionSnapshot: { snapshotHash: "shared-snapshot" },
+  };
   await expect
-    .poll(async () =>
-      (await calls(page, "export_bundle")).map((args: any) => args.path),
-    )
-    .toEqual(["/test/export/session.zip"]);
+    .poll(() => calls(page, "export_bundle"))
+    .toEqual([sharedDownload]);
+  await page.getByRole("button", { name: "View incoming version" }).click();
+  await state
+    .getByRole("button", { name: "Download incoming version", exact: true })
+    .click();
+  await expect
+    .poll(() => calls(page, "export_bundle"))
+    .toEqual([
+      sharedDownload,
+      {
+        ...download,
+        sessionSnapshot: {
+          conflictId: "conflict-1",
+          snapshotHash: "incoming-snapshot",
+        },
+      },
+    ]);
   const axe = await new AxeBuilder({ page })
     .include(".resource-detail")
     .analyze();
   expect(axe.violations).toEqual([]);
+});
+
+test("reopening the transcript refreshes a stale download version", async ({
+  page,
+}) => {
+  await detailFixture(page, { savePath: "/test/export/session.zip" });
+  await page.evaluate(() => {
+    const w = window as any;
+    const original = w.__TAURI_INTERNALS__.invoke;
+    let snapshotHash = "first-snapshot";
+    w.__TAURI_INTERNALS__.invoke = async (name: string, args: any) => {
+      const value = await original(name, args);
+      if (name === "inspect_resource" && args.id === "session-c")
+        return {
+          content: null,
+          previous: null,
+          paths: null,
+          tooLarge: true,
+          size: snapshotHash === "first-snapshot" ? 44_500_000 : 45_500_000,
+          sessionSnapshot: { snapshotHash },
+        };
+      if (
+        name === "export_bundle" &&
+        args.sessionSnapshot?.snapshotHash === "first-snapshot"
+      ) {
+        snapshotHash = "new-snapshot";
+        throw "session_snapshot_changed";
+      }
+      return value;
+    };
+  });
+  await openSession(page);
+  const transcript = page.getByRole("button", {
+    name: "Transcript",
+    exact: true,
+  });
+  await transcript.click();
+  const state = page.locator(".session-view .reader-state");
+  const download = state.getByRole("button", {
+    name: "Download session",
+    exact: true,
+  });
+  await expect(state).toContainText("44.5 MB");
+  await download.click();
+  const error = page.locator("[data-orka-toast]");
+  await expect(error.getByRole("alert")).toHaveText(
+    "Session changed. Reopen the transcript to download.",
+  );
+  await expect(error.getByRole("button", { name: "Try again" })).toHaveCount(0);
+  await error.getByRole("button", { name: "Dismiss" }).click();
+
+  await page.getByRole("button", { name: "Conversation", exact: true }).click();
+  await transcript.click();
+  await expect(state).toContainText("45.5 MB");
+  await download.click();
+  await expect(
+    page.getByRole("status").filter({ hasText: "Download saved" }),
+  ).toBeVisible();
+  expect(await calls(page, "export_bundle")).toEqual([
+    {
+      id: "session-c",
+      path: "/test/export/session.zip",
+      sessionSnapshot: { snapshotHash: "first-snapshot" },
+    },
+    {
+      id: "session-c",
+      path: "/test/export/session.zip",
+      sessionSnapshot: { snapshotHash: "new-snapshot" },
+    },
+  ]);
 });
 
 test("invalid Mermaid retains readable source without leaving error DOM behind", async ({

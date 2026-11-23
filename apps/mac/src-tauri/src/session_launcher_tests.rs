@@ -1118,7 +1118,7 @@ fn cached_session_download_keeps_original_bytes_and_complete_context_without_a_r
         .unwrap();
         let binding = indexer::binding(&f.db, id).unwrap();
         let path = f._home.path().join(format!("{source}.zip"));
-        crate::commands::export_bundle(id.into(), path.to_string_lossy().into()).unwrap();
+        crate::commands::export_bundle(id.into(), path.to_string_lossy().into(), None).unwrap();
         let mut zip = zip::ZipArchive::new(fs::File::open(path).unwrap()).unwrap();
         let mut manifest = String::new();
         zip.by_name("manifest.json")

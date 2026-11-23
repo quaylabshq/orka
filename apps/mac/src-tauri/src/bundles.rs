@@ -258,6 +258,10 @@ fn write_transcript<W: Write + Seek>(
 pub fn export(db: &rusqlite::Connection, id: &str, path: &Path) -> Result<()> {
     let r = crate::local_resources::resource(db, id)?;
     let r = crate::session_forks::current_resource(db, &r)?;
+    export_snapshot(db, &r, path)
+}
+
+pub(crate) fn export_snapshot(db: &rusqlite::Connection, r: &Value, path: &Path) -> Result<()> {
     if r["deleted"] == true {
         return Err("Deleted resources cannot be exported".into());
     }
@@ -276,8 +280,8 @@ pub fn export(db: &rusqlite::Connection, id: &str, path: &Path) -> Result<()> {
             manifest["resource"]["sourceId"] = r["sourceId"].clone();
         }
         write_json(&mut zip, "manifest.json", &manifest, options)?;
-        write_blobs(&mut zip, options, &r, "", &db::blob_read)?;
-        write_transcript(&mut zip, options, &r, "", &db::blob_read)?;
+        write_blobs(&mut zip, options, r, "", &db::blob_read)?;
+        write_transcript(&mut zip, options, r, "", &db::blob_read)?;
         zip.finish().map_err(|e| e.to_string())?;
     }
     staged.as_file().sync_all().map_err(|e| e.to_string())?;

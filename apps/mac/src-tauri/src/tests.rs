@@ -1967,39 +1967,43 @@ fn session_conflict_inspection_shows_both_preserved_versions() {
         json!({"type":"user","message":{"role":"user","content":"shared version"}}),
     ]);
     let incoming = native::encode(&[
-        json!({"type":"user","message":{"role":"user","content":"incoming version"}}),
+        json!({"type":"user","message":{"role":"user","content":format!("incoming version {}", "x".repeat(4 * 1024 * 1024))}}),
     ]);
-    let r = json!({"resourceId":id,"projectId":f.project["id"],"kind":"session","files":[{"path":"session.jsonl","hash":db::blob(&shared).unwrap()}],"deleted":false});
-    db::upsert(
-        &f.db,
-        "resources",
-        &id,
-        f.project["id"].as_str().unwrap(),
-        &r,
-    )
-    .unwrap();
+    let previous = native::encode(&[
+        json!({"type":"turn_context","payload":{"context":"x".repeat(8 * 1024 * 1024)}}),
+    ]);
+    let project_id = f.project["id"].as_str().unwrap();
+    let r = json!({"resourceId":id,"projectId":project_id,"kind":"session","source":"claude","title":"Session","logicalPath":"claude/session.jsonl","files":[{"path":"session.jsonl","hash":db::blob(&shared).unwrap(),"size":shared.len()}],"deleted":false});
+    db::upsert(&f.db, "resources", &id, project_id, &r).unwrap();
     let mut candidate = r.clone();
-    candidate["files"][0]["hash"] = json!(db::blob(&incoming).unwrap());
+    candidate["files"][0] =
+        json!({"path":"session.jsonl","hash":db::blob(&incoming).unwrap(),"size":incoming.len()});
     db::upsert(
         &f.db,
         "conflicts",
         &conflict,
-        f.project["id"].as_str().unwrap(),
+        project_id,
         &json!({"resourceId":id,"candidate":candidate}),
     )
     .unwrap();
-    assert!(
-        crate::commands::inspect_resource(id.clone(), "session.jsonl".into(), None, None).unwrap()
-            ["content"]
-            .as_str()
-            .unwrap()
-            .contains("shared version")
+    db::upsert(
+        &f.db,
+        "bindings",
+        &id,
+        project_id,
+        &json!({"previous":{"files":[{"path":"session.jsonl","hash":db::blob(&previous).unwrap()}]}}),
+    )
+    .unwrap();
+    let uncapped =
+        crate::commands::inspect_resource(id.clone(), "session.jsonl".into(), None, None).unwrap();
+    let shared_transcript = uncapped["content"].as_str().unwrap();
+    assert!(shared_transcript.contains("shared version"));
+    assert_eq!(
+        uncapped["previous"].as_str().unwrap().as_bytes(),
+        previous.as_slice()
     );
-    let full = crate::commands::inspect_resource(id.clone(), "session.jsonl".into(), None, None)
-        .unwrap()["content"]
-        .as_str()
-        .unwrap()
-        .len();
+    assert!(uncapped["messages"].is_array());
+    let full = shared_transcript.len();
     let within =
         crate::commands::inspect_resource(id.clone(), "session.jsonl".into(), None, Some(full))
             .unwrap();
@@ -2008,6 +2012,7 @@ fn session_conflict_inspection_shows_both_preserved_versions() {
         .unwrap()
         .contains("shared version"));
     assert!(within["tooLarge"].is_null() && within["messages"].is_null());
+    assert!(within["previous"].is_null());
     let over =
         crate::commands::inspect_resource(id.clone(), "session.jsonl".into(), None, Some(full - 1))
             .unwrap();
@@ -2015,7 +2020,7 @@ fn session_conflict_inspection_shows_both_preserved_versions() {
     assert_eq!(over["tooLarge"], true);
     assert_eq!(over["size"], full);
     assert!(crate::commands::inspect_resource(
-        id,
+        id.clone(),
         "session.jsonl".into(),
         Some(conflict.clone()),
         None
@@ -2027,10 +2032,88 @@ fn session_conflict_inspection_shows_both_preserved_versions() {
     assert!(crate::commands::inspect_resource(
         uuid::Uuid::new_v4().to_string(),
         "session.jsonl".into(),
-        Some(conflict),
+        Some(conflict.clone()),
         None
     )
     .is_err());
+
+    let oversized = crate::commands::inspect_resource(
+        id.clone(),
+        "session.jsonl".into(),
+        Some(conflict.clone()),
+        Some(4 * 1024 * 1024),
+    )
+    .unwrap();
+    assert_eq!(oversized["tooLarge"], true);
+    let download = |resource_id: &str, inspection: &Value, path: &Path| {
+        crate::commands::export_bundle(
+            resource_id.into(),
+            path.to_string_lossy().into(),
+            Some(serde_json::from_value(inspection["sessionSnapshot"].clone()).unwrap()),
+        )
+    };
+    let download_transcript = |inspection: &Value, name: &str| {
+        let destination = f._home.path().join(name);
+        download(&id, inspection, &destination).unwrap();
+        let mut archive = zip::ZipArchive::new(fs::File::open(destination).unwrap()).unwrap();
+        let mut transcript = String::new();
+        archive
+            .by_name("transcript.md")
+            .unwrap()
+            .read_to_string(&mut transcript)
+            .unwrap();
+        transcript
+    };
+    let transcript = download_transcript(&oversized, "incoming.zip");
+    assert!(transcript.starts_with("## user\n\nincoming version "));
+    assert_eq!(
+        transcript.len(),
+        oversized["size"].as_u64().unwrap() as usize
+    );
+
+    let blocked = f._home.path().join("blocked.zip");
+    let mut updated = r.clone();
+    updated["title"] = json!("Updated session title");
+    updated["updatedAt"] = json!(db::now());
+    db::upsert(&f.db, "resources", &id, project_id, &updated).unwrap();
+    assert_eq!(download_transcript(&over, "shared.zip"), shared_transcript);
+    updated["files"] = candidate["files"].clone();
+    db::upsert(&f.db, "resources", &id, project_id, &updated).unwrap();
+    assert_eq!(
+        download(&id, &over, &blocked).unwrap_err(),
+        "session_snapshot_changed"
+    );
+    assert!(!blocked.exists());
+
+    let other_id = uuid::Uuid::new_v4().to_string();
+    let mut other = r.clone();
+    other["resourceId"] = json!(other_id);
+    db::upsert(&f.db, "resources", &other_id, project_id, &other).unwrap();
+    assert!(download(&other_id, &oversized, &blocked).is_err());
+    assert!(!blocked.exists());
+
+    candidate["files"] = r["files"].clone();
+    db::upsert(
+        &f.db,
+        "conflicts",
+        &conflict,
+        project_id,
+        &json!({"resourceId":id,"candidate":candidate}),
+    )
+    .unwrap();
+    assert_eq!(
+        download(&id, &oversized, &blocked).unwrap_err(),
+        "session_snapshot_changed"
+    );
+    assert!(!blocked.exists());
+
+    f.db.execute("DELETE FROM conflicts WHERE id=?", [&conflict])
+        .unwrap();
+    assert_eq!(
+        download(&id, &oversized, &blocked).unwrap_err(),
+        "session_snapshot_changed"
+    );
+    assert!(!blocked.exists());
 }
 
 #[test]
