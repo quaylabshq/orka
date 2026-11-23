@@ -54,6 +54,17 @@ pub fn request_text(text: &str) -> Option<String> {
 }
 
 pub fn title(records: &[Value]) -> Option<String> {
+    if records
+        .first()
+        .is_some_and(|record| record["type"] == "session")
+    {
+        return crate::pi_sessions::branch(records)
+            .ok()?
+            .into_iter()
+            .filter(|record| record["type"] == "message")
+            .filter_map(crate::session_translation::user_text)
+            .find_map(|text| request_text(&text));
+    }
     records
         .iter()
         .filter_map(crate::session_translation::user_text)

@@ -1,7 +1,8 @@
 import { useEffect, useState, type Dispatch, type SetStateAction } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
-import type { Resource, SessionConflict } from "@portable/protocol";
+import type { SessionConflict } from "@portable/protocol";
+import type { WorkspaceResource as Resource } from "../types.js";
 import type { Inspection } from "../types.js";
 
 export interface ResourceView {

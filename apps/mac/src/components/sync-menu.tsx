@@ -6,7 +6,6 @@ import {
 } from "lucide-react";
 import React, { useEffect, useRef, useState } from "react";
 import * as Popover from "@radix-ui/react-popover";
-import type { Resource } from "@portable/protocol";
 import type { Snapshot, SyncQueueEntry } from "../types.js";
 import { Button } from "./button.js";
 import { IconButton } from "./icon-button.js";
@@ -199,8 +198,7 @@ export function SyncMenu({
     action();
   };
   const resourceTitle = (id: string) =>
-    state.resources.find((item: Resource) => item.resourceId === id)?.title ??
-    "Session";
+    state.resources.find((item) => item.resourceId === id)?.title ?? "Session";
   const projectName = (id: string) => {
     const project = state.projects.find((item) => item.id === id);
     return project ? projectLabel(project) : "Project";

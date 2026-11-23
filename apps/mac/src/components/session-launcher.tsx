@@ -39,7 +39,10 @@ function AppIcon({
   const [failed, setFailed] = useState<string | null>(null);
   const icon = option?.icon;
   const localIcon = icon && icon !== failed ? icon : undefined;
-  if (!localIcon && option?.destination !== "desktop" && option)
+  if (
+    !localIcon &&
+    (tool === "pi" || (option && option.destination !== "desktop"))
+  )
     return <Icon icon={SquareTerminalIcon} />;
   return (
     <span className="ui-icon" aria-hidden="true">
@@ -125,9 +128,11 @@ export function SessionLauncher({
   const targetLabel = (option: SessionLaunchOption) =>
     option.destination === "desktop"
       ? option.label
-      : option.tool === "claude"
-        ? "Claude Code CLI"
-        : "Codex CLI";
+      : option.tool === "pi"
+        ? "Pi"
+        : option.tool === "claude"
+          ? "Claude Code CLI"
+          : "Codex CLI";
   const label = primary
     ? targetLabel(primary)
     : tool === "claude"
@@ -145,14 +150,16 @@ export function SessionLauncher({
     (option) => option.tool === tool && option.mode === "resume",
   );
   const actionLabel =
-    primary?.mode === "handoff"
-      ? primary.destination === "desktop"
-        ? `Continue in ${label}…`
-        : `Start in ${label}`
-      : primary?.mode === "fork" ||
-          (!primary && !resource.fork && !resource.localForkId)
-        ? `Fork and open in ${label}`
-        : `Open in ${label}`;
+    resource.source === "pi"
+      ? "Open in Pi"
+      : primary?.mode === "handoff"
+        ? primary.destination === "desktop"
+          ? `Continue in ${label}…`
+          : `Start in ${label}`
+        : primary?.mode === "fork" ||
+            (!primary && !resource.fork && !resource.localForkId)
+          ? `Fork and open in ${label}`
+          : `Open in ${label}`;
   useEffect(() => {
     let cancelled = false;
     void invoke<SessionLaunchOption[]>("session_launch_options", {

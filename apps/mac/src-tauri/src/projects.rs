@@ -193,18 +193,19 @@ impl ProjectLifecycle for Connection {
 
     fn purge_local(&self, project: &str) -> Result<()> {
         self.detach_project(project)?;
-        let has_drafts: bool = self
+        let has_local_work: bool = self
             .query_row(
-                "SELECT EXISTS(
-                SELECT 1 FROM projects JOIN drafts ON drafts.project=projects.id
-                WHERE projects.id=? AND json_extract(projects.value,'$.purgeAfter') IS NOT NULL
-                AND json_extract(drafts.value,'$.status')='local'
-            )",
+                &format!("SELECT EXISTS(
+                SELECT 1 FROM projects WHERE projects.id=?1 AND json_extract(projects.value,'$.purgeAfter') IS NOT NULL
+                AND (EXISTS(SELECT 1 FROM drafts WHERE drafts.project=projects.id AND json_extract(drafts.value,'$.status')='local')
+                    OR EXISTS(SELECT 1 FROM bindings WHERE bindings.project=projects.id AND json_extract(value,'$.base.source')='pi'{}))
+            )", crate::pi_sessions::COPY_BINDING),
                 [project],
                 |row| row.get(0),
             )
             .map_err(|error| error.to_string())?;
-        if has_drafts {
+        // Private Pi copies are local work, like drafts.
+        if has_local_work {
             self.execute(
                 "UPDATE projects SET value=json_set(value,'$.purged',json('true'),'$.purgeAfter',NULL) WHERE id=?",
                 [project],
@@ -492,7 +493,7 @@ pub fn merge_catalog(db: &Connection, remote: &Value) -> Result<()> {
                     crate::sources::preserve_removed_queue(&tx, id, source)?;
                     source["path"] = Value::Null;
                     source["folderIdentity"] = Value::Null;
-                    tx.execute("DELETE FROM bindings WHERE project=? AND json_extract(value,'$.base.sourceId')=?", [id, source["id"].as_str().ok_or("Missing source")?]).map_err(|e| e.to_string())?;
+                    tx.execute(&format!("DELETE FROM bindings WHERE project=? AND json_extract(value,'$.base.sourceId')=?{}", crate::pi_sessions::KEEP_COPY_BINDINGS), [id, source["id"].as_str().ok_or("Missing source")?]).map_err(|e| e.to_string())?;
                     continue;
                 }
                 if let Some(local) = old["sources"]
@@ -700,7 +701,10 @@ pub async fn project_command(action: String, input: Value) -> Result<Value> {
                 let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
                 db::upsert(&tx, "projects", id, id, &project)?;
                 tx.execute(
-                    "DELETE FROM bindings WHERE project=? AND json_extract(value,'$.base.sourceId')=?",
+                    &format!(
+                        "DELETE FROM bindings WHERE project=? AND json_extract(value,'$.base.sourceId')=?{}",
+                        crate::pi_sessions::KEEP_COPY_BINDINGS
+                    ),
                     [id, source_id],
                 )
                 .map_err(|e| e.to_string())?;

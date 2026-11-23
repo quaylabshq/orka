@@ -47,8 +47,7 @@ try {
     join(root, "../../licenses/Orka-MIT.txt"),
     join(staged, "Orka-MIT.txt"),
   );
-  // Both supported hosts load the same single stdio bridge. There is no remote
-  // endpoint, browser auth configuration or second server to select an identity.
+  // Codex and Claude Code load this manifest. Pi registers the same bridge via `pi mcp add`.
   await writeFile(
     join(staged, ".mcp.json"),
     JSON.stringify(
@@ -72,6 +71,14 @@ try {
     license: manifest.license,
     keywords: manifest.keywords,
   };
+  await writeFile(
+    join(staged, "package.json"),
+    JSON.stringify(
+      { ...hostManifest, private: true, pi: { skills: ["./skills"] } },
+      null,
+      2,
+    ) + "\n",
+  );
   await mkdir(join(staged, ".claude-plugin"));
   await writeFile(
     join(staged, ".claude-plugin", "plugin.json"),

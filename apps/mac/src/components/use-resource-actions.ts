@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
-import type { Resource } from "@portable/protocol";
+import type { WorkspaceResource as Resource } from "../types.js";
 
 /** Runs a native action with the shared busy and error handling, then refreshes. */
 export type ActionFeedback = {
@@ -16,7 +16,7 @@ export type Run = (
 ) => Promise<void>;
 export type SessionActionName = "copy" | "delete" | "keep" | "override";
 export type SessionVersion = "current" | "candidate";
-export type SessionTool = "claude" | "codex";
+export type SessionTool = "claude" | "codex" | "pi";
 export type SessionDestination = "desktop" | "terminal" | "warp" | "iterm2";
 export interface SessionLaunchOption {
   tool: SessionTool;
@@ -34,7 +34,9 @@ export interface SessionLaunchOption {
 export const sessionTool = (
   source: Resource["source"],
 ): SessionTool | undefined =>
-  source === "claude" || source === "codex" ? source : undefined;
+  source === "claude" || source === "codex" || source === "pi"
+    ? source
+    : undefined;
 export type ResourceActionHandlers = ReturnType<typeof useResourceActions>;
 
 /** The native commands behind the reading view's buttons and menu. */
