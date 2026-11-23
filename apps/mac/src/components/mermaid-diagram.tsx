@@ -28,6 +28,7 @@ export function MermaidDiagram({ source }: { source: string }) {
       <div
         className="mermaid-diagram"
         role="img"
+        tabIndex={0}
         aria-label="Mermaid diagram"
         dangerouslySetInnerHTML={{ __html: current.svg }}
       />
@@ -39,7 +40,7 @@ export function MermaidDiagram({ source }: { source: string }) {
           Diagram unavailable. Showing source.
         </p>
       )}
-      <pre>
+      <pre tabIndex={0} role="region" aria-label="Mermaid source">
         <code className="language-mermaid">{source}</code>
       </pre>
     </div>

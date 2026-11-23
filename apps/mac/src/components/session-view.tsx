@@ -7,7 +7,7 @@ import React, {
   useState,
 } from "react";
 import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { markdownRemarkPlugins } from "./markdown-blocks.js";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Resource } from "@portable/protocol";
 import { Button } from "./button.js";
@@ -77,7 +77,7 @@ const SessionTurn = memo(function SessionTurn({
         ) : (
           <div className="markdown-content">
             <Markdown
-              remarkPlugins={[remarkGfm]}
+              remarkPlugins={markdownRemarkPlugins}
               components={markdownComponents}
             >
               {message.text}
