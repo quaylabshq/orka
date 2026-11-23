@@ -77,24 +77,36 @@ export function renderMermaid(source: string): Promise<string> {
       );
       // Strict-mode rendering sanitizes SVG, but can still emit link markup.
       // Keep diagrams read-only and retain the reader's no-embedded-images rule.
-      const document = new DOMParser().parseFromString(svg, "image/svg+xml");
-      if (document.querySelector("parsererror"))
+      const parsedSvg = new DOMParser().parseFromString(svg, "image/svg+xml");
+      if (parsedSvg.querySelector("parsererror"))
         throw new Error("Invalid diagram SVG");
-      document.querySelectorAll("a").forEach((link) => {
+      parsedSvg.querySelectorAll("a").forEach((link) => {
         link.replaceWith(...Array.from(link.childNodes));
       });
-      document
+      parsedSvg
         .querySelectorAll("script, foreignObject, image")
         .forEach((node) => node.remove());
-      document.querySelectorAll("*").forEach((node) => {
+      parsedSvg.querySelectorAll("*").forEach((node) => {
         node.classList.remove("clickable");
         for (const attribute of Array.from(node.attributes)) {
           if (/^on/i.test(attribute.name) || attribute.name === "tabindex")
             node.removeAttribute(attribute.name);
         }
       });
+      const root = parsedSvg.documentElement;
+      // Mermaid defaults to width="100%", which shrinks a wide graph to its
+      // container. Preserve the rendered scale and let the reader scroll it.
+      if (
+        root instanceof SVGSVGElement &&
+        root.getAttribute("width") === "100%"
+      ) {
+        const width = root.viewBox.baseVal.width;
+        if (Number.isFinite(width) && width > 0) {
+          root.setAttribute("width", String(width));
+        }
+      }
       // Do not install Mermaid's optional diagram click handlers.
-      return new XMLSerializer().serializeToString(document.documentElement);
+      return new XMLSerializer().serializeToString(root);
     } finally {
       container.remove();
     }

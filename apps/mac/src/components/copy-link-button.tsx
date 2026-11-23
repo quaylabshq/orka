@@ -7,6 +7,8 @@ import { Icon } from "./icon.js";
 export function CopyLinkButton({
   value,
   label = "Copy link",
+  accessibleLabel = label,
+  copiedMessage = "Link copied",
   errorTitle = "Couldn’t copy link",
   disabled,
   onError,
@@ -19,6 +21,8 @@ export function CopyLinkButton({
 }: {
   value: string;
   label?: string;
+  accessibleLabel?: string;
+  copiedMessage?: string;
   errorTitle?: string;
   disabled?: boolean;
   onError: (message: string) => void;
@@ -43,6 +47,7 @@ export function CopyLinkButton({
     };
   }, [value]);
   const copy = async (event: React.MouseEvent<HTMLButtonElement>) => {
+    if (disabled || pending) return;
     const current = generation.current;
     setMotion(event.detail === 0 ? "instant" : "pointer");
     setPending(true);
@@ -69,17 +74,22 @@ export function CopyLinkButton({
         variant={variant ?? (iconOnly ? "tertiary" : "secondary")}
         size="sm"
         className={`copy-link-button${iconOnly ? " ui-icon-button" : ""}`}
-        disabled={disabled || pending}
+        disabled={disabled}
+        aria-disabled={pending || undefined}
         data-copied={copied}
         data-motion={motion}
-        aria-label={copied && role === "menuitem" ? `${label} Copied` : label}
+        aria-label={
+          copied && role === "menuitem"
+            ? `${accessibleLabel} Copied`
+            : accessibleLabel
+        }
         role={role}
         aria-live={role === "menuitem" ? "polite" : undefined}
         data-keep-open={loadValue ? true : undefined}
         title={
           iconOnly && nativeTooltip
             ? copied
-              ? "Link copied"
+              ? copiedMessage
               : label
             : undefined
         }
@@ -97,7 +107,7 @@ export function CopyLinkButton({
         </span>
         {copied && role !== "menuitem" && (
           <span className="sr-only" role="status">
-            Link copied
+            {copiedMessage}
           </span>
         )}
       </Button>

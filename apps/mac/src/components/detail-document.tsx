@@ -1,13 +1,11 @@
 import React, { type MouseEvent } from "react";
-import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import { FileIcon, GitCompareIcon, PencilIcon } from "lucide-react";
 import type { Inspection, ProjectResource as Resource } from "../types.js";
 import { Button } from "./button.js";
 import { Icon } from "./icon.js";
 import { SegmentedControl } from "./segmented-control.js";
 import { LoadingRegion } from "./loading-region.js";
-import { markdownComponents } from "./resource-content.js";
+import { FormattedFileMarkdown } from "./resource-content.js";
 import { readSkillMarkdown } from "./skill-markdown.js";
 import { FileDiffCard, SourceCard, fileKind } from "./file-diff.js";
 import { ReaderState } from "./skill-state.js";
@@ -144,13 +142,7 @@ function FileDocument({
         }
       />
     );
-  return (
-    <article className="markdown-content" aria-label="Rendered Markdown">
-      <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-        {body}
-      </Markdown>
-    </article>
-  );
+  return <FormattedFileMarkdown content={body} showProperties={!skillFile} />;
 }
 
 /** The selected file with its loading, missing, offline, and failed states. */
