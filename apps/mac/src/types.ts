@@ -84,6 +84,8 @@ export interface Project {
   purged?: boolean | null;
   revoked?: boolean | null;
   detachedAt?: string | null;
+  /** This Mac's workspace attachment was removed. */
+  hidden?: boolean | null;
 }
 export interface Binding {
   resourceId?: string;
@@ -143,6 +145,8 @@ export interface Snapshot {
   inactive?: Project[];
   deletedProjects?: Project[];
   archivedProjects?: Project[];
+  /** Includes projects that have been removed from this Mac. */
+  managedProjects?: Project[];
   resources: ProjectResource[];
   bindings: Binding[];
   conflicts: SessionConflict[];

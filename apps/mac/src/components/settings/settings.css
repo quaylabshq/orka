@@ -450,25 +450,25 @@
   .settings-lifecycle-actions .settings-row {
     @apply flex-wrap gap-4 px-4;
   }
-  .settings-deleted-list {
+  .settings-project-list {
     @apply overflow-hidden;
   }
-  .settings-deleted-row {
+  .settings-project-row {
     @apply flex min-w-0 flex-wrap items-center justify-between gap-3 px-4 py-4;
   }
   .settings-project-summary {
     @apply min-w-0 flex-1;
   }
-  .settings-deleted-row > .settings-inline-actions {
+  .settings-project-row > .settings-inline-actions {
     @apply shrink-0 gap-2;
   }
-  .settings-deleted-row + .settings-deleted-row {
+  .settings-project-row + .settings-project-row {
     @apply border-t border-line;
   }
-  .settings-deleted-row strong {
+  .settings-project-row strong {
     @apply block truncate text-label-item font-medium;
   }
-  .settings-deleted-row p {
+  .settings-project-row p {
     @apply mt-1 text-body-xs;
   }
   .settings-confirm {

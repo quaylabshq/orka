@@ -9,7 +9,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import type { Project } from "../types.js";
 import { InactiveProject } from "./inactive-project.js";
 import {
-  inactiveBadge,
+  inactiveReason,
   inactiveMessage,
   removalWarning,
 } from "./project-inactive.js";
@@ -52,23 +52,20 @@ function renderBanner(value: Project) {
   return run;
 }
 
-test("each inactive state gets its own sidebar badge", () => {
-  expect(inactiveBadge(archived)).toBe("Archived by owner");
-  expect(inactiveBadge(deleted)).toBe(
-    `Deleted by owner, restorable until ${deadline}`,
-  );
+test("each inactive state uses its current lifecycle status", () => {
+  expect(inactiveReason(archived)).toBe("archived");
+  expect(inactiveReason(deleted)).toBe("deleted");
   expect(
-    inactiveBadge(project({ deletedAt: "2026-01-01T00:00:00Z", purged: true })),
-  ).toBe("Deleted");
+    inactiveReason(
+      project({ deletedAt: "2026-01-01T00:00:00Z", purged: true }),
+    ),
+  ).toBe("purged");
   expect(
-    inactiveBadge(
+    inactiveReason(
       project({ revoked: true, detachedAt: "2026-01-02T00:00:00Z" }),
     ),
-  ).toBe("Access removed");
-  expect(inactiveBadge(project({}))).toBeNull();
-  expect(inactiveBadge(project({ deletedAt: "2026-01-01T00:00:00Z" }))).toBe(
-    "Deleted by owner",
-  );
+  ).toBe("removed");
+  expect(inactiveReason(project({}))).toBeNull();
   expect(inactiveMessage(archived)).toContain("archived by its owner");
   expect(inactiveMessage(deleted)).toContain(
     `Sync can resume if the project is restored by ${deadline}.`,
@@ -91,15 +88,13 @@ test("each inactive state gets its own sidebar badge", () => {
     "Access to this project was removed",
   );
   for (const previous of [archived, deleted]) {
-    expect(inactiveBadge({ ...previous, revoked: true })).toBe(
-      "Access removed",
-    );
+    expect(inactiveReason({ ...previous, revoked: true })).toBe("removed");
     expect(
       inactiveMessage({ ...previous, detachedAt: "2026-02-01T00:00:00Z" }),
     ).toContain("Access to this project was removed");
   }
-  expect(inactiveBadge({ ...deleted, purged: true, revoked: true })).toBe(
-    "Deleted",
+  expect(inactiveReason({ ...deleted, purged: true, revoked: true })).toBe(
+    "purged",
   );
 });
 

@@ -78,6 +78,7 @@ export const SettingsModal = forwardRef<
     onSignedOut: () => void;
     onSyncActivity: (projectId: string) => void;
     onManage: (projectId: string, section: "requests" | "logs") => void;
+    onViewInactiveProject: (projectId: string) => void;
     onClose: () => void;
   }
 >(function SettingsModal(
@@ -92,6 +93,7 @@ export const SettingsModal = forwardRef<
     onSignedOut,
     onSyncActivity,
     onManage,
+    onViewInactiveProject,
     onClose,
   },
   ref,
@@ -961,21 +963,20 @@ export const SettingsModal = forwardRef<
           )}
           {section === "projects" && (
             <>
-              <SettingsHeading
-                title="Projects"
-                description="Restore archived and recently deleted projects you own."
-              />
-              {(state.archivedProjects?.length ?? 0) +
-                (state.deletedProjects?.length ?? 0) ===
-                0 && <p>No archived or recently deleted projects.</p>}
+              <SettingsHeading title="Projects" />
               <SettingsDanger
-                archivedProjects={state.archivedProjects ?? []}
-                deletedProjects={state.deletedProjects ?? []}
+                catalog={{
+                  state,
+                  onManage: (id) =>
+                    request({ section: "general", projectId: id }),
+                  onViewInactive: (id) =>
+                    request(() => onViewInactiveProject(id)),
+                }}
                 serviceUrl={state.config?.apiUrl}
                 members={null}
                 busy={busy}
                 run={workspaceRun}
-                onComplete={() => request({ section: "projects", projectId })}
+                onComplete={() => setFocusTarget({ section: "projects" })}
               />
             </>
           )}

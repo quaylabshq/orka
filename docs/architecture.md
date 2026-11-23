@@ -62,10 +62,13 @@ remain visible in Sync while other items continue at the normal cadence.
 
 Project lifecycle, account membership and attachment to this Mac are separate
 states. Archive and recoverable deletion pause synchronization without discarding
-local folders or queued work. Owners recover archived and deleted projects from
-Settings → Projects, independently of the selected active project. Leaving a
-project removes account membership on every device; removing it from one Mac
-only clears that Mac's attachment and cached project state.
+local folders or queued work. The project selector lists active projects.
+Settings → Projects provides access to project settings, re-adds projects
+removed from this Mac, and offers owner-only recovery of archived and recently
+deleted projects. Local copies of inactive projects can still be exported or
+removed from their details. Leaving a project removes account membership on
+every device. Removing a project from one Mac clears that Mac's attachment
+and cached project state.
 
 The desktop explicitly requests the versioned lifecycle catalog with
 `includeArchived=true&projectLifecycle=1`. Owners receive complete deleted project

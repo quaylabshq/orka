@@ -55,8 +55,8 @@ pub fn snapshot() -> Result<Value> {
         ),
         &[],
     )?;
-    // Archived, deleted, and unreachable projects keep their place in the
-    // sidebar so the reason and the local copy stay visible.
+    // Settings can show the reason and offer access to the local copy of an
+    // archived, deleted, or unreachable project.
     let mut inactive = db::rows(
         &db,
         &format!(

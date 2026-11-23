@@ -4,15 +4,19 @@ import {
   ArchiveIcon,
   FolderIcon,
   LogOutIcon,
+  PauseIcon,
+  PlusIcon,
   RotateCcwIcon,
   Trash2Icon,
 } from "lucide-react";
-import type { Project } from "../../types.js";
+import type { Project, Snapshot } from "../../types.js";
 import { ActivityIndicator } from "../activity-indicator.js";
 import { Button } from "../button.js";
 import { Overlay } from "../overlay.js";
 import { TextField } from "../text-field.js";
 import { Icon } from "../icon.js";
+import { inactiveReason } from "../project-inactive.js";
+import { projectLabel } from "../project-navigation.js";
 
 const errorText = (error: unknown) => String(error).replace(/^Error:\s*/, "");
 
@@ -32,6 +36,52 @@ type ProjectCapabilities = {
 
 type Dialog = { kind: "delete" | "purge" | "leave"; project: Project };
 
+type ProjectCatalog = Pick<
+  Snapshot,
+  | "projects"
+  | "managedProjects"
+  | "archivedProjects"
+  | "deletedProjects"
+  | "inactive"
+>;
+
+const projectGroups = [
+  { id: "active", label: "Active projects", icon: FolderIcon },
+  { id: "disabled", label: "Disabled on this Mac", icon: PauseIcon },
+  { id: "archived", label: "Archived projects", icon: ArchiveIcon },
+  { id: "deleted", label: "Recently deleted", icon: Trash2Icon },
+  { id: "unavailable", label: "Unavailable projects", icon: FolderIcon },
+] as const;
+
+function groupProjects(catalog?: ProjectCatalog) {
+  const groups: Record<(typeof projectGroups)[number]["id"], Project[]> = {
+    active: [],
+    disabled: [],
+    archived: [],
+    deleted: [],
+    unavailable: [],
+  };
+  // The owner recovery lists also include projects removed from this Mac.
+  const projects = new Map(
+    [
+      ...(catalog?.managedProjects ?? []),
+      ...(catalog?.archivedProjects ?? []),
+      ...(catalog?.deletedProjects ?? []),
+      ...(catalog?.inactive ?? []),
+      ...(catalog?.projects ?? []),
+    ].map((project) => [project.id, project] as const),
+  );
+  for (const project of projects.values()) {
+    const reason = inactiveReason(project);
+    if (reason === "removed" || reason === "purged") {
+      if (!project.hidden) groups.unavailable.push(project);
+    } else {
+      groups[reason ?? (project.hidden ? "disabled" : "active")].push(project);
+    }
+  }
+  return groups;
+}
+
 export function changeProjectArchive(
   target: Project,
   action: "archive" | "restore",
@@ -48,8 +98,7 @@ export function changeProjectArchive(
 
 export function SettingsDanger({
   project,
-  deletedProjects = [],
-  archivedProjects = [],
+  catalog,
   serviceUrl,
   members,
   busy,
@@ -58,8 +107,11 @@ export function SettingsDanger({
   standaloneDelete,
 }: {
   project?: Project;
-  deletedProjects?: Project[];
-  archivedProjects?: Project[];
+  catalog?: {
+    state: ProjectCatalog;
+    onManage: (id: string) => void;
+    onViewInactive: (id: string) => void;
+  };
   serviceUrl?: string;
   members: number | null;
   busy: boolean;
@@ -100,8 +152,11 @@ export function SettingsDanger({
   );
   const [capabilityError, setCapabilityError] = useState("");
   const [capabilityAttempt, setCapabilityAttempt] = useState(0);
+  const groups = groupProjects(catalog?.state);
+  const localCopies = new Set(catalog?.state.inactive?.map((item) => item.id));
   const needsDeletionCapabilities =
-    project?.role === "owner" || deletedProjects.length > 0;
+    project?.role === "owner" ||
+    groups.deleted.some((item) => item.role === "owner");
   useEffect(() => {
     if (!needsDeletionCapabilities) return;
     let active = true;
@@ -189,13 +244,29 @@ export function SettingsDanger({
     standaloneDelete?.onClose();
   };
 
-  const lifecycle = async (target: Project, action: "archive" | "restore") => {
+  const lifecycle = async (
+    target: Project,
+    action: "archive" | "restore" | "show",
+  ) => {
     setLifecycleError(null);
     setNotice("");
     setOperation({ projectId: target.id });
     try {
-      await run(() => changeProjectArchive(target, action));
-      setNotice(`Project ${action === "archive" ? "archived" : "restored"}.`);
+      await run(() =>
+        action === "show"
+          ? invoke("project_command", {
+              action,
+              input: { projectId: target.id },
+            })
+          : changeProjectArchive(target, action),
+      );
+      setNotice(
+        {
+          archive: "Project archived.",
+          restore: "Project restored.",
+          show: "Project added to this Mac.",
+        }[action],
+      );
       onComplete?.();
     } catch (error) {
       setLifecycleError({ projectId: target.id, message: errorText(error) });
@@ -366,86 +437,119 @@ export function SettingsDanger({
           </div>
         </section>
       )}
-      {archivedProjects.length > 0 && (
-        <section className="settings-danger" aria-label="Archived projects">
-          <div className="settings-danger-heading">
-            <h3>Archived projects</h3>
-          </div>
-          <ul className="settings-group settings-deleted-list">
-            {archivedProjects.map((item) => (
-              <li className="settings-deleted-row" key={item.id}>
-                <Icon icon={ArchiveIcon} variant="tertiary" />
-                <div className="settings-project-summary">
-                  <strong title={item.name}>{item.name}</strong>
-                  <p>Sync paused</p>
-                </div>
-                <div className="settings-inline-actions">
-                  <Button
-                    size="sm"
-                    disabled={disabled}
-                    onClick={() => void lifecycle(item, "restore")}
-                    aria-busy={lifecycleProjectId === item.id}
-                  >
-                    {lifecycleProjectId === item.id ? (
-                      <ActivityIndicator />
-                    ) : (
-                      <Icon icon={RotateCcwIcon} />
-                    )}
-                    Restore
-                  </Button>
-                </div>
-                {lifecycleFeedback(item.id)}
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
-      {deletedProjects.length > 0 && (
-        <section className="settings-danger" aria-label="Recently deleted">
-          <div className="settings-danger-heading">
-            <h3>Recently deleted</h3>
-          </div>
-          <ul className="settings-group settings-deleted-list">
-            {deletedProjects.map((item) => (
-              <li className="settings-deleted-row" key={item.id}>
-                <Icon icon={Trash2Icon} variant="tertiary" />
-                <div className="settings-project-summary">
-                  <strong title={item.name}>{item.name}</strong>
-                  <p>
-                    {restorableUntil(item.purgeAfter)
-                      ? `Restorable until ${restorableUntil(item.purgeAfter)}`
-                      : "Restore deadline unavailable."}
-                  </p>
-                </div>
-                <div className="settings-inline-actions">
-                  <Button
-                    size="sm"
-                    aria-busy={lifecycleProjectId === item.id}
-                    disabled={disabled}
-                    onClick={() => void lifecycle(item, "restore")}
-                  >
-                    {lifecycleProjectId === item.id ? (
-                      <ActivityIndicator />
-                    ) : (
-                      <Icon icon={RotateCcwIcon} />
-                    )}
-                    Restore
-                  </Button>
-                  <Button
-                    size="sm"
-                    className="project-lifecycle-danger"
-                    disabled={disabled || !supportsDelete}
-                    onClick={() => open("purge", item)}
-                  >
-                    Delete now
-                  </Button>
-                </div>
-                {lifecycleFeedback(item.id)}
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
+      {catalog &&
+        (Object.values(groups).some((projects) => projects.length) ? (
+          projectGroups.map(
+            ({ id, label, icon }) =>
+              groups[id].length > 0 && (
+                <section
+                  className="settings-danger"
+                  aria-label={label}
+                  key={id}
+                >
+                  <div className="settings-danger-heading">
+                    <h3>{label}</h3>
+                  </div>
+                  <ul className="settings-group settings-project-list">
+                    {groups[id].map((item) => {
+                      const name = projectLabel(item);
+                      const deadline =
+                        id === "deleted"
+                          ? restorableUntil(item.purgeAfter)
+                          : null;
+                      const owner = item.role === "owner";
+                      return (
+                        <li className="settings-project-row" key={item.id}>
+                          <Icon icon={icon} variant="tertiary" />
+                          <div className="settings-project-summary">
+                            <strong title={name}>{name}</strong>
+                            {id === "archived" && <p>Sync paused</p>}
+                            {id === "deleted" && (
+                              <p>
+                                {deadline
+                                  ? `Restorable until ${deadline}`
+                                  : "Restore deadline unavailable."}
+                              </p>
+                            )}
+                            {id === "unavailable" && (
+                              <p>
+                                {item.purged
+                                  ? "Permanently deleted"
+                                  : "Access removed"}
+                              </p>
+                            )}
+                          </div>
+                          <div className="settings-inline-actions">
+                            {localCopies.has(item.id) && (
+                              <Button
+                                size="sm"
+                                disabled={disabled}
+                                onClick={() => catalog.onViewInactive(item.id)}
+                              >
+                                Details
+                              </Button>
+                            )}
+                            {id === "active" && (
+                              <Button
+                                size="sm"
+                                disabled={disabled}
+                                onClick={() => catalog.onManage(item.id)}
+                              >
+                                Manage
+                              </Button>
+                            )}
+                            {(id === "disabled" ||
+                              (owner &&
+                                (id === "archived" || id === "deleted"))) && (
+                              <Button
+                                size="sm"
+                                disabled={disabled}
+                                aria-busy={lifecycleProjectId === item.id}
+                                onClick={() =>
+                                  void lifecycle(
+                                    item,
+                                    id === "disabled" ? "show" : "restore",
+                                  )
+                                }
+                              >
+                                {lifecycleProjectId === item.id ? (
+                                  <ActivityIndicator />
+                                ) : (
+                                  <Icon
+                                    icon={
+                                      id === "disabled"
+                                        ? PlusIcon
+                                        : RotateCcwIcon
+                                    }
+                                  />
+                                )}
+                                {id === "disabled"
+                                  ? "Add to this Mac"
+                                  : "Restore"}
+                              </Button>
+                            )}
+                            {id === "deleted" && owner && (
+                              <Button
+                                size="sm"
+                                className="project-lifecycle-danger"
+                                disabled={disabled || !supportsDelete}
+                                onClick={() => open("purge", item)}
+                              >
+                                Delete now
+                              </Button>
+                            )}
+                          </div>
+                          {lifecycleFeedback(item.id)}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </section>
+              ),
+          )
+        ) : (
+          <p>No projects yet.</p>
+        ))}
       {notice && (
         <p className="project-lifecycle-feedback" role="status">
           {notice}

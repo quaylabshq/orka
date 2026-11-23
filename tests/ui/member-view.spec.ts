@@ -3,13 +3,6 @@ import { memberViewCalls, memberViewFixture } from "./fixtures/member-view.js";
 
 test.use({ locale: "en-US", timezoneId: "UTC" });
 
-const badges = [
-  ["Archived notes", "Archived by owner"],
-  ["Deleted notes", "Deleted by owner, restorable until Jan 31, 2026"],
-  ["Purged notes", "Deleted"],
-  ["Removed notes", "Access removed"],
-];
-
 async function openPicker(page: Page) {
   await page
     .getByRole("combobox", { name: "Select project", exact: true })
@@ -17,32 +10,51 @@ async function openPicker(page: Page) {
   return page.getByRole("listbox", { name: "Projects", exact: true });
 }
 
-test("inactive projects stay in the sidebar, greyed out with a badge", async ({
+async function openProjectsSettings(page: Page) {
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await page.getByRole("button", { name: "Projects", exact: true }).click();
+  return page.getByRole("region", { name: "Settings", exact: true });
+}
+
+async function openInactiveProject(page: Page, name: string) {
+  const settings = await openProjectsSettings(page);
+  await settings
+    .getByRole("listitem")
+    .filter({ hasText: name })
+    .getByRole("button", { name: "Details", exact: true })
+    .click();
+}
+
+test("inactive projects appear in Settings and stay out of the picker", async ({
   page,
 }) => {
   await memberViewFixture(page);
-  const projects = await openPicker(page);
-  for (const [name, badge] of badges) {
-    const option = projects.getByRole("option").filter({ hasText: name });
-    await expect(option).toBeVisible();
-    await expect(option).toContainText(badge);
-    await expect(option).toHaveClass(/project-menu-item-inactive/);
-  }
-  await page.screenshot({
-    animations: "disabled",
-    path: "/tmp/orka-briefs/member-view-1.png",
+  const picker = await openPicker(page);
+  await expect(picker.getByRole("option")).toHaveText(["Product"]);
+  await page.keyboard.press("Escape");
+  const settings = await openProjectsSettings(page);
+  await expect(
+    settings.getByRole("region", { name: "Archived projects" }),
+  ).toContainText("Archived notes");
+  const deleted = settings.getByRole("region", { name: "Recently deleted" });
+  await expect(deleted).toContainText("Deleted notes");
+  await expect(deleted.getByRole("button")).toHaveText(["Details"]);
+  const unavailable = settings.getByRole("region", {
+    name: "Unavailable projects",
   });
+  await expect(
+    unavailable.getByRole("listitem").filter({ hasText: "Purged notes" }),
+  ).toContainText("Permanently deleted");
+  await expect(
+    unavailable.getByRole("listitem").filter({ hasText: "Removed notes" }),
+  ).toContainText("Access removed");
 });
 
 test("an inactive project explains the pause and offers export and removal", async ({
   page,
 }) => {
   await memberViewFixture(page);
-  const projects = await openPicker(page);
-  await projects
-    .getByRole("option")
-    .filter({ hasText: "Deleted notes" })
-    .click();
+  await openInactiveProject(page, "Deleted notes");
   await expect(
     page.getByRole("heading", { name: "Deleted notes", exact: true }),
   ).toBeVisible();
@@ -98,7 +110,7 @@ test("an inactive project explains the pause and offers export and removal", asy
       },
     ]);
   await expect(page.getByRole("dialog")).toHaveCount(0);
-  // The removed project leaves the sidebar; the remaining active one is shown.
+  // After local removal, the remaining active project is shown.
   await expect(
     page.getByRole("heading", { name: "Home", exact: true }),
   ).toBeVisible();
@@ -109,11 +121,7 @@ test("cancelling local removal returns focus at the minimum viewport", async ({
 }) => {
   await page.setViewportSize({ width: 900, height: 640 });
   await memberViewFixture(page);
-  const projects = await openPicker(page);
-  await projects
-    .getByRole("option")
-    .filter({ hasText: "Deleted notes" })
-    .click();
+  await openInactiveProject(page, "Deleted notes");
   const banner = page.locator(".inactive-project-banner");
   const remove = banner.getByRole("button", {
     name: "Remove from this Mac",
@@ -144,33 +152,25 @@ test("cancelling local removal returns focus at the minimum viewport", async ({
   ).toBeInViewport();
 });
 
-test("a selected inactive project keeps its checkmark aligned with its name", async ({
+test("inactive details keep the project out of the collapsed picker and link back to Projects", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 900, height: 640 });
   await memberViewFixture(page);
-  let projects = await openPicker(page);
-  await projects
-    .getByRole("option")
-    .filter({ hasText: "Deleted notes" })
+  await openInactiveProject(page, "Deleted notes");
+  await page
+    .getByRole("button", { name: "Collapse sidebar", exact: true })
     .click();
-  projects = await openPicker(page);
-  const selected = projects.getByRole("option", { selected: true });
-  await expect(selected).toContainText("Deleted notes");
-  const centers = await selected.evaluate((element) => {
-    const icons = element.querySelectorAll(":scope > svg");
-    const center = (item: Element) => {
-      const box = item.getBoundingClientRect();
-      return box.y + box.height / 2;
-    };
-    return {
-      folder: center(icons[0]),
-      check: center(icons[icons.length - 1]),
-      name: center(element.querySelector(":scope > span")!),
-    };
-  });
-  expect(Math.abs(centers.check - centers.folder)).toBeLessThanOrEqual(1);
-  expect(Math.abs(centers.check - centers.name)).toBeLessThanOrEqual(1);
+  await page.getByRole("combobox", { name: /^Select project/ }).press("Enter");
+  const picker = page.getByRole("listbox", { name: "Projects", exact: true });
+  await expect(picker.getByRole("option")).toHaveText(["Product"]);
+  await page.keyboard.press("Escape");
+  await page
+    .getByRole("button", { name: "Back to Projects", exact: true })
+    .click();
+  await expect(
+    page.getByRole("region", { name: "Recently deleted" }),
+  ).toContainText("Deleted notes");
 });
 
 test("a failed local removal keeps its confirmation open for retry", async ({
@@ -180,11 +180,7 @@ test("a failed local removal keeps its confirmation open for retry", async ({
   const message =
     "Could not remove the cached files. Check folder permissions and try again.";
   await memberViewFixture(page, { removeError: message });
-  const projects = await openPicker(page);
-  await projects
-    .getByRole("option")
-    .filter({ hasText: "Deleted notes" })
-    .click();
+  await openInactiveProject(page, "Deleted notes");
   await page
     .getByRole("button", { name: "Remove from this Mac", exact: true })
     .click();
@@ -210,11 +206,7 @@ test("local removal shows progress and blocks dismissal until it finishes", asyn
   page,
 }) => {
   await memberViewFixture(page, { holdRemoval: true });
-  const projects = await openPicker(page);
-  await projects
-    .getByRole("option")
-    .filter({ hasText: "Deleted notes" })
-    .click();
+  await openInactiveProject(page, "Deleted notes");
   await page
     .getByRole("button", { name: "Remove from this Mac", exact: true })
     .click();
@@ -239,11 +231,7 @@ test("a deleted project with nothing held hides the count", async ({
   page,
 }) => {
   await memberViewFixture(page, { heldChanges: 0 });
-  const projects = await openPicker(page);
-  await projects
-    .getByRole("option")
-    .filter({ hasText: "Deleted notes" })
-    .click();
+  await openInactiveProject(page, "Deleted notes");
   const banner = page.locator(".inactive-project-banner");
   await expect(banner).toContainText(
     "Sync can resume if the project is restored by Jan 31, 2026.",
@@ -255,11 +243,7 @@ test("an archived project keeps its own banner and warning", async ({
   page,
 }) => {
   await memberViewFixture(page);
-  const projects = await openPicker(page);
-  await projects
-    .getByRole("option")
-    .filter({ hasText: "Archived notes" })
-    .click();
+  await openInactiveProject(page, "Archived notes");
   const banner = page.locator(".inactive-project-banner");
   await expect(banner).toContainText(
     "This project is archived by its owner. Sync will resume when it’s restored.",
@@ -278,11 +262,7 @@ test("an archived project keeps its own banner and warning", async ({
 
 test("the removal warning uses a singular change count", async ({ page }) => {
   await memberViewFixture(page, { heldChanges: 1, pendingChanges: 1 });
-  const projects = await openPicker(page);
-  await projects
-    .getByRole("option")
-    .filter({ hasText: "Deleted notes" })
-    .click();
+  await openInactiveProject(page, "Deleted notes");
   const banner = page.locator(".inactive-project-banner");
   await expect(banner).toContainText(
     "1 change is queued to sync if restored by Jan 31, 2026",

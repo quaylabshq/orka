@@ -24,7 +24,6 @@ import {
 } from "../hooks/use-fluid-hover.js";
 import { FluidHoverHighlight } from "./fluid-hover-highlight.js";
 import { ItemContextMenu, type ItemMenuAction } from "./item-menu.js";
-import { inactiveBadge } from "./project-inactive.js";
 import type { LocalKind } from "./use-local-resources.js";
 
 const sections = [
@@ -65,7 +64,6 @@ function ProjectOption({
 }) {
   const ref = React.useRef<HTMLButtonElement>(null);
   useRegisterFluidHoverItem(registerItem, index, ref);
-  const badge = inactiveBadge(project);
   return (
     <ItemContextMenu
       actions={actions}
@@ -77,16 +75,11 @@ function ProjectOption({
         role="option"
         aria-selected={selected}
         tabIndex={selected ? 0 : -1}
-        className={`project-menu-item${badge ? " project-menu-item-inactive" : ""}`}
+        className="project-menu-item"
         onClick={onChoose}
       >
         <FolderIcon size={16} aria-hidden="true" />
         <span>{projectLabel(project)}</span>
-        {badge && (
-          <small className="project-menu-badge" title={badge}>
-            {badge}
-          </small>
-        )}
         {selected && (
           <CheckIcon
             className="project-menu-selected"
