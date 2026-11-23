@@ -1373,7 +1373,7 @@ fn codex_trust_launcher_starts_without_a_prompt_in_the_connected_folder() {
             LaunchIntent::Start,
             &root,
             &home,
-            None,
+            &[],
             None,
         ),
     )
@@ -1405,16 +1405,23 @@ fn terminal_scripts_preserve_arguments_working_directory_and_native_home_literal
                 .join("launcher exec ' $USER\nexec script.command");
             let config = temp.path().join("config exec ' $USER\nexec config.yaml");
             let started = temp.path().join("started exec ' $USER\nexec marker");
+            let legacy = temp.path().join("legacy exec ' $USER\nexec config.yaml");
             if cleanup_config {
                 fs::write(&config, "temporary launcher config").unwrap();
+                fs::write(&legacy, "temporary legacy launcher config").unwrap();
             }
+            let cleanup = if cleanup_config {
+                vec![config.as_path(), legacy.as_path()]
+            } else {
+                Vec::new()
+            };
             let script = session_launcher::terminal_script(
                 &binary,
                 tool,
                 LaunchIntent::Resume("exact-session-id"),
                 &root,
                 &home,
-                cleanup_config.then_some(config.as_path()),
+                &cleanup,
                 track_startup.then_some(started.as_path()),
             );
             fs::write(&path, &script).unwrap();
@@ -1437,6 +1444,7 @@ fn terminal_scripts_preserve_arguments_working_directory_and_native_home_literal
             assert!(!script.contains("--continue"));
             assert!(!path.exists());
             assert!(!config.exists());
+            assert!(!legacy.exists());
             assert_eq!(started.exists(), track_startup);
             if track_startup {
                 fs::remove_file(started).unwrap();
@@ -1455,6 +1463,19 @@ fn terminal_scripts_preserve_arguments_working_directory_and_native_home_literal
     assert_eq!(
         config["windows"][0]["tabs"][0]["layout"]["cwd"],
         json!(root)
+    );
+    let tab: toml::Table = session_launcher::warp_tab_config(&binary, &root)
+        .parse()
+        .unwrap();
+    let pane = &tab["panes"].as_array().unwrap()[0];
+    assert_eq!(pane["type"].as_str(), Some("terminal"));
+    assert_eq!(pane["directory"].as_str(), Some(&*root.to_string_lossy()));
+    assert_eq!(
+        pane["commands"].as_array().unwrap()[0].as_str().unwrap(),
+        format!(
+            "/bin/sh {}",
+            session_launcher::shell_quote(&binary.to_string_lossy())
+        )
     );
 }
 
@@ -1785,7 +1806,7 @@ fn cross_provider_cli_receives_one_literal_prompt_without_a_resume_id() {
             LaunchIntent::Handoff(prompt),
             temp.path(),
             temp.path(),
-            None,
+            &[],
             None,
         );
         fs::write(&path, script).unwrap();

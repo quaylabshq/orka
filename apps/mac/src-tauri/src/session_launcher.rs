@@ -681,7 +681,7 @@ pub(crate) fn terminal_script(
     intent: LaunchIntent<'_>,
     root: &Path,
     native_home: &Path,
-    cleanup: Option<&Path>,
+    cleanup: &[&Path],
     started: Option<&Path>,
 ) -> String {
     let home_key = if tool == Tool::Codex {
@@ -690,9 +690,10 @@ pub(crate) fn terminal_script(
         "CLAUDE_CONFIG_DIR"
     };
     let arguments = intent.arguments(tool);
-    let cleanup = cleanup
+    let cleanup: String = cleanup
+        .iter()
         .map(|path| format!(" {}", shell_quote(&path.to_string_lossy())))
-        .unwrap_or_default();
+        .collect();
     let started = started
         .map(|path| format!(": > {}\n", shell_quote(&path.to_string_lossy())))
         .unwrap_or_default();
@@ -716,7 +717,19 @@ fn private_file(path: &Path, content: &[u8], mode: u32) -> Result<()> {
     file.write_all(content).map_err(|e| e.to_string())
 }
 
-// JSON is valid YAML. This format also works on Warp versions before Tab Configs.
+/// A Warp Tab Config. Warp replaced Launch Configurations with Tab Configs and
+/// current versions no longer run the legacy format from a URL. JSON strings
+/// are valid TOML basic strings, so paths need no further escaping.
+pub(crate) fn warp_tab_config(script: &Path, root: &Path) -> String {
+    let quoted = |value: String| Value::String(value).to_string();
+    format!(
+        "name = \"Orka session\"\n\n[[panes]]\nid = \"main\"\ntype = \"terminal\"\ndirectory = {}\ncommands = [{}]\n",
+        quoted(root.to_string_lossy().into_owned()),
+        quoted(format!("/bin/sh {}", shell_quote(&script.to_string_lossy()))),
+    )
+}
+
+// JSON is valid YAML. Warp versions before Tab Configs read only this format.
 pub(crate) fn warp_config(script: &Path, root: &Path) -> String {
     json!({"name":"Orka session","windows":[{"tabs":[{"title":"Orka session","layout":{"cwd":root,"commands":[{"exec":format!("/bin/sh {}",shell_quote(&script.to_string_lossy()))}]}}]}]}).to_string()
 }
@@ -727,6 +740,28 @@ fn warp_url(path: &Path) -> Result<String> {
         .map_err(|_| "Invalid Warp launch URL")?
         .push(&path.to_string_lossy());
     Ok(url.into())
+}
+
+fn warp_tab_url(name: &str) -> Result<String> {
+    let mut url = reqwest::Url::parse("warp://tab_config/").map_err(|e| e.to_string())?;
+    url.path_segments_mut()
+        .map_err(|_| "Invalid Warp tab URL")?
+        .pop()
+        .push(name);
+    url.query_pairs_mut().append_pair("new_window", "true");
+    Ok(url.into())
+}
+
+fn wait_started(started: &Path, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if started.is_file() {
+            let _ = fs::remove_file(started);
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    false
 }
 
 fn launch_terminal(
@@ -747,7 +782,8 @@ fn launch_terminal(
     } else {
         native::claude_home()?
     };
-    let mut config = None;
+    // Warp's Tab Config and legacy launch config; the script removes both.
+    let mut configs: Vec<PathBuf> = Vec::new();
     let started = directory.join(format!("{nonce}.started"));
     let result = (|| -> Result<()> {
         if destination == Destination::Warp {
@@ -755,12 +791,17 @@ fn launch_terminal(
             let app_home = dirs::home_dir().ok_or("Home directory unavailable")?;
             let warp = app_home.join(".warp");
             packages::safe_directory(&app_home, &warp)?;
-            let configs = warp.join("launch_configurations");
-            packages::safe_directory(&warp, &configs)?;
             let name = format!("orka_session_{}", nonce.simple());
-            let path = configs.join(format!("{name}.yaml"));
+            let tabs = warp.join("tab_configs");
+            packages::safe_directory(&warp, &tabs)?;
+            let path = tabs.join(format!("{name}.toml"));
+            private_file(&path, warp_tab_config(&script, root).as_bytes(), 0o600)?;
+            configs.push(path);
+            let legacy = warp.join("launch_configurations");
+            packages::safe_directory(&warp, &legacy)?;
+            let path = legacy.join(format!("{name}.yaml"));
             private_file(&path, warp_config(&script, root).as_bytes(), 0o600)?;
-            config = Some(path);
+            configs.push(path);
         }
         let content = terminal_script(
             binary,
@@ -768,7 +809,7 @@ fn launch_terminal(
             intent,
             root,
             &native_home,
-            config.as_deref(),
+            &configs.iter().map(PathBuf::as_path).collect::<Vec<_>>(),
             (destination != Destination::Iterm2).then_some(started.as_path()),
         );
         private_file(&script, content.as_bytes(), 0o700)?;
@@ -796,33 +837,49 @@ fn launch_terminal(
                     "iTerm2",
                 )
             }
-            Destination::Warp => checked(
-                Command::new("/usr/bin/open").args([
-                    "-b",
-                    destination.bundle(tool),
-                    &warp_url(config.as_deref().ok_or("Missing Warp configuration")?)?,
-                ]),
-                "Warp",
-            ),
+            Destination::Warp => {
+                let name = configs
+                    .first()
+                    .and_then(|path| path.file_stem())
+                    .ok_or("Missing Warp configuration")?;
+                checked(
+                    Command::new("/usr/bin/open").args([
+                        "-b",
+                        destination.bundle(tool),
+                        &warp_tab_url(&name.to_string_lossy())?,
+                    ]),
+                    "Warp",
+                )
+            }
             Destination::Desktop => Err("Choose a terminal destination".into()),
         }
     })();
     if result.is_ok() && destination == Destination::Iterm2 {
         return Ok(None);
     }
-    if result.is_ok() {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while Instant::now() < deadline {
-            if started.is_file() {
-                let _ = fs::remove_file(&started);
+    if result.is_ok() && wait_started(&started, Duration::from_secs(10)) {
+        return Ok(None);
+    }
+    // Warp versions before Tab Configs ignore the tab URL. The script removes
+    // itself when it runs, so at most one of the two configurations starts it.
+    if result.is_ok() && destination == Destination::Warp {
+        if let Some(legacy) = configs.get(1) {
+            let opened = checked(
+                Command::new("/usr/bin/open").args([
+                    "-b",
+                    destination.bundle(tool),
+                    &warp_url(legacy)?,
+                ]),
+                "Warp",
+            );
+            if opened.is_ok() && wait_started(&started, Duration::from_secs(10)) {
                 return Ok(None);
             }
-            std::thread::sleep(Duration::from_millis(50));
         }
     }
     let _ = fs::remove_file(&script);
     let _ = fs::remove_file(&started);
-    if let Some(path) = config {
+    for path in configs {
         let _ = fs::remove_file(path);
     }
     result?;
