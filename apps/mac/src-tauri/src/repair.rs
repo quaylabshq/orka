@@ -131,7 +131,8 @@ pub fn settle_deletion(
     mut binding: Value,
 ) -> Result<()> {
     binding["base"] = resource.clone();
-    if !binding["paths"].is_array() {
+    if !binding["paths"].is_array() || (resource["kind"] == "session" && resource["source"] == "pi")
+    {
         binding["paths"] = json!([]);
     }
     let empty = indexer::manifest_hash(&json!([]));
@@ -181,6 +182,11 @@ pub fn archived(binding: &Value) -> Result<bool> {
 pub fn deletion_complete(resource: &Value, binding: &Value) -> Result<bool> {
     if resource["deleted"] != true {
         return Ok(false);
+    }
+    // A Pi session belongs to Pi. Orka only ever had a shared snapshot of it,
+    // so acknowledging the deletion is complete without touching native files.
+    if resource["kind"] == "session" && resource["source"] == "pi" {
+        return Ok(true);
     }
     let Some(paths) = binding["paths"].as_array() else {
         return Ok(binding["nativeId"].is_null());

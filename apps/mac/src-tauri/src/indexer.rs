@@ -809,8 +809,9 @@ fn collect(
     if let Some(native_id) = native_id {
         if let Some(b) = db::rows(
             db,
-            "SELECT value FROM bindings WHERE project=? AND json_extract(value,'$.nativeId')=? AND coalesce(json_extract(value,'$.base.sourceId'),'')=?",
-            &[&project_id, &native_id, &project["sourceId"].as_str().unwrap_or("")],
+            // Legacy bindings predate the provider field and must keep matching.
+            "SELECT value FROM bindings WHERE project=? AND json_extract(value,'$.nativeId')=? AND coalesce(json_extract(value,'$.base.sourceId'),'')=? AND (json_extract(value,'$.base.source')=? OR (? != 'pi' AND json_extract(value,'$.base.source') IS NULL))",
+            &[&project_id, &native_id, &project["sourceId"].as_str().unwrap_or(""), &source, &source],
         )?
         .first()
         {
@@ -829,7 +830,7 @@ fn collect(
     {
         if let Some(known_id) = origin["resourceId"].as_str() {
             id = known_id.to_owned();
-        } else if let Some(previous) = db::rows(db,"SELECT value FROM local_resources WHERE project=? AND json_extract(value,'$.resource.kind')=? AND coalesce(json_extract(value,'$.resource.sourceId'),'')=? AND (json_extract(value,'$.resource.logicalPath')=? OR (? IS NOT NULL AND json_extract(value,'$.nativeId')=?)) LIMIT 1",&[&project_id,&kind,&project["sourceId"].as_str().unwrap_or(""),&logical,&native_id,&native_id])?.first() {
+        } else if let Some(previous) = db::rows(db,"SELECT value FROM local_resources WHERE project=? AND json_extract(value,'$.resource.kind')=? AND coalesce(json_extract(value,'$.resource.sourceId'),'')=? AND json_extract(value,'$.resource.source')=? AND (json_extract(value,'$.resource.logicalPath')=? OR (? IS NOT NULL AND json_extract(value,'$.nativeId')=?)) LIMIT 1",&[&project_id,&kind,&project["sourceId"].as_str().unwrap_or(""),&source,&logical,&native_id,&native_id])?.first() {
             id = previous["resource"]["resourceId"].as_str().ok_or("Missing resource")?.to_owned();
         }
     }
@@ -838,7 +839,11 @@ fn collect(
     if project["catalogOnly"] == true {
         let mut resource = json!({"resourceId":id,"kind":kind,"source":source,"logicalPath":logical,"title":title,"files":files,"deleted":false});
         crate::sources::scope(project, &mut resource);
-        resource["contextSources"] = scanned_sources(db, project, logical, native_id)?;
+        resource["contextSources"] = if source == "pi" {
+            json!([])
+        } else {
+            scanned_sources(db, project, logical, native_id)?
+        };
         let previous = db::rows(db, "SELECT value FROM local_resources WHERE id=?", &[&id])?
             .into_iter()
             .next()
@@ -1324,10 +1329,11 @@ fn refresh_catalog(
             .filter_map(|value| value["error"].as_str().map(str::to_owned))
             .collect::<Vec<_>>();
         if reads_history {
-            for (tool, directory) in [
-                ("codex", native::codex_home()?.join("sessions")),
-                ("claude", native::claude_home()?.join("projects")),
-            ] {
+            for (tool, directory) in session_directories(
+                &native::codex_home()?,
+                &native::claude_home()?,
+                kind == "session",
+            )? {
                 let previously_discovered = previous.iter().any(|entry| {
                     entry["resource"]["source"] == tool
                         && (kind == "session"
@@ -1373,6 +1379,21 @@ fn refresh_catalog(
     let mut unique = BTreeSet::new();
     errors.retain(|message| unique.insert(message.clone()));
     Ok(errors)
+}
+
+fn session_directories(
+    codex: &Path,
+    claude: &Path,
+    include_pi: bool,
+) -> Result<Vec<(&'static str, PathBuf)>> {
+    let mut directories = vec![
+        ("codex", codex.join("sessions")),
+        ("claude", claude.join("projects")),
+    ];
+    if include_pi {
+        directories.push(("pi", crate::pi_sessions::directory()?));
+    }
+    Ok(directories)
 }
 
 pub fn scan(db: &rusqlite::Connection, project: &Value) -> Result<()> {
@@ -2069,12 +2090,13 @@ fn scan_source(
             crate::worktrees::SessionScope::new(db, project, &root, &sources, &home)?;
         let topology = session_scope.cache_scope()?;
         let mut last_history_progress = None;
-        for (tool, directory) in [
-            ("codex", codex.join("sessions")),
-            ("claude", claude.join("projects")),
-        ] {
+        let include_pi =
+            project["catalogOnly"] == true && crate::projects::sharing_allowed(project, "session");
+        for (tool, directory) in session_directories(&codex, &claude, include_pi)? {
             if !directory.exists() {
-                sessions_complete = false;
+                if tool != "pi" {
+                    sessions_complete = false;
+                }
                 continue;
             }
             for entry in WalkDir::new(&directory).follow_links(false) {
@@ -2105,9 +2127,8 @@ fn scan_source(
                     .map(|cache| cache.contains(db))
                     .transpose()?
                     .unwrap_or(false);
-                // Codex's first record identifies its project. Avoid loading unrelated
-                // histories in full; uncertain attribution keeps the existing scan path.
-                let unrelated_prefix = if !cached_unrelated && tool == "codex" {
+                // Codex and Pi put the working directory in the first record.
+                let unrelated_prefix = if !cached_unrelated && matches!(tool, "codex" | "pi") {
                     match history::session_route_prefix(e.path(), tool) {
                         Some((Some(id), cwd)) => {
                             session_scope.for_session(tool, &id, &cwd)?.is_none()
@@ -2260,7 +2281,10 @@ fn scan_source(
                         crate::history::resource_records(&json!({"source":tool,"files":files}))?;
                     native::bind_handoff(db, project_id, &id, &records)?;
                 }
-                if !checkout.historical && crate::projects::sharing_allowed(project, "plan") {
+                if tool != "pi"
+                    && !checkout.historical
+                    && crate::projects::sharing_allowed(project, "plan")
+                {
                     let plan_records =
                         crate::history::resource_records(&json!({"source":tool,"files":files}))?;
                     let mut has_plan_file = false;
@@ -2422,7 +2446,7 @@ fn scan_source(
         &[&project_id],
     )? {
         let base = &b["base"];
-        if !crate::sources::matches(project, base) {
+        if crate::pi_sessions::is_private_copy(&b) || !crate::sources::matches(project, base) {
             continue;
         }
         let Some(id) = base["resourceId"].as_str() else {

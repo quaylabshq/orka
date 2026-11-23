@@ -77,13 +77,17 @@ interface ResourceMenuContextValue {
 const ResourceMenuContext = createContext<ResourceMenuContextValue | null>(
   null,
 );
+// A Pi row exposes Orka's private copy of the live session, not the shared
+// snapshot. Later private turns must not invalidate a review of that snapshot.
 const identity = (resource: ProjectResource) =>
   JSON.stringify([
     resource.projectId,
     resource.resourceId,
-    resource.revision,
-    resource.hash,
-    resource.files,
+    resource.source === "pi"
+      ? (resource.sharedRevision ?? resource.revision)
+      : resource.revision,
+    resource.source === "pi" ? null : resource.hash,
+    resource.source === "pi" ? null : resource.files,
   ]);
 
 const resourceKey = (resource: ProjectResource) =>
@@ -96,7 +100,7 @@ export function canDeleteSharedResource(
 ) {
   if (
     resource.local ||
-    resource.localChanges ||
+    (resource.localChanges && resource.source !== "pi") ||
     resource.revision < 1 ||
     resource.deleted
   )
@@ -920,7 +924,9 @@ function ResourceCommandDialog({
       }
       context.onNotice(
         kind === "delete"
-          ? "Shared item deleted. Local copies follow sync and review rules."
+          ? resource.source === "pi"
+            ? "Snapshot removed from shared history. The Pi session on its Mac is unchanged."
+            : "Shared item deleted. Local copies follow sync and review rules."
           : result.status === "published"
             ? "Snapshot shared"
             : result.status === "approval_required"

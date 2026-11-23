@@ -1,14 +1,17 @@
-import { UsersIcon } from "lucide-react";
+import { TerminalIcon, UsersIcon } from "lucide-react";
 import React from "react";
-import type { Resource } from "@portable/protocol";
+import type { ResourceSource } from "../types.js";
 
-export function SourceLabel({ source }: { source: Resource["source"] }) {
-  const label =
-    source === "codex" ? "Codex" : source === "claude" ? "Claude" : "Shared";
+export const sourceName = (source: ResourceSource) =>
+  ({ codex: "Codex", claude: "Claude", pi: "Pi", shared: "Shared" })[source];
+
+export function SourceLabel({ source }: { source: ResourceSource }) {
   return (
     <span className="source-label">
       {source === "shared" ? (
         <UsersIcon size={14} aria-hidden="true" />
+      ) : source === "pi" ? (
+        <TerminalIcon size={16} aria-hidden="true" />
       ) : (
         <img
           src={`${import.meta.env.BASE_URL}source-icons/${source}.svg`}
@@ -19,7 +22,7 @@ export function SourceLabel({ source }: { source: Resource["source"] }) {
           draggable={false}
         />
       )}
-      <span>{label}</span>
+      <span>{sourceName(source)}</span>
     </span>
   );
 }

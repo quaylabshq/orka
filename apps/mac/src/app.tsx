@@ -37,7 +37,7 @@ import { listen } from "@tauri-apps/api/event";
 import { Overlay } from "./components/overlay.js";
 import { SettingsUpdates } from "./components/settings/settings-updates.js";
 import { SettingsPluginConnections } from "./components/settings/settings-plugin-connections.js";
-import type { Resource } from "@portable/protocol";
+import type { WorkspaceResource as Resource } from "./types.js";
 import type { ProjectPage, ProjectResource } from "./types.js";
 import {
   MembersPage,
@@ -1129,7 +1129,6 @@ function WorkspaceApp({
                     ? collectionLabel
                     : "Your projects"
             }
-            instant={sidebarInstant}
             collapsed={sidebarCollapsed}
             onToggle={(instant) => {
               setSidebarInstant(instant);

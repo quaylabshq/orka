@@ -2180,15 +2180,6 @@
   line-height: var(--body-sm-line-height);
   overflow-wrap: anywhere;
 }
-.sidebar-toggle-icons {
-  display: grid;
-  width: 16px;
-  height: 16px;
-}
-.sidebar-toggle-icons > span {
-  grid-area: 1 / 1;
-  display: flex;
-}
 .workspace-header .sync-status,
 .workspace-header .workspace-repository-filter {
   width: auto;

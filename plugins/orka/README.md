@@ -14,7 +14,7 @@ The bridge forwards requests over a private, profile-local Unix socket. It does 
 ## Connect
 
 1. Install an updated Orka desktop and sign in normally. The service must advertise `desktopConnector: 1` at `/v2/instance` for shared tools.
-2. Install the desktop plugin ZIP in Codex or Claude Code and connect Orka.
+2. Install the plugin in Codex or Claude Code, or [connect Pi](#connect-pi).
 3. When a verified assistant connects for the first time, Orka opens the approval dialog. Review the account and service, then approve the access you want to grant. Other setups can open **Settings → Connectors → Review request**.
 
 Orka remembers the selected access for Codex, Claude Code, and Claude when macOS verifies the app's signing identity. Reopening a verified assistant restores those same permissions for the same Orka account and service. Other setups can still connect with approval for the running assistant. If a returning verified assistant needs attention, Orka shows a quiet toast with a link to **Connectors**. Existing process-only approvals stay valid for their original connection. Review one fresh request to save access across restarts.
@@ -26,6 +26,22 @@ Orka remembers the selected access for Codex, Claude Code, and Claude when macOS
 When upgrading from plugin 0.2.0, update the installed plugin as well as Orka desktop. A local plugin marketplace must also contain the new 0.3.2 package; publishing a desktop release does not refresh a local marketplace. The new package has one stdio `orka` connector. A remaining remote `orka` plus local `orka_local` pair indicates the old package and can cause repeated OAuth startup errors against retired endpoints.
 
 Closing the main window keeps Orka available through its menu bar. Explicit Quit stops the broker. Open Orka to use the connector after Quit.
+
+## Connect Pi
+
+Use Pi 1.6.0 or a later release with native `pi mcp` support. Sign in to Orka desktop first. Extract the Orka plugin ZIP to a folder you intend to keep. If you need a ZIP, see [Package locally](#package-locally). Then run:
+
+```sh
+pi install /absolute/path/to/extracted/orka
+pi mcp add orka --exposure direct -- \
+  /Applications/Orka.app/Contents/MacOS/portable-workspace-mac --orka-plugin
+```
+
+Use the `orka` directory inside the extracted ZIP for `pi install`. That installs the workflow skills, not a second connector. If you run a named Orka profile, append `--profile <name>` after `--orka-plugin`. For a different app location, replace the executable path.
+
+If Pi is open, run `/reload`. Ask Pi to check the Orka connection, then open **Settings → Connectors → Review request** in Orka to approve the live session. Start with read access if you only need project context. Ask Pi to list your Orka projects to verify access. To revoke it, use **Settings → Connectors** in Orka. To remove the setup from Pi, run `pi mcp remove orka` and `pi remove /absolute/path/to/extracted/orka`.
+
+Pi can fetch existing shared memories, skills, and sessions. It can load installed project and global skills from the `.agents/skills/` directories it reads. This setup does not discover, share, or resume Pi's own session files.
 
 ## Access and tools
 
@@ -63,7 +79,7 @@ Only an explicit request authorizes publishing one selected frozen snapshot. Use
 node plugins/orka/scripts/package.mjs artifacts/orka-plugin-0.3.2.zip
 ```
 
-This creates one desktop-only ZIP containing Codex and Claude manifests, the same `.mcp.json`, skills and assets. Packaging works offline and contains no account credentials. The default executable is `/Applications/Orka.app/Contents/MacOS/portable-workspace-mac`. For an isolated development app/profile:
+This creates one ZIP containing Codex and Claude manifests, a Pi skills package manifest, the shared desktop bridge configuration, skills, and assets. Packaging works offline and contains no account credentials. The default executable is `/Applications/Orka.app/Contents/MacOS/portable-workspace-mac`. For an isolated development app/profile:
 
 ```sh
 node plugins/orka/scripts/package.mjs artifacts/orka-dev.zip /absolute/path/to/orka-desktop demo-profile
@@ -79,4 +95,4 @@ claude plugin validate artifacts/orka-plugin/orka --strict
 claude --plugin-dir artifacts/orka-plugin/orka
 ```
 
-Run `npm run test:plugin-native` against a debug build for isolated broker/bridge/account-switch acceptance. Packaging metadata does not prove authenticated runtime acceptance. Signed installation, plugin publication and production service deployment remain separate release steps.
+Run `npm run test:plugin-native` against a debug build for isolated broker/bridge/account-switch acceptance. Add `--pi /absolute/path/to/pi` when running `python3 -B scripts/plugin-native-acceptance.py` to verify that Pi loads the packaged skills and discovers the bridge tools without a model call. The native fixture separately verifies approval and revocation. Signed installation, plugin publication and production service deployment remain separate release steps.

@@ -1,11 +1,10 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { readSkillMarkdown, type SkillMarkdown } from "./skill-markdown.js";
-import type { Resource } from "@portable/protocol";
-import type { Inspection } from "../types.js";
+import type { Inspection, WorkspaceResource } from "../types.js";
 
 export function useSkillMetadata(
-  resource: Resource | undefined,
+  resource: WorkspaceResource | undefined,
   scope: string,
 ) {
   const id = resource?.resourceId;

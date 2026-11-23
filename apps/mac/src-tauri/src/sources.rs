@@ -1053,7 +1053,10 @@ pub async fn disconnect_project_source(id: String, source_id: String) -> Result<
     db::upsert(&db, "projects", &id, &id, &project)?;
     clear_sync_after(&db, &id, &source_id)?;
     db.execute(
-        "DELETE FROM bindings WHERE project=? AND json_extract(value,'$.base.sourceId')=?",
+        &format!(
+            "DELETE FROM bindings WHERE project=? AND json_extract(value,'$.base.sourceId')=?{}",
+            crate::pi_sessions::KEEP_COPY_BINDINGS
+        ),
         [id, source_id],
     )
     .map_err(|e| e.to_string())?;

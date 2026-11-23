@@ -538,6 +538,21 @@ fn reset_source(db: &Connection, project_id: &str, events: &Value, p: &Value) ->
             continue;
         }
         let b = indexer::binding(db, id)?;
+        let private_pi = crate::pi_sessions::is_private_copy(&b);
+        if private_pi {
+            // A private copy is this user's local work: keep it, local-only once
+            // its shared origin is gone.
+            let origin = &b["piCopyOrigin"];
+            if let Some(origin) = origin.as_str().filter(|origin| {
+                !visible.iter().any(|event| {
+                    event["resource"]["resourceId"] == *origin
+                        && event["resource"]["deleted"] != true
+                })
+            }) {
+                crate::pi_sessions::detach_copies(db, project_id, origin)?;
+            }
+            continue;
+        }
         crate::local_resources::remember_origin(db, p, &r, &b)?;
         for queued in db::rows(db,"SELECT json_object('id',id,'path',path,'value',json(value)) FROM outbox WHERE project=? AND (json_extract(value,'$.resource.resourceId')=? OR json_extract(value,'$.resourceId')=?)",&[&project_id,&id,&id])? {
             preserve_queued(db, p, &queued, &b["paths"])?;
@@ -595,6 +610,9 @@ fn reset_source(db: &Connection, project_id: &str, events: &Value, p: &Value) ->
         for table in ["resources", "bindings"] {
             db.execute(&format!("DELETE FROM {table} WHERE id=?"), [id])
                 .map_err(|e| e.to_string())?;
+        }
+        if r["source"] == "pi" {
+            crate::pi_sessions::detach_copies(db, project_id, id)?;
         }
         db.execute(
             "DELETE FROM conflicts WHERE json_extract(value,'$.resourceId')=?",

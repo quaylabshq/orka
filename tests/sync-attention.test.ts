@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import type { ReviewRequest } from "@portable/protocol";
+import type { Resource, ReviewRequest } from "@portable/protocol";
 import type {
   LocalDraft,
   ProjectResource,
@@ -20,7 +20,7 @@ const resource = {
   projectId: "one",
   kind: "skill",
   title: "Writing guide",
-} as ProjectResource;
+} as Resource;
 const draft = (
   id: string,
   status = "local",
