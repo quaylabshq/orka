@@ -23,6 +23,17 @@ preserve dirty work privately. They cannot erase prior downloads or conversation
 Orka-produced derivatives retain known source restrictions; this is not general
 secret detection or control over arbitrary copies made outside Orka.
 
+## Orka Cloud product analytics
+
+When enabled on Orka Cloud, the service counts daily desktop sync registrations,
+successful project creations, and successful joins via invite. A sync
+registration may come from the background daemon. The Mac sends its app version
+as part of the existing device registration request when the service advertises
+support. The service sends PostHog the milestone, time, a pseudonymous account ID,
+and the app version for desktop sync registrations. Event payloads exclude
+project content, names, paths, emails, IP addresses, and device identifiers.
+Self-hosted Orka servers leave this capability disabled.
+
 ## Environment-variable sets
 
 ENV sharing is a separate manual workflow. Enabling the category does not scan dotenv files or publish anything automatically. A user imports or pastes values, reviews keys and recipients, and explicitly publishes an encrypted set. Devices exchange approval codes through a trusted channel before receiving decryption access.

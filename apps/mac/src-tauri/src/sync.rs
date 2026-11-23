@@ -19,6 +19,7 @@ use std::{
 const PLAN_REVISION_CONFLICT: &str =
     "409: Resource changed; refresh and review the exact version again";
 const PLAN_REVIEW_PENDING: &str = "Queued plan upload needs review";
+const DESKTOP_VERSION_HEADER: &str = "X-Orka-Desktop-Version";
 
 pub async fn api(method: &str, path: &str, body: Option<&Value>) -> Result<Value> {
     let owner = db::get(&db::open()?, "user")?;
@@ -83,7 +84,14 @@ pub(crate) async fn api_at(
     path: &str,
     body: Option<&Value>,
 ) -> Result<Value> {
-    let mut request = request_at(owner, origin, method, path).await?;
+    let request = request_at(owner, origin, method, path).await?;
+    send_api_request(request, body).await
+}
+
+async fn send_api_request(
+    mut request: reqwest::RequestBuilder,
+    body: Option<&Value>,
+) -> Result<Value> {
     if let Some(body) = body {
         request = request.json(body);
     }
@@ -116,7 +124,13 @@ async fn register_device(owner: &str, origin: &str, device: &str) -> Result<Valu
     if capabilities["deviceHardware"] == 1 {
         registration["hardwareFamily"] = json!(crate::device_metadata::local_family(&db::open()?)?);
     }
-    post_device_registration(owner, origin, registration).await?;
+    post_device_registration(
+        owner,
+        origin,
+        registration,
+        capabilities["desktopAnalytics"] == 1,
+    )
+    .await?;
     Ok(capabilities)
 }
 
@@ -124,12 +138,26 @@ pub(crate) async fn post_device_registration(
     owner: &str,
     origin: &str,
     registration: Value,
+    report_desktop_version: bool,
 ) -> Result<()> {
     send_registration(registration, async |body| {
-        api_at(owner, origin, "POST", "/v2/devices", Some(body)).await?;
+        let request = request_at(owner, origin, "POST", "/v2/devices").await?;
+        let request = with_desktop_version(request, report_desktop_version);
+        send_api_request(request, Some(body)).await?;
         Ok(())
     })
     .await
+}
+
+fn with_desktop_version(
+    request: reqwest::RequestBuilder,
+    report_desktop_version: bool,
+) -> reqwest::RequestBuilder {
+    if report_desktop_version {
+        request.header(DESKTOP_VERSION_HEADER, env!("CARGO_PKG_VERSION"))
+    } else {
+        request
+    }
 }
 
 async fn send_registration(
@@ -3113,6 +3141,34 @@ pub fn capture_held(db: &rusqlite::Connection, project: &str) -> Result<bool> {
 #[cfg(test)]
 mod queue_tests {
     use super::*;
+
+    #[test]
+    fn device_registration_only_reports_version_when_advertised() {
+        let client = reqwest::Client::new();
+        for (capabilities, expected) in [
+            (
+                json!({ "desktopAnalytics": 1 }),
+                Some(env!("CARGO_PKG_VERSION")),
+            ),
+            (json!({}), None),
+            (json!(null), None),
+            (json!({ "desktopAnalytics": 2 }), None),
+        ] {
+            let request = with_desktop_version(
+                client.post("http://localhost/v2/devices"),
+                capabilities["desktopAnalytics"] == 1,
+            )
+            .build()
+            .unwrap();
+            assert_eq!(
+                request
+                    .headers()
+                    .get(DESKTOP_VERSION_HEADER)
+                    .map(|version| version.to_str().unwrap()),
+                expected,
+            );
+        }
+    }
 
     #[tokio::test]
     async fn mixed_replica_registration_retries_once_with_only_public_fields() {

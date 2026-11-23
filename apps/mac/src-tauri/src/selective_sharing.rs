@@ -208,7 +208,7 @@ pub async fn send(db: &Connection, owner: &str, queued: &Value) -> Result<Value>
         .as_str()
         .ok_or("Missing device")?;
     let registration = crate::device_metadata::registration(device, &capabilities);
-    sync::post_device_registration(owner, &origin, registration).await?;
+    sync::post_device_registration(owner, &origin, registration, false).await?;
     crate::repair::upload(
         owner,
         queued["project"].as_str().ok_or("Missing project")?,
