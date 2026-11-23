@@ -310,7 +310,7 @@ pub fn sign_out() -> Result<()> {
     let _lock = projects::lock()?;
     auth::sign_out()
 }
-#[tauri::command]
+#[tauri::command(async)]
 pub fn sync_now() -> Result<()> {
     SyncQueue::request_all(&db::open()?, Priority::User, "sync now")
 }

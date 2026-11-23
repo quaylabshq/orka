@@ -220,7 +220,10 @@ impl SyncQueue {
         reason: &str,
         now: i64,
     ) -> Result<()> {
-        let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
+        // Wait for the writer before reading the targets. A background commit
+        // can make a deferred read snapshot impossible to upgrade to a writer.
+        let tx = rusqlite::Transaction::new_unchecked(db, TransactionBehavior::Immediate)
+            .map_err(|e| e.to_string())?;
         for project in Self::targets(&tx)? {
             Self::enqueue(&tx, &project, priority, reason, now)?;
         }
@@ -1434,9 +1437,20 @@ mod tests {
     }
 
     #[test]
-    fn sync_now_queues_the_workspace_and_every_project_at_user_priority() {
-        let (_root, db) = queue_db(&["a", "b"]);
+    fn sync_now_waits_for_a_background_write_and_queues_every_project() {
+        let (root, mut db) = queue_db(&["a", "b"]);
+        let worker = db::open_at(root.path()).unwrap();
+        worker.execute_batch("BEGIN IMMEDIATE").unwrap();
+        db::set(&worker, "daemon", &json!({"running":true})).unwrap();
+        // Commit the background write when the request first contends for
+        // SQLite's writer. No timer or thread scheduling is needed.
+        db.busy_handler(Some(move |attempt| {
+            attempt == 0 && worker.execute_batch("COMMIT").is_ok()
+        }))
+        .unwrap();
+
         SyncQueue::request_all(&db, Priority::User, "sync now").unwrap();
+        assert_eq!(db::get(&db, "daemon").unwrap()["running"], true);
         let jobs = rows(&db);
         let projects: Vec<_> = jobs.iter().map(|job| job.project.as_str()).collect();
         assert_eq!(projects, [WORKSPACE, "a", "b"]);
