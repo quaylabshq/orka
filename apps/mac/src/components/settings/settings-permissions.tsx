@@ -39,6 +39,7 @@ import {
 } from "./settings-shared.js";
 import { useSettingsQuery } from "./use-settings-query.js";
 import {
+  accessLabel,
   accessOptions,
   categories,
   categoryNames,
@@ -93,13 +94,11 @@ type Phase =
   | "saved"
   | "failed"
   | "loading-latest";
-const nameOf = (value: Access) =>
-  accessOptions.find((option) => option.value === value)?.label ?? value;
 const existingAccessNames: Record<AccessMode, string> = {
-  hidden: nameOf("none"),
-  read: nameOf("read"),
+  hidden: accessLabel("none"),
+  read: accessLabel("read"),
   suggest: "Suggest changes for approval",
-  publish: nameOf("write"),
+  publish: accessLabel("write"),
 };
 const newItemNames: Record<ClassRule["create"], string> = {
   hidden: "Cannot add",
@@ -148,11 +147,18 @@ export function RoleTables({
             <tbody>
               {categories.map((category) => {
                 const Icon = icons[category];
+                const memoryDefault = category === "memory" && role !== "owner";
+                const label = memoryDefault
+                  ? "Default memory access"
+                  : categoryNames[category];
+                const controlLabel = memoryDefault
+                  ? label.toLowerCase()
+                  : `${label} access`;
                 return (
                   <tr key={category}>
                     <th scope="row">
                       <Icon size={16} aria-hidden="true" />
-                      {categoryNames[category]}
+                      {label}
                     </th>
                     <td>
                       {role === "owner" ? (
@@ -172,9 +178,10 @@ export function RoleTables({
                           {(value) =>
                             editable ? (
                               <PermissionSelect
-                                label={`${role === "admin" ? "Admin" : "Member"} ${categoryNames[category]} access`}
+                                label={`${role === "admin" ? "Admin" : "Member"} ${controlLabel}`}
                                 value={value}
-                                options={[...accessOptions]}
+                                valueLabel={accessLabel(value, category)}
+                                options={accessOptions(category)}
                                 disabled={locked || pending}
                                 onChange={(value) => {
                                   if (policies)
@@ -189,7 +196,7 @@ export function RoleTables({
                               />
                             ) : (
                               <span className="settings-readonly-access">
-                                {nameOf(value)}
+                                {accessLabel(value, category)}
                               </span>
                             )
                           }
@@ -505,10 +512,16 @@ export const SettingsPermissions = forwardRef<
           conflict.latest.policies,
         )
       : [];
+  const showRoleTables = !legacy || Boolean(migration);
   return (
     <>
       <SettingsHeading
         title="Permissions"
+        description={
+          showRoleTables
+            ? "Readers can use shared memories. Contributors can also add and update them."
+            : undefined
+        }
         action={
           (checkingOwner ||
             (owner && supported && (!legacy || record?.submission))) && (
@@ -565,7 +578,7 @@ export const SettingsPermissions = forwardRef<
           )}
         </div>
       )}
-      {(!legacy || migration) && (
+      {showRoleTables && (
         <RoleTables
           policies={record?.draft ?? query.data?.catalog.rolePolicies ?? null}
           editable={
@@ -882,9 +895,9 @@ export const SettingsPermissions = forwardRef<
                     <td>
                       {cell.role} / {categoryNames[cell.category]}
                     </td>
-                    <td>{nameOf(cell.before)}</td>
-                    <td>{nameOf(cell.draft)}</td>
-                    <td>{nameOf(cell.latest)}</td>
+                    <td>{accessLabel(cell.before, cell.category)}</td>
+                    <td>{accessLabel(cell.draft, cell.category)}</td>
+                    <td>{accessLabel(cell.latest, cell.category)}</td>
                     <td>
                       {cell.conflict ? (
                         <PermissionSelect

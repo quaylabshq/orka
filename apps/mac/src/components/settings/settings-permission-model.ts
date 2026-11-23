@@ -15,10 +15,24 @@ const accessLabels: Record<Access, string> = {
   add: "Add only",
   write: "Read and write",
 };
-export const accessOptions = categoryAccess.options.map((value) => ({
-  value,
-  label: accessLabels[value],
-}));
+const memoryAccessLabels: Record<Access, string> = {
+  ...accessLabels,
+  read: "Reader",
+  add: "Add only (legacy)",
+  write: "Contributor",
+};
+
+export function accessLabel(value: Access, category?: Category) {
+  const labels = category === "memory" ? memoryAccessLabels : accessLabels;
+  return labels[value];
+}
+
+export function accessOptions(category: Category) {
+  return categoryAccess.options
+    .filter((value) => category !== "memory" || value !== "add")
+    .map((value) => ({ value, label: accessLabel(value, category) }));
+}
+
 export const categoryNames: Record<Category, string> = {
   memory: "Memories",
   session: "Sessions",

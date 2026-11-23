@@ -5,6 +5,6 @@
 # Both findings on this line are verified SHA-256 hashes of PR #159 screenshots.
 c4249ce382763580a0ffff32f9cee1999ef838b5:pr-159/03d6b810bf3cf9cf44a8ba0b1c72b3aa5efb5093/8aba7a50265d/capture.json:generic-api-key:1
 
-# All ten findings match the SHA-256 of the PNGs in these two PR #188 captures.
+# Verified SHA-256 hashes of PR #188 screenshots in two immutable manifests.
 c4564f55be9724b9de06fa59026fa3d6ec3c4d3c:pr-188/b8c57ff02a629cc1b1c6516d9ead58d09f3280a9/473e97925221/capture.json:generic-api-key:1
 b379426d9ccccd2d2585faf7cb74020422dfbc8c:pr-188/aa36680e3c13eb044cc8eea35629a67125449f1d/c32589941630/capture.json:generic-api-key:1

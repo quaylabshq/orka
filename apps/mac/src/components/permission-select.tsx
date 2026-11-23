@@ -5,6 +5,7 @@ import * as Select from "@radix-ui/react-select";
 export function PermissionSelect<T extends string>({
   label,
   value,
+  valueLabel,
   options,
   disabled,
   required,
@@ -16,6 +17,7 @@ export function PermissionSelect<T extends string>({
   placeholder?: string;
   icon?: React.ReactNode;
   value: T;
+  valueLabel?: string;
   options: { value: T; label: string; disabled?: boolean }[];
   disabled?: boolean;
   required?: boolean;
@@ -35,7 +37,7 @@ export function PermissionSelect<T extends string>({
         aria-label={label}
         aria-required={required || undefined}
       >
-        <Select.Value placeholder={placeholder} />
+        <Select.Value placeholder={placeholder}>{valueLabel}</Select.Value>
         <Select.Icon asChild>
           {icon ?? <ChevronDownIcon size={14} />}
         </Select.Icon>
