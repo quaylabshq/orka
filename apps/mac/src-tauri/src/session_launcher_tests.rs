@@ -1451,8 +1451,12 @@ fn terminal_scripts_preserve_arguments_working_directory_and_native_home_literal
             }
         }
     }
-    let config: Value =
-        serde_json::from_str(&session_launcher::warp_config(&binary, &root)).unwrap();
+    let config: Value = serde_json::from_str(&session_launcher::warp_config(
+        "orka_fixture",
+        &binary,
+        &root,
+    ))
+    .unwrap();
     assert_eq!(
         config["windows"][0]["tabs"][0]["layout"]["commands"][0]["exec"],
         format!(
@@ -1477,6 +1481,157 @@ fn terminal_scripts_preserve_arguments_working_directory_and_native_home_literal
             session_launcher::shell_quote(&binary.to_string_lossy())
         )
     );
+}
+
+#[test]
+fn warp_uses_each_config_when_the_other_directory_is_unsafe() {
+    for (blocked, route) in [
+        ("tab_configs", "warp://launch/orka_fixture"),
+        (
+            "launch_configurations",
+            "warp://tab_config/orka_fixture?new_window=true",
+        ),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path();
+        let warp = home.join(".warp");
+        fs::create_dir(&warp).unwrap();
+        let other = home.join("other");
+        fs::create_dir(&other).unwrap();
+        std::os::unix::fs::symlink(&other, warp.join(blocked)).unwrap();
+        let script = home.join("launch.command");
+        let started = home.join("launch.started");
+        let configs =
+            session_launcher::prepare_warp_configs(home, "orka_fixture", &script, home).unwrap();
+        assert_eq!(configs.iter().filter(|config| config.is_ok()).count(), 1);
+        let mut opens = Vec::new();
+        session_launcher::open_warp(&configs, &started, Duration::ZERO, |url| {
+            opens.push(url.to_owned());
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(opens, [route]);
+        assert!(fs::read_dir(other).unwrap().next().is_none());
+    }
+}
+
+#[test]
+fn warp_falls_back_after_rejected_or_silent_dispatch_and_stops_after_start() {
+    for (tab_starts, tab_rejected, legacy_rejected) in [
+        (true, false, false),
+        (false, false, false),
+        (false, true, false),
+        (false, true, true),
+        (false, false, true),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path();
+        let script = home.join("launch.command");
+        let started = home.join("launch.started");
+        fs::write(&script, "fixture launch token").unwrap();
+        let configs =
+            session_launcher::prepare_warp_configs(home, "orka_fixture", &script, home).unwrap();
+        let mut opens = Vec::new();
+        let result = session_launcher::open_warp(&configs, &started, Duration::ZERO, |url| {
+            opens.push(url.to_owned());
+            if url == "warp://tab_config/orka_fixture?new_window=true" {
+                if tab_starts {
+                    fs::rename(&script, &started).unwrap();
+                }
+                if tab_rejected {
+                    return Err("Tab Config dispatch failed".into());
+                }
+            } else {
+                assert_eq!(url, "warp://launch/orka_fixture");
+                let config =
+                    fs::read_to_string(home.join(".warp/launch_configurations/orka_fixture.yaml"))
+                        .unwrap();
+                // Warp matches the URI stem against the YAML name field.
+                let config: Value = serde_json::from_str(&config).unwrap();
+                assert_eq!(config["name"], "orka_fixture");
+                if legacy_rejected {
+                    return Err("Legacy dispatch failed".into());
+                }
+                fs::rename(&script, &started).unwrap();
+            }
+            Ok(())
+        });
+        assert_eq!(opens.len(), if tab_starts { 1 } else { 2 });
+        assert_eq!(result.is_err(), tab_rejected && legacy_rejected);
+        assert_eq!(
+            session_launcher::finish_terminal_launch(&script, &started).unwrap(),
+            tab_starts || !legacy_rejected
+        );
+        assert!(!script.exists());
+        assert!(!started.exists());
+    }
+}
+
+#[test]
+fn warp_starts_at_most_once_even_with_preopened_scripts() {
+    for cancel in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let script = root.join("launch.command");
+        let started = root.join("launch.started");
+        let tab = root.join("tab.toml");
+        let legacy = root.join("launch.yaml");
+        let binary = root.join("codex");
+        fs::write(&binary, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n").unwrap();
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+        for config in [&tab, &legacy] {
+            fs::write(config, "fixture configuration").unwrap();
+        }
+        fs::write(
+            &script,
+            session_launcher::terminal_script(
+                &binary,
+                Tool::Codex,
+                LaunchIntent::Resume("session-1"),
+                root,
+                root,
+                &[&tab, &legacy],
+                Some(&started),
+            ),
+        )
+        .unwrap();
+
+        // Both shells already have the script open when startup or
+        // cancellation is decided. Deleting the source alone cannot stop them.
+        let preopened = [
+            fs::File::open(&script).unwrap(),
+            fs::File::open(&script).unwrap(),
+        ];
+        if cancel {
+            assert!(!session_launcher::finish_terminal_launch(&script, &started).unwrap());
+        }
+        let processes = preopened.map(|file| {
+            Command::new("/bin/sh")
+                .args(["-c", ". /dev/fd/0"])
+                .arg(&script)
+                .stdin(file)
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .unwrap()
+        });
+        let outputs = processes.map(|process| process.wait_with_output().unwrap());
+        for output in &outputs {
+            assert!(output.status.success(), "{output:?}");
+        }
+        let launches = outputs.iter().filter(|output| !output.stdout.is_empty());
+        assert_eq!(launches.clone().count(), usize::from(!cancel));
+        for output in launches {
+            assert_eq!(output.stdout, b"resume\nsession-1\n");
+        }
+        assert_eq!(
+            session_launcher::finish_terminal_launch(&script, &started).unwrap(),
+            !cancel
+        );
+        assert!(!script.exists());
+        assert!(!started.exists());
+        assert_eq!(tab.exists(), cancel);
+        assert_eq!(legacy.exists(), cancel);
+    }
 }
 
 #[test]
