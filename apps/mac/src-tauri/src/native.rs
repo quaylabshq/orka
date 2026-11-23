@@ -227,6 +227,11 @@ pub fn codex_home() -> Result<PathBuf> {
         .map(PathBuf::from)
         .unwrap_or(db::home()?.join(".codex")))
 }
+
+pub(crate) fn codex_memory_stores(home: &Path) -> [PathBuf; 2] {
+    [home.join("memories"), home.join("memories_v2")]
+}
+
 pub fn claude_home() -> Result<PathBuf> {
     Ok(std::env::var_os("CLAUDE_CONFIG_DIR")
         .map(PathBuf::from)

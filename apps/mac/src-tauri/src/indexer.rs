@@ -1702,50 +1702,110 @@ fn scan_source(
                 &format!("{scan_id}:scan:claude-memory"),
                 claude_result,
             )?;
-            let summaries = codex.join("memories/rollout_summaries");
-            let mut summary_projects = BTreeMap::new();
-            let mut summary_threads = BTreeMap::new();
-            let mut summary_files: BTreeMap<String, (String, PathBuf, String)> = BTreeMap::new();
-            if summaries.exists() {
-                for entry in fs::read_dir(&summaries).map_err(|e| e.to_string())? {
-                    let path = entry.map_err(|e| e.to_string())?.path();
-                    if path.extension().is_none_or(|e| e != "md") {
-                        continue;
+            struct CodexSummary {
+                path: PathBuf,
+                name: String,
+                thread: Option<String>,
+                updated_at: String,
+            }
+            let [legacy, current] = native::codex_memory_stores(&codex);
+            let mut legacy_summaries = BTreeMap::new();
+            let mut summary_files: BTreeMap<String, CodexSummary> = BTreeMap::new();
+            // Dual-write can give one thread different filenames. Keep the legacy
+            // file for equal timestamps so existing shared content doesn't churn.
+            for store in [&legacy, &current] {
+                let result = (|| {
+                    let summaries = store.join("rollout_summaries");
+                    for dir in [store.as_path(), &summaries] {
+                        match fs::symlink_metadata(dir) {
+                            Ok(metadata) if metadata.is_dir() => {}
+                            Ok(_) => {
+                                return Err("Codex memory directory is a symlink or file".into())
+                            }
+                            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                            Err(e) => return Err(e.to_string()),
+                        }
                     }
-                    let text = fs::read_to_string(&path).map_err(|e| e.to_string())?;
-                    let cwd = text.lines().find_map(|l| l.strip_prefix("cwd: "));
-                    let belongs =
-                        cwd.is_some_and(|p| Path::new(p.trim_matches('"')).starts_with(&root));
-                    let name = path
-                        .file_name()
-                        .ok_or("Missing filename")?
-                        .to_string_lossy()
-                        .to_string();
-                    summary_projects.insert(name.clone(), belongs);
-                    if let Some(thread) = memory_context::summary_thread(&text) {
-                        summary_threads.insert(name.clone(), thread);
-                    }
-                    if belongs {
-                        let key = memory_context::summary_thread(&text)
+                    for entry in fs::read_dir(&summaries).map_err(|e| e.to_string())? {
+                        let entry = entry.map_err(|e| e.to_string())?;
+                        let path = entry.path();
+                        if path.extension().is_none_or(|e| e != "md")
+                            || !entry.file_type().map_err(|e| e.to_string())?.is_file()
+                        {
+                            continue;
+                        }
+                        let text = match fs::read_to_string(&path) {
+                            Ok(text) => text,
+                            Err(error) => {
+                                // Codex may rewrite or remove a summary during consolidation.
+                                crate::sync::record_result(
+                                    db,
+                                    &format!("{scan_id}:scan:{}", path.display()),
+                                    Err(error.to_string()),
+                                )?;
+                                continue;
+                            }
+                        };
+                        let cwd = text.lines().find_map(|line| line.strip_prefix("cwd: "));
+                        let belongs =
+                            cwd.is_some_and(|p| Path::new(p.trim_matches('"')).starts_with(&root));
+                        let name = entry.file_name().to_string_lossy().into_owned();
+                        let thread = memory_context::summary_thread(&text);
+                        if store == &legacy {
+                            legacy_summaries.insert(name.clone(), (belongs, thread.clone()));
+                        }
+                        if !belongs {
+                            continue;
+                        }
+                        let key = thread
+                            .as_ref()
                             .map(|id| format!("{id}.md"))
-                            .unwrap_or(name.clone());
-                        let updated = text
+                            .unwrap_or_else(|| name.clone());
+                        let updated_at = text
                             .lines()
                             .find_map(|line| line.strip_prefix("updated_at: "))
                             .unwrap_or("")
                             .to_owned();
                         if summary_files
                             .get(&key)
-                            .is_none_or(|(old, _, _)| updated > *old)
+                            .is_none_or(|old| updated_at > old.updated_at)
                         {
-                            summary_files.insert(key, (updated, path, name));
+                            summary_files.insert(
+                                key,
+                                CodexSummary {
+                                    path,
+                                    name,
+                                    thread,
+                                    updated_at,
+                                },
+                            );
                         }
                     }
-                }
+                    Ok(())
+                })();
+                crate::sync::record_result(
+                    db,
+                    &format!(
+                        "{scan_id}:scan:{}",
+                        store.file_name().unwrap_or_default().to_string_lossy()
+                    ),
+                    result,
+                )?;
             }
-            let durable = codex.join("memories/MEMORY.md");
+            // V2's memory_summary.md is a cross-project index. The v1 digest
+            // must resolve its references only against files in its own store.
+            let durable = legacy.join("MEMORY.md");
             let mut covered = BTreeSet::new();
-            if durable.exists() {
+            let durable_result = (|| {
+                if legacy_summaries.is_empty() {
+                    return Ok(());
+                }
+                match fs::symlink_metadata(&durable) {
+                    Ok(metadata) if metadata.is_file() => {}
+                    Ok(_) => return Err("Codex MEMORY.md is not a regular file".into()),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                    Err(e) => return Err(e.to_string()),
+                }
                 let text = fs::read_to_string(&durable).map_err(|e| e.to_string())?;
                 let references =
                     regex::Regex::new(r"(?m)^\s*-\s*([^\s]+\.md)").map_err(|e| e.to_string())?;
@@ -1759,11 +1819,12 @@ fn scan_source(
                         })
                         .collect::<Vec<_>>();
                     if refs.is_empty()
-                        || !refs.iter().all(|r| summary_projects.get(r) == Some(&true))
+                        || !refs
+                            .iter()
+                            .all(|r| legacy_summaries.get(r).is_some_and(|(belongs, _)| *belongs))
                     {
                         continue;
                     }
-                    covered.extend(refs);
                     let title = section
                         .lines()
                         .next()
@@ -1789,35 +1850,55 @@ fn scan_source(
                         },
                         &mut seen,
                     )?;
+                    covered.extend(refs);
                 }
-            }
+                Ok(())
+            })();
+            crate::sync::record_result(
+                db,
+                &format!("{scan_id}:scan:codex-durable"),
+                durable_result,
+            )?;
             let covered_threads: BTreeSet<_> = covered
                 .iter()
-                .filter_map(|name| summary_threads.get(name))
+                .filter_map(|name| legacy_summaries.get(name)?.1.as_ref())
                 .collect();
-            for (key, (_, path, title)) in summary_files {
-                if covered.contains(&title)
-                    || summary_threads
-                        .get(&title)
-                        .is_some_and(|thread| covered_threads.contains(thread))
+            for (
+                key,
+                CodexSummary {
+                    path, name, thread, ..
+                },
+            ) in summary_files
+            {
+                if (path.starts_with(&legacy) && covered.contains(&name))
+                    || thread
+                        .as_ref()
+                        .is_some_and(|id| covered_threads.contains(id))
                 {
                     continue;
                 }
-                report_file(&path)?;
-                collect(
+                let result = (|| {
+                    report_file(&path)?;
+                    collect(
+                        db,
+                        project,
+                        Scanned {
+                            kind: "memory",
+                            source: "codex",
+                            logical: &format!("codex/summaries/{key}"),
+                            title: &name,
+                            files: vec![packages::file(&path, "content.md")?],
+                            paths: vec![path],
+                            native_id: None,
+                            native_parent: None,
+                        },
+                        &mut seen,
+                    )
+                })();
+                crate::sync::record_result(
                     db,
-                    project,
-                    Scanned {
-                        kind: "memory",
-                        source: "codex",
-                        logical: &format!("codex/summaries/{key}"),
-                        title: &title,
-                        files: vec![packages::file(&path, "content.md")?],
-                        paths: vec![path],
-                        native_id: None,
-                        native_parent: None,
-                    },
-                    &mut seen,
+                    &format!("{scan_id}:scan:codex-summaries/{key}"),
+                    result,
                 )?;
             }
             Ok(())

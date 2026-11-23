@@ -80,7 +80,7 @@ Use **Refresh local items** to check for changes without uploading anything.
 
 - Instructions: `AGENTS.md`, `AGENTS.override.md`, and `CLAUDE.md`, including nested project instructions. `CLAUDE.local.md` is excluded.
 - Claude auto-memory: the project's native memory directory, respecting `autoMemoryDirectory`.
-- Codex learned memory: rollout summaries with a project `cwd`, and durable entries whose referenced summaries all belong to that project. Mixed, global, or unattributable memory is excluded. Orka never overwrites Codex's generated global memory store.
+- Codex learned memory: rollout summaries with a project `cwd` from both `memories/` and `memories_v2/`, and v1 durable entries whose referenced summaries all belong to that project. Copies of the same thread are grouped under one item. Mixed, global, or unattributable memory is excluded. Orka never overwrites Codex's generated memory stores.
 - Shared memory is cached under `<project>/.orka/memory/` with a Markdown index. Local hooks expose it to both tools without network calls or inference.
 
 Automatic context uses the current prompt to retrieve up to four relevant memory
