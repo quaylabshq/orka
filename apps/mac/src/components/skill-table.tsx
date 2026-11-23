@@ -144,6 +144,7 @@ export function SkillTable({
   showPerson,
   sort,
   direction,
+  busy,
   onOpen,
   peek: peekContent,
   titleTrailing,
@@ -159,9 +160,11 @@ export function SkillTable({
   showPerson: boolean;
   sort: IndexSort;
   direction: IndexSortDirection;
+  /** Row titles are still loading. */
+  busy?: boolean;
   onOpen: (id: string) => void;
   /** What a row's peek says after its pointer rests or it takes focus. */
-  peek: (resource: Resource) => React.ReactNode;
+  peek?: (resource: Resource) => React.ReactNode;
   /** A marker right after a row's title, such as a session's fork. */
   titleTrailing?: (resource: Resource) => React.ReactNode;
 }) {
@@ -172,7 +175,7 @@ export function SkillTable({
   const menuOpen = useRef(false);
   const openPeek = (id: string, row: HTMLElement, delay: number) => {
     window.clearTimeout(timer.current);
-    if (menuOpen.current) return;
+    if (menuOpen.current || !peekContent) return;
     timer.current = window.setTimeout(() => {
       // A row near the bottom of the visible list opens its description upward.
       const view = row.closest(".resource-index-body");
@@ -294,6 +297,7 @@ export function SkillTable({
       className="skill-table"
       data-kind={page.kind}
       data-compact-people={showPerson || undefined}
+      aria-busy={busy}
     >
       <colgroup>
         <col />
@@ -375,7 +379,7 @@ export function SkillTable({
                       </button>
                       {titleTrailing?.(resource)}
                     </span>
-                    {peeking && (
+                    {peeking && peekContent && (
                       <span
                         id={peekId}
                         className="skill-table-peek"

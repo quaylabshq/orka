@@ -30,6 +30,8 @@ export type SkillsScene = {
   scan?: "ok" | "hold" | "error" | "partial" | "empty";
   globalUsage?: "ok" | "hold" | "error";
   add?: "ok" | "hold" | "error" | "partial";
+  /** One shared plan in each of the first two repositories. */
+  plans?: boolean;
 };
 
 export async function skillsIndexFixture(page: Page, scene: SkillsScene = {}) {
@@ -323,6 +325,19 @@ export async function skillsIndexFixture(page: Page, scene: SkillsScene = {}) {
           .trim();
     }
     if (scene.skillReadFailure) shared[0].logicalPath = "code-review";
+    const plans = scene.plans
+      ? repos.slice(0, 2).map((sourceId) => ({
+          ...make(0),
+          resourceId: `plan-${sourceId}`,
+          kind: "plan",
+          source: "claude",
+          title: `${sourceId} rollout`,
+          description: undefined,
+          global: undefined,
+          logicalPath: `claude/files/${sourceId}-rollout.md`,
+          sourceId,
+        }))
+      : [];
     const sharings = [undefined, "queued", "approval", "paused", "blocked"];
     const locals = scene.locals
       ? sharings.map((sharing, index) => ({
@@ -507,7 +522,7 @@ export async function skillsIndexFixture(page: Page, scene: SkillsScene = {}) {
                   sources: scene.repositories ? sourceList : undefined,
                 },
               ],
-              resources: accessMode === "hidden" ? [] : shared,
+              resources: accessMode === "hidden" ? [] : [...shared, ...plans],
               localSkills: locals,
               bindings,
               drafts,

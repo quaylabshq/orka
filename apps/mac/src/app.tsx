@@ -42,7 +42,7 @@ import { Overlay } from "./components/overlay.js";
 import { SettingsUpdates } from "./components/settings/settings-updates.js";
 import { SettingsPluginConnections } from "./components/settings/settings-plugin-connections.js";
 import type { WorkspaceResource as Resource } from "./types.js";
-import type { ProjectPage, ProjectResource } from "./types.js";
+import type { ProjectPage, ProjectResource, Snapshot } from "./types.js";
 import {
   MembersPage,
   type ManagementSection,
@@ -105,7 +105,8 @@ import {
   type SyncReviewItem,
 } from "./components/sync-attention.js";
 import { skillReviewState } from "./components/skill-review-state.js";
-import { skillStatus, type SkillStatus } from "./components/skill-status.js";
+import { skillStatus, type IndexStatus } from "./components/skill-status.js";
+import { listStatus } from "./components/list-status.js";
 import { useDeepLinks } from "./components/use-deep-links.js";
 import { PluginAuthorization } from "./components/plugin-authorization.js";
 import { parseProjectInvite } from "./components/project-invite.js";
@@ -564,7 +565,8 @@ function WorkspaceApp({
     tab === "home" || tab === "env" || tab === "members" || tab === "reviews"
       ? undefined
       : index.filters[tab];
-  const collectionRepository = tab === "skill" ? "all" : repository;
+  const collectionRepository =
+    tab === "skill" || tab === "plan" ? "all" : repository;
   const filters = useMemo(
     () => ({
       ...defaultIndexFilters,
@@ -738,27 +740,44 @@ function WorkspaceApp({
     () => projectAttention(state, project),
     [state, project],
   );
-  const skillStatusOf = useMemo(() => {
+  const statusOf = useMemo(() => {
     const items = new Map(
       attention.items.map((item) => [item.resourceId ?? item.key, item]),
     );
-    const cache = new Map<string, SkillStatus | null>();
-    return (skill: ProjectResource) => {
-      if (!cache.has(skill.resourceId))
+    // Waiting to sync reads every queued upload; attention drops error-free ones.
+    const uploads = new Map<string, Snapshot["outbox"]>();
+    for (const upload of state.outbox)
+      if (upload.project === project && upload.resourceId)
+        uploads.set(upload.resourceId, [
+          ...(uploads.get(upload.resourceId) ?? []),
+          upload,
+        ]);
+    const cache = new Map<string, IndexStatus | null>();
+    return (resource: ProjectResource) => {
+      const id = resource.resourceId;
+      if (!cache.has(id))
         cache.set(
-          skill.resourceId,
-          skillStatus({
-            resource: skill,
-            conflicted: conflicted.has(skill.resourceId),
-            attention: items.get(skill.resourceId),
-            review: skillReviewState(skill, state, {
-              governed: selectedProject?.governed,
-            }),
-          }),
+          id,
+          resource.kind === "skill"
+            ? skillStatus({
+                resource,
+                conflicted: conflicted.has(id),
+                attention: items.get(id),
+                review: skillReviewState(resource, state, {
+                  governed: selectedProject?.governed,
+                }),
+              })
+            : listStatus({
+                resource,
+                conflicted: conflicted.has(id),
+                attention: items.get(id),
+                uploads: uploads.get(id) ?? [],
+                governed: Boolean(selectedProject?.governed),
+              }),
         );
-      return cache.get(skill.resourceId) ?? null;
+      return cache.get(id) ?? null;
     };
-  }, [attention, conflicted, state, selectedProject?.governed]);
+  }, [attention, conflicted, state, project, selectedProject?.governed]);
   const syncReviews = useMemo(
     () => syncReviewItems(state, project, attention),
     [state, project, attention],
@@ -1189,11 +1208,8 @@ function WorkspaceApp({
               selectedProject &&
               !inactiveProject &&
               repositories.length > 1 &&
-              tab !== "home" &&
-              // Skills filter by repository inside their own Filter menu.
-              tab !== "skill" &&
-              tab !== "reviews" &&
-              tab !== "members" ? (
+              // Skills and Plans filter by repository inside their Filter menu.
+              (tab === "env" || tab === "memory" || tab === "session") ? (
                 <RepositoryFilter
                   key={`${workspaceScope}:${project}`}
                   repositories={repositories}
@@ -1492,7 +1508,8 @@ function WorkspaceApp({
                     displayTitle={displayTitle}
                     duplicateTitles={duplicateTitles}
                     conflicted={conflicted}
-                    skillStatus={skillStatusOf}
+                    statusOf={statusOf}
+                    multiRepository={repositories.length > 1}
                     connected={hasConnectedSource(selectedProject)}
                     noAccess={Boolean(
                       selectedProject.governed &&

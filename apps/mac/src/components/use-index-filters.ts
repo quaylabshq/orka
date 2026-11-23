@@ -35,7 +35,7 @@ export function useIndexFilters(scope: string) {
       setStored((stored) => ({
         scope,
         repository:
-          kind === "skill" && stored.scope === scope
+          (kind === "skill" || kind === "plan") && stored.scope === scope
             ? stored.repository
             : repository,
         filters: {

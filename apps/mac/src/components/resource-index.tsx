@@ -30,7 +30,7 @@ import {
   indexPages,
   sortDirection,
 } from "./skill-index.js";
-import type { SkillStatus } from "./skill-status.js";
+import type { IndexStatus } from "./skill-status.js";
 import { useMemberLabel } from "./member-names.js";
 
 export interface ResourceIndexProps {
@@ -46,8 +46,10 @@ export interface ResourceIndexProps {
   duplicateTitles: Set<string>;
   /** Resource IDs with an unresolved conflict. */
   conflicted: Set<string>;
-  /** The one status each skill row shows; skills only. */
-  skillStatus?: (skill: Resource) => SkillStatus | null;
+  /** The one status each row shows. */
+  statusOf?: (resource: Resource) => IndexStatus | null;
+  /** Lists name each row's repository only when the project has several. */
+  multiRepository?: boolean;
   /** Whether this Mac has a connected folder; it changes the empty copy. */
   connected: boolean;
   noAccess?: boolean;
@@ -69,9 +71,8 @@ export interface ResourceIndexProps {
   onOpen: (id: string) => void;
 }
 
-const noSkillStatus = () => null;
-const noSkills: Resource[] = [];
-const skillPage = indexPages.skill;
+const noStatus = () => null;
+const noResources: Resource[] = [];
 
 /** The shared toolbar over a T1 table (memories, sessions) or the skills table. */
 export function ResourceIndex({
@@ -84,7 +85,8 @@ export function ResourceIndex({
   displayTitle,
   duplicateTitles,
   conflicted,
-  skillStatus = noSkillStatus,
+  statusOf = noStatus,
+  multiRepository = false,
   connected,
   noAccess,
   loading,
@@ -128,50 +130,51 @@ export function ResourceIndex({
         title: `Local ${collectionNoun(kind)} refreshed`,
       });
   }, [discovering, discoveryResult, refreshRequest, kind, notify]);
-  const ownership = kind === "skill" ? "all" : (filters.ownership ?? "all");
+  const page = indexPages[kind];
+  const paged = kind === "skill" || kind === "plan";
+  const ownership = paged ? "all" : (filters.ownership ?? "all");
   const root = useRef<HTMLElement>(null);
-  const skillCategories = useFilterCategories(
-    skillPage,
-    kind === "skill" ? resources : noSkills,
+  const categories = useFilterCategories(
+    page,
+    paged ? resources : noResources,
     filters,
     user,
     memberName,
   );
-  // Skills filter by the picks that still have an option behind them.
+  // Filter by the picks that still have an option behind them.
   const applied = useMemo(
-    () =>
-      kind === "skill" ? effectiveFilters(filters, skillCategories) : filters,
-    [kind, filters, skillCategories],
+    () => (paged ? effectiveFilters(filters, categories) : filters),
+    [paged, filters, categories],
   );
   const visible = useMemo(
     () =>
-      kind === "skill"
-        ? applyPageFilters(skillPage, resources, applied, {
+      paged
+        ? applyPageFilters(page, resources, applied, {
             displayTitle,
             user,
             memberName,
-            statusOf: skillStatus,
+            statusOf,
           })
         : applyIndexFilters(resources, applied, {
             displayTitle,
             user,
             memberName,
           }),
-    [kind, resources, applied, displayTitle, user, memberName, skillStatus],
+    [paged, page, resources, applied, displayTitle, user, memberName, statusOf],
   );
-  const skillFiltered = kind === "skill" && filterPicksActive(applied);
+  const picked = paged && filterPicksActive(applied);
+  const searched = filters.query.trim();
   const sources = useMemo(
     () => [...new Set(resources.map((r) => r.source))],
     [resources],
   );
-  const filtered =
-    kind === "skill"
-      ? Boolean(filters.query.trim()) || skillFiltered
-      : Boolean(
-          filters.query.trim() ||
-          filters.source !== "all" ||
-          (filters.repository && filters.repository !== "all"),
-        );
+  const filtered = paged
+    ? Boolean(searched) || picked
+    : Boolean(
+        searched ||
+        filters.source !== "all" ||
+        (filters.repository && filters.repository !== "all"),
+      );
   const toolbarShown = resources.length > 0 || filtered;
   /** Skills carry their primary action in the toolbar once there is one. */
   const toolbarAction = kind === "skill" && toolbarShown;
@@ -184,23 +187,34 @@ export function ResourceIndex({
     !noAccess &&
     connected,
   );
+  const refreshButton = onRefreshLocal && (
+    <IconButton
+      icon={RefreshCwIcon}
+      size="sm"
+      variant="secondary"
+      aria-label="Refresh local items"
+      title="Refresh local items"
+      disabled={refreshing}
+      onClick={refreshLocal}
+    />
+  );
   // Keep the popover mounted when the first import moves its trigger into the toolbar.
-  const skillToolbar =
-    kind === "skill" ? (
-      <SkillToolbar
-        key="skill-toolbar"
-        page={skillPage}
-        showTools={toolbarShown}
-        categories={skillCategories}
-        filters={filters}
-        onChange={onFilters}
-        actions={
-          React.isValidElement<{ compact?: boolean }>(floatingAction)
-            ? React.cloneElement(floatingAction, { compact: toolbarAction })
-            : floatingAction
-        }
-      />
-    ) : null;
+  const toolbar = paged ? (
+    <SkillToolbar
+      key="index-toolbar"
+      page={page}
+      showTools={toolbarShown}
+      categories={categories}
+      filters={filters}
+      onChange={onFilters}
+      refresh={refreshButton}
+      actions={
+        React.isValidElement<{ compact?: boolean }>(floatingAction)
+          ? React.cloneElement(floatingAction, { compact: toolbarAction })
+          : floatingAction
+      }
+    />
+  ) : null;
   const clearFilters = () => {
     onFilters({
       ...defaultIndexFilters,
@@ -234,7 +248,7 @@ export function ResourceIndex({
       {status}
       <div className="resource-index-body">
         {accessRequest}
-        {kind !== "skill" && (
+        {!paged && (
           <div className="resource-ownership-toolbar">
             <SegmentedControl
               className="resource-ownership-tabs"
@@ -250,17 +264,7 @@ export function ResourceIndex({
               ]}
               onChange={(ownership) => onFilters({ ...filters, ownership })}
             />
-            {onRefreshLocal && (
-              <IconButton
-                icon={RefreshCwIcon}
-                size="sm"
-                variant="tertiary"
-                aria-label="Refresh local items"
-                title={`Refresh local ${collectionNoun(kind)}`}
-                disabled={refreshing}
-                onClick={refreshLocal}
-              />
-            )}
+            {refreshButton}
           </div>
         )}
         {discovering && resources.length > 0 && (
@@ -308,8 +312,8 @@ export function ResourceIndex({
             )}
           </div>
         )}
-        {toolbarShown && skillToolbar}
-        {toolbarShown && kind !== "skill" && (
+        {toolbarShown && toolbar}
+        {toolbarShown && !paged && (
           <IndexToolbar
             kind={kind}
             count={visible.length}
@@ -333,20 +337,20 @@ export function ResourceIndex({
               illustration="search"
               size="compact"
               title={
-                kind === "skill" && filters.query.trim()
-                  ? `No skills match “${filters.query.trim()}”${skillFiltered ? " with these filters" : ""}`
+                paged && searched
+                  ? `No ${collectionNoun(kind)} match “${searched}”${picked ? " with these filters" : ""}`
                   : `No ${collectionNoun(kind)} match`
               }
               description={
                 // With a search and filters both on, the title and the two
                 // buttons already say everything.
-                kind === "skill" && filters.query.trim() && skillFiltered
+                searched && picked
                   ? undefined
                   : "Try a different search or clear your filters."
               }
               announce
               actions={
-                kind === "skill" && filters.query.trim() && skillFiltered ? (
+                searched && picked ? (
                   <>
                     <Button
                       size="sm"
@@ -365,9 +369,7 @@ export function ResourceIndex({
                   </>
                 ) : (
                   <Button size="sm" variant="secondary" onClick={clearFilters}>
-                    {kind === "skill" && !skillFiltered
-                      ? "Clear search"
-                      : "Clear filters"}
+                    {paged && !picked ? "Clear search" : "Clear filters"}
                   </Button>
                 )
               }
@@ -380,39 +382,42 @@ export function ResourceIndex({
               restricted={noAccess && ownership !== "mine"}
             />
           )
-        ) : kind === "skill" ? (
+        ) : paged ? (
           <SkillTable
-            page={skillPage}
+            page={page}
             resources={visible}
             user={user}
             memberName={memberName}
-            statusOf={skillStatus}
+            statusOf={statusOf}
             displayTitle={displayTitle}
-            showRepository={resources.some((skill) => skill.repositoryName)}
+            showRepository={
+              kind === "skill"
+                ? resources.some((skill) => skill.repositoryName)
+                : multiRepository
+            }
             // A project with nobody else in it has no one to credit.
             showPerson={resources.some(
-              (skill) => creditedMember(skillPage, skill, user) !== user,
+              (resource) => creditedMember(page, resource, user) !== user,
             )}
             sort={filters.sort}
             direction={sortDirection(filters)}
+            busy={kind === "skill" ? undefined : loading}
             onOpen={onOpen}
-            peek={(skill) => (
-              <SkillPeek
-                skill={skill}
-                summary={skillSummaries[skillSummaryKey(skill)]}
-              />
-            )}
+            peek={
+              kind === "skill"
+                ? (skill) => (
+                    <SkillPeek
+                      skill={skill}
+                      summary={skillSummaries[skillSummaryKey(skill)]}
+                    />
+                  )
+                : undefined
+            }
           />
         ) : (
           <ResourceTable
             resources={visible}
-            label={
-              kind === "session"
-                ? "Session"
-                : kind === "plan"
-                  ? "Plan"
-                  : "Memory"
-            }
+            label={page.title}
             user={user}
             displayTitle={displayTitle}
             duplicateTitles={duplicateTitles}
@@ -424,7 +429,7 @@ export function ResourceIndex({
             onOpen={onOpen}
           />
         )}
-        {!toolbarShown && skillToolbar}
+        {!toolbarShown && toolbar}
         {kind !== "skill" && floatingAction && (
           <div className="resource-index-action">{floatingAction}</div>
         )}

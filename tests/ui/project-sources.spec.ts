@@ -240,20 +240,21 @@ for (const viewport of [
     for (const [tab, kind] of [
       ["Memories", "memory"],
       ["Skills", "skill"],
-      ["Sessions", "session"],
       ["Plans", "plan"],
+      ["Sessions", "session"],
       ...(ENV_ENABLED ? [["ENVs", "env"]] : []),
     ]) {
       await page.getByRole("button", { name: new RegExp(`^${tab}`) }).click();
-      // Skills filter by repository inside their own Filter menu.
+      const indexed = kind === "skill" || kind === "plan";
+      // Indexed collections filter by repository inside their Filter menu.
       await expect(
         page.getByRole("combobox", { name: /Filter.*repository/ }),
-      ).toHaveCount(kind === "skill" ? 0 : 1);
+      ).toHaveCount(indexed ? 0 : 1);
       if (kind === "env") {
         await expect(page.locator(".env-list-item")).toHaveCount(2);
-      } else if (kind === "skill") {
+      } else if (indexed) {
         const row = page.locator(".skill-table tbody tr", {
-          has: page.locator('[data-resource-id="skill-desktop"]'),
+          has: page.locator(`[data-resource-id="${kind}-desktop"]`),
         });
         await expect(
           row.locator(".skill-table-repository-label"),
@@ -265,10 +266,12 @@ for (const viewport of [
         ).toBeVisible();
         await page.keyboard.press("Escape");
         await page.keyboard.press("Escape");
-        await row.hover();
-        await expect(row.getByRole("tooltip")).toContainText(
-          "From your global skills",
-        );
+        if (kind === "skill") {
+          await row.hover();
+          await expect(row.getByRole("tooltip")).toContainText(
+            "From your global skills",
+          );
+        }
       } else {
         await expect(
           page.getByRole("columnheader", { name: "Repository", exact: true }),
@@ -320,7 +323,7 @@ for (const viewport of [
       });
       // The Skills table gives repository names more room; its own test
       // covers the label and its title above.
-      if (kind !== "skill") {
+      if (!indexed) {
         const overflowing = await page
           .locator(".resource-repository")
           .filter({ hasText: longName })
@@ -427,8 +430,8 @@ test("one repository selection follows tabs, supports the keyboard, and resets o
     ...(ENV_ENABLED ? [["ENVs", ".env-list-item"]] : []),
   ]) {
     await page.getByRole("button", { name: new RegExp(`^${tab}`) }).click();
-    if (tab === "Skills") {
-      // Skills keep their own filters; the header selection does not reach them.
+    if (tab === "Skills" || tab === "Plans") {
+      // These keep their own filters; the header selection does not reach them.
       await expect(filter).toHaveCount(0);
       await expect(page.locator(selector)).toHaveCount(2);
       continue;
@@ -448,6 +451,7 @@ test("one repository selection follows tabs, supports the keyboard, and resets o
     .getByRole("combobox", { name: "Select project", exact: true })
     .click();
   await page.getByRole("option", { name: "Product", exact: true }).click();
+  await page.getByRole("button", { name: /^Memories/ }).click();
   await expect(filter).toHaveText("All repositories");
   await filter.click();
   await page.keyboard.press("Escape");

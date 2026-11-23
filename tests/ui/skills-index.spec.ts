@@ -537,15 +537,14 @@ test("a description near the bottom of the window opens upward and names its row
 test("clearing Skills search and filters preserves the Plans repository", async ({
   page,
 }) => {
-  await skillsIndexFixture(page, { repositories: true });
+  await skillsIndexFixture(page, { repositories: true, plans: true });
   const plans = page.getByRole("button", { name: /^Plans/ });
   const skills = page.getByRole("button", { name: /^Skills/ });
-  const repository = page.getByRole("combobox", {
-    name: "Filter by repository",
-  });
+  const repository = page
+    .getByRole("group", { name: "Active filters" })
+    .filter({ hasText: "Repository" });
   await plans.click();
-  await repository.click();
-  await page.getByRole("option", { name: "desktop", exact: true }).click();
+  await pick(page, "Repository", "desktop");
   await skills.click();
   const empty = page.locator(".empty-state");
   await page
@@ -555,7 +554,8 @@ test("clearing Skills search and filters preserves the Plans repository", async 
     .getByRole("button", { name: "Clear search", exact: true })
     .click();
   await plans.click();
-  await expect(repository).toHaveText("desktop");
+  await expect(repository).toContainText("desktop");
+  await expect(rows(page)).toHaveCount(1);
 
   await skills.click();
   await pick(page, "Status", "Upload failed");
@@ -563,27 +563,28 @@ test("clearing Skills search and filters preserves the Plans repository", async 
     .getByRole("button", { name: "Clear filters", exact: true })
     .click();
   await plans.click();
-  await expect(repository).toHaveText("desktop");
+  await expect(repository).toContainText("desktop");
+  await expect(rows(page)).toHaveCount(1);
 });
 
 test("navigation to Skills and its readers preserves the Plans repository", async ({
   page,
 }) => {
-  await skillsIndexFixture(page, { repositories: true, count: 3 });
+  await skillsIndexFixture(page, { repositories: true, count: 3, plans: true });
   const plans = page.getByRole("button", { name: /^Plans/ });
-  const repository = page.getByRole("combobox", {
-    name: "Filter by repository",
-  });
+  const repository = page
+    .getByRole("group", { name: "Active filters" })
+    .filter({ hasText: "Repository" });
   await plans.click();
-  await repository.click();
-  await page.getByRole("option", { name: "desktop", exact: true }).click();
+  await pick(page, "Repository", "desktop");
   await page.getByRole("button", { name: /^Skills/ }).click();
   await page.getByRole("button", { name: "pr-polish", exact: true }).click();
   await expect(
     page.getByRole("button", { name: "Back to Skills" }),
   ).toBeVisible();
   await plans.click();
-  await expect(repository).toHaveText("desktop");
+  await expect(repository).toContainText("desktop");
+  await expect(rows(page)).toHaveCount(1);
 });
 
 test("a long description preview and its origin fit the minimum window", async ({

@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import { AxeBuilder } from "@axe-core/playwright";
 import { readFileSync } from "node:fs";
 import {
@@ -43,6 +43,20 @@ const kinds = [
   { kind: "session", label: "Sessions" },
   { kind: "plan", label: "Plans" },
 ] as const;
+/** Collections listed like Skills: Search, Filter, Sort, and a flat table. */
+const indexed = kinds.filter(({ kind }) => kind === "plan");
+const tabbed = kinds.filter(({ kind }) => kind !== "plan");
+const personLabel = (kind: string) =>
+  kind === "memory" ? "Updated by" : "Owner";
+const pick = async (page: Page, category: string, option: string) => {
+  await page.getByRole("button", { name: /^Filter/ }).click();
+  await page.getByRole("menuitem", { name: category }).click();
+  await page
+    .getByRole("menuitemcheckbox", { name: option, exact: true })
+    .click();
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape");
+};
 
 for (const width of [1160, 900]) {
   test(`collection sort stays at the right edge across ownership filters at ${width}px`, async ({
@@ -53,7 +67,6 @@ for (const width of [1160, 900]) {
     for (const [label, noun, singular] of [
       ["Sessions", "sessions", "session"],
       ["Memories", "memories", "memory"],
-      ["Plans", "plans", "plan"],
     ]) {
       await page.getByRole("button", { name: new RegExp(`^${label}`) }).click();
       const toolbar = page.getByRole("group", { name: `${noun} tools` });
@@ -114,6 +127,52 @@ for (const width of [1160, 900]) {
       await expect(
         toolbar.getByRole("button", { name: "Sort by Title", exact: true }),
       ).toBeVisible();
+    }
+  });
+}
+
+for (const width of [1160, 900]) {
+  test(`the index toolbar keeps refresh at its right edge while filtering and sorting at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 800 });
+    await resourceLibraryFixture(page);
+    for (const { kind, label } of indexed) {
+      await page.getByRole("button", { name: new RegExp(`^${label}`) }).click();
+      const toolbar = page.getByRole("group", {
+        name: `${label.toLowerCase()} tools`,
+      });
+      const rows = page.locator("tbody tr");
+      const person = personLabel(kind);
+      await expect(rows).toHaveCount(4);
+      for (const [option, count] of [
+        ["You", 3],
+        ["Mira", 1],
+      ] as const) {
+        await pick(page, person, option);
+        await expect(rows).toHaveCount(count);
+        const edges = await toolbar.evaluate((element) => ({
+          toolbar: element.getBoundingClientRect().right,
+          refresh: element
+            .querySelector('[aria-label="Refresh local items"]')!
+            .getBoundingClientRect().right,
+          overflow: element.scrollWidth - element.clientWidth,
+        }));
+        expect(Math.abs(edges.toolbar - edges.refresh)).toBeLessThanOrEqual(1);
+        expect(edges.overflow).toBeLessThanOrEqual(1);
+        await page
+          .getByRole("group", { name: "Active filters" })
+          .getByRole("button", { name: `Remove ${person} filter` })
+          .click();
+      }
+      await expect(rows).toHaveCount(4);
+      await page.getByRole("button", { name: /^Sort/ }).click();
+      await page
+        .getByRole("menuitemradio", { name: "Name", exact: true })
+        .click();
+      await expect(
+        page.getByRole("columnheader", { name: label.slice(0, -1) }),
+      ).toHaveAttribute("aria-sort", "ascending");
     }
   });
 }
@@ -359,7 +418,50 @@ test("cached revalidation during a manual refresh waits for discovery feedback",
   await expect(refresh).toBeEnabled();
 });
 
-for (const { kind, label } of kinds) {
+for (const { kind, label } of indexed)
+  test(`${label} include private content with sharing off and filter by person`, async ({
+    page,
+  }) => {
+    await resourceLibraryFixture(page);
+    await page.getByRole("button", { name: new RegExp(`^${label}`) }).click();
+    const table = page.getByRole("table");
+    await expect(
+      table.getByRole("button", { name: `Private ${kind} notes`, exact: true }),
+    ).toBeVisible();
+    await expect(table.locator("tbody tr")).toHaveCount(4);
+    const person = personLabel(kind);
+    // Memories credit whoever last updated them, other lists their owner.
+    const teammate = kind === "memory" ? `My shared ${kind}` : `Mira's ${kind}`;
+    await pick(page, person, "Mira");
+    await expect(table.locator("tbody tr")).toHaveCount(1);
+    const row = table.getByRole("row", { name: new RegExp(teammate) });
+    await expect(row).toContainText("Mira");
+    await row.getByRole("button", { name: teammate, exact: true }).click();
+    await page
+      .getByRole("button", { name: `Back to ${label}`, exact: true })
+      .click();
+    await expect(
+      page.getByRole("group", { name: "Active filters" }),
+    ).toHaveText(`${person}Mira`);
+    await expect(
+      table.getByRole("button", { name: teammate, exact: true }),
+    ).toBeFocused();
+    const calls = await page.evaluate(
+      () => (window as unknown as LibraryWindow).library.calls,
+    );
+    expect(
+      calls.some((call) => call.command === "local_resource_catalog"),
+    ).toBe(true);
+    expect(
+      calls.filter((call) =>
+        /^(sync_now|cloud_action|session_action|set_project_sharing)$/.test(
+          call.command,
+        ),
+      ),
+    ).toEqual([]);
+  });
+
+for (const { kind, label } of tabbed)
   test(`${label} include private content with sharing off and filter by stable ownership`, async ({
     page,
   }) => {
@@ -415,6 +517,7 @@ for (const { kind, label } of kinds) {
     ).toEqual([]);
   });
 
+for (const { kind, label } of kinds) {
   test(`${label} private detail remains readable offline without shared history actions`, async ({
     page,
   }) => {
@@ -630,13 +733,13 @@ for (const { kind, label } of kinds) {
       expect(geometry.border).toBe("1px");
       expect(Math.abs(geometry.left - geometry.button)).toBeLessThanOrEqual(1);
       expect(geometry.overflow).toBe(false);
-      for (const name of ["Mine", "Shared with me", "All"]) {
-        await page
-          .getByRole("group", { name: "Filter by ownership" })
-          .getByRole("button", { name, exact: true })
-          .click();
-        await expect(banner).toBeVisible();
-      }
+      const search = page.getByRole("searchbox", {
+        name: `Search ${label.toLowerCase()}`,
+      });
+      await search.fill("Mira");
+      await expect(banner).toBeVisible();
+      await search.clear();
+      await expect(banner).toBeVisible();
       await page.evaluate(() => {
         (window as unknown as LibraryWindow).library.deferCatalog = true;
       });
@@ -877,7 +980,43 @@ test("configured sync timing refreshes local-only rows without clearing collecti
   await expect(sessions).toContainText("4");
 });
 
-for (const { kind, label } of kinds) {
+for (const { kind, label } of indexed)
+  test(`${label} lists a large collection in one scrolling list`, async ({
+    page,
+  }) => {
+    await resourceLibraryFixture(page, {
+      extraRows: 50,
+      emptyLocal: true,
+      defer: true,
+    });
+    await page.getByRole("button", { name: new RegExp(`^${label}`) }).click();
+    const table = page.getByRole("table");
+    const rows = table.locator("tbody tr");
+    await expect(rows).toHaveCount(52);
+    await expect(page.getByRole("navigation", { name: /pages$/ })).toHaveCount(
+      0,
+    );
+    const item = table.getByRole("button", {
+      name: `Archive ${kind} 49`,
+      exact: true,
+    });
+    await item.scrollIntoViewIfNeeded();
+    await item.press("Enter");
+    await page
+      .getByRole("button", { name: `Back to ${label}`, exact: true })
+      .click();
+    await expect(item).toBeFocused();
+    await expect(item).toBeInViewport();
+    const search = page.getByRole("searchbox", {
+      name: `Search ${label.toLowerCase()}`,
+    });
+    await search.fill(`Archive ${kind} 1`);
+    await expect(rows).toHaveCount(11);
+    await search.clear();
+    await expect(rows).toHaveCount(52);
+  });
+
+for (const { kind, label } of tabbed) {
   test(`${label} keeps large collections navigable a page at a time`, async ({
     page,
   }) => {

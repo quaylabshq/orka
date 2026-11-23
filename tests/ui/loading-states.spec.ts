@@ -37,9 +37,10 @@ for (const width of [1160, 900]) {
       );
       await expect(collection.getByText(/Checking|Looking for/)).toHaveCount(0);
       await expect(skeleton.getByRole("button")).toHaveCount(0);
-      await expect(
-        collection.getByRole("group", { name: "Filter by ownership" }),
-      ).toBeVisible();
+      if (kind !== "plan")
+        await expect(
+          collection.getByRole("group", { name: "Filter by ownership" }),
+        ).toBeVisible();
       await expect(
         page.getByRole("combobox", { name: "Select project", exact: true }),
       ).toBeEnabled();
