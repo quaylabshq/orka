@@ -27,6 +27,7 @@ import React, {
   useState,
 } from "react";
 import { Channel, invoke } from "@tauri-apps/api/core";
+import { useQuery } from "@tanstack/react-query";
 import type {
   Project,
   ProjectResource,
@@ -51,6 +52,7 @@ import { skillReviewState } from "./skill-review-state.js";
 import { useResourceActions, type Run } from "./use-resource-actions.js";
 import { QueuedUploadReview } from "./queued-upload-review.js";
 import { ArtifactLinkDialog } from "./artifact-link-dialog.js";
+import { useWorkspaceScope } from "./workspace-cache.js";
 
 type ResourceRequest =
   "share" | "delete" | "launch" | "retry-upload" | "public-link";
@@ -329,6 +331,43 @@ export function ResourceMenuProvider({
 
 export function useQueuedUploadReview() {
   return useContext(ResourceMenuContext)?.reviewUpload;
+}
+
+/**
+ * Where an item lives on this Mac: its repository folder, and, when asked
+ * for, the files Copy local path reports. Neither exists off this Mac.
+ */
+export function useLocalLocation(resource: ProjectResource, files: boolean) {
+  const context = useContext(ResourceMenuContext);
+  const scope = useWorkspaceScope();
+  const project = context?.state.projects.find(
+    (item) => item.id === resource.projectId,
+  );
+  const folder =
+    (project && sourcePath(project, resource.sourceId)) || undefined;
+  const { data } = useQuery({
+    queryKey: [
+      "local-paths",
+      scope,
+      resource.projectId,
+      resource.resourceId,
+      resource.hash,
+    ],
+    enabled: files && Boolean(context && folder),
+    queryFn: async () =>
+      (
+        await invoke<{ paths: string[] }>("resource_command", {
+          action: "paths",
+          input: {
+            accountId: context?.state.user,
+            serviceOrigin: context?.state.config?.apiUrl,
+            projectId: resource.projectId,
+            resourceId: resource.resourceId,
+          },
+        })
+      ).paths,
+  });
+  return { folder, files: data };
 }
 
 export function resourceViewMenuActions(

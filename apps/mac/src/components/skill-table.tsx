@@ -174,7 +174,7 @@ export function SkillTable({
   /** A pointer or focus arriving on a row, such as to prefetch it. */
   onRowIntent?: (resource: Resource) => void;
   /** What a row's peek says after its pointer rests or it takes focus. */
-  peek?: (resource: Resource) => React.ReactNode;
+  peek: (resource: Resource) => React.ReactNode;
   /** A marker right after a row's title, such as a session's fork. */
   titleTrailing?: (resource: Resource) => React.ReactNode;
 }) {
@@ -186,7 +186,7 @@ export function SkillTable({
   const body = useRef<HTMLTableSectionElement>(null);
   const openPeek = (id: string, row: HTMLElement, delay: number) => {
     window.clearTimeout(timer.current);
-    if (menuOpen.current !== undefined || !peekContent) return;
+    if (menuOpen.current !== undefined) return;
     timer.current = window.setTimeout(() => {
       // A row near the bottom of the visible list opens its description upward.
       const view = row.closest(".resource-index-body");
@@ -404,7 +404,7 @@ export function SkillTable({
                       </button>
                       {titleTrailing?.(resource)}
                     </span>
-                    {peeking && peekContent && (
+                    {peeking && (
                       <span
                         id={peekId}
                         className="skill-table-peek"

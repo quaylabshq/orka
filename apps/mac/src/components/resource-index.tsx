@@ -21,6 +21,8 @@ import { LoadingRegion } from "./loading-region.js";
 import { CollectionSkeleton } from "./collection-skeleton.js";
 import { skillSummaryKey, type SkillSummaries } from "./use-skill-summaries.js";
 import { SkillPeek, SkillTable } from "./skill-table.js";
+import { ListPeek } from "./list-peek.js";
+import { sessionTree } from "./session-tree.js";
 import { SkillToolbar, useFilterCategories } from "./skill-toolbar.js";
 import {
   applyPageFilters,
@@ -153,6 +155,20 @@ export function ResourceIndex({
       }),
     [page, resources, applied, displayTitle, user, memberName, statusOf],
   );
+  // Forks and their parents come from the whole collection, so a filter
+  // never hides who a session forked from.
+  const family = useMemo(() => {
+    if (kind !== "session") return undefined;
+    const tree = sessionTree(resources);
+    const byId = new Map(resources.map((item) => [item.resourceId, item]));
+    return (session: Resource) => {
+      const parent = byId.get(tree.parents.get(session.resourceId) ?? "");
+      return {
+        parent: parent && displayTitle(parent),
+        forks: tree.children.get(session.resourceId)?.length ?? 0,
+      };
+    };
+  }, [kind, resources, displayTitle]);
   const picked = filterPicksActive(applied);
   const searched = filters.query.trim();
   const filtered = Boolean(searched) || picked;
@@ -369,15 +385,15 @@ export function ResourceIndex({
                 />
               )
             }
-            peek={
-              kind === "skill"
-                ? (skill) => (
-                    <SkillPeek
-                      skill={skill}
-                      summary={skillSummaries[skillSummaryKey(skill)]}
-                    />
-                  )
-                : undefined
+            peek={(resource) =>
+              kind === "skill" ? (
+                <SkillPeek
+                  skill={resource}
+                  summary={skillSummaries[skillSummaryKey(resource)]}
+                />
+              ) : (
+                <ListPeek resource={resource} family={family?.(resource)} />
+              )
             }
           />
         )}

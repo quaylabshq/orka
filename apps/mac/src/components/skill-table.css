@@ -312,6 +312,17 @@
   color: var(--text-tertiary);
 }
 
+.skill-table-peek-path {
+  overflow-wrap: anywhere;
+  color: var(--text-tertiary);
+}
+
+/* Updated has its own column until the window is too narrow for it. */
+.skill-table-peek-updated {
+  display: none;
+  color: var(--text-tertiary);
+}
+
 .skill-table-peek-loading {
   display: flex;
   flex-direction: column;
@@ -380,6 +391,21 @@
 
   .skill-table-col-updated,
   .skill-table-updated {
+    display: none;
+  }
+
+  .skill-table-peek-updated {
+    display: block;
+  }
+
+  .skill-table-peek-kind .skill-table-peek-updated {
+    display: inline;
+  }
+}
+
+/* A peek that would say only when the row was updated waits for that width. */
+@media (min-width: 1001px) {
+  .skill-table-peek:not(:has(> :not(.skill-table-peek-updated))) {
     display: none;
   }
 }

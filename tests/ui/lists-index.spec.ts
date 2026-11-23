@@ -253,3 +253,93 @@ test("several hundred sessions list without a pager and scroll under a fixed too
   ).toBeInViewport();
   await expect(rows(page).first()).not.toBeInViewport();
 });
+
+const peekOf = async (page: Page, title: string) => {
+  await page.mouse.move(0, 0);
+  await page.getByRole("button", { name: title, exact: true }).hover();
+  const peek = page.getByRole("tooltip");
+  await expect(peek).toBeVisible();
+  return peek;
+};
+
+test("a session peek names the fork's parent or counts its forks, then the repository folder", async ({
+  page,
+}) => {
+  await open(page, "Sessions");
+  const fork = await peekOf(page, "Skills index redesign review, second pass");
+  await expect(fork.locator(":scope > span:visible")).toHaveText(
+    ["Fork of Skills index redesign review", "~/code/orka-public"],
+    { useInnerText: true },
+  );
+  const parent = await peekOf(page, "Skills index redesign review");
+  await expect(parent.locator(":scope > span:visible")).toHaveText(
+    ["1 fork", "~/code/orka-public"],
+    { useInnerText: true },
+  );
+  // Updated has its own column at this width.
+  await expect(parent).not.toContainText("Updated", { useInnerText: true });
+});
+
+test("a plan peek says where the plan came from, with its file only when it has one on this Mac", async ({
+  page,
+}) => {
+  await open(page, "Plans");
+  const file = await peekOf(page, "Repository filter across collections");
+  await expect(file.locator(":scope > span:visible")).toHaveText(
+    ["Plan file", "~/.claude/plans/repository-filter-across-collections.md"],
+    { useInnerText: true },
+  );
+  const session = await peekOf(page, "Pending reviews redesign");
+  await expect(session.locator(":scope > span:visible")).toHaveText(
+    ["From a session"],
+    { useInnerText: true },
+  );
+  // A teammate's plan has no file on this Mac.
+  const teammate = await peekOf(page, "Skills index production rollout");
+  await expect(teammate.locator(":scope > span:visible")).toHaveText(
+    ["Plan file"],
+    {
+      useInnerText: true,
+    },
+  );
+});
+
+test("a memory peek gives its kind and version, then its file", async ({
+  page,
+}) => {
+  await open(page, "Memories");
+  const instructions = await peekOf(page, "CLAUDE.md");
+  await expect(instructions.locator(":scope > span:visible")).toHaveText(
+    ["Instruction file · Version 11", "~/code/orka-public/CLAUDE.md"],
+    { useInnerText: true },
+  );
+  const local = await peekOf(page, "Searchable notes folder overflow");
+  await expect(local.locator(":scope > span:visible")).toHaveText(
+    ["Memory", "~/.codex/memory/searchable-notes-folder-overflow.md"],
+    { useInnerText: true },
+  );
+});
+
+test("at the minimum window Updated leaves the table and joins the peek", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 900, height: 640 });
+  await open(page, "Sessions");
+  await expect(
+    page.getByRole("columnheader", { name: "Updated", exact: true }),
+  ).toBeHidden();
+  const fork = await peekOf(page, "Skills index redesign review, second pass");
+  await expect(fork.locator(":scope > span:visible")).toHaveText(
+    [
+      "Fork of Skills index redesign review",
+      "~/code/orka-public",
+      "Updated 1h ago",
+    ],
+    { useInnerText: true },
+  );
+  await page.getByRole("button", { name: /^Memories/ }).click();
+  const memory = await peekOf(page, "CLAUDE.md");
+  await expect(memory.locator(":scope > span:visible").first()).toHaveText(
+    "Instruction file · Version 11 · Updated 41m ago",
+  );
+});
