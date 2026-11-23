@@ -47,6 +47,7 @@ export function CopyLinkButton({
     };
   }, [value]);
   const copy = async (event: React.MouseEvent<HTMLButtonElement>) => {
+    if (disabled || pending) return;
     const current = generation.current;
     setMotion(event.detail === 0 ? "instant" : "pointer");
     setPending(true);
@@ -73,7 +74,8 @@ export function CopyLinkButton({
         variant={variant ?? (iconOnly ? "tertiary" : "secondary")}
         size="sm"
         className={`copy-link-button${iconOnly ? " ui-icon-button" : ""}`}
-        disabled={disabled || pending}
+        disabled={disabled}
+        aria-disabled={pending || undefined}
         data-copied={copied}
         data-motion={motion}
         aria-label={

@@ -91,16 +91,36 @@ test("fenced code copies the original lines and can be reached from the keyboard
   await code.focus();
   await expect(code).toBeFocused();
   await page.evaluate(() => {
+    let writes = 0;
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
       value: {
-        writeText: async (value: string) => {
-          document.documentElement.dataset.clipboard = value;
-        },
+        writeText: (value: string) =>
+          new Promise<void>((resolve) => {
+            document.addEventListener("finish-code-copy", () => resolve(), {
+              once: true,
+            });
+            document.documentElement.dataset.clipboard = value;
+            document.documentElement.dataset.clipboardWrites = String(++writes);
+          }),
       },
     });
   });
-  await reader.getByRole("button", { name: "Copy code" }).press("Enter");
+  const copy = reader.getByRole("button", { name: "Copy code" });
+  await copy.focus();
+  await page.keyboard.press("Enter");
+  await expect(copy).toBeDisabled();
+  await expect(copy).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(page.locator("html")).toHaveAttribute(
+    "data-clipboard-writes",
+    "1",
+  );
+  await page.evaluate(() => {
+    document.dispatchEvent(new Event("finish-code-copy"));
+  });
+  await expect(copy).toBeEnabled();
+  await expect(copy).toBeFocused();
   await expect(reader.getByRole("status")).toHaveText("Code copied");
   await expect(page.locator("html")).toHaveAttribute("data-clipboard", command);
 });
