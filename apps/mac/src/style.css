@@ -1298,15 +1298,10 @@
     margin: 1em 0;
     overflow-x: auto;
   }
-  .mermaid-diagram svg {
+  .mermaid-diagram > svg {
     display: block;
-    max-width: 100%;
     height: auto;
     margin-inline: auto;
-  }
-  /* Mermaid caps responsive diagrams at their intrinsic width. */
-  .mermaid-diagram svg[width="100%"][viewBox] {
-    width: max(100%, 500px);
   }
   .mermaid-status {
     color: var(--text-tertiary);

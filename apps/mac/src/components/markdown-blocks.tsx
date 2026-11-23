@@ -46,7 +46,8 @@ function markCallout(quote: Blockquote, source: string) {
 }
 
 const remarkCallouts: Plugin<[], Root> = () => (tree, file) => {
-  const source = file.toString();
+  // The Markdown parser omits the initial BOM from its source offsets.
+  const source = file.toString().replace(/^\uFEFF/, "");
   function visit(parent: Parent) {
     for (const node of parent.children) {
       if (node.type === "blockquote") markCallout(node, source);
@@ -63,13 +64,13 @@ export function MarkdownCallout({
   "aria-label": label,
 }: React.ComponentProps<"aside">) {
   return (
-    <aside className="markdown-callout" aria-label={label}>
+    <div className="markdown-callout" role="note" aria-label={label}>
       <div className="markdown-callout-title">
         <Icon icon={InfoIcon} size="sm" />
         {label}
       </div>
       {children}
-    </aside>
+    </div>
   );
 }
 
@@ -79,6 +80,7 @@ const languageNames = new Map([
   ["js", "JavaScript"],
   ["ts", "TypeScript"],
   ["json", "JSON"],
+  ["mermaid", "Mermaid"],
 ]);
 
 function CodeCopyButton({ source }: { source: string }) {
@@ -119,21 +121,25 @@ export function MarkdownPre({ children }: React.ComponentProps<"pre">) {
     ?.split(/\s+/)
     .find((name) => name.startsWith("language-"))
     ?.slice("language-".length);
-  if (language === "mermaid") return <MermaidDiagram source={source} />;
   const label = language ? (languageNames.get(language) ?? language) : "Code";
-  return (
+  const block = (
     <div className="markdown-code-block">
       <div className="markdown-code-header">
         <span>{label}</span>
         <CodeCopyButton source={source} />
       </div>
       <pre
-        role="region"
+        role="group"
         aria-label={language ? `${label} code` : "Code"}
         tabIndex={0}
       >
         {children}
       </pre>
     </div>
+  );
+  return language === "mermaid" ? (
+    <MermaidDiagram source={source} fallback={block} />
+  ) : (
+    block
   );
 }

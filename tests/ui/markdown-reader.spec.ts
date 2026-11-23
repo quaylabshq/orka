@@ -1,3 +1,4 @@
+import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 import { detailGalleryFixture } from "./fixtures/detail-gallery.js";
 
@@ -57,7 +58,7 @@ test("a formatted memory separates file properties from body tables and preserve
     "border-bottom-width",
     "1px",
   );
-  const callout = reader.getByRole("complementary", { name: "Important" });
+  const callout = reader.getByRole("note", { name: "Important" });
   await expect(callout).toContainText("Keep the original checklist");
   const borders = await callout.evaluate((el) => {
     const style = getComputedStyle(el);
@@ -86,7 +87,7 @@ test("fenced code copies the original lines and can be reached from the keyboard
     content: memory,
   });
   const reader = view.getByRole("article", { name: "Rendered Markdown" });
-  const code = reader.getByRole("region", { name: "Shell code" });
+  const code = reader.getByRole("group", { name: "Shell code" });
   await code.focus();
   await expect(code).toBeFocused();
   await page.evaluate(() => {
@@ -103,3 +104,75 @@ test("fenced code copies the original lines and can be reached from the keyboard
   await expect(reader.getByRole("status")).toHaveText("Code copied");
   await expect(page.locator("html")).toHaveAttribute("data-clipboard", command);
 });
+
+test("repeated callouts and code blocks do not add duplicate landmarks", async ({
+  page,
+}) => {
+  const content = [
+    "> [!NOTE]",
+    "> Prepare the release.",
+    "",
+    "```sh",
+    "pnpm test",
+    "```",
+    "",
+    "> [!NOTE]",
+    "> Verify the build.",
+    "",
+    "```sh",
+    "pnpm run build",
+    "```",
+  ].join("\n");
+  const view = await detailGalleryFixture(page, { kind: "memory", content });
+  const reader = view.getByRole("article", { name: "Rendered Markdown" });
+  await expect(reader.getByText("Prepare the release.")).toBeVisible();
+  await expect(reader.getByText("Verify the build.")).toBeVisible();
+  await expect(reader.getByRole("button", { name: "Copy code" })).toHaveCount(
+    2,
+  );
+
+  const result = await new AxeBuilder({ page })
+    .withRules(["landmark-unique"])
+    .analyze();
+  expect(result.violations).toEqual([]);
+});
+
+for (const viewport of [
+  { width: 1160, height: 800 },
+  { width: 900, height: 640 },
+]) {
+  test(`wide Mermaid diagrams remain readable and scroll inside the ${viewport.width}px reader`, async ({
+    page,
+  }) => {
+    await page.setViewportSize(viewport);
+    const steps = Array.from({ length: 14 }, (_, index) => {
+      const next = index < 13 ? ` --> step${index + 1}` : "";
+      return `step${index}[Verify release step ${index + 1}]${next}`;
+    });
+    const content = ["```mermaid", "flowchart LR", ...steps, "```"].join("\n");
+    const view = await detailGalleryFixture(page, { kind: "plan", content });
+    const diagram = view.getByRole("img", { name: "Mermaid diagram" });
+    const svg = diagram.locator("svg");
+    await expect(svg).toBeVisible();
+
+    const size = await svg.evaluate((svg: SVGSVGElement) => ({
+      intrinsic: svg.viewBox.baseVal.width,
+      rendered: svg.getBoundingClientRect().width,
+      reader: svg.parentElement!.clientWidth,
+      scroll: svg.parentElement!.scrollWidth,
+    }));
+    expect(size.intrinsic).toBeGreaterThan(2 * size.reader);
+    expect(size.rendered).toBeCloseTo(size.intrinsic, 0);
+    expect(size.scroll - size.reader).toBeGreaterThan(size.reader);
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth),
+    ).toBe(viewport.width);
+
+    await diagram.focus();
+    await expect(diagram).toBeFocused();
+    await page.keyboard.press("ArrowRight");
+    await expect
+      .poll(() => diagram.evaluate((el) => el.scrollLeft))
+      .toBeGreaterThan(0);
+  });
+}

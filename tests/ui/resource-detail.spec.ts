@@ -2553,14 +2553,19 @@ test("invalid Mermaid retains readable source without leaving error DOM behind",
   page,
 }) => {
   await detailFixture(page);
-  await readerContent(page, "```mermaid\nflowchart LR\n  A[broken\n```");
+  const source = "flowchart LR\n  A[broken";
+  await readerContent(page, ["```mermaid", source, "```"].join("\n"));
   await openMemory(page);
   await expect(page.locator(".mermaid-status")).toHaveText(
     "Diagram unavailable. Showing source.",
   );
-  await expect(page.locator("pre code.language-mermaid")).toContainText(
-    "A[broken",
-  );
+  const reader = page.getByRole("article", { name: "Rendered Markdown" });
+  await expect(
+    reader.getByRole("group", { name: "Mermaid code" }),
+  ).toContainText("A[broken");
+  await reader.getByRole("button", { name: "Copy code" }).press("Enter");
+  await expect(reader.getByText("Code copied", { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => (window as any).copiedText)).toBe(source);
   await expect(
     page.locator(".mermaid-diagram, .mermaid-measure, body > svg"),
   ).toHaveCount(0);

@@ -27,7 +27,7 @@ test.each(["Note", "Tip", "Important", "Warning", "Caution"])(
     read(
       `> [!${label.toUpperCase()}]  \r\n> **Keep** the first line.\r\n>\r\n> - Complete the check.`,
     );
-    const note = screen.getByRole("complementary", { name: label });
+    const note = screen.getByRole("note", { name: label });
     expect(note.querySelector("strong")?.textContent).toBe("Keep");
     expect(note.querySelector("li")?.textContent).toBe("Complete the check.");
     expect(note.querySelector("br")).toBeNull();
@@ -47,13 +47,20 @@ test.each([
 ])("keeps literal marker %s in a quotation", (source) => {
   const { container } = read(source);
   expect(container.querySelector("blockquote")).toBeTruthy();
-  expect(screen.queryByRole("complementary")).toBeNull();
+  expect(screen.queryByRole("note")).toBeNull();
 });
 
 test("indented code has a copy action, inline code remains inline", () => {
   read("Run `pnpm` here.\n\n    pnpm test\n      # Keep this indentation");
-  expect(screen.getByRole("region", { name: "Code" }).textContent).toBe(
+  expect(screen.getByRole("group", { name: "Code" }).textContent).toBe(
     "pnpm test\n  # Keep this indentation\n",
   );
   expect(screen.getAllByRole("button", { name: "Copy code" })).toHaveLength(1);
+});
+
+test("formats callouts in Markdown files with a leading BOM", () => {
+  read("\uFEFF# Release\n\n> [!IMPORTANT]\n> Verify the build.");
+  expect(screen.getByRole("note", { name: "Important" }).textContent).toContain(
+    "Verify the build.",
+  );
 });
