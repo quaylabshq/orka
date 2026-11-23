@@ -263,10 +263,20 @@ export function ProjectPicker({
               onPointerDownCapture={() => setKeyboard(false)}
               onCloseAutoFocus={(event) => {
                 const action = actionAfterClose.current;
-                if (!action) return;
-                actionAfterClose.current = null;
-                event.preventDefault();
-                action();
+                if (action) {
+                  actionAfterClose.current = null;
+                  event.preventDefault();
+                  action();
+                  return;
+                }
+                // Exit can finish after navigation has already moved focus.
+                const focused = document.activeElement;
+                if (
+                  focused &&
+                  focused !== document.body &&
+                  !listRef.current?.contains(focused)
+                )
+                  event.preventDefault();
               }}
               onOpenAutoFocus={(event) => {
                 event.preventDefault();

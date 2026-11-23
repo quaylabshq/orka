@@ -171,6 +171,7 @@ test("inactive details keep the project out of the collapsed picker and link bac
   await expect(picker.getByRole("option")).toHaveText(["Product"]);
   await page.keyboard.press("Escape");
   await back.press("Enter");
+  await expect(picker).toHaveCount(0);
   await expect(
     page.getByRole("heading", { name: "Projects", exact: true }),
   ).toBeFocused();
