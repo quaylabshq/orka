@@ -287,10 +287,12 @@ test("memories list in a table and open the full-width reading view", async ({
   await page.getByRole("button", { name: /^Memories/ }).click();
   const table = page.getByRole("table");
   await expect(table.getByRole("row")).toHaveCount(3);
-  await expect(table).toContainText("Design decisions");
   await expect(
-    table.getByRole("img", { name: "Codex · Updated by You", exact: true }),
-  ).toBeVisible();
+    table
+      .getByRole("row", { name: /Design decisions/ })
+      .locator("td")
+      .first(),
+  ).toHaveText("Codex");
   await expect(page.locator(".inspector")).toHaveCount(0);
   await table
     .getByRole("button", { name: "Design decisions", exact: true })
@@ -521,67 +523,65 @@ for (const outcome of ["success", "failure"] as const)
     await expect(page.getByRole("alert")).toHaveCount(0);
   });
 
-test("index toolbar searches, filters by source, sorts, and clears", async ({
+const pickFilter = async (
+  page: import("@playwright/test").Page,
+  category: string,
+  option: string,
+) => {
+  await page.getByRole("button", { name: /^Filter/ }).click();
+  await page.getByRole("menuitem", { name: category }).click();
+  await page
+    .getByRole("menuitemcheckbox", { name: option, exact: true })
+    .click();
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape");
+};
+
+test("index toolbar searches title, path, and agent, filters by agent, sorts, and clears", async ({
   page,
 }) => {
   await resourceFixture(page);
   await page.getByRole("button", { name: /^Memories/ }).click();
-  const titles = () =>
-    page.locator("tbody .resource-table-open").allTextContents();
-  const count = (text: string) => page.getByText(text, { exact: true });
-  await expect(count("2 memories")).toHaveCount(0);
+  const titles = () => page.locator(".skill-table-open").allTextContents();
   await expect.poll(titles).toEqual(["Design decisions", "Architecture notes"]);
-  // Search filters titles, paths, and sources, and the count follows.
+  // The toolbar never counts items.
+  await expect(page.getByText(/^\d+ memor(y|ies)$/)).toHaveCount(0);
   const search = page.getByRole("searchbox", { name: "Search memories" });
   await search.fill("archi");
   await expect.poll(titles).toEqual(["Architecture notes"]);
-  await expect(count("1 memory")).toBeVisible();
   await search.fill("claude");
   await expect.poll(titles).toEqual(["Architecture notes"]);
   await search.fill("nothing here");
-  await expect(page.getByText("No memories match")).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "No memories match “nothing here”" }),
+  ).toBeVisible();
   await expect(page.getByRole("table")).toHaveCount(0);
   await page
-    .getByRole("button", { name: "Clear filters", exact: true })
+    .locator(".empty-state")
+    .getByRole("button", { name: "Clear search", exact: true })
     .click();
   await expect(search).toHaveValue("");
-  await expect(count("2 memories")).toHaveCount(0);
-  // The source segments reflect the loaded sources, in order.
-  const sources = page.getByRole("group", { name: "Filter by source" });
-  await expect(sources.getByRole("button")).toHaveText([
-    "All",
-    "Claude",
-    "Codex",
-  ]);
-  await sources.getByRole("button", { name: "Claude", exact: true }).click();
-  await expect(
-    sources.getByRole("button", { name: "Claude", exact: true }),
-  ).toHaveAttribute("aria-pressed", "true");
+  await pickFilter(page, "Agent", "Claude");
   await expect.poll(titles).toEqual(["Architecture notes"]);
-  await expect(count("1 memory")).toBeVisible();
-  await sources.getByRole("button", { name: "All", exact: true }).click();
-  // Sorting by title reorders the rows.
   await page
-    .getByRole("button", { name: "Sort by Recently updated", exact: true })
+    .getByRole("group", { name: "Active filters" })
+    .getByRole("button", { name: "Remove Agent filter" })
     .click();
-  await page.getByRole("menuitemradio", { name: "Title", exact: true }).click();
+  await expect.poll(titles).toEqual(["Design decisions", "Architecture notes"]);
+  await page.getByRole("button", { name: /^Sort/ }).click();
+  await page.getByRole("menuitemradio", { name: "Name", exact: true }).click();
   await expect.poll(titles).toEqual(["Architecture notes", "Design decisions"]);
-  await expect(
-    page.getByRole("button", { name: "Sort by Title", exact: true }),
-  ).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Sort/ })).toContainText(
+    "Name",
+  );
   // Clearing the search keeps focus in the field.
   await search.fill("design");
   await page.getByRole("button", { name: "Clear search", exact: true }).click();
   await expect(search).toBeFocused();
-  await expect(count("2 memories")).toHaveCount(0);
-  // The skill grid and session table share the toolbar.
   await page.getByRole("button", { name: /^Skills/ }).click();
   await expect(
     page.getByRole("searchbox", { name: "Search skills" }),
   ).toBeVisible();
-  await expect(count("2 skills")).toHaveCount(0);
-  await page.getByRole("button", { name: /^Sessions/ }).click();
-  await expect(count("1 session")).toHaveCount(0);
 });
 
 test("skill title sorting follows frontmatter names instead of folder titles", async ({
@@ -599,7 +599,7 @@ test("skill title sorting follows frontmatter names instead of folder titles", a
   await expect(titles).toHaveText(["Zebra review", "Alpha writing"]);
 });
 
-test("empty collections omit tools and source filters stay clearable after items disappear", async ({
+test("empty collections omit tools, and an agent filter stops filtering once its option disappears", async ({
   page,
 }) => {
   await page.clock.install();
@@ -616,8 +616,12 @@ test("empty collections omit tools and source filters stay clearable after items
   ).toHaveCount(0);
   await selector.click();
   await page.getByRole("option", { name: "Orka", exact: true }).click();
-  const sources = page.getByRole("group", { name: "Filter by source" });
-  await sources.getByRole("button", { name: "Claude", exact: true }).click();
+  await pickFilter(page, "Agent", "Claude");
+  const chips = page.getByRole("group", { name: "Active filters" });
+  await expect(chips).toContainText("Claude");
+  await expect(
+    page.getByRole("button", { name: "Design decisions", exact: true }),
+  ).toHaveCount(0);
   await page.evaluate(() => {
     const w = window as any;
     const original = w.__TAURI_INTERNALS__.invoke;
@@ -634,22 +638,14 @@ test("empty collections omit tools and source filters stay clearable after items
     };
   });
   await page.clock.runFor(3100);
-  await expect(
-    page.getByText("No memories match", { exact: true }),
-  ).toBeVisible();
-  await expect(
-    sources.getByRole("button", { name: "All", exact: true }),
-  ).toBeVisible();
-  await page
-    .getByRole("button", { name: "Clear filters", exact: true })
-    .click();
-  await expect(
-    page.getByRole("searchbox", { name: "Search memories" }),
-  ).toBeFocused();
+  // With one agent left there is nothing to choose, so the pick lapses
+  // instead of hiding every row from out of sight.
   await expect(
     page.getByRole("button", { name: "Design decisions", exact: true }),
   ).toBeVisible();
-  await expect(sources).toHaveCount(0);
+  await expect(chips).toHaveCount(0);
+  await page.getByRole("button", { name: /^Filter/ }).click();
+  await expect(page.getByRole("menuitem", { name: "Agent" })).toHaveCount(0);
 });
 
 for (const width of [1160, 900])

@@ -38,6 +38,37 @@ const pages = [
     ],
     review: "Conflicts panel handoff",
   },
+  {
+    label: "Memories",
+    noun: "Memory",
+    person: "Updated by",
+    headings: [
+      "Memory",
+      "Agent",
+      "Repository",
+      "Updated by",
+      "Updated",
+      "Status",
+    ],
+    filters: [
+      "Status",
+      "Updated by",
+      "Agent",
+      "Repository",
+      "Location",
+      "Kind",
+    ],
+    pills: [
+      "Needs review",
+      "Local edits",
+      "Conflict",
+      "Upload failed",
+      "Waiting to sync",
+      "Couldn’t read",
+      "Upload refused",
+    ],
+    review: "AGENTS.md",
+  },
 ];
 
 for (const scene of pages) {
@@ -66,7 +97,7 @@ for (const scene of pages) {
       "Last updated",
     );
     await expect(
-      page.getByRole("columnheader", { name: "Updated" }),
+      page.getByRole("columnheader", { name: "Updated", exact: true }),
     ).toHaveAttribute("aria-sort", "descending");
     await page.getByRole("button", { name: /^Sort/ }).click();
     await page
@@ -110,3 +141,39 @@ for (const scene of pages) {
     ).toBeVisible();
   });
 }
+
+test("Memories tell repeated file names apart by agent, and the Kind filter splits instruction files from memories", async ({
+  page,
+}) => {
+  await open(page, "Memories");
+  const repeated = rows(page).filter({ hasText: "MEMORY.md" });
+  await expect(repeated).toHaveCount(2);
+  await expect(repeated.locator(".skill-table-agent")).toHaveText([
+    "Claude",
+    "Codex",
+  ]);
+  await pick(page, "Kind", "Instruction file");
+  await expect(page.locator(".skill-table-open")).toHaveText([
+    "AGENTS.md",
+    "CLAUDE.md",
+    "Sharded pull request checks",
+  ]);
+  await pick(page, "Agent", "Codex");
+  await expect(page.locator(".skill-table-open")).toHaveText(["AGENTS.md"]);
+});
+
+test("at 1160 the agent is a logo whose name stays available on hover and to assistive technology", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1160, height: 800 });
+  await open(page, "Memories");
+  const agent = rows(page).first().locator(".skill-table-agent");
+  await expect(agent).toHaveAttribute("title", "Codex");
+  const name = agent.locator(".source-label > span");
+  await expect(name).toHaveText("Codex");
+  expect(await name.evaluate((element) => element.clientWidth)).toBe(1);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  expect(await name.evaluate((element) => element.clientWidth)).toBeGreaterThan(
+    1,
+  );
+});

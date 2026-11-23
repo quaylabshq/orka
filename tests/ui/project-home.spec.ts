@@ -385,19 +385,20 @@ test("each project total opens its collection instead of the previously selected
   }
 });
 
-test("project totals open all repositories after browsing a filtered collection", async ({
+test("a collection keeps its own repository filter across a visit to Home", async ({
   page,
 }) => {
   await homeFixture(page);
   await totals(page)
     .getByRole("button", { name: /^View Memories [0-9]+$/ })
     .click();
-  const filter = page.getByRole("combobox", {
-    name: "Filter by repository",
-    exact: true,
-  });
-  await filter.click();
-  await page.getByRole("option", { name: "Desktop", exact: true }).click();
+  await page.getByRole("button", { name: /^Filter/ }).click();
+  await page.getByRole("menuitem", { name: "Repository" }).click();
+  await page
+    .getByRole("menuitemcheckbox", { name: "Desktop", exact: true })
+    .click();
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape");
   await expect(
     page.getByRole("button", { name: "Older update", exact: true }),
   ).toHaveCount(0);
@@ -410,7 +411,9 @@ test("project totals open all repositories after browsing a filtered collection"
   await totals(page)
     .getByRole("button", { name: /^View Memories [0-9]+$/ })
     .click();
-  await expect(filter).toContainText("All repositories");
+  const chips = page.getByRole("group", { name: "Active filters" });
+  await expect(chips).toContainText("Desktop");
+  await chips.getByRole("button", { name: "Remove Repository filter" }).click();
   await expect(
     page.getByRole("button", { name: "Older update", exact: true }),
   ).toBeVisible();

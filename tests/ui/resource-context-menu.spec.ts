@@ -355,9 +355,14 @@ test("Home keeps resource context menus without separate action buttons in a com
   await page.keyboard.press("Escape");
   await collection(page, "Memories");
   await resourceMenu(page, "My shared memory");
+  // The list's row menu is one flat list, as on Skills.
   expect(
     await page.getByRole("menu").getByRole("menuitem").allTextContents(),
-  ).toEqual(memoryActions);
+  ).toEqual([
+    ...memoryActions.filter((action) => action !== "More actions"),
+    "Show in Finder",
+    "Copy local path",
+  ]);
   const accessibility = await new AxeBuilder({ page })
     .withTags(["wcag2a", "wcag2aa", "wcag21aa"])
     .analyze();

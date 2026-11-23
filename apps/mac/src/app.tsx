@@ -565,8 +565,7 @@ function WorkspaceApp({
     tab === "home" || tab === "env" || tab === "members" || tab === "reviews"
       ? undefined
       : index.filters[tab];
-  const collectionRepository =
-    tab === "skill" || tab === "plan" ? "all" : repository;
+  const collectionRepository = tab === "session" ? repository : "all";
   const filters = useMemo(
     () => ({
       ...defaultIndexFilters,
@@ -1208,8 +1207,8 @@ function WorkspaceApp({
               selectedProject &&
               !inactiveProject &&
               repositories.length > 1 &&
-              // Skills and Plans filter by repository inside their Filter menu.
-              (tab === "env" || tab === "memory" || tab === "session") ? (
+              // Indexed collections filter by repository in their Filter menu.
+              (tab === "env" || tab === "session") ? (
                 <RepositoryFilter
                   key={`${workspaceScope}:${project}`}
                   repositories={repositories}

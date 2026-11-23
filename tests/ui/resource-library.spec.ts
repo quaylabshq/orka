@@ -44,8 +44,9 @@ const kinds = [
   { kind: "plan", label: "Plans" },
 ] as const;
 /** Collections listed like Skills: Search, Filter, Sort, and a flat table. */
-const indexed = kinds.filter(({ kind }) => kind === "plan");
-const tabbed = kinds.filter(({ kind }) => kind !== "plan");
+const indexed = kinds.filter(({ kind }) => kind !== "session");
+const tabbed = kinds.filter(({ kind }) => kind === "session");
+const nouns = { memory: "Memory", session: "Session", plan: "Plan" };
 const personLabel = (kind: string) =>
   kind === "memory" ? "Updated by" : "Owner";
 const pick = async (page: Page, category: string, option: string) => {
@@ -66,7 +67,6 @@ for (const width of [1160, 900]) {
     await resourceLibraryFixture(page);
     for (const [label, noun, singular] of [
       ["Sessions", "sessions", "session"],
-      ["Memories", "memories", "memory"],
     ]) {
       await page.getByRole("button", { name: new RegExp(`^${label}`) }).click();
       const toolbar = page.getByRole("group", { name: `${noun} tools` });
@@ -171,7 +171,7 @@ for (const width of [1160, 900]) {
         .getByRole("menuitemradio", { name: "Name", exact: true })
         .click();
       await expect(
-        page.getByRole("columnheader", { name: label.slice(0, -1) }),
+        page.getByRole("columnheader", { name: nouns[kind], exact: true }),
       ).toHaveAttribute("aria-sort", "ascending");
     }
   });
@@ -272,10 +272,6 @@ for (const width of [1160, 900]) {
       .include(".resource-index")
       .analyze();
     expect(results.violations).toEqual([]);
-    await page.getByRole("button", { name: /^Memories/ }).click();
-    await expect(
-      tabs.getByRole("button", { name: "All", exact: true }),
-    ).toBeVisible();
   });
 }
 
@@ -866,12 +862,8 @@ test("restricted shared access does not suppress independent local content", asy
   await expect(
     page.getByRole("button", { name: "Private memory notes", exact: true }),
   ).toBeVisible();
-  await page
-    .getByRole("group", { name: "Filter by ownership" })
-    .getByRole("button", { name: "Shared with me", exact: true })
-    .click();
   await expect(
-    page.getByText("Access to shared memories is restricted.", { exact: true }),
+    page.getByRole("searchbox", { name: "Search memories" }),
   ).toBeVisible();
 });
 

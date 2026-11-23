@@ -131,7 +131,7 @@ export function ResourceIndex({
       });
   }, [discovering, discoveryResult, refreshRequest, kind, notify]);
   const page = indexPages[kind];
-  const paged = kind === "skill" || kind === "plan";
+  const paged = kind !== "session";
   const ownership = paged ? "all" : (filters.ownership ?? "all");
   const root = useRef<HTMLElement>(null);
   const categories = useFilterCategories(

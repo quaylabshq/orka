@@ -188,38 +188,35 @@ for (const viewport of [
   });
 }
 
+const pickRepository = async (page: Page, name: string) => {
+  await page.getByRole("button", { name: /^Filter/ }).click();
+  await page.getByRole("menuitem", { name: "Repository" }).click();
+  await page.getByRole("menuitemcheckbox", { name, exact: true }).click();
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape");
+};
+
 test("repository filters distinguish same-path resources and remain clearable", async ({
   page,
 }) => {
   await fixture(page);
   await page.getByRole("button", { name: /^Memories/ }).click();
-  const filter = page.getByRole("combobox", {
-    name: "Filter by repository",
-    exact: true,
-  });
-  await expect(
-    page.getByRole("button", { name: "desktop instructions", exact: true }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: "backend instructions", exact: true }),
-  ).toBeVisible();
-  await filter.click();
-  await page.getByRole("option", { name: "backend", exact: true }).click();
-  await expect(
-    page.getByRole("button", { name: "desktop instructions", exact: true }),
-  ).toHaveCount(0);
-  await expect(
-    page.getByRole("button", { name: "backend instructions", exact: true }),
-  ).toBeVisible();
-  await page
-    .getByRole("searchbox", { name: "Search memories" })
-    .fill("missing");
-  await expect(filter).toBeVisible();
+  const desktop = page.getByRole("row", { name: /desktop instructions/ });
+  const backend = page.getByRole("row", { name: /backend instructions/ });
+  await expect(desktop).toContainText("desktop");
+  await expect(backend).toContainText("backend");
+  await pickRepository(page, "backend");
+  await expect(desktop).toHaveCount(0);
+  await expect(backend).toBeVisible();
+  const search = page.getByRole("searchbox", { name: "Search memories" });
+  await search.fill("missing");
   await page.getByRole("button", { name: "Clear filters" }).click();
-  await expect(filter).toHaveText("All repositories");
-  await expect(
-    page.getByRole("button", { name: "desktop instructions", exact: true }),
-  ).toBeVisible();
+  await search.clear();
+  await expect(page.getByRole("group", { name: "Active filters" })).toHaveCount(
+    0,
+  );
+  await expect(desktop).toBeVisible();
+  await expect(backend).toBeVisible();
 });
 
 for (const viewport of [
@@ -245,7 +242,7 @@ for (const viewport of [
       ...(ENV_ENABLED ? [["ENVs", "env"]] : []),
     ]) {
       await page.getByRole("button", { name: new RegExp(`^${tab}`) }).click();
-      const indexed = kind === "skill" || kind === "plan";
+      const indexed = kind !== "session" && kind !== "env";
       // Indexed collections filter by repository inside their Filter menu.
       await expect(
         page.getByRole("combobox", { name: /Filter.*repository/ }),
@@ -408,7 +405,7 @@ test("one repository selection follows tabs, supports the keyboard, and resets o
   page,
 }) => {
   await fixture(page);
-  await page.getByRole("button", { name: /^Memories/ }).click();
+  await page.getByRole("button", { name: /^Sessions/ }).click();
   const filter = page.getByRole("combobox", { name: "Filter by repository" });
   await filter.focus();
   await page.keyboard.press("Enter");
@@ -430,7 +427,7 @@ test("one repository selection follows tabs, supports the keyboard, and resets o
     ...(ENV_ENABLED ? [["ENVs", ".env-list-item"]] : []),
   ]) {
     await page.getByRole("button", { name: new RegExp(`^${tab}`) }).click();
-    if (tab === "Skills" || tab === "Plans") {
+    if (tab !== "Sessions" && tab !== "ENVs") {
       // These keep their own filters; the header selection does not reach them.
       await expect(filter).toHaveCount(0);
       await expect(page.locator(selector)).toHaveCount(2);
@@ -451,7 +448,7 @@ test("one repository selection follows tabs, supports the keyboard, and resets o
     .getByRole("combobox", { name: "Select project", exact: true })
     .click();
   await page.getByRole("option", { name: "Product", exact: true }).click();
-  await page.getByRole("button", { name: /^Memories/ }).click();
+  await page.getByRole("button", { name: /^Sessions/ }).click();
   await expect(filter).toHaveText("All repositories");
   await filter.click();
   await page.keyboard.press("Escape");
@@ -463,14 +460,14 @@ test("duplicate repository names stay distinguishable in the custom picker", asy
 }) => {
   await fixture(page, ["orka", "orka"]);
   await page.getByRole("button", { name: /^Memories/ }).click();
-  const filter = page.getByRole("combobox", { name: "Filter by repository" });
-  await filter.click();
+  await page.getByRole("button", { name: /^Filter/ }).click();
+  await page.getByRole("menuitem", { name: "Repository" }).click();
   await expect(
-    page.getByRole("option", { name: "orka · deskto", exact: true }),
+    page.getByRole("menuitemcheckbox", { name: "orka · deskto", exact: true }),
   ).toBeVisible();
-  await page
-    .getByRole("option", { name: "orka · backen", exact: true })
-    .click();
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape");
+  await pickRepository(page, "orka · backen");
   await expect(page.locator("tbody tr")).toHaveCount(1);
   await expect(page.locator("tbody tr")).toContainText("backend instructions");
 });
@@ -480,16 +477,20 @@ test("Home can open a resource outside the previous repository selection", async
 }) => {
   await fixture(page);
   await page.getByRole("button", { name: /^Memories/ }).click();
-  const filter = page.getByRole("combobox", { name: "Filter by repository" });
-  await filter.click();
-  await page.getByRole("option", { name: "backend", exact: true }).click();
+  await pickRepository(page, "backend");
   await page.getByRole("button", { name: "Home", exact: true }).click();
-  await expect(filter).toHaveCount(0);
   await page.locator('[data-resource-id="memory-desktop"]').click();
   await expect(page.locator(".resource-detail h2").first()).toHaveText(
     "desktop instructions",
   );
-  await expect(filter).toHaveText("All repositories");
+  await page.getByRole("button", { name: "Back to Memories" }).click();
+  // The page keeps its own filter; the item opened from Home is outside it.
+  await expect(
+    page.getByRole("group", { name: "Active filters" }),
+  ).toContainText("backend");
+  await expect(
+    page.getByRole("searchbox", { name: "Search memories" }),
+  ).toBeFocused();
 });
 
 test("ENV repository filtering keeps an unpublished draft and hides other set details", async ({
