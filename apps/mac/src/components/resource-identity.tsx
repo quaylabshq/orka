@@ -2,7 +2,7 @@ import { UserIcon } from "lucide-react";
 import React, { useEffect, useState } from "react";
 import type { ProjectResource } from "../types.js";
 import { useMemberLabel, useMemberPhoto } from "./member-names.js";
-import { SourceLabel } from "./source-label.js";
+import { SourceLabel, sourceName } from "./source-label.js";
 import "./resource-identity.css";
 
 export function ResourceIdentity({
@@ -16,12 +16,7 @@ export function ResourceIdentity({
   const stacked = resource.kind !== "memory";
   const author = memberName(stacked ? resource.owner : resource.updatedBy);
   const photo = useMemberPhoto(resource.owner);
-  const tool =
-    resource.source === "codex"
-      ? "Codex"
-      : resource.source === "claude"
-        ? "Claude"
-        : "Shared";
+  const tool = sourceName(resource.source);
   const label = `${tool} · ${stacked ? author : `Updated by ${author}`}`;
   const [showLabel, setShowLabel] = useState(false);
   useEffect(() => {

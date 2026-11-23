@@ -6,10 +6,10 @@ import {
   UserRoundIcon,
 } from "lucide-react";
 import React from "react";
-import type { Resource } from "@portable/protocol";
+import type { ProjectResource as Resource, ResourceSource } from "../types.js";
 import { SearchField } from "./search-field.js";
 import { SegmentedControl } from "./segmented-control.js";
-import { SourceLabel } from "./source-label.js";
+import { SourceLabel, sourceName } from "./source-label.js";
 import { SortMenu } from "./sort-menu.js";
 import type { IconGlyph } from "./icons.js";
 import { memberLabel } from "./project-permissions.js";
@@ -64,9 +64,7 @@ export const indexNoun = (kind: Resource["kind"], count: number) =>
 /** The lowercase plural used for labels such as "Search memories". */
 export const collectionNoun = (kind: Resource["kind"]) => nouns[kind][1];
 
-const sourceOrder: Resource["source"][] = ["claude", "codex", "shared"];
-const sourceName = (source: Resource["source"]) =>
-  source === "codex" ? "Codex" : source === "claude" ? "Claude" : "Shared";
+const sourceOrder: ResourceSource[] = ["claude", "codex", "pi", "shared"];
 
 interface IndexContext {
   displayTitle: (resource: Resource) => string;

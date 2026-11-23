@@ -1,6 +1,6 @@
 import { startTransition, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { Resource } from "@portable/protocol";
+import type { WorkspaceResource as Resource } from "../types.js";
 
 type Preview = { title: string | null; unavailable?: boolean };
 type TitleItem = { id: string; key: string };

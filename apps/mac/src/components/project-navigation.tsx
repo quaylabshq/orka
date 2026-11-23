@@ -13,7 +13,7 @@ import {
 import React from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import type { Resource } from "@portable/protocol";
+import type { WorkspaceResource as Resource } from "../types.js";
 import type { Project, ProjectPage } from "../types.js";
 import { displayText } from "./resource-presentation.js";
 import { ENV_ENABLED } from "../lib/features.js";

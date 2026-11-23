@@ -194,12 +194,51 @@ pub fn record(
     resource["updatedBy"] = resource["owner"].clone();
     resource["updatedAt"] = json!(db::now());
     resource["hash"] = json!(indexer::manifest_hash(&resource["files"]));
+    let tx = if source["source"] == "pi" {
+        rusqlite::Transaction::new_unchecked(db, rusqlite::TransactionBehavior::Immediate)
+    } else {
+        db.unchecked_transaction()
+    }
+    .map_err(|e| e.to_string())?;
     let mut saved_binding = binding.clone();
     saved_binding["base"] = resource.clone();
-    // The first scan still needs to publish the native copy at base revision 0.
-    saved_binding["base"]["files"] = json!([]);
+    if source["source"] == "pi" {
+        let parent_id = source["resourceId"].as_str().ok_or("Missing parent")?;
+        let current = crate::local_resources::resource(&tx, parent_id)?;
+        if current["deleted"] == true
+            || current["revision"] != source["revision"]
+            || current["files"] != source["files"]
+            || current["projectId"] != source["projectId"]
+        {
+            return Err("The Pi session changed or is no longer accessible.".into());
+        }
+        let parent = indexer::binding(&tx, parent_id)?;
+        let origin = if crate::pi_sessions::is_private_copy(&parent) {
+            parent["piCopyOrigin"].clone()
+        } else if source["revision"].as_u64().is_some_and(|rev| rev > 0)
+            || source["sharedRevision"].as_u64().is_some_and(|rev| rev > 0)
+        {
+            json!(parent_id)
+        } else if current["local"] == true {
+            Value::Null
+        } else {
+            return Err("The Pi session no longer has a local or shared origin.".into());
+        };
+        if let Some(id) = origin.as_str() {
+            let shared = crate::governance::resource(&tx, id)?;
+            if shared["deleted"] == true
+                || shared["projectId"] != project
+                || shared["source"] != "pi"
+            {
+                return Err("The shared Pi session is no longer accessible.".into());
+            }
+        }
+        saved_binding["piCopyOrigin"] = origin;
+    } else {
+        // The first scan still needs to publish the native copy at base revision 0.
+        saved_binding["base"]["files"] = json!([]);
+    }
     let fork = json!({"parentId":source["resourceId"],"nativeId":native_id,"projectId":project,"destination":destination,"createdAt":resource["updatedAt"]});
-    let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
     db::upsert(&tx, "resources", &id, project, &resource)?;
     db::upsert(&tx, "bindings", &id, project, &saved_binding)?;
     db::set(&tx, &format!("sessionFork:{id}"), &fork)?;
@@ -208,10 +247,14 @@ pub fn record(
 }
 
 pub fn resumable(db: &Connection, resource: &Value) -> Result<Option<Value>> {
-    if resource["nativeId"].is_string()
-        && crate::local_resources::native_binding(db, resource)?.is_some()
-    {
-        return Ok(Some(resource.clone()));
+    if resource["nativeId"].is_string() {
+        match crate::local_resources::native_binding(db, resource) {
+            Ok(Some(_)) => return Ok(Some(resource.clone())),
+            // Report an unusable own Pi file as the resume error and keep Fork available.
+            Err(_) if resource["source"] == "pi" => return Ok(Some(resource.clone())),
+            Err(error) => return Err(error),
+            Ok(None) => (),
+        }
     }
     let id = resource["resourceId"].as_str().ok_or("Missing session")?;
     let fork = info(db, id)?;
@@ -271,6 +314,8 @@ pub fn binding(db: &Connection, resource: &Value) -> Result<Value> {
     }
     let home = if resource["source"] == "codex" {
         crate::native::codex_home()?
+    } else if resource["source"] == "pi" {
+        crate::pi_sessions::copy_directory()?
     } else {
         crate::native::claude_home()?
     };
@@ -303,6 +348,9 @@ pub fn current_resource(db: &Connection, resource: &Value) -> Result<Value> {
         db,
         resource["resourceId"].as_str().ok_or("Missing session")?,
     )?;
+    if crate::pi_sessions::is_private_copy(&binding) {
+        return crate::pi_sessions::live_copy(&binding, resource);
+    }
     if resource["source"] == "codex" && !has_native_file(&binding) {
         if let Ok(resolved) = self::binding(db, resource) {
             binding = resolved;

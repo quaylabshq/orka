@@ -718,8 +718,14 @@ pub fn disconnect_project(id: String) -> Result<()> {
     }
     p["path"] = Value::Null;
     db::upsert(&db, "projects", &id, &id, &p)?;
-    db.execute("DELETE FROM bindings WHERE project=?", [id])
-        .map_err(|e| e.to_string())?;
+    db.execute(
+        &format!(
+            "DELETE FROM bindings WHERE project=?{}",
+            crate::pi_sessions::KEEP_COPY_BINDINGS
+        ),
+        [id],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 #[tauri::command]

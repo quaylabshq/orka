@@ -10,6 +10,7 @@ pub enum Format {
     CodexLegacy,
     CodexPaginated,
     Claude,
+    Pi,
 }
 
 pub fn metadata<'a>(tool: &str, records: &'a [Value]) -> Result<&'a Value> {
@@ -32,15 +33,23 @@ pub fn metadata<'a>(tool: &str, records: &'a [Value]) -> Result<&'a Value> {
                     .find(|r| r["cwd"].is_string() && r["sessionId"].is_string())
             })
             .ok_or("Missing Claude session metadata".into()),
+        "pi" => records
+            .first()
+            .filter(|r| r["type"] == "session")
+            .ok_or("Missing Pi session header".into()),
         _ => Err("Unknown session tool".into()),
     }
 }
 
 pub fn format(tool: &str, records: &[Value]) -> Result<Format> {
     let meta = metadata(tool, records)?;
-    let id_key = if tool == "codex" { "id" } else { "sessionId" };
+    let id_key = if tool == "claude" { "sessionId" } else { "id" };
     Uuid::parse_str(meta[id_key].as_str().ok_or("Missing native ID")?)
         .map_err(|_| "Invalid native session ID")?;
+    if tool == "pi" {
+        crate::pi_sessions::branch(records)?;
+        return Ok(Format::Pi);
+    }
     if records
         .iter()
         .any(|r| !r.is_object() || !r["type"].is_string())
@@ -144,7 +153,7 @@ fn message(record: &Value) -> Option<(Message, usize)> {
             }
             _ => return None,
         }
-    } else if matches!(kind, "user" | "assistant") {
+    } else if matches!(kind, "user" | "assistant" | "message") {
         &record["message"]
     } else {
         return None;
@@ -196,6 +205,17 @@ pub fn user_text(record: &Value) -> Option<String> {
 }
 
 pub fn messages(records: &[Value]) -> Vec<Message> {
+    if records
+        .first()
+        .is_some_and(|record| record["type"] == "session")
+    {
+        return crate::pi_sessions::branch(records)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|record| record["type"] == "message")
+            .filter_map(|record| message(record).map(|(message, _)| message))
+            .collect();
+    }
     let mut turn = 0;
     let candidates = records
         .iter()

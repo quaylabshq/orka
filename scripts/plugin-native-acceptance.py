@@ -10,7 +10,13 @@ parser.add_argument(
     / "apps/mac/src-tauri/target/debug/portable-workspace-mac",
 )
 parser.add_argument("--service-fixture", type=pathlib.Path)
+parser.add_argument(
+    "--pi", type=pathlib.Path,
+    help="Also check an installed Pi CLI against the synthetic service.",
+)
 options = parser.parse_args()
+if options.pi and options.service_fixture:
+    parser.error("--pi requires the synthetic service; omit --service-fixture.")
 BINARY = pathlib.Path(
     os.environ.get("ORKA_CONNECTOR_NATIVE_BINARY", options.binary)
 ).resolve()
@@ -449,6 +455,54 @@ with tempfile.TemporaryDirectory(prefix="orka-plugin-native-") as temp:
         assert (
             (pathlib.Path(location) / "broker.sock").stat().st_mode & 0o777
         ) == 0o600
+
+        if options.pi:
+            pi_env = dict(
+                env, HOME=str(home), PI_CODING_AGENT_DIR=str(home / ".pi" / "agent"),
+            )
+            repo = pathlib.Path(__file__).resolve().parents[1]
+            archive = root / "orka.zip"
+            subprocess.run(
+                ["node", str(repo / "plugins/orka/scripts/package.mjs"), str(archive), str(BINARY)],
+                check=True, timeout=30,
+            )
+            subprocess.run(
+                ["unzip", "-q", str(archive), "-d", str(root)], check=True, timeout=30,
+            )
+
+            def pi(*args, input=None):
+                result = subprocess.run(
+                    [str(options.pi.absolute()), *args], cwd=project, env=pi_env,
+                    input=input, text=True, capture_output=True, timeout=40,
+                )
+                assert result.returncode == 0, (args, result.stdout, result.stderr)
+                return result.stdout
+
+            pi("install", str(root / "orka"))
+            output = pi(
+                "--mode", "rpc", "--no-session",
+                input=compact({"type": "get_commands"}) + "\n",
+            )
+            responses = [json.loads(line) for line in output.splitlines()]
+            skills = {
+                command["name"]
+                for response in responses
+                if response.get("command") == "get_commands" and response.get("success")
+                for command in response["data"]["commands"]
+                if command["source"] == "skill"
+            }
+            expected_skills = {
+                f"skill:{path.parent.name}"
+                for path in (root / "orka/skills").glob("*/SKILL.md")
+            }
+            assert expected_skills and expected_skills <= skills, (expected_skills, skills)
+            pi(
+                "mcp", "add", "orka", "--exposure", "direct", "--", str(BINARY), "--orka-plugin",
+            )
+            servers = json.loads(pi("mcp", "list", "--json"))
+            assert "get_connection_status" in compact(servers), servers
+            assert "list_projects" in compact(servers), servers
+            print("Pi installed the Orka package and discovered the native bridge tools")
 
         # Framing and local credentials cannot invoke native approval or access content.
         def ipc(value=None, raw=None):

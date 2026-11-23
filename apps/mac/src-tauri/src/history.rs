@@ -195,7 +195,7 @@ pub(crate) fn session_route_prefix(path: &Path, tool: &str) -> Option<(Option<St
     let records = native::complete_records(&prefix).ok()?;
     let cwd = native::session_cwd(tool, &records).ok()?;
     let metadata = crate::session_translation::metadata(tool, &records).ok()?;
-    let id = metadata[if tool == "codex" { "id" } else { "sessionId" }].as_str();
+    let id = metadata[if tool == "claude" { "sessionId" } else { "id" }].as_str();
     Some((id.map(str::to_owned), cwd))
 }
 
@@ -775,6 +775,16 @@ pub fn session_files(tool: &str, path: &Path, scope: Option<&Path>) -> Result<Ve
         return history.files();
     }
     let mut records = native::complete_records(&read(path, None)?)?;
+    if tool == "pi" {
+        let (_, cwd, _) = native::session_info(tool, &records)?;
+        if let Some(root) = scope {
+            let cwd = cwd.canonicalize().unwrap_or(cwd);
+            let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+            if !cwd.starts_with(root) {
+                return Err("Pi session belongs to a different repository".into());
+            }
+        }
+    }
     records
         .iter_mut()
         .for_each(crate::session_redaction::SessionRedactor::redact);
@@ -824,5 +834,10 @@ pub(crate) fn resource_records_with(
         .as_array()
         .and_then(|files| files.iter().find(|f| f["path"] == "session.jsonl"))
         .ok_or("Missing transcript")?;
-    native::complete_records(&read_blob(file["hash"].as_str().ok_or("Missing hash")?)?)
+    let records =
+        native::complete_records(&read_blob(file["hash"].as_str().ok_or("Missing hash")?)?)?;
+    if resource["source"] == "pi" {
+        native::validate_session_import("pi", &records)?;
+    }
+    Ok(records)
 }

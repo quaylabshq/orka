@@ -1333,9 +1333,21 @@ test("the sidebar collapses and expands while a detail is open", async ({
 }) => {
   await detailFixture(page);
   await page.getByRole("button", { name: /^Memories/ }).click();
+  const toggle = page.locator(".sidebar-toggle");
+  const indexToggle = (await toggle.boundingBox())!;
   await page
     .getByRole("button", { name: "Design decisions", exact: true })
     .click();
+  // The toggle keeps its index position, ahead of Back, without needing hover.
+  const back = page.getByRole("button", { name: "Back to Memories" });
+  await expect(back).toBeVisible();
+  await page.mouse.move(600, 400);
+  await expect(toggle).toHaveCSS("opacity", "1");
+  const detailToggle = (await toggle.boundingBox())!;
+  expect(detailToggle).toEqual(indexToggle);
+  expect((await back.boundingBox())!.x).toBe(
+    detailToggle.x + detailToggle.width + 8,
+  );
   const sidebar = page.locator(".sidebar");
   await page.getByRole("button", { name: "Collapse sidebar" }).click();
   await expect(sidebar).toHaveClass(/sidebar-collapsed/);
