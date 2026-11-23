@@ -42,8 +42,9 @@
 }
 
 /* Title card */
+/* The left inset matches the index header so the sidebar toggle stays put. */
 .app > main > .workspace-header.workspace-header--detail {
-  padding-inline: 24px;
+  padding-inline: 28px 24px;
 }
 .workspace-header.workspace-header--detail .sync-status {
   padding-inline: 16px;
@@ -87,15 +88,6 @@
 .workspace-header--detail .ui-button,
 .detail-layout .ui-button {
   --control-icon-container: 14px;
-}
-/* Keep the shell control available on hover and keyboard focus without
-   displacing the detail page's Back action. A collapsed sidebar always shows it. */
-.workspace-header--detail[data-collapsed="false"] .sidebar-toggle {
-  opacity: 0;
-}
-.workspace-header--detail:hover .sidebar-toggle,
-.workspace-header--detail:focus-within .sidebar-toggle {
-  opacity: 1;
 }
 .detail-title-card {
   display: flex;

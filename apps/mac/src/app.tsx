@@ -1129,7 +1129,6 @@ function WorkspaceApp({
                     ? collectionLabel
                     : "Your projects"
             }
-            instant={sidebarInstant}
             collapsed={sidebarCollapsed}
             onToggle={(instant) => {
               setSidebarInstant(instant);
