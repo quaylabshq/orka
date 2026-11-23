@@ -74,7 +74,7 @@ for (const section of ["Profile", "Permissions"])
       await settings
         .getByRole("textbox", { name: "Display name", exact: true })
         .fill("");
-    else await choose(settings, "Member Memories access", "Add only");
+    else await choose(settings, "Member default memory access", "Add only");
     await button(settings, "Devices").click();
     const dialog = page.getByRole("dialog", { name: "Save your changes?" });
     await button(dialog, "Save").click();
@@ -98,7 +98,7 @@ for (const section of ["Profile", "Permissions"])
       await settings
         .getByRole("textbox", { name: "Display name", exact: true })
         .fill("Updated name");
-    else await choose(settings, "Member Memories access", "Add only");
+    else await choose(settings, "Member default memory access", "Add only");
     await button(settings, "Devices").click();
     const dialog = page.getByRole("dialog", { name: "Save your changes?" });
     await button(dialog, "Save").click();
@@ -290,7 +290,7 @@ test("G8: failed conflict lookup retries without resubmitting the stale policy",
 }) => {
   const settings = await settingsFixture(page, { policyFailure: "conflict" });
   await button(settings, "Permissions").click();
-  await choose(settings, "Member Memories access", "Add only");
+  await choose(settings, "Member default memory access", "Add only");
   await page.evaluate(() => {
     const w = window as any,
       original = w.__TAURI_INTERNALS__.invoke;
@@ -420,7 +420,7 @@ test("C2: uncertain save offers Leave and check later and keeps its operation", 
 }) => {
   const settings = await settingsFixture(page, { policyFailure: "offline" });
   await button(settings, "Permissions").click();
-  await choose(settings, "Member Memories access", "Add only");
+  await choose(settings, "Member default memory access", "Add only");
   await button(settings, "Save changes").click();
   await expect(button(settings, "Retry save")).toBeVisible();
   await button(settings, "Devices").click();

@@ -686,11 +686,17 @@ test("permission edit/revert, eight-field locking, and duplicate-click suppressi
   const settings = await settingsFixture(page, { saveDelay: 800 });
   await button(settings, "Permissions").click();
   await expect(settings.getByRole("combobox")).toHaveCount(8);
+  await expect(
+    settings.getByRole("combobox", { name: "Admin default memory access" }),
+  ).toHaveText("Contributor");
+  await expect(
+    settings.getByRole("combobox", { name: "Member default memory access" }),
+  ).toHaveText("Reader");
   await expect(button(settings, "Save changes")).toBeDisabled();
-  await choose(settings, "Member Memories access", "Add only");
-  await choose(settings, "Member Memories access", "Read only");
+  await choose(settings, "Member default memory access", "Add only");
+  await choose(settings, "Member default memory access", "Reader");
   await expect(button(settings, "Save changes")).toBeDisabled();
-  await choose(settings, "Member Memories access", "Add only");
+  await choose(settings, "Member default memory access", "Add only");
   await button(settings, "Save changes").evaluate(
     (element: HTMLButtonElement) => {
       element.click();
@@ -714,7 +720,7 @@ test("lost policy response reconciles the original operation without another log
 }) => {
   const settings = await settingsFixture(page, { policyFailure: "drop" });
   await button(settings, "Permissions").click();
-  await choose(settings, "Member Memories access", "Add only");
+  await choose(settings, "Member default memory access", "Add only");
   await button(settings, "Save changes").click();
   await expect(settings.getByText("Permissions saved.")).toBeVisible();
   const calls = await settingsCalls(page);
@@ -736,10 +742,10 @@ test("a late permission refresh cannot replace a confirmed save or its revision"
   const settings = await settingsFixture(page);
   await button(settings, "Permissions").click();
   const memories = settings.getByRole("combobox", {
-    name: "Member Memories access",
+    name: "Member default memory access",
     exact: true,
   });
-  await expect(memories).toHaveText("Read only");
+  await expect(memories).toHaveText("Reader");
   await page.evaluate(() => {
     const w = window as any;
     const invoke = w.__TAURI_INTERNALS__.invoke;
@@ -761,7 +767,7 @@ test("a late permission refresh cannot replace a confirmed save or its revision"
     w.settingsState.projects[0].policyRevision++;
   });
   await page.waitForFunction(() => (window as any).releasePermissionRefresh);
-  await choose(settings, "Member Memories access", "Read and write");
+  await choose(settings, "Member default memory access", "Contributor");
   await button(settings, "Save changes").click();
   await expect(settings.getByText("Permissions saved.")).toBeVisible();
   await page.evaluate(async () => {
@@ -770,7 +776,7 @@ test("a late permission refresh cannot replace a confirmed save or its revision"
     await new Promise(requestAnimationFrame);
     await new Promise(requestAnimationFrame);
   });
-  await expect(memories).toHaveText("Read and write");
+  await expect(memories).toHaveText("Contributor");
   await expect(button(settings, "Save changes")).toBeDisabled();
   await choose(settings, "Member Sessions access", "Read and write");
   await button(settings, "Save changes").click();
@@ -790,12 +796,18 @@ test("conflict review keeps unrelated newer values and requires an explicit resa
 }) => {
   const settings = await settingsFixture(page, { policyFailure: "conflict" });
   await button(settings, "Permissions").click();
-  await choose(settings, "Member Memories access", "Add only");
+  await choose(settings, "Member default memory access", "Add only");
   await button(settings, "Save changes").click();
   const review = page.getByRole("dialog", {
     name: "Review latest permissions",
   });
   await expect(review).toBeVisible();
+  await expect(
+    review.getByRole("row", { name: /admin \/ Memories/ }),
+  ).toContainText("Contributor");
+  await expect(
+    review.getByRole("row", { name: /member \/ Memories/ }),
+  ).toContainText("Reader");
   await review.getByRole("button", { name: "Use reviewed values" }).click();
   await expect(
     settings.getByRole("combobox", {
@@ -805,7 +817,7 @@ test("conflict review keeps unrelated newer values and requires an explicit resa
   ).toContainText("Read only");
   await expect(
     settings.getByRole("combobox", {
-      name: "Member Memories access",
+      name: "Member default memory access",
       exact: true,
     }),
   ).toContainText("Add only");
@@ -818,7 +830,7 @@ test("offline permission drafts do not auto-submit on reconnect", async ({
 }) => {
   const settings = await settingsFixture(page);
   await button(settings, "Permissions").click();
-  await choose(settings, "Member Memories access", "Add only");
+  await choose(settings, "Member default memory access", "Add only");
   await page.evaluate(() => {
     (window as any).settingsState.sync.online = false;
   });
@@ -883,7 +895,7 @@ test("loss of Owner access removes policy editing and Save without deleting loca
 }) => {
   const settings = await settingsFixture(page);
   await button(settings, "Permissions").click();
-  await choose(settings, "Member Memories access", "Add only");
+  await choose(settings, "Member default memory access", "Add only");
   await page.evaluate(() => {
     const w = window as any;
     w.settingsState.projects[0].role = "member";
@@ -1335,7 +1347,7 @@ for (const viewport of [
       await button(settings, "Permissions").click();
       if (legacy) await button(settings, "Review access changes").click();
       else {
-        await choose(settings, "Member Memories access", "Add only");
+        await choose(settings, "Member default memory access", "Add only");
         await button(settings, "Save changes").click();
       }
       const review = page.getByRole("dialog", {
@@ -1481,7 +1493,7 @@ for (const navigateAway of [false, true])
     await expect(button(settings, "Save changes")).toBeDisabled();
     await expect(
       settings.getByRole("combobox", {
-        name: "Member Memories access",
+        name: "Member default memory access",
         exact: true,
       }),
     ).toBeEnabled();
@@ -1605,7 +1617,7 @@ test("an uncertain save stays locked across navigation and editing access loss",
     saveDelay: 300,
   });
   await button(settings, "Permissions").click();
-  await choose(settings, "Member Memories access", "Add only");
+  await choose(settings, "Member default memory access", "Add only");
   await button(settings, "Save changes").click();
   await expect(button(settings, "Retry save")).toBeEnabled();
   for (const field of await settings.getByRole("combobox").all())
@@ -1642,7 +1654,7 @@ test("a successful response arriving after ownership loss cannot restore editing
 }) => {
   const settings = await settingsFixture(page, { saveDelay: 4500 });
   await button(settings, "Permissions").click();
-  await choose(settings, "Member Memories access", "Add only");
+  await choose(settings, "Member default memory access", "Add only");
   await button(settings, "Save changes").click();
   await expect(button(settings, "Saving…")).toBeDisabled();
   await page.evaluate(() => {
@@ -1708,7 +1720,7 @@ test("sign-out clears an uncertain policy operation before the same account retu
 }) => {
   const settings = await settingsFixture(page, { policyFailure: "offline" });
   await button(settings, "Permissions").click();
-  await choose(settings, "Member Memories access", "Add only");
+  await choose(settings, "Member default memory access", "Add only");
   await button(settings, "Save changes").click();
   await expect(button(settings, "Retry save")).toBeEnabled();
   await button(settings, "Profile").click();
@@ -1731,10 +1743,10 @@ test("sign-out clears an uncertain policy operation before the same account retu
   await button(settings, "Permissions").click();
   await expect(
     settings.getByRole("combobox", {
-      name: "Member Memories access",
+      name: "Member default memory access",
       exact: true,
     }),
-  ).toContainText("Read only");
+  ).toContainText("Reader");
   await expect(button(settings, "Save changes")).toBeDisabled();
   await expect(button(settings, "Check save")).toHaveCount(0);
   expect(

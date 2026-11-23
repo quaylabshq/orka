@@ -19,6 +19,11 @@ other fields in each class, including older differences. View only, Suggest
 changes, and Can edit explain consumption, reviewed proposals, and publication.
 New-item permissions and sharing delegation remain separate.
 
+For projects with role-based permissions, open **Settings → Permissions** to
+set **Default memory access** for Admins and Members. **Reader** can use shared
+memories. **Contributor** can also add and update them. This access also applies
+to project instructions.
+
 Changes are staged locally, reviewed, then saved with revision checks. The existing
 backend accepts one category per transaction. A multi-category save uses each
 returned revision, stops on failure, refreshes accepted settings, and retains any
