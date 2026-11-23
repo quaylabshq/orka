@@ -179,37 +179,45 @@ test("inactive details keep the project out of the collapsed picker and link bac
   ).toContainText("Deleted notes");
 });
 
-test("the picker closes if the last active project is archived while it is open", async ({
-  page,
-}) => {
-  await memberViewFixture(page);
-  const trigger = page.getByRole("combobox", {
-    name: "Select project",
-    exact: true,
+for (const open of [true, false]) {
+  test(`focus moves to Settings when the last active project is archived with the picker ${open ? "open" : "focused"}`, async ({
+    page,
+  }) => {
+    await memberViewFixture(page);
+    const trigger = page.getByRole("combobox", {
+      name: "Select project",
+      exact: true,
+    });
+    const picker = page.getByRole("listbox", { name: "Projects", exact: true });
+    if (open) {
+      await trigger.press("ArrowDown");
+      await expect(
+        picker.getByRole("option", { name: "Product" }),
+      ).toBeFocused();
+    } else {
+      await trigger.focus();
+    }
+    const project = await page.evaluate(() => {
+      const state = window.memberViewFixture.state;
+      const [active] = state.projects.splice(0);
+      state.inactive?.push({ ...active, archivedAt: "2026-11-19T12:00:00Z" });
+      return active;
+    });
+    await expect(trigger).toBeDisabled();
+    await expect(trigger).toHaveAttribute("aria-expanded", "false");
+    await expect(picker).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: "Settings", exact: true }),
+    ).toBeFocused();
+    await page.evaluate((active) => {
+      const state = window.memberViewFixture.state;
+      state.projects.push(active);
+      state.inactive = state.inactive?.filter((item) => item.id !== active.id);
+    }, project);
+    await expect(trigger).toBeEnabled();
+    await expect(trigger).toHaveAttribute("aria-expanded", "false");
   });
-  await trigger.press("ArrowDown");
-  const picker = page.getByRole("listbox", { name: "Projects", exact: true });
-  await expect(picker.getByRole("option", { name: "Product" })).toBeFocused();
-  const project = await page.evaluate(() => {
-    const state = window.memberViewFixture.state;
-    const [active] = state.projects.splice(0);
-    state.inactive?.push({ ...active, archivedAt: "2026-11-19T12:00:00Z" });
-    return active;
-  });
-  await expect(trigger).toBeDisabled();
-  await expect(trigger).toHaveAttribute("aria-expanded", "false");
-  await expect(picker).toHaveCount(0);
-  await expect(
-    page.getByRole("button", { name: "Settings", exact: true }),
-  ).toBeFocused();
-  await page.evaluate((active) => {
-    const state = window.memberViewFixture.state;
-    state.projects.push(active);
-    state.inactive = state.inactive?.filter((item) => item.id !== active.id);
-  }, project);
-  await expect(trigger).toBeEnabled();
-  await expect(trigger).toHaveAttribute("aria-expanded", "false");
-});
+}
 
 test("a failed local removal keeps its confirmation open for retry", async ({
   page,

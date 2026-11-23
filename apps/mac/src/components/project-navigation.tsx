@@ -106,7 +106,7 @@ export function ProjectPicker({
   collapsed: boolean;
   onProjectChange: (id: string) => void;
   onEmptyAutoFocus: () => void;
-  triggerRef?: React.Ref<HTMLButtonElement>;
+  triggerRef?: React.RefObject<HTMLButtonElement | null>;
   projectActions?: (project: Project) => ItemMenuAction[];
 }) {
   const selected = projects.find((p) => p.id === projectId);
@@ -114,18 +114,22 @@ export function ProjectPicker({
   const [requestedOpen, setOpen] = React.useState(false);
   const hasProjects = projects.length > 0;
   const open = requestedOpen && hasProjects;
+  const hadProjects = React.useRef(hasProjects);
   const [keyboard, setKeyboard] = React.useState(false);
   const reduced = useReducedMotion();
   const listRef = React.useRef<HTMLDivElement>(null);
   React.useLayoutEffect(() => {
-    if (!requestedOpen || hasProjects) return;
+    const becameEmpty = hadProjects.current && !hasProjects;
+    hadProjects.current = hasProjects;
+    if (!becameEmpty) return;
     setOpen(false);
     if (
       document.activeElement === document.body ||
+      document.activeElement === triggerRef?.current ||
       listRef.current?.contains(document.activeElement)
     )
       onEmptyAutoFocus();
-  }, [hasProjects, requestedOpen, onEmptyAutoFocus]);
+  }, [hasProjects, onEmptyAutoFocus, triggerRef]);
   const focusEdge = React.useRef<"first" | "last" | null>(null);
   const actionAfterClose = React.useRef<(() => void) | null>(null);
   const typeahead = React.useRef({ text: "", time: 0 });
