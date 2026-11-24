@@ -295,6 +295,54 @@ test("a row in two states shows the more urgent pill, and the Status filter file
   await expect(row).toHaveCount(0);
 });
 
+test("a control-click anywhere on a row shows its menu and never opens the row", async ({
+  page,
+}) => {
+  await open(page, "Plans");
+  const row = rows(page).filter({ hasText: "Conflicts panel handoff" });
+  const back = page.getByRole("button", { name: "Back to Plans" });
+  for (const target of [
+    row.getByRole("button", { name: "Conflicts panel handoff", exact: true }),
+    row.locator(".index-table-repository"),
+    row.locator(".index-table-updated"),
+  ]) {
+    // macOS turns a control-click into a secondary click, and WebKit still
+    // follows it with a click carrying the control key.
+    await target.click({ button: "right", modifiers: ["Control"] });
+    await target.dispatchEvent("click", { ctrlKey: true });
+    await expect(
+      page.getByRole("menu", { name: "plan actions" }),
+    ).toBeVisible();
+    await expect(back).toHaveCount(0);
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("menu")).toHaveCount(0);
+  }
+  await expect(back).toHaveCount(0);
+});
+
+test("clicking another row to dismiss a menu does not open that row, and the next click does", async ({
+  page,
+}) => {
+  await open(page, "Plans");
+  await page
+    .getByRole("button", { name: "Conflicts panel handoff", exact: true })
+    .click({ button: "right" });
+  await expect(page.getByRole("menu")).toBeVisible();
+  const other = page.getByRole("button", {
+    name: "Docs redesign table component",
+    exact: true,
+  });
+  await other.click();
+  await expect(page.getByRole("menu")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Back to Plans" })).toHaveCount(
+    0,
+  );
+  await other.click();
+  await expect(
+    page.getByRole("button", { name: "Back to Plans" }),
+  ).toBeVisible();
+});
+
 test("Memories tell repeated file names apart by agent, and the Kind filter splits instruction files from memories", async ({
   page,
 }) => {
