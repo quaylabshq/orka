@@ -561,10 +561,17 @@ test("R15 after approving, the next opens", async ({ page }) => {
       page.evaluate(() =>
         (
           window as unknown as { reviewUsageSignals: string[] }
-        ).reviewUsageSignals.filter((event) => event.startsWith("feature:")),
+        ).reviewUsageSignals.filter((event) =>
+          [
+            "review_approved",
+            "review_rejected",
+            "review_decision_failed",
+            "feature:review_decided",
+          ].includes(event),
+        ),
       ),
     )
-    .toEqual(["feature:review_decided"]);
+    .toEqual(["review_approved"]);
   await shot(
     page,
     "R15-next-opens",
