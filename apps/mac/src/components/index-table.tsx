@@ -316,12 +316,7 @@ export function IndexTable({
     }
   };
   return (
-    <table
-      className="index-table"
-      data-kind={page.kind}
-      data-compact-people={showPerson || undefined}
-      aria-busy={busy}
-    >
+    <table className="index-table" data-kind={page.kind} aria-busy={busy}>
       <colgroup>
         <col />
         {columns.map((column) => (
