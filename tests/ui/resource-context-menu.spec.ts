@@ -556,7 +556,7 @@ test("local and teammate sessions expose useful actions without mutation of anot
   await resourceMenu(page, "Private session notes");
   await expect(
     page.getByRole("menuitem", {
-      name: "Share snapshot with project…",
+      name: "Share with team…",
       exact: true,
     }),
   ).toBeVisible();
@@ -575,9 +575,57 @@ test("local and teammate sessions expose useful actions without mutation of anot
     page.getByRole("menuitem", { name: "Copy link", exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByRole("menuitem", { name: /Share snapshot|Remove from history/ }),
+    page.getByRole("menuitem", { name: /Share with team|Remove from history/ }),
   ).toHaveCount(0);
 });
+
+for (const [label, kind, rest] of [
+  [
+    "Sessions",
+    "session",
+    [
+      "Continue or fork in…",
+      "Copy session prompt",
+      "Download session (.zip)…",
+      "Show in Finder",
+      "Copy local path",
+    ],
+  ],
+  [
+    "Plans",
+    "plan",
+    [
+      "Open in editor",
+      "Copy content",
+      "Export ZIP…",
+      "Show in Finder",
+      "Copy local path",
+    ],
+  ],
+  [
+    "Memories",
+    "memory",
+    ["Open in editor", "Copy content", "Show in Finder", "Copy local path"],
+  ],
+] as const)
+  test(`${label} offer Share with team… right after Open, in its own group`, async ({
+    page,
+  }) => {
+    await menuFixture(page);
+    await collection(page, label);
+    const menu = await resourceMenu(page, `Private ${kind} notes`);
+    expect(
+      await menu
+        .locator('[role="menuitem"], [role="separator"]')
+        .evaluateAll((entries) =>
+          entries.map((entry) =>
+            entry.getAttribute("role") === "separator"
+              ? "---"
+              : entry.textContent,
+          ),
+        ),
+    ).toEqual(["Open", "---", "Share with team…", "---", ...rest]);
+  });
 
 test("public links use the saved shared revision and can be revoked after reopening", async ({
   page,
@@ -695,11 +743,7 @@ test("snapshot sharing requires review and submits the exact frozen token withou
 }) => {
   await menuFixture(page);
   await collection(page, "Memories");
-  await resourceMenu(
-    page,
-    "Private memory notes",
-    "Share snapshot with project…",
-  );
+  await resourceMenu(page, "Private memory notes", "Share with team…");
   const dialog = page.getByRole("dialog", {
     name: "Share snapshot with project",
     exact: true,
@@ -744,11 +788,7 @@ test("a published memory snapshot records one successful share", async ({
   await page.evaluate(() => {
     (window as unknown as MenuWindow).resourceMenu.shareStatus = "published";
   });
-  await resourceMenu(
-    page,
-    "Private memory notes",
-    "Share snapshot with project…",
-  );
+  await resourceMenu(page, "Private memory notes", "Share with team…");
   await page
     .getByRole("button", { name: "Share this snapshot", exact: true })
     .click();
@@ -788,11 +828,7 @@ for (const viewport of [
       controls.previewFiles = [{ path: "session.jsonl", size: 8_284_522 }];
     });
     await collection(page, "Sessions");
-    await resourceMenu(
-      page,
-      "Private session notes",
-      "Share snapshot with project…",
-    );
+    await resourceMenu(page, "Private session notes", "Share with team…");
     const dialog = page.getByRole("dialog", {
       name: "Share snapshot with project",
       exact: true,
@@ -916,11 +952,7 @@ for (const viewport of [
         }));
       });
       await collection(page, "Sessions");
-      await resourceMenu(
-        page,
-        "Private session notes",
-        "Share snapshot with project…",
-      );
+      await resourceMenu(page, "Private session notes", "Share with team…");
       const dialog = page.getByRole("dialog", {
         name: "Share snapshot with project",
         exact: true,
@@ -1080,11 +1112,7 @@ test("snapshot file review bounds long manifests in a compact window", async ({
     }));
   });
   await collection(page, "Memories");
-  await resourceMenu(
-    page,
-    "Private memory notes",
-    "Share snapshot with project…",
-  );
+  await resourceMenu(page, "Private memory notes", "Share with team…");
   const dialog = page.getByRole("dialog", {
     name: "Share snapshot with project",
     exact: true,
@@ -1140,11 +1168,7 @@ test("snapshot retry and submission ignore earlier progress channels", async ({
   await page.evaluate(() => {
     (window as unknown as MenuWindow).resourceMenu.previewFailures = 1;
   });
-  await resourceMenu(
-    page,
-    "Private memory notes",
-    "Share snapshot with project…",
-  );
+  await resourceMenu(page, "Private memory notes", "Share with team…");
   const dialog = page.getByRole("dialog", {
     name: "Share snapshot with project",
     exact: true,
@@ -1237,22 +1261,14 @@ test("canceled snapshot preparation cannot update a reopened review", async ({
   await page.evaluate(() => {
     (window as unknown as MenuWindow).resourceMenu.deferPreview = true;
   });
-  await resourceMenu(
-    page,
-    "Private memory notes",
-    "Share snapshot with project…",
-  );
+  await resourceMenu(page, "Private memory notes", "Share with team…");
   const dialog = page.getByRole("dialog", {
     name: "Share snapshot with project",
     exact: true,
   });
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(dialog).toHaveCount(0);
-  await resourceMenu(
-    page,
-    "Private memory notes",
-    "Share snapshot with project…",
-  );
+  await resourceMenu(page, "Private memory notes", "Share with team…");
   await page.evaluate(() => {
     const controls = (window as unknown as MenuWindow).resourceMenu;
     controls.previewProgresses[0]?.({ label: "Canceled preview progress" });
@@ -1291,11 +1307,7 @@ for (const [status, notice] of [
     await page.evaluate((status) => {
       (window as unknown as MenuWindow).resourceMenu.shareStatus = status;
     }, status);
-    await resourceMenu(
-      page,
-      "Private memory notes",
-      "Share snapshot with project…",
-    );
+    await resourceMenu(page, "Private memory notes", "Share with team…");
     const dialog = page.getByRole("dialog", {
       name: "Share snapshot with project",
       exact: true,
@@ -1462,11 +1474,7 @@ test("a late snapshot preview cannot be submitted after changing accounts", asyn
   await page.evaluate(() => {
     (window as unknown as MenuWindow).resourceMenu.deferPreview = true;
   });
-  await resourceMenu(
-    page,
-    "Private memory notes",
-    "Share snapshot with project…",
-  );
+  await resourceMenu(page, "Private memory notes", "Share with team…");
   const dialog = page.getByRole("dialog", {
     name: "Share snapshot with project",
     exact: true,
@@ -1557,7 +1565,7 @@ test("read-only shared skills retain copy and export but omit sharing and deleti
     menu.getByRole("menuitem", { name: "Copy link", exact: true }),
   ).toBeVisible();
   await expect(
-    menu.getByRole("menuitem", { name: /Delete shared skill|Share snapshot/ }),
+    menu.getByRole("menuitem", { name: /Delete shared skill|Share with team/ }),
   ).toHaveCount(0);
   // The Skills index shows every action in one list, with no submenu.
   await expect(

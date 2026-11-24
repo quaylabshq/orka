@@ -354,6 +354,29 @@ test("a row menu is one flat list, and after dismissing it Enter still opens the
   ).toBeVisible();
 });
 
+test("a skill only on this Mac offers Share with team… right after Open", async ({
+  page,
+}) => {
+  await skillsIndexFixture(page, { locals: true });
+  await rows(page)
+    .filter({ hasText: "standup-notes" })
+    .click({ button: "right", position: { x: 40, y: 20 } });
+  const menu = page.getByRole("menu", { name: "skill actions", exact: true });
+  expect(
+    await menu
+      .locator('[role="menuitem"], [role="separator"]')
+      .evaluateAll((entries) =>
+        entries
+          .slice(0, 4)
+          .map((entry) =>
+            entry.getAttribute("role") === "separator"
+              ? "---"
+              : entry.textContent,
+          ),
+      ),
+  ).toEqual(["Open", "---", "Share with team…", "---"]);
+});
+
 test("two hundred skills scroll under a fixed toolbar, and the last row's menu stays on screen", async ({
   page,
 }) => {

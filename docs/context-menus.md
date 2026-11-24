@@ -15,7 +15,8 @@ local-update and local-edit previews. A link does not grant its recipient access
 
 ## Share one snapshot
 
-A local item or your local changes can offer **Share snapshot with project…**.
+A local item or your local changes can offer **Share with team…**, right after
+**Open**.
 Review the project, service, exact file list and snapshot before confirming.
 Preparation shows file-checking activity while the snapshot is read, with a
 progress bar and current stage. File totals appear only when known. Files are

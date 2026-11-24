@@ -463,6 +463,22 @@ function ResourceMenuTarget({
       onSelect: () => context.onOpen(resource),
     },
   ];
+  if (
+    (resource.local || resource.localChanges) &&
+    resource.sharing !== "queued" &&
+    resource.sharing !== "approval" &&
+    (resource.kind === "skill" || resource.owner === context.state.user)
+  )
+    items.push({
+      id: "share",
+      icon: UploadIcon,
+      label: "Share with team…",
+      disabled: context.busy || !connected,
+      reason: !connected
+        ? "Connect this repository on this Mac first"
+        : undefined,
+      onSelect: () => context.request("share", resource),
+    });
   if (resource.kind === "session") {
     items.push({
       id: "launch",
@@ -578,22 +594,6 @@ function ResourceMenuTarget({
         ),
     });
   }
-  if (
-    (resource.local || resource.localChanges) &&
-    resource.sharing !== "queued" &&
-    resource.sharing !== "approval" &&
-    (resource.kind === "skill" || resource.owner === context.state.user)
-  )
-    items.push({
-      id: "share",
-      icon: UploadIcon,
-      label: "Share snapshot with project…",
-      disabled: context.busy || !connected,
-      reason: !connected
-        ? "Connect this repository on this Mac first"
-        : undefined,
-      onSelect: () => context.request("share", resource),
-    });
   if (queuedUpload)
     items.push({
       id: "review-upload",
