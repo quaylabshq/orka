@@ -694,8 +694,9 @@ for (const [width, height, memberCatalog] of [
         const row = page.getByRole("row").filter({
           has: page.getByRole("button", { name: title, exact: true }),
         });
-        // Every plan here is yours, so Plans have no one else to credit.
-        if (collection === "Plans")
+        // Every plan here is yours. The Owner column still shows once the
+        // project is known to have other members, so loading never moves it.
+        if (collection === "Plans" && memberCatalog === "fetch")
           await expect(row.locator(".index-table-person")).toHaveCount(0);
         else
           await expect(row.locator(".index-table-person")).toHaveAttribute(
