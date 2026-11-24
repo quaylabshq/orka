@@ -1,5 +1,5 @@
 import { displayText } from "./resource-presentation.js";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./product-command.js";
 import { ENV_ENABLED } from "../lib/features.js";
 import type { FileManifestEntry } from "./diff-model.js";
 import type { ProjectMember } from "../types.js";

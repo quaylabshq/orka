@@ -16,7 +16,7 @@ import {
   TriangleAlertFilledIcon,
 } from "./icons.js";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./product-command.js";
 import type { RepositoryAccessRequest } from "@portable/protocol";
 import type { Project, Snapshot } from "../types.js";
 import { Button } from "./button.js";

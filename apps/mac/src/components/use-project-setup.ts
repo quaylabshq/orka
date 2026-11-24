@@ -1,3 +1,4 @@
+import { productAction } from "./desktop-usage.js";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -22,6 +23,7 @@ export function useConnectProject() {
   return useCallback(
     async (id: string, sourceId?: string, defaultPath?: string) => {
       const recordConnected = startFeature("feature:source_connected");
+      productAction()("source_picker_opened");
       const path = await open({
         directory: true,
         multiple: !sourceId,
@@ -171,6 +173,7 @@ export function useProjectSetup(
         return;
       }
     }
+    const record = productAction();
     let result: { id: string; repositorySetup?: boolean };
     const name = input.trim();
     if (creating && createRequest.current?.name !== name) {
@@ -180,6 +183,7 @@ export function useProjectSetup(
       setPending(value.waiting ? "waiting" : null),
     );
     try {
+      record(creating ? "project_create_started" : "project_join_started");
       result = await invoke("cloud_action", {
         action: currentDialog,
         input: creating
@@ -196,6 +200,7 @@ export function useProjectSetup(
       }
       // Keep setup feedback with the dialog even if a deep link selected
       // another project while the native request was waiting.
+      if (!creating) record("invite_redemption_failed");
       onError(creating ? message : joinErrorMessage(error));
       return;
     }

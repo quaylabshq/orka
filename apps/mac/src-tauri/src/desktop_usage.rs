@@ -14,7 +14,7 @@ const SUPPORTED_TTL: Duration = Duration::from_secs(120);
 const UNAVAILABLE_TTL: Duration = Duration::from_secs(300);
 const FAILURE_COOLDOWN: Duration = Duration::from_secs(45);
 
-#[derive(Clone, Copy, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub(crate) enum UsageEvent {
     #[serde(rename = "screen:projects")]
     Projects,
@@ -56,6 +56,52 @@ pub(crate) enum UsageEvent {
     ReviewDecided,
     #[serde(rename = "feature:session_forked")]
     SessionForked,
+    #[serde(untagged)]
+    Catalogue(CatalogueSignal),
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(try_from = "String")]
+pub(crate) struct CatalogueSignal(String);
+
+impl TryFrom<String> for CatalogueSignal {
+    type Error = &'static str;
+    fn try_from(wire: String) -> Result<Self, Self::Error> {
+        if valid_signal("desktop", &wire) {
+            Ok(Self(wire))
+        } else {
+            Err("Unknown desktop usage signal")
+        }
+    }
+}
+
+fn valid_signal(origin: &str, wire: &str) -> bool {
+    if wire.len() > 128 {
+        return false;
+    }
+    let mut parts = wire.split(':');
+    let Some(name) = parts.next() else {
+        return false;
+    };
+    for row in include_str!("product-events.txt").lines() {
+        let mut fields = row.split_ascii_whitespace();
+        if !fields
+            .next()
+            .is_some_and(|origins| origins.split(',').any(|value| value == origin))
+            || fields.next() != Some(name)
+        {
+            continue;
+        }
+        return fields.all(|field| {
+            let Some((_, choices)) = field.split_once('=') else {
+                return false;
+            };
+            parts
+                .next()
+                .is_some_and(|value| choices.split(',').any(|choice| choice == value))
+        }) && parts.next().is_none();
+    }
+    false
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,6 +109,7 @@ enum UsageSupport {
     Disabled,
     Standard,
     Expanded,
+    Catalogue,
 }
 
 impl UsageSupport {
@@ -76,6 +123,12 @@ impl UsageSupport {
         }
         if value["desktopUsageEventSet"]
             .as_u64()
+            .is_some_and(|set| set >= 3)
+        {
+            return Self::Catalogue;
+        }
+        if value["desktopUsageEventSet"]
+            .as_u64()
             .is_some_and(|set| set >= 2)
         {
             Self::Expanded
@@ -84,7 +137,7 @@ impl UsageSupport {
         }
     }
 
-    fn accepts(self, event: UsageEvent) -> bool {
+    fn accepts(self, event: &UsageEvent) -> bool {
         match self {
             Self::Disabled => false,
             Self::Standard => matches!(
@@ -101,7 +154,8 @@ impl UsageSupport {
                     | UsageEvent::SkillImported
                     | UsageEvent::MemoryShared
             ),
-            Self::Expanded => true,
+            Self::Expanded => !matches!(event, UsageEvent::Catalogue(_)),
+            Self::Catalogue => true,
         }
     }
 }
@@ -188,6 +242,7 @@ async fn submit_usage(
     mut events: Vec<UsageEvent>,
     account_id: String,
     service_origin: String,
+    connector: bool,
 ) -> bool {
     if !valid_batch(&events)
         || !db::matches_cloud_account(&account_id, &service_origin).unwrap_or(false)
@@ -203,7 +258,40 @@ async fn submit_usage(
     };
     let support = transport.support(&service_origin).await;
     // An older server rejects a whole batch if it sees an unsupported signal.
-    events.retain(|event| support.accepts(*event));
+    if connector && support != UsageSupport::Catalogue {
+        return false;
+    }
+    if matches!(support, UsageSupport::Standard | UsageSupport::Expanded) {
+        events = events
+            .into_iter()
+            .filter_map(|event| {
+                let UsageEvent::Catalogue(signal) = &event else {
+                    return Some(event);
+                };
+                Some(match signal.0.as_str() {
+                    "project_home_viewed" | "project_list_viewed" => UsageEvent::Projects,
+                    "resource_list_viewed:session" => UsageEvent::Sessions,
+                    "resource_list_viewed:memory" => UsageEvent::Memories,
+                    "resource_list_viewed:plan" => UsageEvent::Plans,
+                    "resource_list_viewed:skill" => UsageEvent::Skills,
+                    "review_list_viewed" => UsageEvent::Reviews,
+                    "settings_section_viewed:members" | "member_list_viewed" => UsageEvent::Members,
+                    "settings_section_viewed:account" => UsageEvent::Settings,
+                    "project_logs_viewed" => UsageEvent::Logs,
+                    "env_list_viewed" => UsageEvent::Envs,
+                    "review_approved" | "review_rejected" => UsageEvent::ReviewDecided,
+                    value
+                        if value.starts_with("settings_")
+                            && (value.contains("_changed") || value.ends_with("_saved")) =>
+                    {
+                        UsageEvent::SettingsSaved
+                    }
+                    _ => return None,
+                })
+            })
+            .collect();
+    }
+    events.retain(|event| support.accepts(event));
     if events.is_empty() {
         return false;
     }
@@ -222,8 +310,9 @@ async fn submit_usage(
     };
     let sent = client
         .post(format!(
-            "{}/v2/analytics/desktop",
-            service_origin.trim_end_matches('/')
+            "{}/v2/analytics/{}",
+            service_origin.trim_end_matches('/'),
+            if connector { "connector" } else { "desktop" }
         ))
         .header(sync::DESKTOP_VERSION_HEADER, env!("CARGO_PKG_VERSION"))
         .bearer_auth(token)
@@ -237,6 +326,123 @@ async fn submit_usage(
     sent
 }
 
+pub(crate) fn lifecycle(config: &Value, event: &'static str) {
+    if config["mode"] == "self-hosted" {
+        return;
+    }
+    let Some(origin) = config["apiUrl"]
+        .as_str()
+        .filter(|s| db::validate_url(s).is_ok())
+        .map(str::to_owned)
+    else {
+        return;
+    };
+    tauri::async_runtime::spawn(async move {
+        let Ok(mut transport) = TRANSPORT.try_lock() else {
+            return;
+        };
+        if transport.support(&origin).await != UsageSupport::Catalogue {
+            return;
+        }
+        if let Some(client) = CLIENT.as_ref() {
+            let _ = client
+                .post(format!(
+                    "{}/v2/analytics/lifecycle",
+                    origin.trim_end_matches('/')
+                ))
+                .header(sync::DESKTOP_VERSION_HEADER, env!("CARGO_PKG_VERSION"))
+                .json(&json!({"events":[event]}))
+                .send()
+                .await;
+        }
+    });
+}
+// A context command exits immediately after producing its result. Hold its one
+// fixed outcome until the command has released all project and database locks.
+static CLI_OUTCOME: std::sync::OnceLock<(String, String, &'static str)> =
+    std::sync::OnceLock::new();
+
+pub(crate) fn governance_event(account: &str, origin: &str, name: &'static str) {
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|arg| arg == "--orka-context")
+    {
+        let _ = CLI_OUTCOME.set((account.to_owned(), origin.to_owned(), name));
+    } else {
+        native_event(account, origin, name);
+    }
+}
+
+pub(crate) async fn finish_context() {
+    if let Some((account, origin, name)) = CLI_OUTCOME.get() {
+        let event = UsageEvent::Catalogue(CatalogueSignal((*name).to_owned()));
+        let _ = tokio::time::timeout(
+            Duration::from_millis(750),
+            submit_usage(vec![event], account.clone(), origin.clone(), false),
+        )
+        .await;
+    }
+}
+
+pub(crate) fn native_event(account: &str, origin: &str, name: &'static str) {
+    static SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
+    if !valid_signal("desktop", name) {
+        return;
+    }
+    let Ok(slot) = SLOTS.try_acquire() else {
+        return;
+    };
+    let (account, origin) = (account.to_owned(), origin.to_owned());
+    tauri::async_runtime::spawn(async move {
+        let _slot = slot;
+        submit_usage(
+            vec![UsageEvent::Catalogue(CatalogueSignal(name.into()))],
+            account,
+            origin,
+            false,
+        )
+        .await;
+    });
+}
+
+/// Connector calls can repeat in agent loops. Coalesce the same tool/outcome
+/// for five minutes and dispatch without holding the project operation lock.
+pub(crate) fn connector_result(account: &str, origin: &str, tool: &str, success: bool) {
+    use std::collections::HashMap;
+    type Recent = HashMap<(String, String, String), Instant>;
+    static RECENT: LazyLock<std::sync::Mutex<Recent>> = LazyLock::new(Default::default);
+    let outcome = if success { "completed" } else { "failed" };
+    let wire = format!("connector_tool_{outcome}:{tool}");
+    if !valid_signal("connector", &wire) {
+        return;
+    }
+    let Ok(mut recent) = RECENT.try_lock() else {
+        return;
+    };
+    let now = Instant::now();
+    recent.retain(|_, at| now.duration_since(*at) < Duration::from_secs(300));
+    let key = (account.to_owned(), origin.to_owned(), wire.clone());
+    if recent.len() >= 256 || recent.contains_key(&key) {
+        return;
+    }
+    recent.insert(key, now);
+    drop(recent);
+    let (account, origin) = (account.to_owned(), origin.to_owned());
+    tokio::spawn(async move {
+        let semantic = match wire.as_str() {
+            "connector_tool_completed:get_project_context" => Some("context_retrieved"),
+            "connector_tool_completed:repair_sync" => Some("sync_repair_completed"),
+            "connector_tool_failed:repair_sync" => Some("sync_repair_failed"),
+            _ => None,
+        };
+        let mut events = vec![UsageEvent::Catalogue(CatalogueSignal(wire))];
+        if let Some(event) = semantic {
+            events.push(UsageEvent::Catalogue(CatalogueSignal(event.into())));
+        }
+        submit_usage(events, account, origin, true).await;
+    });
+}
+
 #[tauri::command]
 pub(crate) async fn record_desktop_usage(
     window: tauri::WebviewWindow,
@@ -247,7 +453,7 @@ pub(crate) async fn record_desktop_usage(
     // The main renderer checks focus at the navigation/action. A successful
     // launch may bring another app to the foreground before its batch flushes.
     if window.label() == "main" {
-        submit_usage(events, account_id, service_origin).await;
+        submit_usage(events, account_id, service_origin, false).await;
     }
 }
 
@@ -264,7 +470,12 @@ pub(crate) fn test_record(input: Value) -> db::Result<Value> {
     let events = serde_json::from_value::<Vec<UsageEvent>>(input["events"].clone())
         .map_err(|_| "Invalid desktop usage events")?;
     let runtime = tokio::runtime::Runtime::new().map_err(|error| error.to_string())?;
-    let sent = runtime.block_on(submit_usage(events, account.to_owned(), origin.to_owned()));
+    let sent = runtime.block_on(submit_usage(
+        events,
+        account.to_owned(),
+        origin.to_owned(),
+        false,
+    ));
     Ok(json!({ "sent": sent }))
 }
 
@@ -343,13 +554,13 @@ mod tests {
             UsageEvent::SessionForked,
         ];
         let legacy: Vec<_> = batch
-            .into_iter()
-            .filter(|event| UsageSupport::Standard.accepts(*event))
+            .iter()
+            .filter(|event| UsageSupport::Standard.accepts(event))
             .collect();
         assert_eq!(json!(legacy), json!(["screen:settings", "screen:members"]));
         assert!(batch
             .into_iter()
-            .all(|event| UsageSupport::Expanded.accepts(event)));
+            .all(|event| UsageSupport::Expanded.accepts(&event)));
     }
 
     #[tokio::test]
@@ -413,7 +624,7 @@ mod tests {
         assert!(!valid_batch(&events));
         assert_eq!(serde_json::to_value(&events).unwrap(), known);
         assert!(!valid_batch(&[]));
-        assert!(!valid_batch(&[UsageEvent::Projects; BATCH_LIMIT + 1]));
+        assert!(!valid_batch(&vec![UsageEvent::Projects; BATCH_LIMIT + 1]));
         for input in [
             json!(["screen:workspace-specific-title"]),
             json!(["feature:refresh"]),

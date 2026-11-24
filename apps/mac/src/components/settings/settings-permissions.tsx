@@ -1,3 +1,4 @@
+import { DesktopUsageScreen } from "../desktop-usage.js";
 import {
   BookOpenIcon,
   ListTodoIcon,
@@ -731,6 +732,7 @@ export const SettingsPermissions = forwardRef<
           className="settings-migration settings-migration--permissions"
           onClose={() => setMigrationOpen(false)}
         >
+          <DesktopUsageScreen screen="permissions_preview_viewed" />
           <h2>Review role migration</h2>
           <div
             className="settings-migration-body"

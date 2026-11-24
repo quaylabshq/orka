@@ -144,85 +144,95 @@ pub(crate) async fn call_session(
             },
         );
     let binding = plugin_connection::authorize(id, secret, scope)?;
-    if shared.iter().any(|t| t["name"] == name) {
-        let _operation = crate::projects::lock()?;
-        binding.check_current()?;
-        let checked = CAPABILITIES
-            .lock()
-            .map_err(|_| "Connector capability unavailable")?
-            .contains(&binding.generation);
-        if !checked {
-            let instance = crate::sync::api_at(
-                &binding.account_id,
-                &binding.service_origin,
-                "GET",
-                "/v2/instance",
-                None,
-            )
-            .await
-            .map_err(|error| {
-                if error.starts_with("404:") {
-                    "Upgrade your Orka service to use the desktop connector.".to_string()
-                } else {
-                    error
-                }
-            })?;
+    let outcome = async {
+        if shared.iter().any(|t| t["name"] == name) {
+            let _operation = crate::projects::lock()?;
             binding.check_current()?;
-            if instance["desktopConnector"] != 1 {
-                return Err("Upgrade your Orka service to use the desktop connector.".into());
-            }
-            CAPABILITIES
+            let checked = CAPABILITIES
                 .lock()
                 .map_err(|_| "Connector capability unavailable")?
-                .insert(binding.generation.clone());
-        }
-        if name == "list_sessions" && arguments["provider"] == "pi" {
-            let capabilities = crate::sync::api_at(
+                .contains(&binding.generation);
+            if !checked {
+                let instance = crate::sync::api_at(
+                    &binding.account_id,
+                    &binding.service_origin,
+                    "GET",
+                    "/v2/instance",
+                    None,
+                )
+                .await
+                .map_err(|error| {
+                    if error.starts_with("404:") {
+                        "Upgrade your Orka service to use the desktop connector.".to_string()
+                    } else {
+                        error
+                    }
+                })?;
+                binding.check_current()?;
+                if instance["desktopConnector"] != 1 {
+                    return Err("Upgrade your Orka service to use the desktop connector.".into());
+                }
+                CAPABILITIES
+                    .lock()
+                    .map_err(|_| "Connector capability unavailable")?
+                    .insert(binding.generation.clone());
+            }
+            if name == "list_sessions" && arguments["provider"] == "pi" {
+                let capabilities = crate::sync::api_at(
+                    &binding.account_id,
+                    &binding.service_origin,
+                    "GET",
+                    "/v2/projects/capabilities",
+                    None,
+                )
+                .await?;
+                binding.check_current()?;
+                if capabilities["piSessions"] != 1 {
+                    return Err("Update the Orka service to list shared Pi sessions.".into());
+                }
+            }
+            let result = crate::sync::api_at(
                 &binding.account_id,
                 &binding.service_origin,
-                "GET",
-                "/v2/projects/capabilities",
-                None,
+                "POST",
+                "/v2/connector/tools",
+                Some(&json!({"name":name,"arguments":arguments})),
             )
-            .await?;
+            .await;
             binding.check_current()?;
-            if capabilities["piSessions"] != 1 {
-                return Err("Update the Orka service to list shared Pi sessions.".into());
-            }
+            return result;
         }
-        let result = crate::sync::api_at(
-            &binding.account_id,
-            &binding.service_origin,
-            "POST",
-            "/v2/connector/tools",
-            Some(&json!({"name":name,"arguments":arguments})),
-        )
-        .await;
+        let mut input = arguments.clone();
+        input["accountId"] = json!(binding.account_id);
+        input["serviceOrigin"] = json!(binding.service_origin);
+        let result = if matches!(
+            name,
+            "list_local_resources" | "preview_share" | "share_selected"
+        ) {
+            selective_sharing::plugin_command(name, &input, &binding).await
+        } else {
+            plugin_operations::command(
+                if name == "list_local_skills" {
+                    "list_skills"
+                } else {
+                    name
+                },
+                &input,
+                Some(&binding),
+            )
+            .await
+        }?;
         binding.check_current()?;
-        return result;
+        Ok(envelope(result))
     }
-    let mut input = arguments.clone();
-    input["accountId"] = json!(binding.account_id);
-    input["serviceOrigin"] = json!(binding.service_origin);
-    let result = if matches!(
+    .await;
+    crate::desktop_usage::connector_result(
+        &binding.account_id,
+        &binding.service_origin,
         name,
-        "list_local_resources" | "preview_share" | "share_selected"
-    ) {
-        selective_sharing::plugin_command(name, &input, &binding).await
-    } else {
-        plugin_operations::command(
-            if name == "list_local_skills" {
-                "list_skills"
-            } else {
-                name
-            },
-            &input,
-            Some(&binding),
-        )
-        .await
-    }?;
-    binding.check_current()?;
-    Ok(envelope(result))
+        outcome.is_ok(),
+    );
+    outcome
 }
 fn envelope(value: Value) -> Value {
     json!({"content":[{"type":"text","text":value.to_string()}],"structuredContent":value})

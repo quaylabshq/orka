@@ -157,7 +157,7 @@ test("keeps a single bounded batch and drops completed actions from an old accou
   expect(batches()).toHaveLength(1);
 });
 
-test("limits an account to 60 events across sign-outs and resets at UTC midnight", async () => {
+test("limits an account to 180 events across sign-outs and resets at UTC midnight", async () => {
   vi.setSystemTime(new Date("2030-06-15T12:00:00Z"));
   const state = { ...alice, user: "metered" };
   const trackAccount = () =>
@@ -167,20 +167,21 @@ test("limits an account to 60 events across sign-outs and resets at UTC midnight
       ),
     });
   const app = trackAccount();
-  for (let batch = 0; batch < 4; batch += 1) {
+  for (let batch = 0; batch < 12; batch += 1) {
     for (let event = 0; event < 16; event += 1)
       app.result.current("feature:skill_imported")();
     await advance(1_250);
   }
   expect(batches().map(({ events }) => events.length)).toEqual([
-    16, 16, 16, 12,
+    ...Array(11).fill(16),
+    4,
   ]);
   app.unmount();
 
   const signedInAgain = trackAccount();
   signedInAgain.result.current("feature:memory_shared")();
   await advance(1_250);
-  expect(batches()).toHaveLength(4);
+  expect(batches()).toHaveLength(12);
 
   vi.setSystemTime(new Date("2030-06-16T00:00:00Z"));
   signedInAgain.result.current("feature:memory_shared")();
@@ -247,7 +248,10 @@ test("reports a source connection only after native confirms a new local binding
     {
       accountId: "alice",
       serviceOrigin: origin,
-      events: ["feature:source_connected"],
+      events: [
+        ...Array(4).fill("source_picker_opened"),
+        "feature:source_connected",
+      ],
     },
   ]);
 });
@@ -301,6 +305,7 @@ test("records a confirmed launch when the reader changes before it finishes", as
   await advance(1_250);
   expect(onNotice).not.toHaveBeenCalled();
   expect(batches().flatMap(({ events }) => events)).toEqual([
+    "session_resume_started",
     "feature:session_resumed",
   ]);
 });
@@ -352,16 +357,16 @@ test.each([
       await actions.result.current.resume(target, fork);
     });
     await advance(2_000);
-    expect(batches()).toEqual(
-      reported
-        ? [
-            {
-              accountId: "alice",
-              serviceOrigin: origin,
-              events: [reported],
-            },
-          ]
-        : [],
-    );
+    expect(batches()).toEqual([
+      {
+        accountId: "alice",
+        serviceOrigin: origin,
+        events: [
+          fork ? "session_fork_started" : "session_resume_started",
+          ...("handoff" in reply ? ["session_handoff_prepared"] : []),
+          ...(reported ? [reported] : []),
+        ],
+      },
+    ]);
   },
 );

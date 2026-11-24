@@ -1,3 +1,4 @@
+import { productAction } from "./desktop-usage.js";
 import {
   ChevronRightIcon,
   CircleDotIcon,
@@ -21,7 +22,7 @@ import { defaultProjectRules, type ReviewRequest } from "@portable/protocol";
 import type { Project, Snapshot } from "../types.js";
 import { Button } from "./button.js";
 import { CollectionSkeleton } from "./collection-skeleton.js";
-import { useDesktopFeature } from "./desktop-usage.js";
+
 import { AccessRequestDialog } from "./access-request-dialog.js";
 import { Icon } from "./icon.js";
 import { IconButton } from "./icon-button.js";
@@ -295,7 +296,6 @@ export function ReviewsPage({
   onRefresh: () => Promise<void>;
   onReviewFile: (id: string) => void;
 }) {
-  const startFeature = useDesktopFeature();
   const [catalog, setCatalog] = useState<GovernanceCatalog | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -423,7 +423,7 @@ export function ReviewsPage({
     const prior = decision(item.id);
     if (prior.sending || prior.outcome)
       throw new Error("Decision already submitted");
-    const recordDecision = startFeature("feature:review_decided");
+    const record = productAction();
     reviewDecisions.start(scope, item.id, choice);
     let result: ReviewRequest;
     try {
@@ -444,6 +444,7 @@ export function ReviewsPage({
         serviceRejected: Boolean(status),
         message: message.replace(/^4\d\d:\s*/, ""),
       };
+      record("review_decision_failed");
       reviewDecisions.fail(scope, item.id, failure);
       // The message still matters if the reviewer left or lost access.
       if (
@@ -458,7 +459,9 @@ export function ReviewsPage({
       throw error;
     }
     if (result.status === "approved" || result.status === "rejected")
-      recordDecision();
+      record(
+        result.status === "approved" ? "review_approved" : "review_rejected",
+      );
     // The request stays locked until the lists show its new status.
     await load()
       .then(onRefresh)

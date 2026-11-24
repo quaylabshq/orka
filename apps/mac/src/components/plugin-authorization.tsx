@@ -1,5 +1,6 @@
+import { useProductView } from "./desktop-usage.js";
 import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./product-command.js";
 import { PlugIcon, XIcon } from "lucide-react";
 import { Button } from "./button.js";
 import { IconButton } from "./icon-button.js";
@@ -138,6 +139,7 @@ export function PluginAuthorization({
       setBusy(false);
     }
   };
+  useProductView(preview ? "connector_consent_viewed" : undefined);
   return (
     <Overlay
       open

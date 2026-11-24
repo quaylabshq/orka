@@ -1,3 +1,4 @@
+import { productAction } from "./desktop-usage.js";
 import { LockIcon, RefreshCwIcon, TriangleAlertIcon } from "lucide-react";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { ProjectResource as Resource } from "../types.js";
@@ -80,7 +81,7 @@ export function ResourceIndex({
   kind,
   resources,
   filters,
-  onFilters,
+  onFilters: updateFilters,
   user,
   displayTitle,
   duplicateTitles,
@@ -97,7 +98,7 @@ export function ResourceIndex({
   floatingAction,
   focusResource,
   onFocusHandled,
-  onOpen,
+  onOpen: openResource,
 }: ResourceIndexProps) {
   const memberName = useMemberLabel(user);
   const { notify } = useToasts();
@@ -129,6 +130,18 @@ export function ResourceIndex({
         title: `Local ${collectionNoun(kind)} refreshed`,
       });
   }, [discovering, discoveryResult, refreshRequest, kind, notify]);
+  const onFilters = (next: IndexFilters) => {
+    if (next.sort !== filters.sort || next.direction !== filters.direction)
+      productAction()("resource_sort_changed");
+    else if (next.query === filters.query)
+      productAction()("resource_filter_applied");
+    updateFilters(next);
+  };
+  const onOpen = (id: string) => {
+    if (filters.query.trim()) productAction()("resource_search_result_opened");
+    openResource(id);
+  };
+  const lastSearch = useRef("");
   const ownership = kind === "skill" ? "all" : (filters.ownership ?? "all");
   const root = useRef<HTMLElement>(null);
   const skillCategories = useSkillFilterCategories(
@@ -161,6 +174,31 @@ export function ResourceIndex({
           }),
     [kind, resources, applied, displayTitle, user, memberName, skillStatus],
   );
+  useEffect(() => {
+    const query = filters.query.trim();
+    if (!query) {
+      lastSearch.current = "";
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      if (
+        query === lastSearch.current ||
+        document.hidden ||
+        !document.hasFocus()
+      )
+        return;
+      lastSearch.current = query;
+      productAction()(
+        "resource_search_completed",
+        visible.length === 0
+          ? "zero"
+          : visible.length === 1
+            ? "one"
+            : "several",
+      );
+    }, 750);
+    return () => window.clearTimeout(timer);
+  }, [filters.query, visible.length]);
   const skillFiltered = kind === "skill" && skillFiltersActive(applied);
   const sources = useMemo(
     () => [...new Set(resources.map((r) => r.source))],

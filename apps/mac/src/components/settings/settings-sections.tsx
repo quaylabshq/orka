@@ -9,7 +9,7 @@ import {
   XIcon,
 } from "lucide-react";
 import { useCallback, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../product-command.js";
 import {
   ItemContextMenu,
   ItemMenuButton,

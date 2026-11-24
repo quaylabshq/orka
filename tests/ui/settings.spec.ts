@@ -10,7 +10,10 @@ const usageSignals = async (page: Page): Promise<string[]> =>
     .flatMap((call) => call.args.events);
 const settingsSaveCount = async (page: Page) =>
   (await usageSignals(page)).filter(
-    (signal) => signal === "feature:settings_saved",
+    (signal) =>
+      signal.startsWith("settings_sync_interval_changed:") ||
+      signal === "settings_profile_saved" ||
+      signal === "permissions_policy_saved",
   ).length;
 async function choose(scope: Locator, label: string, value: string) {
   await scope.getByRole("combobox", { name: label, exact: true }).click();
@@ -75,9 +78,13 @@ test("all nine destinations and no-project account and Mac settings stay usable"
   );
 });
 
-test("reports only one confirmed settings save per visit", async ({ page }) => {
+test("reports every committed settings change, including two in the same visit", async ({
+  page,
+}) => {
   const settings = await settingsFixture(page, { failBackground: true });
-  await expect.poll(() => usageSignals(page)).toContain("screen:settings");
+  await expect
+    .poll(() => usageSignals(page))
+    .toContain("settings_section_viewed:general");
   await button(settings, "Sync & startup").click();
   await settings.getByRole("switch", { name: "Background sync" }).uncheck();
   await button(settings, "Save changes").click();
@@ -87,7 +94,9 @@ test("reports only one confirmed settings save per visit", async ({ page }) => {
 
   await button(settings, "Members").click();
   await page.getByRole("button", { name: "Discard", exact: true }).click();
-  await expect.poll(() => usageSignals(page)).toContain("screen:members");
+  await expect
+    .poll(() => usageSignals(page))
+    .toContain("settings_section_viewed:members");
   expect(await settingsSaveCount(page)).toBe(0);
 
   await button(settings, "Sync & startup").click();
@@ -102,19 +111,18 @@ test("reports only one confirmed settings save per visit", async ({ page }) => {
   await button(settings, "Save changes").click();
   await expect(button(settings, "Save changes")).toBeDisabled();
   const screenCount = (await usageSignals(page)).filter((event) =>
-    event.startsWith("screen:"),
+    event.includes("_viewed"),
   ).length;
   await page.keyboard.press("Escape");
   await expect(settings).toBeHidden();
   await expect
     .poll(
       async () =>
-        (await usageSignals(page)).filter((event) =>
-          event.startsWith("screen:"),
-        ).length,
+        (await usageSignals(page)).filter((event) => event.includes("_viewed"))
+          .length,
     )
     .toBeGreaterThan(screenCount);
-  expect(await settingsSaveCount(page)).toBe(1);
+  expect(await settingsSaveCount(page)).toBe(2);
 
   await page.getByRole("button", { name: "Settings", exact: true }).click();
   await settings
@@ -124,7 +132,12 @@ test("reports only one confirmed settings save per visit", async ({ page }) => {
   await expect(
     settings.getByText("Profile saved.", { exact: true }),
   ).toBeVisible();
-  await expect.poll(() => settingsSaveCount(page)).toBe(2);
+  await expect.poll(() => settingsSaveCount(page)).toBe(3);
+  const events = await usageSignals(page);
+  expect(events).toContain("settings_sync_interval_changed:15:5");
+  expect(events).toContain("settings_sync_interval_changed:5:1");
+  expect(events).toContain("settings_save_failed:background_sync");
+  expect(events.join(" ")).not.toContain("Changed in this visit");
 });
 
 test("reports an acknowledged save when the workspace refresh fails", async ({

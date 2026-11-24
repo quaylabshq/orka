@@ -1,3 +1,4 @@
+import { useProductView } from "./desktop-usage.js";
 import {
   ChevronRightIcon,
   RefreshCwIcon,
@@ -154,6 +155,7 @@ export function SyncMenu({
     Number(Boolean(attention.accountError)) +
     Number(Boolean(independentActionError)) +
     Number(Boolean(setup && !setup.deferred && !setupRunning));
+  useProductView(open && attentionCount > 0 ? "sync_issue_viewed" : undefined);
   const count = attentionCount + reviews.length;
   const requestHistoryCount =
     attention.historyRequests.length + attention.historyDrafts.length;

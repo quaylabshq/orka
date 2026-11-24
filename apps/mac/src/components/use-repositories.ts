@@ -1,3 +1,4 @@
+import { productAction } from "./desktop-usage.js";
 import {
   useCallback,
   useEffect,
@@ -5,7 +6,8 @@ import {
   useRef,
   useState,
 } from "react";
-import { Channel, invoke } from "@tauri-apps/api/core";
+import { Channel } from "@tauri-apps/api/core";
+import { invoke } from "./product-command.js";
 import { useQuery } from "@tanstack/react-query";
 import type { Project, Snapshot } from "../types.js";
 import { useDesktopFeature } from "./desktop-usage.js";
@@ -269,6 +271,7 @@ export function useRepositories(
           return;
         }
         if (result.connected) {
+          productAction()("repository_auth_completed");
           await reloadStatus();
           if (!canceled) {
             setAccess({});

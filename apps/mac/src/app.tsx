@@ -28,15 +28,17 @@ import { motion, useReducedMotion } from "motion/react";
 import { spring } from "./lib/springs.js";
 import { ResourceMenuProvider } from "./components/resource-menu.js";
 import {
+  productAction,
   DesktopUsageProvider,
   DesktopUsageScreen,
-  type DesktopScreen,
+  type ProductScreen,
 } from "./components/desktop-usage.js";
 import type { ItemMenuAction } from "./components/item-menu.js";
 import type { IconGlyph } from "./components/icons.js";
 import { useWebViewMenuPolicy } from "./hooks/use-web-view-menu-policy.js";
 import { ENV_ENABLED } from "./lib/features.js";
-import { invoke, isTauri } from "@tauri-apps/api/core";
+import { isTauri } from "@tauri-apps/api/core";
+import { invoke } from "./components/product-command.js";
 import { listen } from "@tauri-apps/api/event";
 import { Overlay } from "./components/overlay.js";
 import { SettingsUpdates } from "./components/settings/settings-updates.js";
@@ -164,15 +166,15 @@ const pageLabels: Record<ProjectPage, string> = {
   plan: "plans",
 };
 
-const projectUsageScreens: Record<ProjectPage, DesktopScreen> = {
-  home: "screen:projects",
-  session: "screen:sessions",
-  memory: "screen:memories",
-  skill: "screen:skills",
-  plan: "screen:plans",
-  reviews: "screen:reviews",
-  env: "screen:envs",
-  members: "screen:logs",
+const projectUsageScreens: Record<ProjectPage, ProductScreen> = {
+  home: "project_home_viewed",
+  session: "resource_list_viewed:session",
+  memory: "resource_list_viewed:memory",
+  skill: "resource_list_viewed:skill",
+  plan: "resource_list_viewed:plan",
+  reviews: "review_list_viewed",
+  env: "env_list_viewed",
+  members: "project_logs_viewed",
 };
 
 export function App() {
@@ -396,6 +398,7 @@ function WorkspaceApp({
           });
         } else if (attention.reconnect && !toastShowing) {
           const { id, name } = attention.reconnect;
+          productAction()("connector_reconnect_failed");
           notify({
             title: `${name} couldn’t reconnect to Orka`,
             placement: "bottom-right",
@@ -894,12 +897,12 @@ function WorkspaceApp({
   );
   const workspaceUsageScreen =
     settings === "members"
-      ? "screen:members"
+      ? "member_list_viewed"
       : settings
-        ? "screen:settings"
+        ? undefined
         : selectedProject
           ? undefined
-          : "screen:projects";
+          : "project_list_viewed";
   const projectUsagePage =
     tab === "home" || tab === "reviews" || tab === "env" || tab === "members"
       ? tab
@@ -1382,9 +1385,13 @@ function WorkspaceApp({
                 }
               >
                 <DesktopUsageScreen
+                  localKey={selected?.resourceId ?? project}
                   screen={
                     trackScreen
-                      ? projectUsageScreens[projectUsagePage]
+                      ? selected &&
+                        ["session", "memory", "skill", "plan"].includes(tab)
+                        ? `resource_detail_viewed:${selected.kind}`
+                        : projectUsageScreens[projectUsagePage]
                       : undefined
                   }
                 />

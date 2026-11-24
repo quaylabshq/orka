@@ -25,34 +25,9 @@ secret detection or control over arbitrary copies made outside Orka.
 
 ## Orka Cloud product analytics
 
-When enabled on Orka Cloud, the service counts daily desktop sync registrations,
-successful project creations, and successful joins via invite. A sync
-registration may come from the background daemon. The Mac sends its app version
-as part of the existing device registration request when the service advertises
-support. The service sends PostHog the milestone, time, a pseudonymous account ID,
-and the app version for desktop sync registrations. Event payloads exclude
-project content, names, paths, emails, IP addresses, and device identifiers.
-Self-hosted Orka servers leave this capability disabled.
+The [product event catalogue](../apps/mac/src-tauri/src/product-events.txt) lists the fixed names and dimensions available on a compatible managed service. Orka records foreground screens after a 750 ms dwell, explicit feature outcomes, and a daily sync registration. Examples include the section of Settings visited, a confirmed change from 15 minutes to 5 minutes, the category of sharing enabled, and a connector tool completing. Searches use result-count buckets. Repeated connector calls coalesce by tool and outcome. Events omit resource IDs, names, paths, query text, tool arguments and results, credentials, and ENV data.
 
-Compatible Mac builds report foreground visits to Projects, Sessions, Memories,
-Skills, Plans, ENVs, Reviews, Logs, Members, and Settings. Reading a resource or
-review from a direct link counts toward its section. Orka waits for the screen
-to settle before counting it.
-
-Orka counts confirmed session resumes and forks, skill imports, published
-snapshot shares, source connections, review decisions, and the first successful
-Settings save per visit. The event contains a fixed action name. It omits
-preferences, account details, and permission values.
-
-The Mac sends fixed screen and action names through the signed-in Cloud
-connection. The API attaches the app version, a capture time, and the same
-pseudonymous account ID as sync registration. Short in-memory batches,
-per-account and service budgets, and best-effort delivery keep capture bounded.
-The screen-view limit leaves room for successful actions later the same day.
-For signed-in usage, Orka Cloud sends the verified account email to update the
-PostHog person profile. The stable account pseudonym connects the profile to
-usage history. PostHog can expose profile properties alongside events.
-[PostHog event storage](https://posthog.com/blog/changing-event-storage#what-properties-expire-after-60-days)
+Signed-in events share a stable HMAC of the account ID across desktop, dashboard and API. The managed API may update the PostHog person profile with the account's GoTrue-confirmed email. Anonymous authentication lifecycle events use independent random IDs, disable person profiles and omit email. Update or recovery outcomes require a matching local account scope and a compatible app to reopen within one day. Managed capture is best effort and bounded by account and service budgets. Self-hosted servers keep capture disabled.
 
 ## Environment-variable sets
 

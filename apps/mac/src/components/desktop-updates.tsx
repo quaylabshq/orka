@@ -1,3 +1,4 @@
+import { useProductView } from "./desktop-usage.js";
 import { DownloadIcon, XIcon } from "lucide-react";
 import { useState, type MouseEvent } from "react";
 import { isTauri } from "@tauri-apps/api/core";
@@ -82,6 +83,12 @@ export function SidebarUpdate({
 }) {
   const [dismissedVersion, setDismissedVersion] = useState<string>();
   const update = updates.status?.update;
+  useProductView(
+    update && dismissedVersion !== update.version
+      ? "desktop_update_offered"
+      : undefined,
+    update?.version,
+  );
   if (!update) return null;
   const { installing } = updates;
   const close = (

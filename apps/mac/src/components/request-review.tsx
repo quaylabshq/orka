@@ -1,3 +1,4 @@
+import { DesktopUsageScreen, useProductView } from "./desktop-usage.js";
 import {
   BotIcon,
   CheckIcon,
@@ -273,6 +274,7 @@ export function RequestReview({
     resource?.kind === "skill" && detail?.files?.["SKILL.md"]
       ? readSkillMarkdown(detail.files["SKILL.md"]).description
       : "";
+  useProductView("review_detail_viewed", request.id);
   const title = resource ? requestTitle(request, resource) : listedTitle;
   return (
     <DetailLayout
@@ -426,21 +428,27 @@ export function RequestReview({
       ) : mode === "file" && readable(change) ? (
         <SourceCard path={change.path} content={change.after} />
       ) : (
-        <FileDiffCard
-          {...change}
-          showRemovedContent
-          fallback={
-            <ResourceContent
-              inspection={{
-                content: change.after,
-                previous: change.before,
-                paths: null,
-              }}
-              changes
-              markdown={false}
-            />
-          }
-        />
+        <>
+          <DesktopUsageScreen
+            screen="review_diff_viewed"
+            localKey={request.id}
+          />
+          <FileDiffCard
+            {...change}
+            showRemovedContent
+            fallback={
+              <ResourceContent
+                inspection={{
+                  content: change.after,
+                  previous: change.before,
+                  paths: null,
+                }}
+                changes
+                markdown={false}
+              />
+            }
+          />
+        </>
       )}
     </DetailLayout>
   );

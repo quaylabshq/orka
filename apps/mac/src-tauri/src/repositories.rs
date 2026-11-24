@@ -389,6 +389,7 @@ async fn clone_job(
     canceled: Arc<AtomicBool>,
     completion: Option<Channel<bool>>,
 ) {
+    let mut cloned = false;
     let result: Result<bool> = async {
         let project = job["projectId"].as_str().ok_or("Missing project")?.to_owned();
         let source_id = job["sourceId"].as_str().ok_or("Missing source")?.to_owned();
@@ -418,6 +419,7 @@ async fn clone_job(
         verify_remote(&checkout, url)?;
         let incomplete = checkout_needs_setup(&checkout);
         move_checkout(&checkout, &destination)?;
+        cloned = true;
         job["folderIdentity"] = json!(crate::indexer::folder_identity(&destination)?);
         {
             let _jobs = JOBS.lock().unwrap_or_else(|e| e.into_inner());
@@ -430,6 +432,16 @@ async fn clone_job(
         job["message"] = json!(if incomplete { "Connected. Review submodule or Git LFS setup before using this checkout." } else { "Cloned and connected" });
         Ok(connected)
     }.await;
+    if context.check().is_ok() {
+        let name = if cloned {
+            "repository_clone_completed"
+        } else if canceled.load(Ordering::Relaxed) {
+            "repository_clone_cancelled"
+        } else {
+            "repository_clone_failed"
+        };
+        crate::desktop_usage::native_event(&context.user, &context.service, name);
+    }
     let connected = result.as_ref().is_ok_and(|connected| *connected);
     if let Err(error) = result {
         job["state"] = json!(if canceled.load(Ordering::Relaxed) {

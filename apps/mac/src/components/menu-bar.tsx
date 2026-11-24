@@ -1,6 +1,6 @@
 import { ArrowUpRightIcon, RefreshCwIcon } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./product-command.js";
 import { motion, useReducedMotion } from "motion/react";
 import type { Snapshot, SyncProgress } from "../types.js";
 import { Button } from "./button.js";
@@ -112,7 +112,9 @@ export function MenuBar() {
     setBusy(true);
     setActionError("");
     try {
-      await invoke(command, args);
+      await (command === "sync_now"
+        ? invoke("menu_bar_action", { action: "sync" })
+        : invoke(command, args));
       if (command === "sync_now") {
         requestTime.current = Date.now();
         setRequested(true);

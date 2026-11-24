@@ -1,3 +1,4 @@
+import { productAction } from "./desktop-usage.js";
 import {
   CheckIcon,
   ChevronDownIcon,
@@ -436,6 +437,8 @@ function AddSkills({
     });
   const add = async () => {
     if (locked || !target || !chosen.length) return;
+    const record = productAction();
+    record("skill_import_started");
     const recordImported = startFeature("feature:skill_imported");
     setPending(true);
     onAdding(true);
@@ -463,6 +466,7 @@ function AddSkills({
         // Native installs both local mirrors before returning a result. Its
         // queued status applies to publishing those files, not the import.
         if (added.length) recordImported();
+        if (added.length < attempted.length) record("skill_import_failed");
         let stale = results.filter((item) => item.error === STALE_SKILL);
         const dead = results.filter(
           (item) => item.error && item.error !== STALE_SKILL,
@@ -530,6 +534,7 @@ function AddSkills({
         closeOnSuccess = !keepsPickerOpen;
       });
     } catch (error) {
+      if (!answered) record("skill_import_failed");
       if (active.current && !answered)
         setRetry(
           `Couldn’t add ${attempted.length} ${plural(attempted.length)}.\n${String(error)}`,

@@ -111,6 +111,9 @@ pub fn retry_storage() -> Result<Value> {
     *pending = None;
     drop(pending);
     cancel()?;
+    if let Ok(scope) = db::CacheScope::current() {
+        scope.record_usage("auth_recovery_completed");
+    }
     Ok(json!({"signedIn":true}))
 }
 fn client() -> Result<reqwest::Client> {

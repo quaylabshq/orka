@@ -1,4 +1,11 @@
-import { useEffect, useState, type Dispatch, type SetStateAction } from "react";
+import { useProductView } from "./desktop-usage.js";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type Dispatch,
+  type SetStateAction,
+} from "react";
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import type { SessionConflict } from "@portable/protocol";
@@ -119,6 +126,47 @@ export function useResourceView(
       return result;
     },
   });
+  const reading = useRef<{ id?: string; revision?: number }>({});
+  const [updatedRevision, setUpdatedRevision] = useState<string>();
+  useEffect(() => {
+    const revision = resource?.revision;
+    if (
+      id &&
+      revision &&
+      reading.current.id === id &&
+      reading.current.revision !== undefined &&
+      reading.current.revision !== revision
+    ) {
+      setUpdatedRevision(JSON.stringify([scope, id, revision]));
+    } else if (reading.current.id !== id) setUpdatedRevision(undefined);
+    reading.current = { id, revision };
+  }, [id, resource?.revision, scope]);
+  useProductView(
+    enabled &&
+      inspection.data &&
+      updatedRevision === JSON.stringify([scope, id, resource?.revision])
+      ? "resource_revision_viewed"
+      : undefined,
+    updatedRevision,
+  );
+  useProductView(
+    kind === "session" && loaded
+      ? `session_reader_viewed:${fullTranscript ? "transcript" : "conversation"}`
+      : undefined,
+    resourceId,
+  );
+  useProductView(
+    kind === "skill" && enabled && inspection.data
+      ? "skill_file_viewed"
+      : undefined,
+    JSON.stringify([resourceId, file]),
+  );
+  useProductView(
+    changes && enabled && inspection.data?.previous != null
+      ? "resource_revisions_compared"
+      : undefined,
+    resourceId,
+  );
   return {
     file,
     setFile,

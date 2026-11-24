@@ -173,7 +173,14 @@ fn main() {
                 }
                 tokio::runtime::Runtime::new()
                     .map_err(|e| e.to_string())?
-                    .block_on(governance::governance_command(action, v["input"].clone()))
+                    .block_on(async {
+                        let result =
+                            governance::governance_command(action, v["input"].clone()).await;
+                        if result.is_ok() {
+                            desktop_usage::finish_context().await;
+                        }
+                        result
+                    })
             });
         match result {
             Ok(value) => println!("{value}"),

@@ -656,7 +656,18 @@ impl SyncQueue {
             db.set_transaction_behavior(TransactionBehavior::Immediate);
         }
         let result = run(&mut db, &job).await;
+        // One outcome per explicitly requested project attempt. Ignore workspace discovery and automatic retries.
+        let manual = job.project != WORKSPACE
+            && job.attempts == 0
+            && matches!(job.reason.as_str(), "sync now" | "retry" | "folder");
         self.settle(&db, job, &result, Self::now(), interval)?;
+        if manual {
+            match result {
+                Ok(Outcome::Synced) => scope.record_usage("sync_manual_completed"),
+                Err(_) => scope.record_usage("sync_manual_failed"),
+                _ => {}
+            }
+        }
         Ok(true)
     }
 

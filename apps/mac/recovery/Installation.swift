@@ -128,6 +128,7 @@ struct Installation {
         guard try InstalledBuild(at: next) == InstalledBuild(version: release.version, dataEpoch: release.dataEpoch) else {
             throw UpdateError("The downloaded app does not match the approved release.")
         }
+        let scope = productScope
         progress(UpdateProgress(phase: "restarting"))
         try await replace(with: next, current: current, keepPrevious: true) {
             let (_, offer) = try await refreshOffer(current: current, bypassCache: true, token: token)
@@ -142,9 +143,28 @@ struct Installation {
                 throw UpdateError("This update is no longer available. Check for updates again.")
             }
         }
+        recordOutcome("desktop_update_installed", version: release.version, scope: scope)
+    }
+
+    // The desktop consumes one same-account receipt after the replacement launches.
+    // The helper never opens a session, calls an analytics service or records errors.
+    private func recordOutcome(_ event: String, version: String, scope: String?) {
+        guard let scope, scope.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil else { return }
+        let record: [String: Any] = ["event": event, "version": version, "scope": scope, "at": Int(Date().timeIntervalSince1970)]
+        try? JSONSerialization.data(withJSONObject: record).write(to: state.appendingPathComponent("product-outcome.json"), options: .atomic)
+    }
+
+    private var productScope: String? {
+        try? String(contentsOf: state.appendingPathComponent("product-scope"), encoding: .utf8)
     }
 
     func restore(_ approved: InstalledBuild, replacing current: InstalledBuild) async throws {
+        let scope = productScope
+        var completed = false
+        defer {
+            recordOutcome(completed ? "desktop_recovery_completed" : "desktop_recovery_failed",
+                          version: completed ? approved.version : current.version, scope: scope)
+        }
         let transaction = try FileLock(state.appendingPathComponent("installer.lock"), operation: LOCK_EX | LOCK_NB)
         defer { withExtendedLifetime(transaction) {} }
         if let feed { _ = try? await feed.refresh(bypassCache: true) }
@@ -165,6 +185,7 @@ struct Installation {
             }
             try Data().write(to: state.appendingPathComponent("skipped-\(current.version)"), options: .atomic)
         }
+        completed = true
     }
 
     private func replace(with next: URL, current: InstalledBuild, keepPrevious: Bool,
