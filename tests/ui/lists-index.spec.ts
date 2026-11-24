@@ -92,6 +92,7 @@ const pages = [
       "Upload failed",
       "Waiting to sync",
       "Upload refused",
+      "Couldn’t read",
     ],
     find: ["Upload refused", "Token audit for the Skills table"],
   },
@@ -258,6 +259,23 @@ test("a pick whose person left stays dropped when they come back", async ({
   await expect(
     page.getByRole("button", { name: "Remove Owner filter" }),
   ).toHaveCount(0);
+});
+
+test("a session whose transcript this Mac cannot read says Couldn’t read, and the Status filter finds it", async ({
+  page,
+}) => {
+  await open(page, "Sessions");
+  const row = rows(page).filter({
+    hasText: "Request access panel failure states",
+  });
+  await expect(row.locator(".index-status-pill")).toHaveText("Couldn’t read");
+  await expect(row.locator(".index-status-pill")).toHaveAttribute(
+    "data-tone",
+    "red",
+  );
+  await pick(page, "Status", "Couldn’t read");
+  await expect(rows(page)).toHaveCount(1);
+  await expect(rows(page)).toContainText("Request access panel failure states");
 });
 
 test("Memories tell repeated file names apart by agent, and the Kind filter splits instruction files from memories", async ({

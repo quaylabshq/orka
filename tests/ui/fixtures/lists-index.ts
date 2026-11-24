@@ -302,7 +302,14 @@ export async function listsIndexFixture(page: Page, scene: ListsScene = {}) {
           4 * day,
           "refused",
         ],
-        ["Request access panel failure states", "claude", 1, "user", 6 * day],
+        [
+          "Request access panel failure states",
+          "claude",
+          1,
+          "user",
+          6 * day,
+          "unreadable",
+        ],
         [
           "Onboarding folder step illustration",
           "claude",
