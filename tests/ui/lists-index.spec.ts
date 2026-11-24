@@ -749,7 +749,7 @@ test("a view-only member asks for editing access from beside the toolbar", async
   await open(page, "Sessions", { access: "read" });
   const toolbar = tools(page, "sessions");
   const request = toolbar.getByRole("button", {
-    name: "Request editing access",
+    name: "Ask to edit",
   });
   await expect(request).toBeVisible();
   // The refresh button comes first, then the request, at the right end.
@@ -772,7 +772,19 @@ test("a disconnected view-only member can still request editing access", async (
   await expect(
     toolbar.getByRole("button", { name: "Not on this Mac" }),
   ).toBeVisible();
-  await toolbar.getByRole("button", { name: "Request editing access" }).click();
+  const ask = toolbar.getByRole("button", { name: "Ask to edit" });
+  await expect(ask).toBeVisible();
+  await page.evaluate(() => document.fonts.ready.then(() => {}));
+  const [searchBox, askBox] = await Promise.all([
+    toolbar.getByRole("searchbox").boundingBox(),
+    ask.boundingBox(),
+  ]);
+  expect(
+    Math.abs(
+      searchBox!.y + searchBox!.height / 2 - (askBox!.y + askBox!.height / 2),
+    ),
+  ).toBeLessThan(2);
+  await ask.click();
   const request = page.getByRole("dialog", { name: "Request access" });
   await expect(request.getByRole("combobox")).toHaveText("Can edit");
   await request.getByRole("button", { name: "Send request" }).click();

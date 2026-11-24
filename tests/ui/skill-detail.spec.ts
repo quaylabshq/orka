@@ -876,7 +876,7 @@ test("pending suggestions hide the outgoing entry and announce approval", async 
   ).toHaveCount(0);
   await expect(
     detail(page).getByRole("button", {
-      name: "Request editing access",
+      name: "Ask to edit",
       exact: true,
     }),
   ).toHaveCount(0);

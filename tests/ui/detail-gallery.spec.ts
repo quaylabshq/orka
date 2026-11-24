@@ -678,7 +678,7 @@ for (const kind of ["memory", "plan"] as const) {
   test(`${kind}: view-only access`, async ({ page }) => {
     const view = await open(page, wide, { kind, viewOnly: true });
     const request = view.locator(".detail-toolbar").getByRole("button", {
-      name: "Request editing access",
+      name: "Ask to edit",
       exact: true,
     });
     await expect(request).toBeVisible();
@@ -869,7 +869,7 @@ test("session: long title and view-only access", async ({ page }) => {
   await expect(view.locator(".session-turn").first()).toBeVisible();
   await expect(
     view.locator(".detail-toolbar").getByRole("button", {
-      name: "Request editing access",
+      name: "Ask to edit",
       exact: true,
     }),
   ).toBeVisible();

@@ -114,6 +114,12 @@
   .index-menu-value {
     display: none;
   }
+
+  .index-toolbar-actions:has(
+    .index-access-pill + button.resource-access-request
+  ) {
+    column-gap: 8px;
+  }
 }
 
 /* Search, Filter, Sort and the chips stay put while the list scrolls under.

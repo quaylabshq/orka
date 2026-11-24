@@ -1124,9 +1124,7 @@ test("access requests start from resource pages and do not appear in management"
     }),
   ).toHaveCount(0);
   await page.getByRole("button", { name: "Plans 0", exact: true }).click();
-  await page
-    .getByRole("button", { name: "Request editing access", exact: true })
-    .click();
+  await page.getByRole("button", { name: "Ask to edit", exact: true }).click();
   const dialog = page.getByRole("dialog", {
     name: "Request access",
     exact: true,

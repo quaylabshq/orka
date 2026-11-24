@@ -117,7 +117,7 @@ export function RequestAccess({
           ? "Access requested"
           : needsRead
             ? "Request access"
-            : "Request editing access"}
+            : "Ask to edit"}
       </Button>
       {open && (
         <Overlay
