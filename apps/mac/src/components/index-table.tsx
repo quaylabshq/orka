@@ -205,21 +205,41 @@ export function IndexTable({
     menuOpen.current = open ? id : undefined;
     if (open) closePeek();
   };
-  // A late title can re-sort the list; the row being acted on stays in view.
+  const previous = useRef(resources);
+  // A late title can re-sort the list. The row being acted on keeps its place
+  // on screen when it moves, unless the person had already scrolled it away.
   useLayoutEffect(() => {
+    const before = previous.current;
+    previous.current = resources;
     // A row that leaves the list takes its open menu with it, and that menu
     // never reports closing.
     if (!resources.some(({ resourceId }) => resourceId === menuOpen.current))
       menuOpen.current = undefined;
     const rows = body.current;
-    const active = document.activeElement;
+    const view = rows?.closest(".resource-index-body");
+    const focused = document.activeElement;
     const row =
-      (menuOpen.current !== undefined &&
-        rows?.querySelector(
-          `[data-resource-id="${CSS.escape(menuOpen.current)}"]`,
-        )) ||
-      (active && rows?.contains(active) ? active : null);
-    row?.closest("tr")?.scrollIntoView({ block: "nearest" });
+      menuOpen.current !== undefined
+        ? rows?.querySelector(
+            `[data-resource-id="${CSS.escape(menuOpen.current)}"]`,
+          )
+        : focused && rows?.contains(focused)
+          ? focused
+          : null;
+    const tr = row?.closest("tr");
+    const id = tr
+      ?.querySelector("[data-resource-id]")
+      ?.getAttribute("data-resource-id");
+    if (!view || !tr || !id) return;
+    const from = before.findIndex(({ resourceId }) => resourceId === id);
+    const to = resources.findIndex(({ resourceId }) => resourceId === id);
+    if (from < 0 || from === to) return;
+    // Rows are one height, so the row sat this far from where it is now.
+    const { top, height } = tr.getBoundingClientRect();
+    const moved = (to - from) * height;
+    const bounds = view.getBoundingClientRect();
+    if (top - moved < bounds.bottom && top - moved + height > bounds.top)
+      view.scrollTop += moved;
   }, [resources]);
   useEffect(() => {
     if (!peek) return;
