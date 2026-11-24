@@ -17,8 +17,8 @@ memories, and plans, independent of automatic sharing. Discovery runs through a
 native asynchronous command when a collection opens or refreshes, rather than
 rescanning histories during every workspace snapshot. Local content is not added
 to the published resource table or outbox merely to make it readable. The UI merges
-local and authorized shared identities and filters ownership independently of
-provider and repository.
+local and authorized shared identities. Owner, agent, and repository filters
+apply independently of each other.
 
 The native `local_resources` SQLite table persists the local index independently of
 the UI's in-memory catalogs. Collections restore those entries in a read transaction

@@ -61,14 +61,19 @@ not invalidate them. Older connections upgrade during catalog refresh only while
 their original device and directory IDs still match. If those IDs already differ,
 select the existing folder once to reconnect; Orka does not silently trust it.
 
-Memories, Skills, Sessions, Plans, and ENVs share an **All repositories** dropdown
-in the top bar beside sync status. The selection follows those pages within a
-project and resets when switching projects, accounts, or services. Search,
-coding-tool filters, and sorting remain separate for each collection. Home
-continues to show recent updates across the project. Repository names appear in
-their own table column, below skill titles, and alongside ENV sets; long names
-truncate with the full name available on hover. ENV filters preserve unpublished
-drafts and hide revealed values when the selection changes.
+Memories, Skills, Sessions, and Plans show a **Repository** column and filter by
+repository from their own **Filter** menu. On Memories, Sessions, and Plans, the
+column and its filter appear when the project has more than one repository. On
+Skills, they appear when any skill has a repository. Each page keeps its own
+search, filters, and sort. Sessions and Memories also filter by **Agent**; Plans
+has no agent filter. Home continues to show recent updates across the project.
+
+ENVs keep the **All repositories** dropdown in the top bar beside sync status
+when the project has more than one repository. The ENV selection stays while you
+move between pages in a project and resets when switching projects, accounts, or
+services. Repository names appear in the table column and alongside ENV sets.
+Long names truncate with the full name available on hover. ENV filters preserve
+unpublished drafts and hide revealed values when the selection changes.
 
 Resources carry their source identity through upload, review, conflict,
 download, installation, and session resume. Identical relative paths in different

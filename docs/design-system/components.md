@@ -75,6 +75,15 @@ Memory, plan, session, and skill detail pages share one shell (`apps/mac/src/com
 
 Render the loading region's children as a component, not inline elements: the skeleton pass clones element children through `React.Children.map`, which turns a Markdown string child into an array.
 
+## Index pages
+
+Memories, Sessions, Plans, and Skills share one index page (`apps/mac/src/components/resource-index.tsx`). Each page's columns, filter categories, sorts, statuses, and search fields come from its entry in `indexPages` (`index-pages.ts`). Table and toolbar styles live in `index-table.css`.
+
+- `IndexTable` (`index-table.tsx`): flat rows that scroll under the toolbar, with no pager. Each row leads with a location icon (**On this Mac** or **Shared with team**), then the title, the page's columns, one status pill, and a more button with the right-click actions. Columns follow the whole collection, so filtering never moves them. Resting the pointer on a row or focusing it opens the row's peek below it, or above it near the bottom of the list. `titleTrailing` places a marker after the title, such as a session's fork.
+- `IndexToolbar` (`index-toolbar.tsx`): search, **Filter**, and **Sort**, then trailing controls such as the refresh button, then page actions. Several options can be ticked in one category. Each active category shows as a chip (`ActiveFilters` in `index-menus.tsx`) with the category name and its picks, and **Clear all** appears with two or more chips. Owner, agent, and repository categories hide when they have fewer than two options. The tools hide when the page has nothing to list; page actions stay.
+- `AccessPill` (`index-access.tsx`): an amber pill at the end of a list toolbar that explains a limit on the whole page, such as **Not on this Mac** or **Restricted**. Clicking it opens a panel with a title, a description, and an optional action. Skills show their access notice above the table instead.
+- `UpdatedTime` (`updated-time.tsx`): the Updated cell. It reads “Just now”, “5m ago”, “23h ago”, or “3d ago” within a week, then a short date, with the year only outside the current year. The full date and time show on hover.
+
 ## Preview and validation
 
 `components.html` is generated from the real React components and production CSS. From the repository root, run `npm run design:preview` to rebuild it. This does not open or mutate project data.
@@ -97,9 +106,11 @@ The same treatment applies to readers, conversations, skill pickers, members, an
 settings. Reduced motion keeps placeholders static; available controls and content
 stay usable.
 
-Sessions, Memories, and Plans use `CollectionSkeleton` on first discovery, with
-title and metadata shapes aligned to the collection rows, without visible loading
-copy. The Skills description peek and Home updates show placeholders only for pending metadata,
+Sessions, Memories, and Plans use `CollectionSkeleton` on first discovery, without
+visible loading copy. Its six bordered rows each hold a title bar, a shorter line
+below it, and three narrow column shapes. That is the shape of the rows before the
+index table; it does not mirror the table's columns or the status pill. The
+Skills description peek and Home updates show placeholders only for pending metadata,
 keeping known content and navigation available. Decorative shapes stay out of the
 accessibility tree; one status announces the pending collection. Background refresh
 keeps existing rows visible. Empty and error states appear after the request
