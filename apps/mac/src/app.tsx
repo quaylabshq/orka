@@ -676,15 +676,6 @@ function WorkspaceApp({
       }
       if (link.hostname === "project") {
         const [id, resourceId] = link.pathname.split("/").filter(Boolean);
-        const sameProjectSkill =
-          id === project &&
-          catalogResources.some(
-            (item) =>
-              item.projectId === id &&
-              item.resourceId === resourceId &&
-              item.kind === "skill",
-          );
-        if (!sameProjectSkill) index.setRepository("all");
         setProject(id);
         if (resourceId) setResource(resourceId);
         else {
@@ -838,13 +829,6 @@ function WorkspaceApp({
       </>
     );
   const openResource = (id: string) => {
-    const target = catalogResources.find((item) => item.resourceId === id);
-    if (
-      target?.kind !== "skill" &&
-      repository !== "all" &&
-      target?.sourceId !== repository
-    )
-      index.setRepository("all");
     setResource(id);
     view.setChanges(false);
   };
@@ -1435,7 +1419,6 @@ function WorkspaceApp({
                     resources={catalogResources}
                     pendingCounts={localCatalog.pendingCounts}
                     onNavigate={(kind) => {
-                      if (kind !== "skill") index.setRepository("all");
                       setEnvSet("");
                       setTab(kind);
                       setResource("");
