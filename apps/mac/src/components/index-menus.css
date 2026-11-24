@@ -116,11 +116,13 @@
   }
 }
 
-/* Search, Filter, Sort and the chips stay put while the list scrolls under. */
+/* Search, Filter, Sort and the chips stay put while the list scrolls under.
+   It holds the space below them too, so rows never show above the headings. */
 .index-head {
   position: sticky;
   z-index: 10;
   top: 0;
+  display: flow-root;
   background: var(--surface-secondary);
 }
 

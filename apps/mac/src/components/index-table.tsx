@@ -327,6 +327,30 @@ export function IndexTable({
   }, [focusResource]);
   // The rows drawn follow the scroll position, the window size, and the list.
   useLayoutEffect(update, [update, resources]);
+  // The headings stick right under the toolbar, which grows with its chips
+  // and when it wraps.
+  useLayoutEffect(() => {
+    const table = body.current?.closest("table");
+    const view = table?.closest(".resource-index-body");
+    const head = view?.querySelector<HTMLElement>(":scope > .index-head");
+    if (!table || !view || !head) return;
+    const stick = () => {
+      // The table's top edge, drawn above the headings, stays in view too.
+      const bottom =
+        parseFloat(getComputedStyle(head).top) +
+        head.offsetHeight +
+        table.clientTop;
+      table.style.setProperty("--index-head-bottom", `${bottom}px`);
+      table.style.setProperty(
+        "--index-rows-top",
+        `${parseFloat(getComputedStyle(view).paddingTop) + bottom + (table.tHead?.offsetHeight ?? 0)}px`,
+      );
+    };
+    stick();
+    const resize = new ResizeObserver(stick);
+    resize.observe(head, { box: "border-box" });
+    return () => resize.disconnect();
+  }, []);
   useEffect(() => {
     const view = body.current?.closest(".resource-index-body");
     if (!view) return;
@@ -359,11 +383,17 @@ export function IndexTable({
     const place = () => {
       const row = tip.closest("tr")?.getBoundingClientRect();
       const view = tip.closest(".resource-index-body")?.getBoundingClientRect();
+      // Rows start below the headings, which stay in view.
+      const top = tip
+        .closest("table")
+        ?.querySelector("thead th")
+        ?.getBoundingClientRect().bottom;
       if (
         row &&
         view &&
+        top !== undefined &&
         tip.getBoundingClientRect().bottom > view.bottom &&
-        row.top - view.top > view.bottom - row.bottom
+        row.top - top > view.bottom - row.bottom
       )
         setPeek((current) => current && { ...current, above: true });
     };
@@ -423,14 +453,13 @@ export function IndexTable({
   ].sort((a, b) => a - b);
   const rows: React.ReactNode[] = [];
   // Rows not drawn keep their height, so the list scrolls its full length.
+  // One cell is enough: a span would count a column the window hides and
+  // add one to the table.
   const gap = (from: number, to: number) =>
     to > from &&
     rows.push(
       <tr key={`gap-${from}`} className="index-table-spacer" aria-hidden="true">
-        <td
-          colSpan={columns.length + 2}
-          style={{ height: (to - from) * span.height }}
-        />
+        <td style={{ height: (to - from) * span.height }} />
       </tr>,
     );
   let next = 0;

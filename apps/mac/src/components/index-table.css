@@ -63,9 +63,46 @@
   color: var(--text-secondary);
 }
 
+/* The headings stay under the toolbar while rows pass beneath them. */
 .index-table thead th {
+  position: sticky;
+  z-index: 1;
+  top: var(--index-head-bottom, 0px);
   height: 36px;
+  overflow: visible;
+  background: var(--surface-secondary);
   color: var(--text-tertiary);
+}
+
+/* The table's top edge and corners move with the headings. At rest they lie
+   over the table's own; the corners hide the rows passing outside them. */
+.index-table thead th::before {
+  content: "";
+  position: absolute;
+  inset: -1px 0 0;
+  border-top: 1px solid var(--border-default);
+  pointer-events: none;
+}
+
+.index-table thead th:first-child::before {
+  left: -1px;
+  border-left: 1px solid var(--border-default);
+  border-top-left-radius: var(--radius-surface);
+  box-shadow: calc(-1 * var(--radius-surface)) calc(-1 * var(--radius-surface))
+    0 var(--surface-secondary);
+}
+
+.index-table thead th:last-child::before {
+  right: -1px;
+  border-right: 1px solid var(--border-default);
+  border-top-right-radius: var(--radius-surface);
+  box-shadow: var(--radius-surface) calc(-1 * var(--radius-surface)) 0
+    var(--surface-secondary);
+}
+
+/* A row scrolled to for focus lands below the toolbar and headings. */
+.index-table tbody :is(tr, button) {
+  scroll-margin-top: var(--index-rows-top, 0px);
 }
 
 .index-table tbody tr:last-child > * {

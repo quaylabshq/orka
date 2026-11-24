@@ -292,3 +292,75 @@ test("a peek with a long path stays inside the list at the minimum window", asyn
   expect(box.y).toBeGreaterThanOrEqual(view.y);
   expect(box.y + box.height).toBeLessThanOrEqual(view.y + view.height);
 });
+
+/**
+ * Scrolls the list well past its start, then expects the heading row right
+ * under the toolbar, with nothing from the rows passing beneath on top of it.
+ */
+const expectHeadingsUnderToolbar = async (page: Page) => {
+  await body(page).evaluate((element) => {
+    element.scrollTop = element.scrollHeight / 2;
+  });
+  expect(await scrollTop(page)).toBeGreaterThan(1000);
+  // The cells stick; their row keeps its place at the top of the table.
+  const headings = page.locator(".index-table thead th");
+  await expect(headings.first()).toBeInViewport();
+  const toolbar = (await page.locator(".index-head").boundingBox())!;
+  const box = (await headings.first().boundingBox())!;
+  // Only the table's top edge, a pixel, lies between them.
+  const gap = box.y - (toolbar.y + toolbar.height);
+  expect(gap).toBeGreaterThanOrEqual(0);
+  expect(gap).toBeLessThanOrEqual(1);
+  // The headings span the table, even with rows left undrawn.
+  const table = (await page.locator(".index-table").boundingBox())!;
+  const end = (await headings.last().boundingBox())!;
+  expect(table.x + table.width - (end.x + end.width)).toBeLessThan(2);
+  const covered = await headings.evaluateAll((cells) => {
+    const row = cells[0].parentElement!;
+    const { top, bottom } = cells[0].getBoundingClientRect();
+    const left = cells[0].getBoundingClientRect().left;
+    const right = cells[cells.length - 1].getBoundingClientRect().right;
+    return [left + 1, (left + right) / 2, right - 1].flatMap((x) =>
+      [top + 1, (top + bottom) / 2, bottom - 1].flatMap((y) => {
+        const hit = document.elementFromPoint(x, y);
+        return hit && row.contains(hit) ? [] : [hit?.outerHTML.slice(0, 80)];
+      }),
+    );
+  });
+  expect(covered).toEqual([]);
+  // Rows really are passing beneath the headings.
+  const under = await page
+    .locator(".index-table tbody tr[aria-rowindex]")
+    .evaluateAll(
+      (rows, line) =>
+        rows.filter((row) => {
+          const { top, bottom } = row.getBoundingClientRect();
+          return top < line && bottom > line;
+        }).length,
+      box.y + box.height / 2,
+    );
+  expect(under).toBe(1);
+};
+
+test("the headings stay under the toolbar while a long list scrolls", async ({
+  page,
+}) => {
+  await open(page, "Sessions", { sessions: 200 });
+  await expectHeadingsUnderToolbar(page);
+});
+
+test("the headings stay under a wrapped toolbar with filter chips", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 900, height: 640 });
+  await open(page, "Sessions", { sessions: 200 });
+  await page.getByRole("button", { name: /^Filter/ }).click();
+  await page.getByRole("menuitem", { name: "Agent" }).click();
+  await page
+    .getByRole("menuitemcheckbox", { name: "Claude", exact: true })
+    .click();
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".index-filter-chip")).toHaveCount(1);
+  await expectHeadingsUnderToolbar(page);
+});
