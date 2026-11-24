@@ -1,4 +1,5 @@
 import {
+  FolderIcon,
   GitForkIcon,
   LockIcon,
   RefreshCwIcon,
@@ -11,6 +12,7 @@ import { IconButton } from "./icon-button.js";
 import { Button } from "./button.js";
 import { Icon } from "./icon.js";
 import { EmptyState } from "./empty-state.js";
+import { AccessPill } from "./index-access.js";
 import { useToasts } from "./toasts.js";
 import {
   collectionNoun,
@@ -54,6 +56,8 @@ export interface ResourceIndexProps {
   multiRepository?: boolean;
   /** Whether this Mac has a connected folder; it changes the empty copy. */
   connected: boolean;
+  /** How lists connect this Mac while it has no connected folder. */
+  connect?: { repositories: boolean; busy: boolean; onConnect: () => void };
   noAccess?: boolean;
   /** Session titles still loading. */
   loading?: boolean;
@@ -87,6 +91,7 @@ export function ResourceIndex({
   statusOf = noStatus,
   multiRepository = false,
   connected,
+  connect,
   noAccess,
   loading,
   discovering = false,
@@ -172,7 +177,11 @@ export function ResourceIndex({
   const picked = filterPicksActive(applied);
   const searched = filters.query.trim();
   const filtered = Boolean(searched) || picked;
-  const toolbarShown = resources.length > 0 || filtered;
+  const noun = collectionNoun(kind);
+  const list = kind !== "skill";
+  // Loading rows draw under the toolbar; Empty, No access, and Could not load hide it.
+  const toolbarShown = resources.length > 0 || filtered || discovering;
+  const restrictedEmpty = Boolean(noAccess) && !resources.length;
   /** Skills carry their primary action in the toolbar once there is one. */
   const toolbarAction = kind === "skill" && toolbarShown;
   const inlineAction = Boolean(
@@ -184,16 +193,60 @@ export function ResourceIndex({
     !noAccess &&
     connected,
   );
-  const refreshButton = kind !== "skill" && onRefreshLocal && (
-    <IconButton
-      icon={RefreshCwIcon}
-      size="sm"
-      variant="secondary"
-      aria-label="Refresh local items"
-      title="Refresh local items"
-      disabled={refreshing}
-      onClick={refreshLocal}
-    />
+  const connectButton = connect && (
+    <Button
+      size="md"
+      variant="primary"
+      disabled={connect.busy}
+      onClick={connect.onConnect}
+    >
+      <Icon icon={FolderIcon} />
+      {connect.repositories ? "Connect repositories" : "Connect folder"}
+    </Button>
+  );
+  // Lists explain a page-wide limit beside the toolbar; Skills keep theirs above it.
+  const access = !list ? null : !connected && connect ? (
+    <AccessPill
+      label="Not on this Mac"
+      title="This project isn’t on this Mac"
+      icon={FolderIcon}
+    >
+      <p className="index-access-description">
+        You can read the team’s shared {noun}. Connect{" "}
+        {connect.repositories ? "its repositories" : "the project folder"} to{" "}
+        {connectPurposes[kind]}.
+      </p>
+      {connectButton}
+    </AccessPill>
+  ) : noAccess ? (
+    <AccessPill
+      label="Restricted"
+      title={`Shared ${noun} are restricted`}
+      icon={LockIcon}
+    >
+      <p className="index-access-description">
+        Your role cannot see {noun} shared in this project.
+      </p>
+      {accessRequest}
+    </AccessPill>
+  ) : (
+    accessRequest
+  );
+  const trailing = list && (
+    <>
+      {onRefreshLocal && (
+        <IconButton
+          icon={RefreshCwIcon}
+          size="sm"
+          variant="secondary"
+          aria-label="Refresh local items"
+          title="Refresh local items"
+          disabled={refreshing}
+          onClick={refreshLocal}
+        />
+      )}
+      {access}
+    </>
   );
   // Keep the popover mounted when the first import moves its trigger into the toolbar.
   const toolbar = (
@@ -204,7 +257,7 @@ export function ResourceIndex({
       categories={categories}
       filters={filters}
       onChange={onFilters}
-      refresh={refreshButton}
+      trailing={trailing}
       actions={
         React.isValidElement<{ compact?: boolean }>(floatingAction)
           ? React.cloneElement(floatingAction, { compact: toolbarAction })
@@ -241,30 +294,26 @@ export function ResourceIndex({
     >
       {status}
       <div className="resource-index-body">
-        {accessRequest}
+        {(!list || (!toolbarShown && !restrictedEmpty)) && accessRequest}
         {discovering && resources.length > 0 && (
           <span className="sr-only" role="status">
-            Refreshing {collectionNoun(kind)}…
+            Refreshing {noun}…
           </span>
         )}
-        {kind !== "skill" && discoveryErrors.length > 0 && (
+        {list && discoveryErrors.length > 0 && resources.length > 0 && (
           <div className="resource-discovery-status">
             <div role={refreshing ? "status" : "alert"} aria-atomic="true">
               <p className="resource-discovery-title">
                 <Icon icon={TriangleAlertIcon} size="sm" variant="secondary" />
                 {refreshing
-                  ? `Checking local ${collectionNoun(kind)}…`
+                  ? `Checking local ${noun}…`
                   : refreshFailed
-                    ? `Couldn’t refresh local ${collectionNoun(kind)}`
-                    : discoveryFailed
-                      ? `Couldn’t check local ${collectionNoun(kind)}`
-                      : `Some local ${collectionNoun(kind)} couldn’t be checked`}
+                    ? `Couldn’t refresh local ${noun}`
+                    : `Some local ${noun} couldn’t be checked`}
               </p>
-              {resources.length > 0 && (
-                <p className="resource-discovery-message">
-                  Previously discovered items are still available.
-                </p>
-              )}
+              <p className="resource-discovery-message">
+                Previously discovered items are still available.
+              </p>
               {!refreshing &&
                 discoveryErrors.map((error, index) => (
                   <p className="resource-discovery-message" key={index}>
@@ -291,21 +340,42 @@ export function ResourceIndex({
         {discovering && !resources.length ? (
           <LoadingRegion
             id={`collection:${kind}`}
-            label={`Loading ${collectionNoun(kind)}…`}
+            label={`Loading ${noun}…`}
             loading
             skeleton={<CollectionSkeleton />}
           >
             <div />
           </LoadingRegion>
-        ) : discoveryFailed ? null : !visible.length ? (
+        ) : discoveryFailed ? (
+          <EmptyState
+            illustration={kind}
+            title={`Couldn’t load ${noun}`}
+            // The cause, as local discovery reported it.
+            description={discoveryErrors.join(" ")}
+            announce
+            actions={
+              onRefreshLocal && (
+                <Button
+                  size="sm"
+                  variant="primary"
+                  disabled={refreshing}
+                  onClick={refreshLocal}
+                >
+                  <Icon icon={RefreshCwIcon} size="sm" />
+                  Try again
+                </Button>
+              )
+            }
+          />
+        ) : !visible.length ? (
           filtered ? (
             <EmptyState
               illustration="search"
               size="compact"
               title={
                 searched
-                  ? `No ${collectionNoun(kind)} match “${searched}”${picked ? " with these filters" : ""}`
-                  : `No ${collectionNoun(kind)} match`
+                  ? `No ${noun} match “${searched}”${picked ? " with these filters" : ""}`
+                  : `No ${noun} match`
               }
               description={
                 // With a search and filters both on, the title and the two
@@ -345,6 +415,10 @@ export function ResourceIndex({
               kind={kind}
               connected={connected}
               restricted={noAccess}
+              actions={
+                list &&
+                (restrictedEmpty ? accessRequest : !connected && connectButton)
+              }
             />
           )
         ) : (
@@ -410,23 +484,41 @@ const emptyDescriptions: Record<Resource["kind"], string> = {
   skill: "Add a skill from Codex or Claude.",
 };
 
+/** What connecting this Mac adds for each list. */
+const connectPurposes: Partial<Record<Resource["kind"], string>> = {
+  session: "continue them on this Mac and share your own",
+  memory: "open them in your editor",
+  plan: "open them in your editor",
+};
+
 function ResourceEmptyState({
   kind,
   connected,
   restricted,
+  actions,
 }: {
   kind: Resource["kind"];
   connected: boolean;
   restricted?: boolean;
+  actions?: React.ReactNode;
 }) {
   const noun = collectionNoun(kind);
   if (restricted) {
-    return (
+    return kind === "skill" ? (
       <EmptyState
         title={`Access to shared ${noun} is restricted.`}
         icon={LockIcon}
         size="compact"
         announce
+      />
+    ) : (
+      <EmptyState
+        title={`Shared ${noun} are restricted`}
+        description={`Your role cannot see ${noun} shared in this project.`}
+        icon={LockIcon}
+        size="compact"
+        announce
+        actions={actions}
       />
     );
   }
@@ -440,6 +532,7 @@ function ResourceEmptyState({
       }
       illustration={kind}
       announce
+      actions={actions}
     />
   );
 }

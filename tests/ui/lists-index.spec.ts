@@ -373,3 +373,210 @@ test("at the minimum window Updated leaves the table and joins the peek", async 
     "Instruction file · Version 11 · Updated 41m ago",
   );
 });
+
+const tools = (page: Page, noun: string) =>
+  page.getByRole("group", { name: `${noun} tools` });
+const visit = async (page: Page, label: string, scene: ListsScene) => {
+  await listsIndexFixture(page, scene);
+  await page.getByRole("button", { name: new RegExp(`^${label}`) }).click();
+};
+
+test("a project not on this Mac keeps its rows and explains itself in a pill beside the toolbar", async ({
+  page,
+}) => {
+  await open(page, "Sessions", { disconnected: true });
+  await expect(
+    page.getByRole("region", { name: "Connect this Mac" }),
+  ).toHaveCount(0);
+  const pill = tools(page, "sessions").getByRole("button", {
+    name: "Not on this Mac",
+  });
+  await pill.click();
+  const panel = page.getByRole("dialog", {
+    name: "This project isn’t on this Mac",
+  });
+  await expect(panel).toContainText(
+    "You can read the team’s shared sessions. Connect the project folder to continue them on this Mac and share your own.",
+  );
+  await panel.getByRole("button", { name: "Connect folder" }).click();
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        (window as any).listsCalls.some(
+          ({ name }: { name: string }) => name === "plugin:dialog|open",
+        ),
+      ),
+    )
+    .toBe(true);
+  await page.keyboard.press("Escape");
+  await expect(panel).toBeHidden();
+  await expect(pill).toBeFocused();
+  await expect(rows(page)).toHaveCount(15);
+  await expect(rows(page).getByLabel("On this Mac")).toHaveCount(0);
+});
+
+test("an empty list not on this Mac offers Connect folder in place of the toolbar", async ({
+  page,
+}) => {
+  await visit(page, "Memories", { disconnected: true, empty: true });
+  await expect(
+    page.getByRole("heading", { name: "No memories yet" }),
+  ).toBeVisible();
+  await expect(page.getByRole("searchbox")).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Connect folder" }),
+  ).toBeVisible();
+});
+
+test("a role that hides shared plans lists the ones on this Mac with a Restricted pill", async ({
+  page,
+}) => {
+  await open(page, "Plans", { access: "hidden" });
+  await expect(rows(page)).toHaveCount(3);
+  await tools(page, "plans")
+    .getByRole("button", { name: "Restricted" })
+    .click();
+  const panel = page.getByRole("dialog", {
+    name: "Shared plans are restricted",
+  });
+  await expect(panel).toContainText(
+    "Your role cannot see plans shared in this project.",
+  );
+  await panel.getByRole("button", { name: "Request access" }).click();
+  const request = page.getByRole("dialog", { name: "Request access" });
+  await request.getByRole("button", { name: "Send request" }).click();
+  await expect(request).toBeHidden();
+  await expect(
+    panel.getByRole("button", { name: "Access requested" }),
+  ).toBeVisible();
+  expect(
+    await page.evaluate(() =>
+      (window as any).listsCalls
+        .filter(
+          ({ name, args }: { name: string; args: { action: string } }) =>
+            name === "governance_command" && args.action === "request-access",
+        )
+        .map(({ args }: { args: { input: { class: string } } }) => args.input),
+    ),
+  ).toMatchObject([{ class: "plan", mode: "read" }]);
+});
+
+test("with nothing on this Mac either, No access offers Request access without a toolbar", async ({
+  page,
+}) => {
+  await visit(page, "Memories", { access: "hidden", empty: true });
+  await expect(
+    page.getByRole("heading", { name: "Shared memories are restricted" }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Your role cannot see memories shared in this project."),
+  ).toBeVisible();
+  await expect(page.getByRole("searchbox")).toHaveCount(0);
+  await expect(
+    page
+      .locator(".empty-state")
+      .getByRole("button", { name: "Request access" }),
+  ).toBeVisible();
+});
+
+test("a view-only member asks for editing access from beside the toolbar", async ({
+  page,
+}) => {
+  await open(page, "Sessions", { access: "read" });
+  const toolbar = tools(page, "sessions");
+  const request = toolbar.getByRole("button", {
+    name: "Request editing access",
+  });
+  await expect(request).toBeVisible();
+  // The refresh button comes first, then the request, at the right end.
+  const [refresh, ask] = await Promise.all([
+    toolbar.getByRole("button", { name: "Refresh local items" }).boundingBox(),
+    request.boundingBox(),
+  ]);
+  expect(ask!.x).toBeGreaterThan(refresh!.x);
+  expect(
+    Math.abs(ask!.y + ask!.height / 2 - (refresh!.y + refresh!.height / 2)),
+  ).toBeLessThan(2);
+});
+
+test("loading draws skeleton rows under the toolbar", async ({ page }) => {
+  await visit(page, "Plans", { empty: true, discovery: "pending" });
+  await expect(
+    page.getByRole("status").filter({ hasText: "Loading plans…" }),
+  ).toHaveCount(1);
+  await expect(
+    page.getByRole("searchbox", { name: "Search plans" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Refresh local items" }),
+  ).toBeDisabled();
+  const [toolbar, skeleton] = await Promise.all([
+    tools(page, "plans").boundingBox(),
+    page.locator(".collection-skeleton").boundingBox(),
+  ]);
+  expect(skeleton!.y).toBeGreaterThan(toolbar!.y + toolbar!.height);
+});
+
+test("Could not load gives the cause and one action, Try again", async ({
+  page,
+}) => {
+  await visit(page, "Memories", { empty: true, discovery: "failed" });
+  const state = page.locator(".empty-state");
+  await expect(
+    state.getByRole("heading", { name: "Couldn’t load memories" }),
+  ).toBeVisible();
+  await expect(state).toContainText("Permission denied (os error 13)");
+  await expect(state.getByRole("button")).toHaveText(["Try again"]);
+  await expect(page.getByRole("searchbox")).toHaveCount(0);
+  await expect(page.locator(".resource-discovery-status")).toHaveCount(0);
+  await page.evaluate(() => ((window as any).listsDiscovery = "ok"));
+  await state.getByRole("button", { name: "Try again" }).click();
+  await expect(
+    page.getByRole("heading", { name: "No memories yet" }),
+  ).toBeVisible();
+});
+
+test("an empty list hides the toolbar and says what will appear", async ({
+  page,
+}) => {
+  await visit(page, "Plans", { empty: true });
+  await expect(
+    page.getByRole("heading", { name: "No plans yet" }),
+  ).toBeVisible();
+  await expect(
+    page.getByText(
+      "Plans saved by your coding tools for this project appear here.",
+    ),
+  ).toBeVisible();
+  await expect(page.getByRole("searchbox")).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Refresh local items" }),
+  ).toHaveCount(0);
+});
+
+test("no match uses the Skills wording, with both ways out when filters are on too", async ({
+  page,
+}) => {
+  await open(page, "Sessions");
+  const search = page.getByRole("searchbox", { name: "Search sessions" });
+  await search.fill("deploy");
+  await expect(
+    page.getByRole("heading", { name: "No sessions match “deploy”" }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Try a different search or clear your filters."),
+  ).toBeVisible();
+  await pick(page, "Agent", "Codex");
+  await expect(
+    page.getByRole("heading", {
+      name: "No sessions match “deploy” with these filters",
+    }),
+  ).toBeVisible();
+  const state = page.locator(".empty-state");
+  await expect(state.getByRole("button")).toHaveText([
+    "Clear search",
+    "Clear filters",
+  ]);
+  await state.getByRole("button", { name: "Clear search" }).click();
+  await expect(rows(page)).toHaveCount(9);
+});

@@ -9,6 +9,17 @@ export type ListsScene = {
   oneRepository?: boolean;
   /** Extra sessions after the sample ones; every seventh is a fork. */
   sessions?: number;
+  /** Nothing shared and nothing on this Mac. */
+  empty?: boolean;
+  /** No repository is connected on this Mac. */
+  disconnected?: boolean;
+  /** A member whose role only reads, or cannot see, shared items. */
+  access?: "read" | "hidden";
+  /**
+   * Local discovery never finishes, or fails until the test sets
+   * `window.listsDiscovery` to "ok".
+   */
+  discovery?: "pending" | "failed";
 };
 
 type Kind = "memory" | "session" | "plan";
@@ -57,8 +68,9 @@ export async function listsIndexFixture(page: Page, scene: ListsScene = {}) {
     const sources = repositories.map((name) => ({
       id: name,
       name,
-      path: `${home}/code/${name}`,
-      folderState: "connected",
+      ...(scene.disconnected
+        ? {}
+        : { path: `${home}/code/${name}`, folderState: "connected" }),
     }));
     const hour = 60;
     const day = 24 * hour;
@@ -222,7 +234,7 @@ export async function listsIndexFixture(page: Page, scene: ListsScene = {}) {
               owner !== user
                 ? undefined
                 : logicalPath.startsWith("instructions/")
-                  ? `${sources[Number(repo)]?.path ?? sources[0].path}/${logicalPath.slice("instructions/".length)}`
+                  ? `${home}/code/${repositories[Number(repo)] ?? repositories[0]}/${logicalPath.slice("instructions/".length)}`
                   : `${home}/.${source}/${logicalPath.slice(String(source).length + 1)}`,
           } as Row;
         },
@@ -397,12 +409,21 @@ export async function listsIndexFixture(page: Page, scene: ListsScene = {}) {
     const all = (Object.keys(rows) as Kind[]).flatMap((kind) =>
       rows[kind].map((row) => ({ kind, row })),
     );
-    const shared = all
-      .filter(({ row }) => !row.local)
-      .map(({ kind, row }) => resource(kind, row));
+    const shared =
+      scene.empty || scene.access === "hidden"
+        ? []
+        : all
+            .filter(({ row }) => !row.local)
+            .map(({ kind, row }) => resource(kind, row));
     const local = (kind: Kind) =>
       rows[kind]
-        .filter((row) => row.local || row.status === "edits")
+        .filter(
+          (row) =>
+            !scene.empty &&
+            !scene.disconnected &&
+            (row.local ||
+              (row.status === "edits" && scene.access !== "hidden")),
+        )
         .map((row) => ({
           ...resource(kind, row),
           ...(row.status === "edits"
@@ -429,7 +450,13 @@ export async function listsIndexFixture(page: Page, scene: ListsScene = {}) {
       { id: "dev", role: "member", name: "Dev" },
     ];
     const catalog = {
-      access: {},
+      access: scene.access
+        ? Object.fromEntries(
+            ["instructions", "memory", "skill", "plan", "session", "env"].map(
+              (key) => [key, { mode: scene.access }],
+            ),
+          )
+        : {},
       members: scene.solo ? [] : members,
     };
     const located = new Map(
@@ -452,7 +479,7 @@ export async function listsIndexFixture(page: Page, scene: ListsScene = {}) {
                 {
                   id: "one",
                   name: "Orka",
-                  role: "owner",
+                  role: scene.access ? "member" : "owner",
                   governed: true,
                   sources,
                 },
@@ -502,8 +529,18 @@ export async function listsIndexFixture(page: Page, scene: ListsScene = {}) {
               deviceId: "device",
               background: true,
             };
-          if (name === "local_resource_catalog")
+          if (name === "local_resource_catalog") {
+            if (scene.discovery === "pending") return new Promise(() => {});
+            if (
+              scene.discovery === "failed" &&
+              (window as any).listsDiscovery !== "ok"
+            )
+              return {
+                resources: [],
+                errors: ["Permission denied (os error 13)"],
+              };
             return { resources: local(args.kind as Kind), errors: [] };
+          }
           if (name === "governance_command") return catalog;
           if (name === "session_display_title") return null;
           if (name === "resource_command" && args.action === "paths") {

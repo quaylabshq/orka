@@ -33,14 +33,14 @@ export function useFilterCategories(
   );
 }
 
-/** Search, Filter, Sort, then the refresh button and whatever the page adds. */
+/** Search, Filter, Sort, then the trailing controls and whatever the page adds. */
 export function SkillToolbar({
   page,
   showTools,
   categories,
   filters,
   onChange,
-  refresh,
+  trailing,
   actions,
 }: {
   page: IndexPage;
@@ -48,8 +48,8 @@ export function SkillToolbar({
   categories: FilterCategory[];
   filters: IndexFilters;
   onChange: (filters: IndexFilters) => void;
-  /** A quiet icon button at the right end; it hides with the tools. */
-  refresh?: React.ReactNode;
+  /** Controls at the right end, such as refresh; they hide with the tools. */
+  trailing?: React.ReactNode;
   actions?: React.ReactNode;
 }) {
   const noun = collectionNoun(page.kind);
@@ -72,9 +72,9 @@ export function SkillToolbar({
     ? filters.sort
     : page.defaultSort;
   const end =
-    showTools && refresh ? (
+    showTools && trailing ? (
       <>
-        {refresh}
+        {trailing}
         {actions}
       </>
     ) : (

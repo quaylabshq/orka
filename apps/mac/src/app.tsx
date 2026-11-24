@@ -902,6 +902,18 @@ function WorkspaceApp({
   const resourceLabel = pageLabels[tab];
   const collectionLabel =
     resourceLabel.charAt(0).toUpperCase() + resourceLabel.slice(1);
+  const listPage = tab === "memory" || tab === "plan" || tab === "session";
+  const repositoryProject = activeSources(selectedProject?.sources).some(
+    (source) => source.repository,
+  );
+  const connect = {
+    repositories: repositoryProject,
+    busy,
+    onConnect: () =>
+      repositoryProject
+        ? openSettings("general")
+        : void act(() => connectProject(project)),
+  };
   const accessRequest =
     selectedProject &&
     (tab === "memory" ||
@@ -1350,20 +1362,14 @@ function WorkspaceApp({
           ) : (
             <>
               {!hasConnectedSource(selectedProject) &&
-                selected?.kind !== "skill" && (
+                selected?.kind !== "skill" &&
+                // Lists say so in a pill beside their toolbar.
+                !(listPage && !selected) && (
                   <FolderConnectionPrompt
                     projectName={projectLabel(selectedProject)}
                     busy={busy}
-                    repositories={activeSources(selectedProject.sources).some(
-                      (source) => source.repository,
-                    )}
-                    onConnect={() =>
-                      activeSources(selectedProject.sources).some(
-                        (source) => source.repository,
-                      )
-                        ? openSettings("general")
-                        : void act(() => connectProject(project))
-                    }
+                    repositories={connect.repositories}
+                    onConnect={connect.onConnect}
                   />
                 )}
               <Suspense
@@ -1492,6 +1498,7 @@ function WorkspaceApp({
                     statusOf={statusOf}
                     multiRepository={repositories.length > 1}
                     connected={hasConnectedSource(selectedProject)}
+                    connect={connect}
                     noAccess={Boolean(
                       selectedProject.governed &&
                       selectedProject.role !== "owner" &&

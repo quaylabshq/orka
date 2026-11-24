@@ -1241,7 +1241,10 @@ test("a member with no shared access can request a collection from its empty pag
   await fixture(page, true, false, "restricted");
   await page.getByRole("button", { name: "Memories 0", exact: true }).click();
   await expect(
-    page.getByText("Access to shared memories is restricted.", { exact: true }),
+    page.getByRole("heading", {
+      name: "Shared memories are restricted",
+      exact: true,
+    }),
   ).toBeVisible();
   await page
     .getByRole("button", { name: "Request access", exact: true })

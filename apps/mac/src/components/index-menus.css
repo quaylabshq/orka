@@ -130,3 +130,86 @@
   margin-top: -20px;
   padding-top: 20px;
 }
+
+/* A page-wide limit beside the toolbar: the status pill at control height. */
+.index-access-pill {
+  height: 28px;
+  padding-inline: 10px;
+  border: 1px solid transparent;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.index-access-pill:hover,
+.index-access-pill[data-state="open"] {
+  border-color: currentColor;
+}
+
+.index-access-pill:focus-visible {
+  outline: 1px solid var(--border-focus);
+  outline-offset: 2px;
+}
+
+.index-access-panel {
+  z-index: 110;
+  display: flex;
+  width: 320px;
+  max-width: calc(100vw - 24px);
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-surface);
+  background: var(--surface-tertiary);
+  box-shadow: var(--shadow-workspace);
+  outline: none;
+}
+
+.index-access-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: var(--font-weight-medium);
+  line-height: 20px;
+}
+
+.index-access-title > svg {
+  flex-shrink: 0;
+  color: var(--amber-text);
+}
+
+.index-access-description {
+  margin: 0 0 4px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.index-access-panel > .ui-button {
+  width: 100%;
+}
+
+/* A secondary action keeps a visible fill on the panel's raised surface. */
+.index-access-panel .ui-button--secondary {
+  box-shadow: inset 0 0 0 100vmax var(--state-hover);
+}
+
+.index-access-panel .ui-button--secondary:hover:not(:disabled) {
+  box-shadow: inset 0 0 0 100vmax var(--state-pressed);
+}
+
+/* The access request sits in the toolbar or its panel instead of above. */
+.index-toolbar-actions .resource-access-request,
+.index-access-panel .resource-access-request {
+  margin: 0;
+}
+
+.index-toolbar-actions p.resource-access-request,
+.index-access-panel p.resource-access-request {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 20px;
+}
