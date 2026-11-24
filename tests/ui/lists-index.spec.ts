@@ -659,6 +659,22 @@ test("an empty list keeps only Refresh from the toolbar and says what will appea
   await expect.poll(scans).toBeGreaterThan(before);
 });
 
+test("narrowing a list announces how many rows are left, without a visible count", async ({
+  page,
+}) => {
+  await open(page, "Sessions");
+  const result = page.locator(".resource-index-body .sr-only[role='status']");
+  await expect(result).toHaveCount(0);
+  await page.getByRole("searchbox", { name: "Search sessions" }).fill("Skills");
+  await expect(result).toHaveText("4 sessions");
+  // Read out only: no visible copy of the count.
+  await expect(page.getByText("4 sessions")).toHaveCount(1);
+  await page.getByRole("searchbox", { name: "Search sessions" }).fill("");
+  await expect(result).toHaveCount(0);
+  await pick(page, "Status", "Upload refused");
+  await expect(result).toHaveText("1 session");
+});
+
 test("no match uses the Skills wording, with both ways out when filters are on too", async ({
   page,
 }) => {

@@ -328,6 +328,13 @@ export function ResourceIndex({
             Refreshing {noun}…
           </span>
         )}
+        {list && filtered && visible.length > 0 && (
+          // Lists show no count; a search or filter says what is left.
+          <span className="sr-only" role="status">
+            {visible.length}{" "}
+            {visible.length === 1 ? page.title.toLocaleLowerCase() : noun}
+          </span>
+        )}
         {list && discoveryErrors.length > 0 && resources.length > 0 && (
           <div className="resource-discovery-status">
             <div role={refreshing ? "status" : "alert"} aria-atomic="true">
