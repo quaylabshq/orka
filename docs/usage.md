@@ -69,8 +69,8 @@ required. The desktop pins the matching versioned 0.5.1 backend packages.
 Sessions, Memories, and Plans list every item, newest first, in one table that
 scrolls under its toolbar. Search matches titles, paths, and agents. **Filter**
 narrows by status, owner (**Updated by** on Memories), repository and location,
-plus agent and forks on Sessions, and agent and kind on Memories. Ownership stays
-with the original owner when someone else edits an item.
+plus agent and type (forks or originals) on Sessions, and agent and kind on
+Memories. Ownership stays with the original owner when someone else edits an item.
 
 Local items remain visible when automatic sharing is off. **On this Mac** means
 an item has not been published; viewing or opening it does not share it. A shared

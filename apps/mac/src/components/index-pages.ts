@@ -357,7 +357,7 @@ const categories: Record<
     options: () => Object.values(locations),
   },
   forks: {
-    label: () => "Forks",
+    label: () => "Type",
     icon: GitForkIcon,
     value: (resource) => (isFork(resource) ? "fork" : "original"),
     options: () => [

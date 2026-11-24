@@ -86,7 +86,7 @@ const pages = [
     noun: "Session",
     person: "Owner",
     headings: ["Session", "Agent", "Repository", "Owner", "Updated", "Status"],
-    filters: ["Status", "Owner", "Agent", "Repository", "Location", "Forks"],
+    filters: ["Status", "Owner", "Agent", "Repository", "Location", "Type"],
     pills: [
       "Local edits",
       "Conflict",
@@ -379,7 +379,7 @@ test("at 1160 the agent is a logo whose name stays available on hover and to ass
   );
 });
 
-test("Sessions list forks flat with a marker after the title, and the Forks filter finds them", async ({
+test("Sessions list forks flat with a marker after the title, and the Type filter finds them", async ({
   page,
 }) => {
   await open(page, "Sessions");
@@ -401,9 +401,9 @@ test("Sessions list forks flat with a marker after the title, and the Forks filt
   expect(markerBox.width).toBe(12);
   expect(markerBox.x).toBeGreaterThan(titleBox.x + titleBox.width);
   expect(markerBox.x - (titleBox.x + titleBox.width)).toBeLessThan(10);
-  await pick(page, "Forks", "Forks");
+  await pick(page, "Type", "Forks");
   await expect(page.locator(".index-table-open")).toHaveText(forks);
-  await pick(page, "Forks", "Originals");
+  await pick(page, "Type", "Originals");
   await expect(rows(page)).toHaveCount(16);
 });
 

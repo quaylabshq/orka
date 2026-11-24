@@ -526,7 +526,7 @@ describe("the memory, session, and plan pages", () => {
       "Agent",
       "Repository",
       "Location",
-      "Forks",
+      "Type",
     ]);
     expect(
       categoryLabels(

@@ -1668,7 +1668,7 @@ test("forks list flat with a marker, filter, and restore focus on nested session
     page.getByRole("button", { name: "Fork 8", exact: true }),
   ).toBeFocused();
   await page.getByRole("button", { name: /^Filter/ }).click();
-  await page.getByRole("menuitem", { name: "Forks" }).click();
+  await page.getByRole("menuitem", { name: "Type" }).click();
   await page
     .getByRole("menuitemcheckbox", { name: "Originals", exact: true })
     .click();
@@ -1679,7 +1679,7 @@ test("forks list flat with a marker, filter, and restore focus on nested session
   );
   await page
     .getByRole("group", { name: "Active filters" })
-    .getByRole("button", { name: "Remove Forks filter" })
+    .getByRole("button", { name: "Remove Type filter" })
     .click();
   await page.getByRole("searchbox").fill("Fork 7");
   await expect(rows).toHaveCount(1);
