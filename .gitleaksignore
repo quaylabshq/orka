@@ -8,3 +8,6 @@ c4249ce382763580a0ffff32f9cee1999ef838b5:pr-159/03d6b810bf3cf9cf44a8ba0b1c72b3aa
 # Verified SHA-256 hashes of PR #188 screenshots in two immutable manifests.
 c4564f55be9724b9de06fa59026fa3d6ec3c4d3c:pr-188/b8c57ff02a629cc1b1c6516d9ead58d09f3280a9/473e97925221/capture.json:generic-api-key:1
 b379426d9ccccd2d2585faf7cb74020422dfbc8c:pr-188/aa36680e3c13eb044cc8eea35629a67125449f1d/c32589941630/capture.json:generic-api-key:1
+
+# Verified PNG SHA-256 values in the immutable PR #198 screenshot manifest.
+45c65a19faa7f4e5e154988fba78aaf40c7b2548:pr-198/846b03edbf2cf33e1dd87158c2b7ac60745529c2/933d752e838d/capture.json:generic-api-key:1
