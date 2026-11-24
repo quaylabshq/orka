@@ -15,10 +15,18 @@ import { EmptyState } from "./empty-state.js";
 import { AccessPill } from "./index-access.js";
 import { useToasts } from "./toasts.js";
 import {
+  applyPageFilters,
+  clearFilterPicks,
   collectionNoun,
+  creditedMember,
   defaultIndexFilters,
+  effectiveFilters,
+  filterPicksActive,
+  indexPages,
+  isFork,
+  sortDirection,
   type IndexFilters,
-} from "./index-toolbar.js";
+} from "./skill-index.js";
 import { LoadingRegion } from "./loading-region.js";
 import { CollectionSkeleton } from "./collection-skeleton.js";
 import { skillSummaryKey, type SkillSummaries } from "./use-skill-summaries.js";
@@ -26,16 +34,6 @@ import { SkillPeek, SkillTable } from "./skill-table.js";
 import { ListPeek } from "./list-peek.js";
 import { sessionTree } from "./session-tree.js";
 import { SkillToolbar, useFilterCategories } from "./skill-toolbar.js";
-import {
-  applyPageFilters,
-  clearFilterPicks,
-  creditedMember,
-  effectiveFilters,
-  filterPicksActive,
-  indexPages,
-  isFork,
-  sortDirection,
-} from "./skill-index.js";
 import type { IndexStatus } from "./skill-status.js";
 import { useMemberLabel } from "./member-names.js";
 import { SessionMessagesQuery } from "./use-session-messages.js";

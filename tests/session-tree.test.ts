@@ -1,9 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import {
-  sessionAncestors,
-  sessionTree,
-} from "../apps/mac/src/components/session-tree.js";
+import { sessionTree } from "../apps/mac/src/components/session-tree.js";
 import type { ProjectResource } from "../apps/mac/src/types.js";
 
 const resource = (
@@ -36,7 +33,7 @@ const resource = (
     : {}),
 });
 
-void test("fork trees preserve sibling sort order, nested ancestry, and filtered orphans", () => {
+void test("fork trees preserve sibling sort order, nested parents, and filtered orphans", () => {
   const list = [
     resource("newest", "source"),
     resource("grandchild", "older"),
@@ -45,23 +42,18 @@ void test("fork trees preserve sibling sort order, nested ancestry, and filtered
     resource("other"),
   ];
   const tree = sessionTree(list);
-  assert.deepEqual(
-    tree.roots.map((r) => r.resourceId),
-    ["source", "other"],
-  );
+  assert.deepEqual(Object.fromEntries(tree.parents), {
+    newest: "source",
+    grandchild: "older",
+    older: "source",
+  });
   assert.deepEqual(
     tree.children.get("source")?.map((r) => r.resourceId),
     ["newest", "older"],
   );
-  assert.deepEqual(sessionAncestors("grandchild", tree.parents), [
-    "older",
-    "source",
-  ]);
-  assert.deepEqual(
-    sessionTree(list.filter((r) => r.resourceId === "grandchild")).roots.map(
-      (r) => r.resourceId,
-    ),
-    ["grandchild"],
+  assert.equal(
+    sessionTree(list.filter((r) => r.resourceId === "grandchild")).parents.size,
+    0,
   );
 });
 
@@ -75,8 +67,8 @@ void test("invalid lineage cannot hide sessions or join different projects and r
     { ...resource("other-repo", "orphan"), sourceId: "different" },
   ];
   const tree = sessionTree(list);
-  assert.equal(tree.roots.length, list.length);
   assert.equal(tree.parents.size, 0);
+  assert.equal(tree.children.size, 0);
 });
 
 void test("native lineage nests local forks and gives Orka-recorded lineage precedence", () => {
@@ -90,10 +82,9 @@ void test("native lineage nests local forks and gives Orka-recorded lineage prec
     nativeForkParentId: parent.resourceId,
   };
   const tree = sessionTree([managed, native, parent]);
-  assert.deepEqual(tree.roots, [parent]);
-  assert.deepEqual(sessionAncestors("managed", tree.parents), [
-    "native",
-    "parent",
-  ]);
-  assert.deepEqual(sessionTree([native]).roots, [native]);
+  assert.deepEqual(Object.fromEntries(tree.parents), {
+    managed: "native",
+    native: "parent",
+  });
+  assert.equal(sessionTree([native]).parents.size, 0);
 });

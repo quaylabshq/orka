@@ -63,10 +63,6 @@
   background: var(--border-default);
 }
 
-.resource-table-actions {
-  text-align: right;
-}
-
 .modal.toast-host-modal.resource-command-dialog {
   display: flex;
   flex-direction: column;
@@ -537,12 +533,4 @@
 [data-item-menu-open]:not(.resource-detail, tr) {
   outline: 2px solid var(--border-focus);
   outline-offset: -2px;
-}
-
-.resource-table tbody tr[data-item-menu-open] > * {
-  background: color-mix(
-    in srgb,
-    var(--surface-tertiary) 60%,
-    var(--surface-secondary)
-  );
 }

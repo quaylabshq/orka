@@ -1,14 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type { ProjectResource } from "../types.js";
-import { defaultIndexFilters } from "./index-toolbar.js";
-import { listStatuses } from "./list-status.js";
 import {
   applyPageFilters,
+  defaultIndexFilters,
   effectiveFilters,
   filterCategories,
   indexPages,
   sortDirection,
 } from "./skill-index.js";
+import { listStatuses } from "./list-status.js";
 import type { SkillReviewState } from "./skill-review-state.js";
 import type { AttentionItem } from "./sync-attention.js";
 import { skillStatus, skillStatuses } from "./skill-status.js";

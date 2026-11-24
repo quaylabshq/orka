@@ -10,7 +10,9 @@ import {
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import type { ProjectResource, SessionPage } from "../types.js";
-import { ResourceTable } from "./resource-table.js";
+import { ResourceIndex } from "./resource-index.js";
+import { defaultIndexFilters } from "./skill-index.js";
+import { ToastProvider } from "./toasts.js";
 import { WorkspaceCacheProvider } from "./workspace-cache.js";
 import { useSessionMessages } from "./use-session-messages.js";
 
@@ -127,17 +129,20 @@ const resource: ProjectResource = {
 function SessionIndex({ local = false }: { local?: boolean }) {
   const [open, setOpen] = useState(false);
   return (
-    <>
-      <ResourceTable
+    <ToastProvider scope="test">
+      <ResourceIndex
+        skillSummaries={{}}
+        kind="session"
         resources={[{ ...resource, local: local ? true : undefined }]}
-        label="Session"
+        filters={defaultIndexFilters}
+        onFilters={() => {}}
         user="alice"
         displayTitle={(item) => item.title}
-        conflicted={new Set()}
+        connected
         onOpen={() => setOpen(true)}
       />
       {open && <Sessions contentKey="hash-a" refreshOnMount={local} />}
-    </>
+    </ToastProvider>
   );
 }
 

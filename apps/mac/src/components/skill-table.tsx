@@ -17,17 +17,18 @@ import React, {
   useState,
 } from "react";
 import type { ProjectResource as Resource } from "../types.js";
-import type { IndexSort, IndexSortDirection } from "./index-toolbar.js";
-import { ItemMenuButton } from "./item-menu.js";
-import { useMemberPhoto } from "./member-names.js";
-import { ResourceItemMenu } from "./resource-menu.js";
 import {
   agentOf,
   creditedMember,
   locationOf,
   type IndexColumn,
   type IndexPage,
+  type IndexSort,
+  type IndexSortDirection,
 } from "./skill-index.js";
+import { ItemMenuButton } from "./item-menu.js";
+import { useMemberPhoto } from "./member-names.js";
+import { ResourceItemMenu } from "./resource-menu.js";
 import type { IndexStatus } from "./skill-status.js";
 import { SourceLabel, sourceName } from "./source-label.js";
 import { UpdatedTime } from "./updated-time.js";

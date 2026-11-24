@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import type { Resource } from "@portable/protocol";
-import { defaultIndexFilters, type IndexFilters } from "./index-toolbar.js";
-import { indexPages } from "./skill-index.js";
+import {
+  defaultIndexFilters,
+  indexPages,
+  type IndexFilters,
+} from "./skill-index.js";
 
 type Kind = Resource["kind"];
 const opening = (kind: Kind): IndexFilters => ({

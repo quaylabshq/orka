@@ -6,7 +6,7 @@ import { isFork } from "./skill-index.js";
 import { UpdatedTime } from "./updated-time.js";
 
 /** A session's place among its forks, read from the whole collection. */
-export interface SessionFamily {
+interface SessionFamily {
   /** The display title of the session this one forked from. */
   parent?: string;
   forks: number;

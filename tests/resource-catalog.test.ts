@@ -3,9 +3,10 @@ import assert from "node:assert/strict";
 import type { ProjectResource } from "../apps/mac/src/types.js";
 import { resourceCatalog } from "../apps/mac/src/components/resource-catalog.js";
 import {
-  applyIndexFilters,
+  applyPageFilters,
   defaultIndexFilters,
-} from "../apps/mac/src/components/index-toolbar.js";
+  indexPages,
+} from "../apps/mac/src/components/skill-index.js";
 
 const resource = (
   id: string,
@@ -27,11 +28,6 @@ const resource = (
   files: [],
   ...fields,
 });
-const context = {
-  displayTitle: (resource: ProjectResource) => resource.title,
-  user: "me",
-};
-
 void test("the default collection includes private, own shared, and teammate content", () => {
   const shared = [
     resource("my-shared", { updatedBy: "teammate" }),
@@ -39,100 +35,15 @@ void test("the default collection includes private, own shared, and teammate con
   ];
   const privateItem = resource("private", { local: true, revision: 0 });
   const catalog = resourceCatalog(shared, [privateItem]);
-  assert.equal(defaultIndexFilters.ownership, "all");
   assert.deepEqual(
-    applyIndexFilters(catalog, defaultIndexFilters, context).map(
-      (item) => item.resourceId,
-    ),
-    ["my-shared", "teammate-shared", "private"],
+    applyPageFilters(indexPages.session, catalog, defaultIndexFilters, {
+      displayTitle: (item) => item.title,
+      user: "me",
+      memberName: (id) => id,
+      statusOf: () => null,
+    }).map((item) => item.resourceId),
+    ["my-shared", "private", "teammate-shared"],
   );
-});
-
-for (const kind of ["memory", "session", "plan"] as const) {
-  void test(`${kind} ownership views follow the owner despite edits and downloaded copies`, () => {
-    const catalog = [
-      resource("mine", { kind, updatedBy: "teammate" }),
-      resource("private", { kind, local: true, revision: 0 }),
-      resource("downloaded", { kind, owner: "teammate", updatedBy: "me" }),
-    ];
-    assert.deepEqual(
-      applyIndexFilters(
-        catalog,
-        { ...defaultIndexFilters, ownership: "mine" },
-        context,
-      ).map((item) => item.resourceId),
-      ["mine", "private"],
-    );
-    assert.deepEqual(
-      applyIndexFilters(
-        catalog,
-        { ...defaultIndexFilters, ownership: "shared" },
-        context,
-      ).map((item) => item.resourceId),
-      ["downloaded"],
-    );
-  });
-}
-
-void test("ownership composes with repository, provider, search, and sorting", () => {
-  const catalog = [
-    resource("mine-latest", {
-      title: "Backend notes",
-      sourceId: "backend",
-      updatedAt: "2026-11-13T09:00:00Z",
-    }),
-    resource("mine-earlier", {
-      title: "Backend notes",
-      sourceId: "backend",
-    }),
-    resource("teammate", {
-      owner: "teammate",
-      title: "Backend notes",
-      sourceId: "backend",
-    }),
-    resource("other-provider", {
-      source: "claude",
-      title: "Backend notes",
-      sourceId: "backend",
-    }),
-    resource("other-repository", { title: "Backend notes" }),
-    resource("other-title", { title: "Unrelated", sourceId: "backend" }),
-  ];
-  const filters = {
-    ...defaultIndexFilters,
-    ownership: "mine" as const,
-    repository: "backend",
-    source: "codex" as const,
-    query: " NOTES ",
-  };
-  assert.deepEqual(
-    applyIndexFilters(catalog, filters, context).map((item) => item.resourceId),
-    ["mine-latest", "mine-earlier"],
-  );
-  assert.equal(catalog.length, 6);
-});
-
-void test("author sorting follows session and plan owners while memories and skills keep their updater", () => {
-  for (const kind of ["session", "memory", "plan", "skill"] as const) {
-    const catalog = [
-      resource("alex-session", { kind, owner: "alex", updatedBy: "zoe" }),
-      resource("zoe-session", { kind, owner: "zoe", updatedBy: "alex" }),
-    ];
-    const sorted = applyIndexFilters(
-      catalog,
-      { ...defaultIndexFilters, sort: "author" },
-      {
-        ...context,
-        memberName: (id) => id,
-      },
-    ).map((item) => item.resourceId);
-    assert.deepEqual(
-      sorted,
-      kind === "session" || kind === "plan"
-        ? ["alex-session", "zoe-session"]
-        : ["zoe-session", "alex-session"],
-    );
-  }
 });
 
 void test("a private continuation occupies one row while preserving its published ownership and revision", () => {

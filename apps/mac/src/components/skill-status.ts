@@ -47,7 +47,7 @@ export interface IndexStatus<Key extends string = string> {
   icon: IconGlyph;
 }
 
-export type SkillStatus = IndexStatus<SkillStatusKey>;
+type SkillStatus = IndexStatus<SkillStatusKey>;
 
 const status = (
   key: SkillStatusKey,

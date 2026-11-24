@@ -19,15 +19,43 @@ import type {
   FilterOption,
   SortOption,
 } from "./index-menus.js";
-import type {
-  IndexFilterKey,
-  IndexFilters,
-  IndexSort,
-  IndexSortDirection,
-} from "./index-toolbar.js";
 import { isInstructionFile, listStatuses } from "./list-status.js";
 import { skillStatuses, statusRank, type IndexStatus } from "./skill-status.js";
 import { sourceName } from "./source-label.js";
+
+export type IndexSort =
+  "updated" | "title" | "author" | "status" | "repository";
+export type IndexSortDirection = "asc" | "desc";
+/** A category in an index's Filter menu. */
+export type IndexFilterKey =
+  | "statuses"
+  | "people"
+  | "agents"
+  | "repositories"
+  | "locations"
+  | "forks"
+  | "kinds";
+
+/** Presentation-only view state for one collection; never touches stored data. */
+export interface IndexFilters {
+  query: string;
+  sort: IndexSort;
+  /** Unset means the sort's natural order: newest first, or A to Z. */
+  direction?: IndexSortDirection;
+  /** Filter menu picks by category; an empty or missing list filters nothing. */
+  picks?: Partial<Record<IndexFilterKey, string[]>>;
+}
+
+export const defaultIndexFilters: IndexFilters = { query: "", sort: "updated" };
+
+const nouns: Record<ProjectResource["kind"], string> = {
+  memory: "memories",
+  skill: "skills",
+  session: "sessions",
+  plan: "plans",
+};
+/** The lowercase plural used for labels such as "Search memories". */
+export const collectionNoun = (kind: ProjectResource["kind"]) => nouns[kind];
 
 /** A column between the name and the row menu. */
 export type IndexColumn =

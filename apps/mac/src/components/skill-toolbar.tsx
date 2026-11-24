@@ -7,17 +7,15 @@ import {
   type FilterCategory,
 } from "./index-menus.js";
 import {
-  collectionNoun,
-  type IndexFilterKey,
-  type IndexFilters,
-} from "./index-toolbar.js";
-import { SearchField } from "./search-field.js";
-import {
   clearFilterPicks,
+  collectionNoun,
   filterCategories,
   sortDirection,
+  type IndexFilterKey,
+  type IndexFilters,
   type IndexPage,
 } from "./skill-index.js";
+import { SearchField } from "./search-field.js";
 
 /** The filter categories this collection can offer, with the current picks. */
 export function useFilterCategories(

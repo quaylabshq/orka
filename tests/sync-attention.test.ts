@@ -7,9 +7,9 @@ import type {
   Snapshot,
 } from "../apps/mac/src/types.js";
 import { projectAttention } from "../apps/mac/src/components/sync-attention.js";
-import { defaultIndexFilters } from "../apps/mac/src/components/index-toolbar.js";
 import {
   applyPageFilters,
+  defaultIndexFilters,
   indexPages,
 } from "../apps/mac/src/components/skill-index.js";
 import {

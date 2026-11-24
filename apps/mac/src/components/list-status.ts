@@ -24,7 +24,7 @@ export type ListStatusKey =
   | "waiting-to-sync"
   | "local-edits";
 
-export type ListStatus = IndexStatus<ListStatusKey>;
+type ListStatus = IndexStatus<ListStatusKey>;
 
 export interface ListStatusInput {
   resource: ProjectResource;

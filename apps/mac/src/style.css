@@ -905,41 +905,6 @@
   .skill-origin-badge {
     @apply inline-flex shrink-0 items-center rounded border border-line bg-surface-tertiary px-1.5 py-0.5 text-body-2xs text-secondary;
   }
-  .resource-ownership-toolbar {
-    @apply mb-4 flex items-center justify-between gap-3;
-  }
-  .segmented-control.resource-ownership-tabs {
-    @apply gap-6;
-    min-width: 0;
-    padding: 0;
-    border-radius: 0;
-    background: transparent;
-  }
-  .resource-ownership-tabs .ui-button {
-    @apply text-body-sm;
-    position: relative;
-    min-height: 44px;
-    padding: 0 0 12px;
-    border-radius: 0;
-    color: var(--text-secondary);
-    background: transparent;
-    box-shadow: none;
-    transform: none;
-  }
-  .resource-ownership-tabs .ui-button:hover,
-  .resource-ownership-tabs .ui-button[aria-pressed="true"] {
-    color: var(--text-primary);
-    background: transparent;
-  }
-  .resource-ownership-tabs .ui-button[aria-pressed="true"]::after {
-    position: absolute;
-    right: 0;
-    bottom: 0;
-    left: 0;
-    height: 2px;
-    background: var(--text-primary);
-    content: "";
-  }
   .resource-discovery-status {
     @apply mb-4 flex flex-col items-start gap-3 border border-line bg-panel p-4 text-body-xs text-secondary;
     border-radius: var(--radius-surface);
@@ -954,7 +919,7 @@
   .resource-discovery-message {
     @apply m-0 mt-1;
   }
-  /* Shared index toolbar: search, source filter, count, sort. */
+  /* Shared index toolbar: Search, Filter, Sort, then trailing controls. */
   .index-toolbar {
     @apply mb-4 flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2;
   }
@@ -963,51 +928,14 @@
     flex: 1 1 144px;
     max-width: 240px;
   }
-  .index-toolbar .segmented-control .source-label {
-    @apply gap-1;
-    color: inherit;
-    font: inherit;
-    letter-spacing: inherit;
-  }
-  .index-toolbar .segmented-control .source-label > img,
-  .index-toolbar .segmented-control .source-label > svg {
-    @apply h-3.5 w-3.5;
-  }
   .index-toolbar-actions {
     @apply ml-auto flex shrink-0 items-center gap-3;
   }
-  .index-toolbar-count {
-    @apply whitespace-nowrap text-body-xs text-muted;
-  }
-  .index-toolbar .index-toolbar-sort {
-    --control-gap: 4px;
-    --control-padding-x: 10px;
-  }
-  .index-toolbar .index-toolbar-sort[data-state="open"] {
-    background: var(--state-pressed);
-  }
-  .index-sort-menu [role="menu"] {
-    @apply flex flex-col gap-1;
-  }
-  .index-sort-option .index-sort-option-label {
-    @apply min-w-0 flex-1 text-left;
-  }
+  /* The Reviews tables. */
   .resource-table {
-    --resource-meta-width: 128px;
     --resource-cell-padding: 16px;
     @apply w-full border-separate border-spacing-0 rounded-xl border border-line text-left;
     table-layout: fixed;
-  }
-  .resource-table-pagination {
-    @apply mt-3 flex items-center justify-end gap-2 text-body-sm text-secondary;
-  }
-  .resource-table-col-repository,
-  .resource-table-col-identity,
-  .resource-table-col-updated {
-    width: var(--resource-meta-width);
-  }
-  .resource-table-col-actions {
-    width: calc(var(--button-sm-height) + 2 * var(--resource-cell-padding));
   }
   .resource-table th,
   .resource-table td {
@@ -1056,49 +984,6 @@
     align-items: center;
     gap: 8px;
     min-width: 0;
-  }
-  .resource-table-title-text {
-    flex: 1;
-    min-width: 0;
-  }
-  .session-forks-toggle {
-    @apply text-body-2xs;
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    flex: none;
-    min-height: 28px;
-    padding: 4px 0;
-    border: 0;
-    border-radius: var(--radius-control);
-    background: transparent;
-    color: var(--text-secondary);
-  }
-  .session-forks-disclosure {
-    display: inline-flex;
-    flex: 0 0 44px;
-  }
-  .session-fork-icon {
-    flex: none;
-    color: var(--text-tertiary);
-  }
-  .session-forks-more td {
-    height: 40px;
-  }
-  .session-forks-more {
-    cursor: default;
-  }
-  .resource-table-title .resource-conflict {
-    @apply mt-1 flex items-center gap-1.5 text-xs text-foreground;
-  }
-  .resource-table-suffix {
-    @apply mt-0.5 block w-full truncate text-body-2xs text-muted;
-  }
-  .resource-table-updated {
-    @apply text-left text-muted;
-  }
-  .resource-table-updated time {
-    @apply block truncate;
   }
   /* Session reader: a speaker column beside each turn. */
   .session-conversation {
@@ -1663,7 +1548,6 @@
 }
 @media (max-width: 999px) {
   .resource-table {
-    --resource-meta-width: 100px;
     --resource-cell-padding: 12px;
   }
   .index-toolbar > .ui-field {

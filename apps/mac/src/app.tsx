@@ -111,7 +111,7 @@ import { useDeepLinks } from "./components/use-deep-links.js";
 import { PluginAuthorization } from "./components/plugin-authorization.js";
 import { parseProjectInvite } from "./components/project-invite.js";
 import { useIndexFilters } from "./components/use-index-filters.js";
-import { defaultIndexFilters } from "./components/index-toolbar.js";
+import { defaultIndexFilters } from "./components/skill-index.js";
 import { useResourceView } from "./components/use-resource-view.js";
 import {
   useSkillSummaries,
