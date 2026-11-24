@@ -522,7 +522,11 @@ export async function listsIndexFixture(page: Page, scene: ListsScene = {}) {
                   sources,
                 },
               ],
-              resources: shared,
+              // Rows a test has taken out of later snapshots.
+              resources: shared.filter(
+                ({ resourceId }) =>
+                  !((window as any).listsHidden ?? []).includes(resourceId),
+              ),
               bindings: [
                 ...withStatus("review").map(({ kind, row }) => ({
                   resourceId: row.id,

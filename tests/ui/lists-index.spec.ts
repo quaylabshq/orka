@@ -241,6 +241,25 @@ test("Couldn’t read marks the plan whose own file failed, not one a rescan rep
   ).toHaveCount(0);
 });
 
+test("a pick whose person left stays dropped when they come back", async ({
+  page,
+}) => {
+  await open(page, "Plans");
+  await pick(page, "Owner", "Dev");
+  await expect(rows(page)).toHaveCount(3);
+  const dev = ["plan-6", "plan-11", "plan-14"];
+  await page.evaluate((ids) => ((window as any).listsHidden = ids), dev);
+  await expect(rows(page)).toHaveCount(13);
+  await expect(
+    page.getByRole("button", { name: "Remove Owner filter" }),
+  ).toHaveCount(0);
+  await page.evaluate(() => ((window as any).listsHidden = []));
+  await expect(rows(page)).toHaveCount(16);
+  await expect(
+    page.getByRole("button", { name: "Remove Owner filter" }),
+  ).toHaveCount(0);
+});
+
 test("Memories tell repeated file names apart by agent, and the Kind filter splits instruction files from memories", async ({
   page,
 }) => {

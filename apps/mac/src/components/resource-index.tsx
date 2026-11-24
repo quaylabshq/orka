@@ -25,6 +25,7 @@ import {
   indexPages,
   isFork,
   sortDirection,
+  type IndexFilterKey,
   type IndexFilters,
 } from "./index-pages.js";
 import { LoadingRegion } from "./loading-region.js";
@@ -153,6 +154,16 @@ export function ResourceIndex({
     () => effectiveFilters(filters, categories),
     [filters, categories],
   );
+  // A pick whose option went away is dropped for good, so it cannot come
+  // back on its own when that person or repository returns.
+  const stalePicks = Object.entries(filters.picks ?? {}).some(
+    ([id, picks]) =>
+      (picks?.length ?? 0) >
+      (applied.picks?.[id as IndexFilterKey]?.length ?? 0),
+  );
+  useEffect(() => {
+    if (stalePicks) onFilters(applied);
+  }, [stalePicks, applied, onFilters]);
   const visible = useMemo(
     () =>
       applyPageFilters(page, resources, applied, {

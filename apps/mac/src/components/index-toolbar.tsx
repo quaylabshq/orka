@@ -63,7 +63,8 @@ export function IndexToolbar({
       picks: { ...filters.picks, [category as IndexFilterKey]: picks },
     });
   const toggle = (category: string, value: string) => {
-    const current = filters.picks?.[category as IndexFilterKey] ?? [];
+    const current =
+      categories.find(({ id }) => id === category)?.selected ?? [];
     setPicks(
       category,
       current.includes(value)
