@@ -136,12 +136,17 @@ export function ResourceIndex({
   }, [discovering, discoveryResult, refreshRequest, kind, notify]);
   const page = indexPages[kind];
   const root = useRef<HTMLElement>(null);
+  const showRepository =
+    kind === "skill"
+      ? resources.some((skill) => skill.repositoryName)
+      : multiRepository;
   const categories = useFilterCategories(
     page,
     resources,
     filters,
     user,
     memberName,
+    showRepository,
   );
   // Filter by the picks that still have an option behind them.
   const applied = useMemo(
@@ -427,11 +432,7 @@ export function ResourceIndex({
             memberName={memberName}
             statusOf={statusOf}
             displayTitle={displayTitle}
-            showRepository={
-              kind === "skill"
-                ? resources.some((skill) => skill.repositoryName)
-                : multiRepository
-            }
+            showRepository={showRepository}
             // A project with nobody else in it has no one to credit.
             showPerson={resources.some(
               (resource) => creditedMember(page, resource, user) !== user,

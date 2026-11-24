@@ -269,6 +269,8 @@ interface IndexContext {
 }
 type OptionContext = Pick<IndexContext, "user" | "memberName"> & {
   page: IndexPage;
+  /** The table shows a Repository column; its filter needs one too. */
+  repositories: boolean;
 };
 
 const categories: Record<
@@ -330,11 +332,14 @@ const categories: Record<
     label: () => "Repository",
     icon: FolderIcon,
     value: (resource) => resource.sourceId ?? undefined,
-    options: (resources) =>
+    options: (resources, { repositories }) =>
       [
         ...new Map(
           resources
-            .filter((resource) => resource.sourceId && resource.repositoryName)
+            .filter(
+              (resource) =>
+                repositories && resource.sourceId && resource.repositoryName,
+            )
             .map((resource) => [
               resource.sourceId as string,
               resource.repositoryName as string,

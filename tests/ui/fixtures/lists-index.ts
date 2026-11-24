@@ -7,6 +7,8 @@ export type ListsScene = {
   solo?: boolean;
   /** One connected repository instead of four. */
   oneRepository?: boolean;
+  /** Two repositories, the second removed from the project; its rows stay. */
+  removedRepository?: boolean;
   /** Extra sessions after the sample ones; every seventh is a fork. */
   sessions?: number;
   /** Nothing shared and nothing on this Mac. */
@@ -64,13 +66,16 @@ export async function listsIndexFixture(page: Page, scene: ListsScene = {}) {
       "orka-api",
       "infrastructure-and-deployment",
       "data-pipelines-and-analytics",
-    ].slice(0, scene.oneRepository ? 1 : 4);
-    const sources = repositories.map((name) => ({
+    ].slice(0, scene.oneRepository ? 1 : scene.removedRepository ? 2 : 4);
+    const sources = repositories.map((name, index) => ({
       id: name,
       name,
       ...(scene.disconnected
         ? {}
         : { path: `${home}/code/${name}`, folderState: "connected" }),
+      ...(scene.removedRepository && index === 1
+        ? { removedAt: "2026-11-20T10:00:00Z" }
+        : {}),
     }));
     const hour = 60;
     const day = 24 * hour;

@@ -153,6 +153,19 @@ for (const scene of pages) {
     ).toBeVisible();
   });
 
+  test(`${scene.label} offer no Repository filter while one repository is left and the column is gone`, async ({
+    page,
+  }) => {
+    await open(page, scene.label, { removedRepository: true });
+    await expect(
+      page.getByRole("columnheader", { name: "Repository" }),
+    ).toHaveCount(0);
+    await filter(page).click();
+    await expect(page.getByRole("menuitem")).toHaveText(
+      scene.filters.filter((label) => label !== "Repository"),
+    );
+  });
+
   test(`${scene.label} show people as avatars at 1160 with their names kept for assistive technology`, async ({
     page,
   }) => {

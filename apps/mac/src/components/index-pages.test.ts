@@ -476,10 +476,12 @@ describe("the memory, session, and plan pages", () => {
   const categoryLabels = (
     kind: keyof typeof indexPages,
     items: ProjectResource[],
+    repositories = true,
   ) =>
     filterCategories(indexPages[kind], items, defaultIndexFilters, {
       user: "me",
       memberName: (id) => (id === "me" ? "You" : id),
+      repositories,
     }).map(({ label }) => label);
 
   it("opens on Last updated, newest first", () => {
@@ -544,6 +546,13 @@ describe("the memory, session, and plan pages", () => {
     expect(
       categoryLabels("skill", [skill("a"), skill("b", { owner: "me" })]),
     ).toEqual(["Status", "Shared by", "Location"]);
+  });
+
+  it("offers Repository only beside a Repository column", () => {
+    expect(categoryLabels("session", sessions)).toContain("Repository");
+    expect(categoryLabels("session", sessions, false)).not.toContain(
+      "Repository",
+    );
   });
 
   it("offers Agent only with two agents present, never counting shared items", () => {
@@ -615,7 +624,7 @@ describe("the memory, session, and plan pages", () => {
       indexPages.session,
       sessions,
       { ...defaultIndexFilters, picks: { repositories: ["removed"] } },
-      { user: "me", memberName: (id) => id },
+      { user: "me", memberName: (id) => id, repositories: true },
     );
     expect(
       run("session", sessions, effectiveFilters(defaultIndexFilters, shown)),

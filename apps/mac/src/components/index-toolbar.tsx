@@ -24,10 +24,16 @@ export function useFilterCategories(
   filters: IndexFilters,
   user: string | null,
   memberName: (id: string) => string,
+  repositories: boolean,
 ): FilterCategory[] {
   return useMemo(
-    () => filterCategories(page, resources, filters, { user, memberName }),
-    [page, resources, filters, user, memberName],
+    () =>
+      filterCategories(page, resources, filters, {
+        user,
+        memberName,
+        repositories,
+      }),
+    [page, resources, filters, user, memberName, repositories],
   );
 }
 
