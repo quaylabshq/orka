@@ -172,6 +172,9 @@ connector connector_tool_failed tool=get_project_context,get_profile,list_projec
 desktop integration_hook_approved
 desktop integration_trust_blocked
 dashboard library_viewed
+dashboard library_collection_changed resource_kind=skill,session,plan
+dashboard library_sort_changed sort=name,repository,recent
+dashboard library_page_changed destination=first,next
 dashboard library_search_completed result_count=zero,one,several
 dashboard library_filter_applied
 dashboard artifact_viewed
