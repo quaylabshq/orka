@@ -359,10 +359,6 @@
     width: 150px;
   }
 
-  .skill-table-col-updated {
-    width: 100px;
-  }
-
   /* Hidden from sight only: the names still label the logo and the avatar. */
   .skill-table-agent .source-label > span,
   .skill-table-agent-heading .skill-table-heading-label,

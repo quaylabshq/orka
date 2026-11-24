@@ -184,7 +184,7 @@ export function ResourceIndex({
     !noAccess &&
     connected,
   );
-  const refreshButton = onRefreshLocal && (
+  const refreshButton = kind !== "skill" && onRefreshLocal && (
     <IconButton
       icon={RefreshCwIcon}
       size="sm"

@@ -391,6 +391,14 @@ test("two hundred skills scroll under a fixed toolbar, and the last row's menu s
   expect(box.x + box.width).toBeLessThanOrEqual(compact.width);
 });
 
+test("the Skills toolbar has no refresh button", async ({ page }) => {
+  await skillsIndexFixture(page);
+  await expect(filter(page)).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Refresh local items" }),
+  ).toHaveCount(0);
+});
+
 test("skills with no repository leave the cell empty and are not offered as a filter", async ({
   page,
 }) => {

@@ -154,6 +154,13 @@ for (const scene of pages) {
     await expect(
       page.getByRole("columnheader", { name: scene.person }),
     ).toBeVisible();
+    // The sorted Updated heading keeps its whole label beside the arrow.
+    const updated = page
+      .getByRole("columnheader", { name: "Updated", exact: true })
+      .locator(".skill-table-heading-label");
+    expect(
+      await updated.evaluate((label) => label.scrollWidth <= label.clientWidth),
+    ).toBe(true);
   });
 }
 
