@@ -30,7 +30,10 @@ import {
   type IndexFilters,
 } from "./index-pages.js";
 import { LoadingRegion } from "./loading-region.js";
-import { CollectionSkeleton } from "./collection-skeleton.js";
+import {
+  CollectionSkeleton,
+  IndexTableSkeleton,
+} from "./collection-skeleton.js";
 import { skillSummaryKey, type SkillSummaries } from "./use-skill-summaries.js";
 import { SkillPeek, IndexTable } from "./index-table.js";
 import { ListPeek } from "./list-peek.js";
@@ -377,7 +380,18 @@ export function ResourceIndex({
             id={`collection:${kind}`}
             label={`Loading ${noun}…`}
             loading
-            skeleton={<CollectionSkeleton />}
+            skeleton={
+              list ? (
+                <IndexTableSkeleton
+                  page={page}
+                  showRepository={showRepository}
+                  sort={filters.sort}
+                  direction={sortDirection(filters)}
+                />
+              ) : (
+                <CollectionSkeleton />
+              )
+            }
           >
             <div />
           </LoadingRegion>

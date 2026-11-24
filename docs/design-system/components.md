@@ -106,10 +106,10 @@ The same treatment applies to readers, conversations, skill pickers, members, an
 settings. Reduced motion keeps placeholders static; available controls and content
 stay usable.
 
-Sessions, Memories, and Plans use `CollectionSkeleton` on first discovery, without
-visible loading copy. Its six bordered rows each hold a title bar, a shorter line
-below it, and three narrow column shapes. That is the shape of the rows before the
-index table; it does not mirror the table's columns or the status pill. The
+Sessions, Memories, and Plans use `IndexTableSkeleton` on first discovery, without
+visible loading copy. It draws the page's index table header, the same columns the
+loaded table will show, over eight 44 px rows with one bar per column and a status
+bar on only some rows. Skills and Reviews keep `CollectionSkeleton`. The
 Skills description peek and Home updates show placeholders only for pending metadata,
 keeping known content and navigation available. Decorative shapes stay out of the
 accessibility tree; one status announces the pending collection. Background refresh

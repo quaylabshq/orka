@@ -6,10 +6,22 @@ import {
 } from "./fixtures/resource-library.js";
 
 for (const width of [1160, 900]) {
-  for (const { label, kind } of [
-    { label: "Sessions", kind: "session" },
-    { label: "Memories", kind: "memory" },
-    { label: "Plans", kind: "plan" },
+  for (const { label, kind, headings } of [
+    {
+      label: "Sessions",
+      kind: "session",
+      headings: ["Session", "Agent", "Repository", "Updated", "Status"],
+    },
+    {
+      label: "Memories",
+      kind: "memory",
+      headings: ["Memory", "Agent", "Repository", "Updated", "Status"],
+    },
+    {
+      label: "Plans",
+      kind: "plan",
+      headings: ["Plan", "Repository", "Updated", "Status"],
+    },
   ]) {
     test(`${label} loading fits at ${width}px and leaves navigation usable`, async ({
       page,
@@ -31,6 +43,11 @@ for (const width of [1160, 900]) {
       );
       await expect(collection.getByRole("status")).toHaveClass("sr-only");
       await expect(skeleton).not.toContainText(/Loading/);
+      // The table's own header sits over placeholder rows of its height.
+      await expect(skeleton.locator("thead th")).toHaveText([...headings, ""]);
+      const rows = skeleton.locator("tbody tr");
+      await expect(rows).toHaveCount(8);
+      expect((await rows.first().boundingBox())!.height).toBe(44);
       await expect(collection.locator("[skullet-own]")).toHaveCSS(
         "mask-image",
         "linear-gradient(rgb(0, 0, 0) 35%, rgba(0, 0, 0, 0))",
@@ -45,10 +62,9 @@ for (const width of [1160, 900]) {
           (element) => element.scrollWidth <= element.clientWidth,
         ),
       ).toBe(true);
-      await expect(skeleton.locator(".collection-skeleton-rows")).toHaveCSS(
-        "animation-name",
-        "none",
-      );
+      await expect(
+        skeleton.locator(".collection-skeleton-bar").first(),
+      ).toHaveCSS("animation-name", "none");
       await page.screenshot({
         path: info.outputPath(`${kind}-loading-${width}.png`),
       });
@@ -66,6 +82,11 @@ for (const width of [1160, 900]) {
         }),
       ).toBeVisible();
       await expect(skeleton).toHaveCount(0);
+      // The loaded table keeps the header the skeleton drew.
+      await expect(collection.locator("thead th")).toHaveText([
+        ...headings,
+        "Actions",
+      ]);
     });
   }
 }
@@ -76,7 +97,7 @@ test("loading breathes softly, stops with reduced motion, and refresh retains re
   await resourceLibraryFixture(page, { emptyShared: true, defer: true });
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await page.getByRole("button", { name: /^Sessions/ }).click();
-  const skeleton = page.locator(".collection-skeleton-rows");
+  const skeleton = page.locator(".collection-skeleton-bar").first();
   await expect(skeleton).toHaveCSS("animation-name", "loading-breathe");
   await expect(skeleton).toHaveCSS("animation-duration", "2.4s");
   await page.emulateMedia({ reducedMotion: "reduce" });
