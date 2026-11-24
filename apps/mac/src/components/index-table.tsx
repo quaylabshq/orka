@@ -361,11 +361,11 @@ export function IndexTable({
                     );
                   }}
                   onPointerLeave={closePeek}
-                  onFocus={(event) => {
-                    onRowIntent?.(resource);
-                    // Keyboard focus only: returning from an item or closing
-                    // a menu restores focus without opening the peek.
-                    if (event.target.matches(":focus-visible"))
+                  onFocus={() => onRowIntent?.(resource)}
+                  // Tab ends on the row it moved focus to. Focus handed back by
+                  // a closing menu or the reader's Back leaves the peek closed.
+                  onKeyUp={(event) => {
+                    if (event.key === "Tab")
                       openPeek(resource.resourceId, event.currentTarget, 0);
                   }}
                   onBlur={(event) => {
