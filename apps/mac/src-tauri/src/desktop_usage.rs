@@ -596,6 +596,37 @@ mod tests {
     }
 
     #[test]
+    fn desktop_usage_catalogue_roundtrips_mixed_versions_and_drops_private_dimensions() {
+        let batch = json!([
+            "screen:projects",
+            "project_home_viewed",
+            "resource_detail_viewed:session",
+            "settings_sync_interval_changed:15:5",
+            "settings_background_sync_changed:false"
+        ]);
+        let events: Vec<UsageEvent> = serde_json::from_value(batch.clone()).unwrap();
+        let support = UsageSupport::from_instance(
+            &json!({"version":1,"auth":{},"mode":"cloud","desktopUsageAnalytics":1,"desktopUsageEventSet":3}),
+        );
+        assert_eq!(support, UsageSupport::Catalogue);
+        assert!(events.iter().all(|event| support.accepts(event)));
+        assert_eq!(serde_json::to_value(events).unwrap(), batch);
+        for invalid in [
+            "settings_section_viewed:user@example.test",
+            "settings_sync_interval_changed:5:123",
+            "connector_tool_completed:get_profile",
+        ] {
+            assert!(serde_json::from_value::<UsageEvent>(json!(invalid)).is_err());
+        }
+        let tool = "connector_tool_completed:get_project_context";
+        assert!(valid_signal("connector", tool));
+        assert_eq!(
+            serde_json::to_value(UsageEvent::Catalogue(CatalogueSignal(tool.into()))).unwrap(),
+            json!(tool)
+        );
+    }
+
+    #[test]
     fn desktop_usage_accepts_only_a_bounded_allowlist() {
         let known = json!([
             "screen:projects",
