@@ -580,3 +580,25 @@ test("no match uses the Skills wording, with both ways out when filters are on t
   await state.getByRole("button", { name: "Clear search" }).click();
   await expect(rows(page)).toHaveCount(9);
 });
+
+for (const label of ["Sessions", "Plans", "Memories"])
+  test(`at the minimum window ${label} show the Repository heading and a short repository name in full`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 900, height: 640 });
+    await open(page, label);
+    const whole = (locator: ReturnType<Page["locator"]>) =>
+      locator.evaluate((element) => element.scrollWidth <= element.clientWidth);
+    expect(
+      await whole(
+        page
+          .getByRole("columnheader", { name: "Repository" })
+          .locator(".skill-table-heading-label"),
+      ),
+    ).toBe(true);
+    const name = page
+      .locator(".skill-table-repository-label > span")
+      .filter({ hasText: /^orka-public$/ })
+      .first();
+    expect(await whole(name)).toBe(true);
+  });

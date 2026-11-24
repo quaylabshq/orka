@@ -1,11 +1,11 @@
 import {
   ArrowDownIcon,
   ArrowUpIcon,
-  BotIcon,
   CircleCheckIcon,
   ClockIcon,
   FileIcon,
   FolderIcon,
+  SquareTerminalIcon,
   UserIcon,
 } from "lucide-react";
 import React, {
@@ -50,7 +50,7 @@ const headings: Record<
 > = {
   agent: {
     label: () => "Agent",
-    icon: BotIcon,
+    icon: SquareTerminalIcon,
     className: "skill-table-agent-heading",
   },
   repository: {

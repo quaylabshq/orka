@@ -375,10 +375,11 @@
   }
 }
 
-/* Minimum window: list rows move Updated into the peek. */
+/* Minimum window: list rows move Updated into the peek. The repository
+   keeps the Skills width, enough for its heading and a short name. */
 @media (max-width: 1000px) {
   .skill-table:not([data-kind="skill"]) .skill-table-col-repository {
-    width: 112px;
+    width: 134px;
   }
 
   .skill-table:not([data-kind="skill"]) .skill-table-col-actions {

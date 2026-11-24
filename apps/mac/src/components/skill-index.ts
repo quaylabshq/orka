@@ -1,6 +1,5 @@
 import {
   ArrowDownAZIcon,
-  BotIcon,
   CircleCheckIcon,
   ClockIcon,
   FileIcon,
@@ -9,6 +8,7 @@ import {
   GitForkIcon,
   LaptopIcon,
   MapPinIcon,
+  SquareTerminalIcon,
   UserIcon,
   UsersIcon,
 } from "lucide-react";
@@ -274,7 +274,7 @@ const categories: Record<
   },
   agents: {
     label: () => "Agent",
-    icon: BotIcon,
+    icon: SquareTerminalIcon,
     value: agentOf,
     options: (resources) =>
       agents
