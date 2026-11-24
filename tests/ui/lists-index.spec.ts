@@ -46,6 +46,7 @@ const pages = [
       "Waiting to sync",
       "Upload refused",
       "Couldn’t read",
+      "Couldn’t read",
     ],
     find: ["Needs review", "Conflicts panel handoff"],
   },
@@ -132,7 +133,9 @@ for (const scene of pages) {
       .click();
     // The order the pill itself is chosen in; rows with no status sink.
     await expect(pills(page)).toHaveText(
-      priority.filter((label) => scene.pills.includes(label)),
+      [...scene.pills].sort(
+        (a, b) => priority.indexOf(a) - priority.indexOf(b),
+      ),
     );
     await expect(rows(page).last().locator(".index-status-pill")).toHaveCount(
       0,
@@ -276,6 +279,20 @@ test("a session whose transcript this Mac cannot read says Couldn’t read, and 
   await pick(page, "Status", "Couldn’t read");
   await expect(rows(page)).toHaveCount(1);
   await expect(rows(page)).toContainText("Request access panel failure states");
+});
+
+test("a row in two states shows the more urgent pill, and the Status filter files it there", async ({
+  page,
+}) => {
+  await open(page, "Plans");
+  const row = rows(page).filter({ hasText: "Copy pass with Orka guidelines" });
+  await expect(row.locator(".index-status-pill")).toHaveText("Couldn’t read");
+  await pick(page, "Status", "Couldn’t read");
+  await expect(row).toHaveCount(1);
+  await pick(page, "Status", "Couldn’t read");
+  await pick(page, "Status", "Waiting to sync");
+  await expect(rows(page)).toHaveCount(1);
+  await expect(row).toHaveCount(0);
 });
 
 test("Memories tell repeated file names apart by agent, and the Kind filter splits instruction files from memories", async ({

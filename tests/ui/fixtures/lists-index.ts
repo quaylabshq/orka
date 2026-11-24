@@ -41,6 +41,8 @@ type Row = {
     | "waiting"
     | "edits"
     | "unreadable";
+  /** A second condition the row is in at the same time. */
+  also?: Row["status"];
   local?: true;
   logicalPath?: string;
   /** The file Copy local path reports; none when it is not on this Mac. */
@@ -91,7 +93,16 @@ export async function listsIndexFixture(page: Page, scene: ListsScene = {}) {
         ["Detail page layout unification", 0, "user", 2 * day + 60, "waiting"],
         ["Add skills popover build", 0, "user", 3 * day, undefined, true],
         ["Lucide icon migration plan", 1, "user", 4 * day, "refused"],
-        ["Copy pass with Orka guidelines", 1, "user", 5 * day],
+        // Waiting to sync and unreadable at once.
+        [
+          "Copy pass with Orka guidelines",
+          1,
+          "user",
+          5 * day,
+          "waiting",
+          undefined,
+          "unreadable",
+        ],
         ["Library icon gaps", 2, "dev", "2026-11-14T10:00:00", "unreadable"],
         [
           "Onboarding journeys and handoff",
@@ -111,7 +122,7 @@ export async function listsIndexFixture(page: Page, scene: ListsScene = {}) {
         ],
         ["Self-hosted server upgrade", 3, "dev", "2026-11-09T10:00:00"],
         ["Release checklist for 0.3.19", 0, "user", "2026-11-06T10:00:00"],
-      ].map(([title, repo, owner, updated, status, local], index) => {
+      ].map(([title, repo, owner, updated, status, local, also], index) => {
         const slug = String(title).toLowerCase().replace(/\W+/g, "-");
         const fromSession = index === 6;
         return {
@@ -123,6 +134,7 @@ export async function listsIndexFixture(page: Page, scene: ListsScene = {}) {
           updated,
           status,
           local,
+          also,
           logicalPath: fromSession
             ? `claude/sessions/s${index}/plan.md`
             : `claude/files/${slug}.md`,
@@ -463,7 +475,7 @@ export async function listsIndexFixture(page: Page, scene: ListsScene = {}) {
             : {}),
         }));
     const withStatus = (status: Row["status"]) =>
-      all.filter(({ row }) => row.status === status);
+      all.filter(({ row }) => row.status === status || row.also === status);
     const upload = (
       { kind, row }: { kind: Kind; row: Row },
       error: string | null,
