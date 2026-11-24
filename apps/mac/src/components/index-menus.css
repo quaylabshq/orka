@@ -201,7 +201,7 @@
   box-shadow: inset 0 0 0 100vmax var(--state-pressed);
 }
 
-/* The access request sits in the toolbar or its panel instead of above. */
+/* An access request beside the toolbar or in its panel has no margin. */
 .index-toolbar-actions .resource-access-request,
 .index-access-panel .resource-access-request {
   margin: 0;
