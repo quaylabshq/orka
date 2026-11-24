@@ -207,6 +207,10 @@ export function IndexTable({
   };
   // A late title can re-sort the list; the row being acted on stays in view.
   useLayoutEffect(() => {
+    // A row that leaves the list takes its open menu with it, and that menu
+    // never reports closing.
+    if (!resources.some(({ resourceId }) => resourceId === menuOpen.current))
+      menuOpen.current = undefined;
     const rows = body.current;
     const active = document.activeElement;
     const row =
