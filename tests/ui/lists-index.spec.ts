@@ -187,6 +187,21 @@ test("the Location filter and each row's leading icon use the same words", async
   ]);
 });
 
+test("a fork Orka made and has not shared yet reads On this Mac, on its row and in the Location filter", async ({
+  page,
+}) => {
+  await open(page, "Sessions");
+  const fork = rows(page).filter({
+    hasText: "Unify detail pages on one layout",
+  });
+  await expect(fork.getByLabel("On this Mac")).toBeVisible();
+  await pick(page, "Location", "Shared with team");
+  await expect(fork).toHaveCount(0);
+  await pick(page, "Location", "Shared with team");
+  await pick(page, "Location", "On this Mac");
+  await expect(fork).toHaveCount(1);
+});
+
 test("Memories tell repeated file names apart by agent, and the Kind filter splits instruction files from memories", async ({
   page,
 }) => {
@@ -411,7 +426,7 @@ test("a project not on this Mac keeps its rows and explains itself in a pill bes
   await page.keyboard.press("Escape");
   await expect(panel).toBeHidden();
   await expect(pill).toBeFocused();
-  await expect(rows(page)).toHaveCount(15);
+  await expect(rows(page)).toHaveCount(14);
   await expect(rows(page).getByLabel("On this Mac")).toHaveCount(0);
 });
 

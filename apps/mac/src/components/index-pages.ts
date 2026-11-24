@@ -135,13 +135,17 @@ const agents: ResourceSource[] = ["claude", "codex", "pi"];
 export const agentOf = (resource: ProjectResource) =>
   resource.source === "shared" ? undefined : resource.source;
 
+/** The team has a revision of it; a fork Orka just made has none yet. */
+export const isShared = (resource: ProjectResource) =>
+  !resource.local && resource.revision > 0;
+
 const locations = {
   mac: { value: "mac", label: "On this Mac", icon: LaptopIcon },
   shared: { value: "shared", label: "Shared with team", icon: UsersIcon },
 };
 /** Where a row lives, as its leading icon and the Location filter name it. */
 export const locationOf = (resource: ProjectResource) =>
-  locations[resource.local ? "mac" : "shared"];
+  locations[isShared(resource) ? "shared" : "mac"];
 
 export const isFork = (resource: ProjectResource) =>
   Boolean(resource.fork || resource.nativeForkParentId);
@@ -231,9 +235,9 @@ export const creditedMember = (
   resource: ProjectResource,
   user: string | null,
 ) =>
-  resource.local
-    ? (user ?? resource[page.person.field])
-    : resource[page.person.field];
+  isShared(resource)
+    ? resource[page.person.field]
+    : (user ?? resource[page.person.field]);
 
 /** Last updated reads newest first; every other sort reads A to Z. */
 export const sortDirection = (filters: IndexFilters): IndexSortDirection =>

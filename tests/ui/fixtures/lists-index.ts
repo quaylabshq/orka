@@ -312,6 +312,7 @@ export async function listsIndexFixture(page: Page, scene: ListsScene = {}) {
           "user",
           "2026-11-12T10:00:00",
         ],
+        // Forked in Orka and not shared yet: no shared revision, no local flag.
         [
           "Unify detail pages on one layout",
           "codex",
@@ -321,6 +322,7 @@ export async function listsIndexFixture(page: Page, scene: ListsScene = {}) {
           undefined,
           undefined,
           "session-15",
+          0,
         ],
         [
           "Replace Primer Octicons with Lucide",
@@ -350,7 +352,20 @@ export async function listsIndexFixture(page: Page, scene: ListsScene = {}) {
             : undefined,
         ]),
       ].map(
-        ([title, source, repo, owner, updated, status, local, forkOf], index) =>
+        (
+          [
+            title,
+            source,
+            repo,
+            owner,
+            updated,
+            status,
+            local,
+            forkOf,
+            revision,
+          ],
+          index,
+        ) =>
           ({
             id: `session-${index}`,
             title,
@@ -361,6 +376,7 @@ export async function listsIndexFixture(page: Page, scene: ListsScene = {}) {
             status,
             local,
             forkOf,
+            revision,
             logicalPath: `${source}/sessions/s${index}.jsonl`,
           }) as Row,
       ),
@@ -413,7 +429,11 @@ export async function listsIndexFixture(page: Page, scene: ListsScene = {}) {
       scene.empty || scene.access === "hidden"
         ? []
         : all
-            .filter(({ row }) => !row.local)
+            // A fork not shared yet exists only on this Mac, like a local row.
+            .filter(
+              ({ row }) =>
+                !row.local && !(scene.disconnected && row.revision === 0),
+            )
             .map(({ kind, row }) => resource(kind, row));
     const local = (kind: Kind) =>
       rows[kind]

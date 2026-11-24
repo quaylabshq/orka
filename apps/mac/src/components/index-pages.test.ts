@@ -6,6 +6,7 @@ import {
   effectiveFilters,
   filterCategories,
   indexPages,
+  locationOf,
   sortDirection,
 } from "./index-pages.js";
 import { listStatuses } from "./list-status.js";
@@ -585,6 +586,28 @@ describe("the memory, session, and plan pages", () => {
     expect(run("plan", sessions, { picks: { forks: ["fork"] } })).toHaveLength(
       3,
     );
+  });
+
+  it("files an Orka fork with no shared revision under On this Mac", () => {
+    const unshared = item("session", "fresh fork", {
+      owner: "me",
+      revision: 0,
+      fork: {
+        parentId: "deploy fix",
+        nativeId: "native",
+        destination: "desktop",
+        createdAt: "2026-11-01T00:00:00Z",
+      },
+    });
+    expect(locationOf(unshared)).toMatchObject({ label: "On this Mac" });
+    expect(locationOf(sessions[0])).toMatchObject({
+      label: "Shared with team",
+    });
+    expect(
+      run("session", [...sessions, unshared], {
+        picks: { locations: ["mac"] },
+      }),
+    ).toEqual(["token audit", "fresh fork"]);
   });
 
   it("drops a pick whose option is gone", () => {
