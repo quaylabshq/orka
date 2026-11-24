@@ -242,3 +242,53 @@ test("Tab walks the rows in order past the ones first drawn", async ({
     "62",
   );
 });
+
+test("a peek with a long path stays inside the list at the minimum window", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 900, height: 640 });
+  // Every repository folder is about 350 characters long.
+  await page.addInitScript(() => {
+    let inner: any;
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      get: () => inner,
+      set(value) {
+        const invoke = value.invoke;
+        value.invoke = async (name: string, args: unknown) => {
+          const result = await invoke(name, args);
+          if (name === "snapshot")
+            for (const project of result.projects)
+              for (const source of project.sources)
+                source.path &&= source.path.replace(
+                  "/code/",
+                  `/code/${"a-long-folder-name-for-the-peek/".repeat(10)}`,
+                );
+          return result;
+        };
+        inner = value;
+      },
+    });
+  });
+  await open(page, "Sessions", { sessions: 60 });
+  const view = (await body(page).boundingBox())!;
+  const rows = page.locator(".index-table tbody tr[aria-rowindex]");
+  // The lowest row with the old 144 px of room under it.
+  const index = await rows.evaluateAll((elements, bottom) => {
+    let last = 0;
+    elements.forEach((element, position) => {
+      if (element.getBoundingClientRect().bottom + 144 <= bottom)
+        last = position;
+    });
+    return last;
+  }, view.y + view.height);
+  const row = rows.nth(index);
+  await page.mouse.move(0, 0);
+  await row.locator(".index-table-open").hover();
+  const tip = row.getByRole("tooltip");
+  await expect(tip).toContainText("a-long-folder-name-for-the-peek");
+  const box = (await tip.boundingBox())!;
+  expect(box.height).toBeGreaterThan(188);
+  expect(box.y).toBeGreaterThanOrEqual(view.y);
+  expect(box.y + box.height).toBeLessThanOrEqual(view.y + view.height);
+});
