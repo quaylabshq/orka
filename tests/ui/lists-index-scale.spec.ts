@@ -6,11 +6,60 @@ const title = (page: Page, name: string) =>
   page.locator(".index-table").getByRole("button", { name, exact: true });
 const actions = (page: Page, name: string) =>
   page.getByRole("button", { name: `Actions for ${name}`, exact: true });
+const body = (page: Page) => page.locator(".resource-index-body");
+const scrollTop = (page: Page) =>
+  body(page).evaluate((element) => element.scrollTop);
 
 const open = async (page: Page, label: string, scene: ListsScene = {}) => {
   await listsIndexFixture(page, scene);
   await page.getByRole("button", { name: new RegExp(`^${label}`) }).click();
   await expect(page.locator(".index-table tbody th").first()).toBeVisible();
+};
+
+/**
+ * Later snapshots report the session in `window.listsBumped` as updated just
+ * now, so it sorts to the top of Last updated.
+ */
+const bumpable = (page: Page) =>
+  page.addInitScript(() => {
+    let inner: any;
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      get: () => inner,
+      set(value) {
+        const invoke = value.invoke;
+        value.invoke = async (name: string, args: unknown) => {
+          const result = await invoke(name, args);
+          const bumped = (window as any).listsBumped;
+          if (name === "snapshot")
+            for (const resource of result.resources)
+              if (resource.resourceId === bumped)
+                resource.updatedAt = new Date().toISOString();
+          return result;
+        };
+        inner = value;
+      },
+    });
+  });
+
+/** Resolves once the app has applied one more snapshot from the fixture. */
+const nextSnapshot = async (page: Page) => {
+  const calls = () =>
+    page.evaluate(
+      () =>
+        (window as any).listsCalls.filter(
+          (call: { name: string }) => call.name === "snapshot",
+        ).length,
+    );
+  const seen = await calls();
+  await expect.poll(calls, { timeout: 10_000 }).toBeGreaterThan(seen);
+  // Let React apply it and the browser draw it.
+  await page.evaluate(
+    () =>
+      new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)),
+      ),
+  );
 };
 
 /** WebKit on macOS moves focus to buttons with Option-Tab, as Safari does. */
@@ -70,4 +119,45 @@ test("after a row leaves under its open menu, other rows still open their peek",
   await page.mouse.move(0, 0);
   await title(page, "Repository filter across collections").hover();
   await expect(peek(page)).toBeVisible();
+});
+
+test("a refresh never scrolls the list back to the focused row", async ({
+  page,
+}) => {
+  await bumpable(page);
+  await open(page, "Sessions", { sessions: 60 });
+  const name = "Archived session 1";
+  await title(page, name).click();
+  await page
+    .getByRole("button", { name: "Back to Sessions", exact: true })
+    .click();
+  await expect(title(page, name)).toBeFocused();
+  await body(page).evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+  });
+  const left = await scrollTop(page);
+  expect(left).toBeGreaterThan(1000);
+  await nextSnapshot(page);
+  expect(await scrollTop(page)).toBe(left);
+  // Nor when the refresh moves that row somewhere else.
+  await page.evaluate(() => ((window as any).listsBumped = "session-16"));
+  await nextSnapshot(page);
+  expect(await scrollTop(page)).toBe(left);
+  await expect(title(page, name)).toBeFocused();
+});
+
+test("a focused row in view that a refresh moves stays in view", async ({
+  page,
+}) => {
+  await bumpable(page);
+  await open(page, "Sessions", { sessions: 60 });
+  const name = "Archived session 40";
+  const row = title(page, name);
+  await row.scrollIntoViewIfNeeded();
+  await row.focus();
+  await page.evaluate(() => ((window as any).listsBumped = "session-55"));
+  await nextSnapshot(page);
+  await expect(page.locator(".index-table-open").first()).toHaveText(name);
+  await expect(row).toBeInViewport();
+  await expect(row).toBeFocused();
 });
