@@ -350,6 +350,28 @@ export function IndexTable({
       window.removeEventListener("scroll", events.unpeek, true);
     };
   }, [peek, events]);
+  // A description taller than PEEK_ROOM, such as one with a long path, also
+  // opens above its row when it runs past the bottom of the list and there
+  // is more room above. It can grow as it loads.
+  useLayoutEffect(() => {
+    const tip = peek && !peek.above ? document.getElementById(peekId) : null;
+    if (!tip) return;
+    const place = () => {
+      const row = tip.closest("tr")?.getBoundingClientRect();
+      const view = tip.closest(".resource-index-body")?.getBoundingClientRect();
+      if (
+        row &&
+        view &&
+        tip.getBoundingClientRect().bottom > view.bottom &&
+        row.top - view.top > view.bottom - row.bottom
+      )
+        setPeek((current) => current && { ...current, above: true });
+    };
+    place();
+    const resize = new ResizeObserver(place);
+    resize.observe(tip);
+    return () => resize.disconnect();
+  }, [peek, peekId]);
   useEffect(() => () => window.clearTimeout(timer.current), []);
   const SortArrow = direction === "asc" ? ArrowUpIcon : ArrowDownIcon;
   const heading = (
