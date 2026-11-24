@@ -560,6 +560,7 @@ impl SyncQueue {
     /// again as it was. A request that arrived while the job ran stays queued
     /// with its own `not_before`. A service outage holds other network jobs
     /// until the same retry time so it costs one request per step.
+    /// Returns whether the committed outcome was cancellation.
     fn settle(
         &mut self,
         db: &Connection,
@@ -567,7 +568,7 @@ impl SyncQueue {
         result: &Result<Outcome>,
         now: i64,
         interval: &Interval,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let project = &job.project;
         let tx = rusqlite::Transaction::new_unchecked(db, rusqlite::TransactionBehavior::Immediate)
             .map_err(|e| e.to_string())?;
@@ -637,7 +638,7 @@ impl SyncQueue {
         if matches!(result, Ok(Outcome::Synced | Outcome::Captured)) {
             self.synced.insert(job.project.clone(), now);
         }
-        Ok(())
+        Ok(matches!(result, Ok(Outcome::Cancelled)))
     }
 
     /// Runs the most urgent ready job under its project or workspace lock.
@@ -668,8 +669,8 @@ impl SyncQueue {
         let manual = job.project != WORKSPACE
             && job.attempts == 0
             && matches!(job.reason.as_str(), "sync now" | "retry" | "folder");
-        self.settle(&db, job, &result, Self::now(), interval)?;
-        if manual {
+        let cancelled = self.settle(&db, job, &result, Self::now(), interval)?;
+        if manual && !cancelled {
             match result {
                 Ok(Outcome::Synced) => scope.record_usage("sync_manual_completed"),
                 Err(_) => scope.record_usage("sync_manual_failed"),
@@ -1899,6 +1900,8 @@ mod tests {
         for result in [
             Ok(Outcome::Deferred),
             Ok(Outcome::Yielded),
+            Ok(Outcome::Synced),
+            Ok(Outcome::Captured),
             Err("Cloud unavailable; local work stays queued".to_string()),
         ] {
             SyncQueue::enqueue(&db, "a", Priority::Timer, "timer", 0).unwrap();
@@ -1912,6 +1915,31 @@ mod tests {
             assert!(rows(&db).is_empty());
             assert_eq!(SyncQueue::next(&db, i64::MAX - 1).unwrap(), None);
             assert!(db::get(&db, OUTAGE).unwrap().is_null());
+            assert!(!queue.synced.contains_key("a"));
+            assert!(db::get(&db, &cancelled_at_key("a")).unwrap().is_i64());
+        }
+    }
+
+    #[test]
+    fn settle_reports_the_committed_cancellation_to_its_caller() {
+        let interval = interval();
+        for (cancelled, result) in [
+            (false, Ok(Outcome::Synced)),
+            (false, Err("item failed".into())),
+            (true, Ok(Outcome::Synced)),
+            (true, Err("item failed".into())),
+        ] {
+            let (_root, db) = queue_db(&["a"]);
+            let mut queue = SyncQueue::new(0);
+            SyncQueue::enqueue(&db, "a", Priority::User, "sync now", 0).unwrap();
+            let job = SyncQueue::claim(&db, 0).unwrap().unwrap();
+            if cancelled {
+                SyncQueue::cancel(&db, "a").unwrap();
+            }
+            assert_eq!(
+                queue.settle(&db, job, &result, 0, &interval).unwrap(),
+                cancelled
+            );
         }
     }
 
