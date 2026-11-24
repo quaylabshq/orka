@@ -60,7 +60,7 @@ const status = (
 export const skillStatuses: SkillStatus[] = [
   status("conflict", "Conflict", "red", TriangleAlertIcon),
   status("upload-failed", "Upload failed", "red", CloudAlertIcon),
-  status("could-not-read", "Could not read", "red", FileWarningIcon),
+  status("could-not-read", "Couldn’t read", "red", FileWarningIcon),
   status("sync-issue", "Sync issue", "red", CircleAlertIcon),
   status("sharing-blocked", "Sharing blocked", "amber", BanIcon),
   status("update-blocked", "Update blocked", "amber", BanIcon),

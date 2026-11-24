@@ -652,8 +652,8 @@ test("a read failure outranks an available update and appears in the status filt
   const row = rows(page).filter({
     has: page.getByRole("button", { name: "code-review", exact: true }),
   });
-  await expect(row.locator(".index-status-pill")).toHaveText("Could not read");
-  await pick(page, "Status", "Could not read");
+  await expect(row.locator(".index-status-pill")).toHaveText("Couldn’t read");
+  await pick(page, "Status", "Couldn’t read");
   await expect(rows(page)).toHaveCount(1);
   await expect(row).toBeVisible();
 });
