@@ -52,7 +52,7 @@ export function IndexToolbar({
   categories: FilterCategory[];
   filters: IndexFilters;
   onChange: (filters: IndexFilters) => void;
-  /** Controls at the right end, such as refresh; they hide with the tools. */
+  /** Controls at the right end, such as refresh; they can stand alone. */
   trailing?: React.ReactNode;
   actions?: React.ReactNode;
 }) {
@@ -76,21 +76,21 @@ export function IndexToolbar({
   const sort = page.sorts.some((option) => option.value === filters.sort)
     ? filters.sort
     : page.defaultSort;
-  const end =
-    showTools && trailing ? (
-      <>
-        {trailing}
-        {actions}
-      </>
-    ) : (
-      actions
-    );
+  const head = showTools || Boolean(trailing);
+  const end = trailing ? (
+    <>
+      {trailing}
+      {actions}
+    </>
+  ) : (
+    actions
+  );
   return (
-    <div className={showTools ? "index-head" : undefined}>
+    <div className={head ? "index-head" : undefined}>
       <div
-        className={showTools ? "index-toolbar" : undefined}
-        role={showTools ? "group" : undefined}
-        aria-label={showTools ? `${noun} tools` : undefined}
+        className={head ? "index-toolbar" : undefined}
+        role={head ? "group" : undefined}
+        aria-label={head ? `${noun} tools` : undefined}
       >
         {showTools && (
           <>
@@ -127,9 +127,7 @@ export function IndexToolbar({
         )}
         {end && (
           <div
-            className={
-              showTools ? "index-toolbar-actions" : "resource-index-action"
-            }
+            className={head ? "index-toolbar-actions" : "resource-index-action"}
           >
             {end}
           </div>

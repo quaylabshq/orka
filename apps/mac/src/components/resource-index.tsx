@@ -196,6 +196,14 @@ export function ResourceIndex({
   // Loading rows draw under the toolbar; Empty, No access, and Could not load hide it.
   const toolbarShown = resources.length > 0 || filtered || discovering;
   const restrictedEmpty = Boolean(noAccess) && !resources.length;
+  // Empty keeps Refresh so a new local item shows before the next scan.
+  const emptyRefresh =
+    list &&
+    connected &&
+    Boolean(onRefreshLocal) &&
+    !toolbarShown &&
+    !discoveryFailed &&
+    !restrictedEmpty;
   /** Skills carry their primary action in the toolbar once there is one. */
   const toolbarAction = kind === "skill" && toolbarShown;
   const inlineAction = Boolean(
@@ -246,22 +254,27 @@ export function ResourceIndex({
   ) : (
     accessRequest
   );
-  const trailing = list && (
-    <>
-      {onRefreshLocal && (
-        <IconButton
-          icon={RefreshCwIcon}
-          size="sm"
-          variant="secondary"
-          aria-label="Refresh local items"
-          title="Refresh local items"
-          disabled={refreshing}
-          onClick={refreshLocal}
-        />
-      )}
-      {access}
-    </>
+  const refreshButton = onRefreshLocal && (
+    <IconButton
+      icon={RefreshCwIcon}
+      size="sm"
+      variant="secondary"
+      aria-label="Refresh local items"
+      title="Refresh local items"
+      disabled={refreshing}
+      onClick={refreshLocal}
+    />
   );
+  const trailing =
+    list && toolbarShown ? (
+      <>
+        {refreshButton}
+        {access}
+      </>
+    ) : emptyRefresh ? (
+      refreshButton
+    ) : undefined;
+  const headShown = toolbarShown || emptyRefresh;
   // Keep the popover mounted when the first import moves its trigger into the toolbar.
   const toolbar = (
     <IndexToolbar
@@ -350,7 +363,7 @@ export function ResourceIndex({
             )}
           </div>
         )}
-        {toolbarShown && toolbar}
+        {headShown && toolbar}
         {discovering && !resources.length ? (
           <LoadingRegion
             id={`collection:${kind}`}
@@ -481,7 +494,7 @@ export function ResourceIndex({
             }
           />
         )}
-        {!toolbarShown && toolbar}
+        {!headShown && toolbar}
       </div>
     </section>
   );

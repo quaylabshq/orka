@@ -546,6 +546,9 @@ test("with nothing on this Mac either, No access offers Request access without a
   ).toBeVisible();
   await expect(page.getByRole("searchbox")).toHaveCount(0);
   await expect(
+    page.getByRole("button", { name: "Refresh local items" }),
+  ).toHaveCount(0);
+  await expect(
     page
       .locator(".empty-state")
       .getByRole("button", { name: "Request access" }),
@@ -601,6 +604,9 @@ test("Could not load gives the cause and one action, Try again", async ({
   await expect(state).toContainText("Permission denied (os error 13)");
   await expect(state.getByRole("button")).toHaveText(["Try again"]);
   await expect(page.getByRole("searchbox")).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Refresh local items" }),
+  ).toHaveCount(0);
   await expect(page.locator(".resource-discovery-status")).toHaveCount(0);
   await page.evaluate(() => ((window as any).listsDiscovery = "ok"));
   await state.getByRole("button", { name: "Try again" }).click();
@@ -609,13 +615,12 @@ test("Could not load gives the cause and one action, Try again", async ({
   ).toBeVisible();
 });
 
-test("an empty list hides the toolbar and says what will appear", async ({
+test("an empty list keeps only Refresh from the toolbar and says what will appear", async ({
   page,
 }) => {
   await visit(page, "Plans", { empty: true });
-  await expect(
-    page.getByRole("heading", { name: "No plans yet" }),
-  ).toBeVisible();
+  const heading = page.getByRole("heading", { name: "No plans yet" });
+  await expect(heading).toBeVisible();
   await expect(
     page.getByText(
       "Plans saved by your coding tools for this project appear here.",
@@ -623,8 +628,28 @@ test("an empty list hides the toolbar and says what will appear", async ({
   ).toBeVisible();
   await expect(page.getByRole("searchbox")).toHaveCount(0);
   await expect(
-    page.getByRole("button", { name: "Refresh local items" }),
+    page.getByRole("button", { name: /^(Filter|Sort)/ }),
   ).toHaveCount(0);
+  const refresh = page.getByRole("button", { name: "Refresh local items" });
+  await expect(refresh).toBeVisible();
+  // Alone at the right end of where the toolbar sits, above the message.
+  const [button, body, title] = await Promise.all(
+    [refresh, page.locator(".resource-index-body"), heading].map(
+      async (element) => (await element.boundingBox())!,
+    ),
+  );
+  expect(body.x + body.width - (button.x + button.width)).toBeLessThan(40);
+  expect(button.y + button.height).toBeLessThan(title.y);
+  const scans = () =>
+    page.evaluate(
+      () =>
+        (window as any).listsCalls.filter(
+          ({ name }: { name: string }) => name === "local_resource_catalog",
+        ).length,
+    );
+  const before = await scans();
+  await refresh.click();
+  await expect.poll(scans).toBeGreaterThan(before);
 });
 
 test("no match uses the Skills wording, with both ways out when filters are on too", async ({
