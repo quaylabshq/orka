@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../product-command.js";
 import { ExternalLinkIcon, PlugIcon } from "lucide-react";
 import type { Snapshot } from "../../types.js";
 import {

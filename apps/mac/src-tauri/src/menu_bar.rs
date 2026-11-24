@@ -104,6 +104,9 @@ pub fn open_main(app: &tauri::AppHandle) -> tauri::Result<()> {
         window.unminimize()?;
         window.show()?;
         window.set_focus()?;
+        if let Ok(scope) = db::CacheScope::current() {
+            scope.record_usage("desktop_workspace_opened");
+        }
     }
     Ok(())
 }
@@ -111,6 +114,14 @@ pub fn open_main(app: &tauri::AppHandle) -> tauri::Result<()> {
 #[tauri::command]
 pub fn menu_bar_action(app: tauri::AppHandle, action: String) -> db::Result<()> {
     match action.as_str() {
+        "sync" => {
+            let scope = db::CacheScope::current().ok();
+            crate::commands::sync_now()?;
+            if let Some(scope) = scope {
+                scope.record_usage("sync_manual_requested");
+            }
+            Ok(())
+        }
         "open" => open_main(&app).map_err(|error| error.to_string()),
         "close" => app
             .get_webview_window(LABEL)
@@ -221,6 +232,9 @@ pub fn open_overview(app: &tauri::AppHandle) -> tauri::Result<()> {
         panel.center()?;
         panel.show()?;
         panel.set_focus()?;
+        if let Ok(scope) = db::CacheScope::current() {
+            scope.record_usage("desktop_menubar_opened");
+        }
     }
     Ok(())
 }
@@ -258,5 +272,9 @@ fn toggle(app: &tauri::AppHandle, rect: tauri::Rect) -> tauri::Result<()> {
         panel.set_position(tauri::PhysicalPosition::new(x, y))?;
     }
     panel.show()?;
-    panel.set_focus()
+    panel.set_focus()?;
+    if let Ok(scope) = db::CacheScope::current() {
+        scope.record_usage("desktop_menubar_opened");
+    }
+    Ok(())
 }

@@ -1,5 +1,6 @@
+import { useProductView } from "./desktop-usage.js";
 import { XIcon } from "lucide-react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./product-command.js";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "./button.js";
 import { IconButton } from "./icon-button.js";
@@ -80,6 +81,7 @@ export function QueuedUploadReview({
       cancelled = true;
     };
   }, [attempt, accountId, serviceOrigin, projectId, resourceId, uploadId]);
+  useProductView(preview ? "upload_review_viewed" : undefined, resourceId);
   const submit = async () => {
     if (submitting.current || !preview || stale || parentBusy) return;
     submitting.current = true;

@@ -287,7 +287,12 @@ pub async fn complete_sign_in(callback: Option<String>, code: Option<String>) ->
 }
 #[tauri::command]
 pub fn cancel_sign_in() -> Result<()> {
-    auth::cancel()
+    let config = db::open().and_then(|db| db::get(&db, "config")).ok();
+    auth::cancel()?;
+    if let Some(config) = config {
+        crate::desktop_usage::lifecycle(&config, "auth_signin_cancelled");
+    }
+    Ok(())
 }
 #[tauri::command]
 pub fn retry_sign_in_storage() -> Result<Value> {
@@ -308,9 +313,20 @@ pub async fn sign_in(email: String, password: String) -> Result<Value> {
 #[tauri::command]
 pub fn sign_out() -> Result<()> {
     let _lock = projects::lock()?;
-    auth::sign_out()
+    let config = db::open().ok().and_then(|db| {
+        db::get(&db, "user")
+            .ok()?
+            .is_string()
+            .then(|| db::get(&db, "config").ok())
+            .flatten()
+    });
+    auth::sign_out()?;
+    if let Some(config) = config {
+        crate::desktop_usage::lifecycle(&config, "auth_signout_completed");
+    }
+    Ok(())
 }
-#[tauri::command]
+#[tauri::command(async)]
 pub fn sync_now() -> Result<()> {
     SyncQueue::request_all(&db::open()?, Priority::User, "sync now")
 }

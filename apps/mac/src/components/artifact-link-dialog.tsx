@@ -1,3 +1,4 @@
+import { productAction } from "./desktop-usage.js";
 import {
   CopyIcon,
   FileIcon,
@@ -7,7 +8,7 @@ import {
   XIcon,
 } from "lucide-react";
 import React, { useEffect, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./product-command.js";
 import type { ProjectResource } from "../types.js";
 import { Button } from "./button.js";
 import { Icon } from "./icon.js";
@@ -138,7 +139,9 @@ export function ArtifactLinkDialog({
   const copyLink = async () => {
     if (!link?.url || stale) return;
     try {
+      const record = productAction();
       await navigator.clipboard.writeText(link.url);
+      record("public_link_copied");
       setNotice("Link copied.");
       setError("");
     } catch {

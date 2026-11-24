@@ -1,3 +1,4 @@
+import { DesktopUsageScreen } from "../desktop-usage.js";
 import {
   BookOpenIcon,
   ListTodoIcon,
@@ -216,8 +217,8 @@ export function RoleTables({
 
 export const SettingsPermissions = forwardRef<
   SettingsEditor,
-  { state: Snapshot; project: Project }
->(function SettingsPermissions({ state, project }, ref) {
+  { state: Snapshot; project: Project; startSettingsSave: () => () => void }
+>(function SettingsPermissions({ state, project, startSettingsSave }, ref) {
   const scope = settingsScope(state, project.id),
     user = state.user,
     service = state.config?.apiUrl,
@@ -335,6 +336,7 @@ export const SettingsPermissions = forwardRef<
   };
   async function reconcile(
     submission: PolicySubmission,
+    recordSave: () => void,
   ): Promise<true | string> {
     setPhase("checking");
     try {
@@ -345,6 +347,7 @@ export const SettingsPermissions = forwardRef<
       if (!active.current || !authority.current)
         return "Your editing access changed. Your draft is kept for review.";
       if (result.status === "committed") {
+        recordSave();
         applyResult(result);
         return true;
       }
@@ -413,10 +416,11 @@ export const SettingsPermissions = forwardRef<
       setMigrationOpen(true);
       return "Review the access changes before saving.";
     }
+    const recordSave = startSettingsSave();
     locked.current = true;
     if (record.submission && !verifiedMissing) {
       try {
-        return await reconcile(record.submission);
+        return await reconcile(record.submission, recordSave);
       } finally {
         locked.current = false;
       }
@@ -435,6 +439,7 @@ export const SettingsPermissions = forwardRef<
       const result = await call<SaveResult>("save-role-policy", {
         ...submission,
       });
+      recordSave();
       if (!active.current || !authority.current)
         return "Your editing access changed. Your draft is kept for review.";
       applyResult(result);
@@ -459,7 +464,7 @@ export const SettingsPermissions = forwardRef<
         setError(message);
         return message;
       }
-      return await reconcile(submission);
+      return await reconcile(submission, recordSave);
     } finally {
       locked.current = false;
     }
@@ -640,9 +645,11 @@ export const SettingsPermissions = forwardRef<
           onClick={() => {
             if (!locked.current) {
               locked.current = true;
-              void reconcile(record.submission!).finally(() => {
-                locked.current = false;
-              });
+              void reconcile(record.submission!, startSettingsSave()).finally(
+                () => {
+                  locked.current = false;
+                },
+              );
             }
           }}
         >
@@ -725,6 +732,7 @@ export const SettingsPermissions = forwardRef<
           className="settings-migration settings-migration--permissions"
           onClose={() => setMigrationOpen(false)}
         >
+          <DesktopUsageScreen screen="permissions_preview_viewed" />
           <h2>Review role migration</h2>
           <div
             className="settings-migration-body"

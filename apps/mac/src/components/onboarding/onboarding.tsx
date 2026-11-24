@@ -1,3 +1,4 @@
+import { useProductView } from "../desktop-usage.js";
 import { ArrowRightIcon, FolderIcon, UserPlusIcon } from "lucide-react";
 import React, { useEffect, useEffectEvent, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
@@ -43,6 +44,15 @@ export function Onboarding({
   const flow = useOnboarding(state, refresh, onComplete);
   const { draft, busy, error } = flow;
   const step = draft.step;
+  useProductView(`onboarding_step_viewed:${step.replaceAll("-", "_")}`);
+  const entry = useRef(
+    state.onboarding?.draft?.deferred ||
+      (state.onboarding?.draft?.step &&
+        state.onboarding.draft.step !== "profile")
+      ? ("onboarding_resumed" as const)
+      : ("onboarding_started" as const),
+  );
+  useProductView(entry.current);
   const repositoryCall = useRepositoryCommand(state);
   const [repositoryEnabled, setRepositoryEnabled] = useState(false);
   const [githubSetup, setGithubSetup] = useState(false);

@@ -9,7 +9,7 @@ import {
   XIcon,
 } from "lucide-react";
 import { useCallback, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../product-command.js";
 import {
   ItemContextMenu,
   ItemMenuButton,
@@ -22,7 +22,7 @@ import { Button } from "../button.js";
 import { Icon } from "../icon.js";
 import { IconButton } from "../icon-button.js";
 import { TextField } from "../text-field.js";
-import { connectProject } from "../use-project-setup.js";
+import { useConnectProject } from "../use-project-setup.js";
 import { activeSources } from "../project-sources.js";
 import { SourceSyncButton } from "../source-sync-button.js";
 import { useSettingsQuery } from "./use-settings-query.js";
@@ -119,6 +119,7 @@ export function SettingsFolder({
   onSyncActivity: () => void;
   run: (action: () => Promise<unknown>) => Promise<unknown>;
 }) {
+  const connectProject = useConnectProject();
   const user = state.user,
     service = state.config?.apiUrl;
   const notice = useToastNotice();

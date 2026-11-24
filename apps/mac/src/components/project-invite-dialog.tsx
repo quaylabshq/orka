@@ -1,3 +1,4 @@
+import { productAction } from "./desktop-usage.js";
 import { MailIcon, XIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -57,6 +58,7 @@ export function ProjectInviteDialog({
 
   const submit = async () => {
     if (inFlight.current || emailAvailable === null) return;
+    const record = productAction();
     inFlight.current = true;
     setBusy(true);
     setError("");
@@ -72,6 +74,7 @@ export function ProjectInviteDialog({
         );
         if (!result.sent)
           throw new Error("Email invites are unavailable. Use an invite link.");
+        record("invite_email_sent");
         onDelivery?.(result.email, true);
         setMessage(`Invite sent to ${result.email}.`);
         setEmail("");
@@ -86,12 +89,15 @@ export function ProjectInviteDialog({
             },
           );
           link = result.url ?? `orka://join/${result.token}`;
+          record("invite_link_created");
           setJoiningLink(link);
         }
         await navigator.clipboard.writeText(link);
+        record("invite_link_copied");
         setMessage("Link copied.");
       }
     } catch (cause) {
+      if (mode === "email") record("invite_email_failed");
       if (mode === "email" && /^503:/.test(String(cause)))
         onDelivery?.(email.trim().toLowerCase(), false);
       setError(String(cause).replace(/^Error:\s*/, ""));

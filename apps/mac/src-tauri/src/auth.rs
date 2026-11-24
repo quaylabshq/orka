@@ -111,6 +111,9 @@ pub fn retry_storage() -> Result<Value> {
     *pending = None;
     drop(pending);
     cancel()?;
+    if let Ok(scope) = db::CacheScope::current() {
+        scope.record_usage("auth_recovery_completed");
+    }
     Ok(json!({"signedIn":true}))
 }
 fn client() -> Result<reqwest::Client> {
@@ -403,7 +406,7 @@ pub async fn complete(callback: Option<String>, code: Option<String>) -> Result<
 }
 fn session_for_service(owner: &str, base: &str) -> Result<(Value, Value)> {
     let value = session()?;
-    let config = db::get(&db::open()?, "config")?;
+    let config = db::service_config()?;
     // Old sessions are bound to the legacy origin on first upgrade.
     let bound = value["apiUrl"]
         .as_str()
@@ -424,8 +427,12 @@ fn fresh_access_token(session: &Value) -> Result<Option<String>> {
         .ok_or("Session is invalid".into())
 }
 
+pub(crate) fn fresh_token_for_service(owner: &str, base: &str) -> Result<Option<String>> {
+    fresh_access_token(&session_for_service(owner, base)?.0)
+}
+
 pub async fn token_for_service(owner: &str, base: &str) -> Result<String> {
-    if let Some(token) = fresh_access_token(&session_for_service(owner, base)?.0)? {
+    if let Some(token) = fresh_token_for_service(owner, base)? {
         return Ok(token);
     }
     // The desktop and daemon share one rotating refresh token. The loser of

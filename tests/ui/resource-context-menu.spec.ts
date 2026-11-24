@@ -179,7 +179,7 @@ async function menuFixture(
 
 async function collection(
   page: Page,
-  label: "Memories" | "Sessions" | "Plans",
+  label: "Memories" | "Sessions" | "Plans" | "Skills",
 ) {
   await page.getByRole("button", { name: new RegExp("^" + label) }).click();
   await expect(page.getByRole("table")).toBeVisible();
@@ -737,6 +737,47 @@ test("snapshot sharing requires review and submits the exact frozen token withou
     ),
   ).toEqual([]);
 });
+
+for (const [kind, label] of [
+  ["memory", "Memories"],
+  ["session", "Sessions"],
+  ["plan", "Plans"],
+  ["skill", "Skills"],
+] as const)
+  test(`a published ${kind} snapshot records one successful share`, async ({
+    page,
+  }) => {
+    await menuFixture(page, { localSkill: kind === "skill" });
+    await collection(page, label);
+    await page.evaluate(() => {
+      (window as unknown as MenuWindow).resourceMenu.shareStatus = "published";
+    });
+    await resourceMenu(
+      page,
+      `Private ${kind} notes`,
+      "Share snapshot with project…",
+    );
+    await page
+      .getByRole("button", { name: "Share this snapshot", exact: true })
+      .click();
+    await expect(
+      page.getByText("Snapshot shared", { exact: true }),
+    ).toBeVisible();
+
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          (window as unknown as MenuWindow).library.calls
+            .filter(({ command }) => command === "record_desktop_usage")
+            .flatMap(({ args }) =>
+              (args.events as string[]).filter((event) =>
+                event.startsWith("feature:"),
+              ),
+            ),
+        ),
+      )
+      .toEqual([`feature:${kind}_shared`]);
+  });
 
 for (const viewport of [
   { width: 1160, height: 800 },

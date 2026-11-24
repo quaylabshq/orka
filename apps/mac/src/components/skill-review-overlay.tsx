@@ -1,3 +1,4 @@
+import { productAction, useProductView } from "./desktop-usage.js";
 import { EyeIcon, MessageSquareIcon, PencilIcon, XIcon } from "lucide-react";
 import { type IconGlyph } from "./icons.js";
 import React, {
@@ -268,6 +269,11 @@ export function SkillReviewOverlay({
       setActiveAction(null);
     }
   };
+  useProductView(
+    mode === "incoming" && phase.status === "ready"
+      ? "skill_install_reviewed"
+      : undefined,
+  );
   const finishIncoming = (action: "install" | "keep") =>
     run(
       action,
@@ -278,11 +284,14 @@ export function SkillReviewOverlay({
           return;
         }
         const keep = action === "keep";
+        const record = productAction();
         await call(keep ? "keep-skill-copies" : "apply-install", {
           resourceId: resource.resourceId,
           token: phase.token,
           ...(keep ? {} : { preserveLocal: true }),
         });
+        if (!keep)
+          record(removal ? "skill_removal_applied" : "skill_installed");
         onNotice(
           keep
             ? "Local skill copies kept"
@@ -294,6 +303,7 @@ export function SkillReviewOverlay({
         onClose();
       },
       (message) => {
+        if (action === "install") productAction()("skill_install_failed");
         if (stalePattern.test(message)) setStale(true);
         else setFailure(message);
       },

@@ -1,3 +1,4 @@
+import { productAction } from "../desktop-usage.js";
 import { useEffect, useRef } from "react";
 import type { Preview } from "./api.js";
 import { Button } from "../button.js";
@@ -48,12 +49,16 @@ export function ApplyEnvDialog({ c }: { c: EnvController }) {
       });
       if (!isCurrent()) return;
     }
+    const record = productAction();
     const next = await env<Preview>("preview", {
       draftId: draft.draftId,
       path,
       keys: checked,
     });
-    if (isCurrent() && next.path === path) setPreview(next);
+    if (isCurrent() && next.path === path) {
+      setPreview(next);
+      record("env_apply_previewed");
+    }
   };
   return (
     <>

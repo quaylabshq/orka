@@ -194,6 +194,7 @@ export function SessionDetail({
             {shared && (
               <SkillActionTooltip label="Copy session link">
                 <CopyLinkButton
+                  usageEvent="resource_link_copied"
                   iconOnly
                   nativeTooltip={false}
                   value={`orka://project/${project.id}/${resource.resourceId}`}

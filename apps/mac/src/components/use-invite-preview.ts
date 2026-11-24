@@ -1,3 +1,4 @@
+import { useProductView } from "./desktop-usage.js";
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { inviteExpiredOrUsedMessage, inviteExpiry } from "./project-invite.js";
@@ -36,6 +37,11 @@ export function useInvitePreview(
       canceled = true;
     };
   }, [serviceUrl, token]);
+  useProductView(
+    token && preview?.status === "available"
+      ? "invite_preview_viewed"
+      : undefined,
+  );
   if (!token) return undefined;
   if (preview?.status === "available")
     return {

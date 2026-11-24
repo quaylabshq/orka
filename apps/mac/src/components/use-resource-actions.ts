@@ -1,6 +1,8 @@
+import { productAction } from "./desktop-usage.js";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./product-command.js";
 import { save } from "@tauri-apps/plugin-dialog";
+import { useDesktopFeature } from "./desktop-usage.js";
 import type {
   SessionSnapshotDownload,
   WorkspaceResource as Resource,
@@ -57,6 +59,7 @@ export function useResourceActions({
   scope: string;
 }) {
   const { resourceId: id, source, owner, title, kind } = resource;
+  const startFeature = useDesktopFeature();
   const commandKey = JSON.stringify([
     scope,
     id,
@@ -117,11 +120,19 @@ export function useResourceActions({
       ) => {
         if (launching.current) return Promise.resolve();
         launching.current = true;
+        const record = productAction();
+        record(fork ? "session_fork_started" : "session_resume_started");
+        const recordLaunch = startFeature(
+          fork ? "feature:session_forked" : "feature:session_resumed",
+        );
         return act(
           async () => {
             setLaunchFailure(null);
             const r = await invoke<{
               instruction?: string;
+              opened?: boolean;
+              forked?: boolean;
+              handoff?: string;
               manualCommand?: string;
               destinationLabel?: string;
             }>("resume_session", {
@@ -132,11 +143,20 @@ export function useResourceActions({
                 : {}),
               ...(fork ? { fork: true } : {}),
             }).catch((error: unknown) => {
+              record("session_launch_failed");
               if (activeKey.current !== commandKey) return null;
               setLaunchFailure({ key: commandKey, message: String(error) });
               throw error;
             });
-            if (!r || activeKey.current !== commandKey) return;
+            if (!r) return;
+            if (r.handoff) record("session_handoff_prepared");
+            const resumed =
+              r.opened === true &&
+              !r.manualCommand &&
+              !r.handoff &&
+              target?.destination !== "iterm2";
+            if (fork ? r.forked === true : resumed) recordLaunch();
+            if (activeKey.current !== commandKey) return;
             if (r.manualCommand) {
               setManualCommand({
                 key: commandKey,
@@ -235,6 +255,7 @@ export function useResourceActions({
       launchError,
       manualResume,
       resource.revision,
+      startFeature,
     ],
   );
 }

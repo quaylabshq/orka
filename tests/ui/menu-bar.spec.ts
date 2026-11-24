@@ -38,8 +38,13 @@ test.beforeEach(async ({ page }) => {
           fixture.calls.push({ name, args });
           if (name === "menu_bar_snapshot")
             return structuredClone(fixture.state);
-          if (name === "sync_now" && fixture.failure) throw fixture.failure;
-          if (name === "sync_now")
+          if (
+            name === "menu_bar_action" &&
+            args?.action === "sync" &&
+            fixture.failure
+          )
+            throw fixture.failure;
+          if (name === "menu_bar_action" && args?.action === "sync")
             fixture.state.progress = { label: "Checking local files" };
           return null;
         },
@@ -82,8 +87,10 @@ test("sync button owns the only moving icon and shows live phase counts below", 
   expect(
     await page.evaluate(
       () =>
-        window.menuBarFixture.calls.filter((call) => call.name === "sync_now")
-          .length,
+        window.menuBarFixture.calls.filter(
+          (call) =>
+            call.name === "menu_bar_action" && call.args?.action === "sync",
+        ).length,
     ),
   ).toBe(1);
 });

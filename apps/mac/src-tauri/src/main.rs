@@ -9,6 +9,7 @@ mod codex_trust;
 mod commands;
 mod context_sharing;
 mod db;
+mod desktop_usage;
 mod device_metadata;
 mod doctor;
 mod env;
@@ -172,7 +173,14 @@ fn main() {
                 }
                 tokio::runtime::Runtime::new()
                     .map_err(|e| e.to_string())?
-                    .block_on(governance::governance_command(action, v["input"].clone()))
+                    .block_on(async {
+                        let result =
+                            governance::governance_command(action, v["input"].clone()).await;
+                        if result.is_ok() {
+                            desktop_usage::finish_context().await;
+                        }
+                        result
+                    })
             });
         match result {
             Ok(value) => println!("{value}"),
@@ -197,6 +205,7 @@ fn main() {
         let result:db::Result<Value>=match input["action"].as_str().unwrap_or("") {
             "rpc"=>native::Rpc::connect().and_then(|mut rpc|rpc.call(input["method"].as_str().unwrap_or(""),input["params"].clone())),
             "configure"=>commands::configure(input["config"].clone()).map(|_|json!({"ok":true})),
+            "record-desktop-usage"=>desktop_usage::test_record(input),
             "test-session"=>auth::test_session(&input["session"]).map(|_|json!({"ok":true})),
             "switch-service"=>commands::switch_service(input["config"].clone()).map(|_|json!({"ok":true})),
             "begin-sign-in"=>tokio::runtime::Runtime::new().expect("Test runtime").block_on(commands::begin_sign_in(input["method"].as_str().unwrap_or("").into(),input["email"].as_str().map(str::to_string))),
@@ -314,7 +323,7 @@ fn main() {
                 menu_bar::menu_bar_resize,
                 settings_lifecycle::guard_settings_close,
                 settings_lifecycle::finish_settings_close,
-                onboarding::onboarding_command,
+                onboarding::onboarding_command_view,
                 commands::open_legal_link,
                 commands::open_web_link,
                 env::env_command,
@@ -329,6 +338,7 @@ fn main() {
                 plugin_connection::plugin_connection_requests,
                 plugin_connection::plugin_connection_attention,
                 commands::snapshot,
+                desktop_usage::record_desktop_usage,
                 local_resources::local_resource_catalog,
                 resource_commands::resource_command,
                 projects::project_command,
@@ -352,7 +362,7 @@ fn main() {
                 commands::invite_preview,
                 commands::connect_project,
                 sources::connect_project_sources,
-                repositories::repository_command,
+                repositories::repository_command_view,
                 sources::disconnect_project_source,
                 sources::start_source_sync,
                 sources::scan_project_folders,

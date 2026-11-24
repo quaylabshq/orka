@@ -16,7 +16,7 @@ import {
   TriangleAlertFilledIcon,
 } from "./icons.js";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./product-command.js";
 import type { RepositoryAccessRequest } from "@portable/protocol";
 import type { Project, Snapshot } from "../types.js";
 import { Button } from "./button.js";
@@ -30,7 +30,7 @@ import {
   ItemMenuButton,
   type ItemMenuAction,
 } from "./item-menu.js";
-import { connectProject } from "./use-project-setup.js";
+import { useConnectProject } from "./use-project-setup.js";
 import {
   RepositoryPicker,
   type RepositorySource,
@@ -81,6 +81,7 @@ export function RepositoryConnections({
   onClose?: () => void;
   onConnecting?: () => void;
 }) {
+  const connectProject = useConnectProject();
   const controller = useRepositories(project, state, refresh);
   const {
     call,
