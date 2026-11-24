@@ -142,6 +142,13 @@ const rules: {
 ];
 
 const all = rules.map(({ status }) => status);
+const priority = new Map<string, number>(
+  all.map(({ key }, rank) => [key, rank]),
+);
+
+/** Sort rank: the order the pill itself is chosen in, and no status last. */
+export const listStatusRank = (status: IndexStatus | null) =>
+  (status && priority.get(status.key)) ?? all.length;
 
 /** The statuses each list can show, in the order the Filter menu lists them. */
 export const listStatuses: Record<ListKind, ListStatus[]> = {

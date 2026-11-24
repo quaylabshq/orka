@@ -638,6 +638,37 @@ describe("the memory, session, and plan pages", () => {
     ]);
   });
 
+  it("sorts Most urgent first in the order a list picks its pill, unlike Skills", () => {
+    const plans = ["a", "b", "c", "d", "e"].map((title) => item("plan", title));
+    const statuses = {
+      a: "could-not-read",
+      b: "upload-refused",
+      c: "conflict",
+      e: "upload-failed",
+    };
+    expect(run("plan", plans, { sort: "status" }, statuses)).toEqual([
+      "c",
+      "e",
+      "a",
+      "b",
+      "d",
+    ]);
+    expect(
+      run("plan", plans, { sort: "status", direction: "desc" }, statuses),
+    ).toEqual(["d", "b", "a", "e", "c"]);
+    // Skills keep ranking by tone, so equally red rows fall back to name.
+    expect(
+      titles(
+        applyPageFilters(
+          skillPage,
+          [skill("a"), skill("b"), skill("c")],
+          { ...defaultIndexFilters, sort: "status" },
+          context({ a: "could-not-read", c: "conflict", b: "sync-issue" }),
+        ),
+      ),
+    ).toEqual(["a", "b", "c"]);
+  });
+
   it("names each sort and its directions for the page", () => {
     const sorts = (kind: keyof typeof indexPages) =>
       indexPages[kind].sorts.map(({ label, directions }) => [

@@ -19,6 +19,17 @@ const open = async (page: Page, label: string, scene: ListsScene = {}) => {
   await expect(rows(page).first()).toBeVisible();
 };
 
+/** Most urgent first: the order a list row picks its one pill in. */
+const priority = [
+  "Conflict",
+  "Upload failed",
+  "Couldn’t read",
+  "Upload refused",
+  "Needs review",
+  "Waiting to sync",
+  "Local edits",
+];
+
 /** What each page shows for the fixture's sample rows. */
 const pages = [
   {
@@ -118,8 +129,10 @@ for (const scene of pages) {
     await page
       .getByRole("menuitemradio", { name: "Status", exact: true })
       .click();
-    // Red first, then amber, then neutral; rows with no status sink.
-    await expect(pills(page).first()).toHaveAttribute("data-tone", "red");
+    // The order the pill itself is chosen in; rows with no status sink.
+    await expect(pills(page)).toHaveText(
+      priority.filter((label) => scene.pills.includes(label)),
+    );
     await expect(rows(page).last().locator(".index-status-pill")).toHaveCount(
       0,
     );

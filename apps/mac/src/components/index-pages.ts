@@ -19,7 +19,11 @@ import type {
   FilterOption,
   SortOption,
 } from "./index-menus.js";
-import { isInstructionFile, listStatuses } from "./list-status.js";
+import {
+  isInstructionFile,
+  listStatusRank,
+  listStatuses,
+} from "./list-status.js";
 import { skillStatuses, statusRank, type IndexStatus } from "./skill-status.js";
 import { sourceName } from "./source-label.js";
 
@@ -72,6 +76,8 @@ export interface IndexPage {
   /** Filter categories in menu order. */
   filters: IndexFilterKey[];
   statuses: FilterOption[];
+  /** Where a status sorts under Most urgent first; no status sorts last. */
+  statusRank: (status: IndexStatus | null) => number;
   /** Sort options in menu order. */
   sorts: SortOption<IndexSort>[];
   defaultSort: IndexSort;
@@ -173,6 +179,7 @@ export const indexPages: Record<ProjectResource["kind"], IndexPage> = {
     statuses: statusOptions(skillStatuses, ({ tone }) =>
       tone === "red" || tone === "amber" ? "attention" : tone,
     ),
+    statusRank,
     sorts: sortOptions(
       ["title", "status", "repository", "author", "updated"],
       "Shared by",
@@ -194,6 +201,7 @@ export const indexPages: Record<ProjectResource["kind"], IndexPage> = {
       "forks",
     ],
     statuses: statusOptions(listStatuses.session, ({ tone }) => tone),
+    statusRank: listStatusRank,
     sorts: listSorts("Owner"),
     defaultSort: "updated",
     searchText: listSearch,
@@ -205,6 +213,7 @@ export const indexPages: Record<ProjectResource["kind"], IndexPage> = {
     columns: ["repository", "person", "updated", "status"],
     filters: ["statuses", "people", "repositories", "locations"],
     statuses: statusOptions(listStatuses.plan, ({ tone }) => tone),
+    statusRank: listStatusRank,
     sorts: listSorts("Owner"),
     defaultSort: "updated",
     searchText: listSearch,
@@ -223,6 +232,7 @@ export const indexPages: Record<ProjectResource["kind"], IndexPage> = {
       "kinds",
     ],
     statuses: statusOptions(listStatuses.memory, ({ tone }) => tone),
+    statusRank: listStatusRank,
     sorts: listSorts("Updated by"),
     defaultSort: "updated",
     searchText: listSearch,
@@ -433,7 +443,7 @@ export function applyPageFilters(
   const primary = (a: ProjectResource, b: ProjectResource) => {
     switch (filters.sort) {
       case "status":
-        return statusRank(statusOf(a)) - statusRank(statusOf(b));
+        return page.statusRank(statusOf(a)) - page.statusRank(statusOf(b));
       case "repository":
         return compareText(a.repositoryName ?? "", b.repositoryName ?? "");
       case "author":
