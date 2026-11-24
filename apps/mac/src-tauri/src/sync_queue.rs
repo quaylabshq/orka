@@ -560,6 +560,7 @@ impl SyncQueue {
     /// again as it was. A request that arrived while the job ran stays queued
     /// with its own `not_before`. A service outage holds other network jobs
     /// until the same retry time so it costs one request per step.
+    /// Returns whether the committed outcome was cancellation.
     fn settle(
         &mut self,
         db: &Connection,
@@ -567,18 +568,26 @@ impl SyncQueue {
         result: &Result<Outcome>,
         now: i64,
         interval: &Interval,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let project = &job.project;
+        let tx = rusqlite::Transaction::new_unchecked(db, rusqlite::TransactionBehavior::Immediate)
+            .map_err(|e| e.to_string())?;
+        // A cancel that lands after the job's last check still stops it, and it
+        // stays recorded until the row is settled in this same transaction.
+        let result = if Self::cancelled(&tx, project)? {
+            &Ok(Outcome::Cancelled)
+        } else {
+            result
+        };
         // The job is over, so its claim and any cancel for it must not reach a
         // later request.
-        Self::clear(db, project)?;
+        Self::clear(&tx, project)?;
         match result {
-            Ok(Outcome::Skipped) => sql(db.execute(
+            Ok(Outcome::Skipped) => sql(tx.execute(
                 "DELETE FROM sync_queue WHERE project=?1 AND not_before=?2",
                 params![project, RUNNING],
-            )),
+            ))?,
             Ok(Outcome::Synced | Outcome::Cancelled | Outcome::Captured) => {
-                let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
                 sql(tx.execute(
                     "DELETE FROM sync_queue WHERE project=?1 AND not_before=?2",
                     params![project, RUNNING],
@@ -591,22 +600,18 @@ impl SyncQueue {
                 if project == WORKSPACE {
                     sql(tx.execute("DELETE FROM meta WHERE key=?", [OUTAGE]))?;
                 }
-                tx.commit().map_err(|e| e.to_string())?;
                 if matches!(result, Ok(Outcome::Synced | Outcome::Captured)) {
-                    self.synced.insert(job.project.clone(), now);
-                    sql(db.execute("DELETE FROM meta WHERE key=?", [cancelled_at_key(project)]))?;
+                    sql(tx.execute("DELETE FROM meta WHERE key=?", [cancelled_at_key(project)]))?;
                 }
-                Ok(())
             }
-            Ok(Outcome::Yielded) => sql(db.execute(
+            Ok(Outcome::Yielded) => sql(tx.execute(
                 "UPDATE sync_queue SET not_before=min(not_before,?2) WHERE project=?1",
                 params![project, job.not_before],
-            )),
+            ))?,
             Ok(Outcome::Deferred) | Err(_) => {
                 let attempts = job.attempts + 1;
                 let retry = interval.retry(attempts);
                 let not_before = now + millis(retry + jitter(&self.device, project, retry));
-                let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
                 sql(tx.execute(
                     "UPDATE sync_queue SET attempts=?2, not_before=min(not_before,?3) WHERE project=?1",
                     params![project, attempts, not_before],
@@ -627,9 +632,13 @@ impl SyncQueue {
                         params![attempts, not_before],
                     ))?;
                 }
-                tx.commit().map_err(|e| e.to_string())
             }
         }
+        tx.commit().map_err(|e| e.to_string())?;
+        if matches!(result, Ok(Outcome::Synced | Outcome::Captured)) {
+            self.synced.insert(job.project.clone(), now);
+        }
+        Ok(matches!(result, Ok(Outcome::Cancelled)))
     }
 
     /// Runs the most urgent ready job under its project or workspace lock.
@@ -660,8 +669,8 @@ impl SyncQueue {
         let manual = job.project != WORKSPACE
             && job.attempts == 0
             && matches!(job.reason.as_str(), "sync now" | "retry" | "folder");
-        self.settle(&db, job, &result, Self::now(), interval)?;
-        if manual {
+        let cancelled = self.settle(&db, job, &result, Self::now(), interval)?;
+        if manual && !cancelled {
             match result {
                 Ok(Outcome::Synced) => scope.record_usage("sync_manual_completed"),
                 Err(_) => scope.record_usage("sync_manual_failed"),
@@ -1877,6 +1886,84 @@ mod tests {
                 ["revision"],
             1
         );
+    }
+
+    #[tokio::test]
+    async fn a_cancel_after_the_last_check_still_stops_the_job() {
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("ORKA_TEST_HOME", home.path());
+        let db = db::open().unwrap();
+        let mut queue = SyncQueue::new(0);
+        let interval = interval();
+        // The job found no cancel at its last check, so it returns its own
+        // result; Cancel lands before the worker settles it.
+        for result in [
+            Ok(Outcome::Deferred),
+            Ok(Outcome::Yielded),
+            Ok(Outcome::Synced),
+            Ok(Outcome::Captured),
+            Err("Cloud unavailable; local work stays queued".to_string()),
+        ] {
+            SyncQueue::enqueue(&db, "a", Priority::Timer, "timer", 0).unwrap();
+            let ran = queue
+                .run_next(&interval, async |db, _| {
+                    SyncQueue::cancel(db, "a").unwrap();
+                    result
+                })
+                .await;
+            assert!(ran.unwrap());
+            assert!(rows(&db).is_empty());
+            assert_eq!(SyncQueue::next(&db, i64::MAX - 1).unwrap(), None);
+            assert!(db::get(&db, OUTAGE).unwrap().is_null());
+            assert!(!queue.synced.contains_key("a"));
+            assert!(db::get(&db, &cancelled_at_key("a")).unwrap().is_i64());
+        }
+    }
+
+    #[test]
+    fn settle_reports_the_committed_cancellation_to_its_caller() {
+        let interval = interval();
+        for (cancelled, result) in [
+            (false, Ok(Outcome::Synced)),
+            (false, Err("item failed".into())),
+            (true, Ok(Outcome::Synced)),
+            (true, Err("item failed".into())),
+        ] {
+            let (_root, db) = queue_db(&["a"]);
+            let mut queue = SyncQueue::new(0);
+            SyncQueue::enqueue(&db, "a", Priority::User, "sync now", 0).unwrap();
+            let job = SyncQueue::claim(&db, 0).unwrap().unwrap();
+            if cancelled {
+                SyncQueue::cancel(&db, "a").unwrap();
+            }
+            assert_eq!(
+                queue.settle(&db, job, &result, 0, &interval).unwrap(),
+                cancelled
+            );
+        }
+    }
+
+    #[test]
+    fn a_cancelled_job_stays_cancelled_when_settling_fails() {
+        let (_root, db) = queue_db(&["a"]);
+        let mut queue = SyncQueue::new(0);
+        SyncQueue::enqueue(&db, "a", Priority::Timer, "timer", 0).unwrap();
+        let job = SyncQueue::claim(&db, 0).unwrap().unwrap();
+        SyncQueue::cancel(&db, "a").unwrap();
+        // Removing the row fails, as if the process died before that write.
+        db.execute_batch(
+            "CREATE TEMP TRIGGER fail BEFORE DELETE ON sync_queue
+             BEGIN SELECT RAISE(ABORT, 'disk I/O error'); END",
+        )
+        .unwrap();
+        assert!(queue
+            .settle(&db, job, &Ok(Outcome::Cancelled), 1, &interval())
+            .is_err());
+        db.execute_batch("DROP TRIGGER fail").unwrap();
+        // The next start still finds the cancel, so the job does not run again.
+        SyncQueue::recover(&db, 2).unwrap();
+        assert!(rows(&db).is_empty());
+        assert_eq!(SyncQueue::next(&db, 2).unwrap(), None);
     }
 
     #[tokio::test]
