@@ -34,6 +34,8 @@ export interface ListStatusInput {
   /** Every queued upload for this item, including ones with no error yet. */
   uploads: Snapshot["outbox"];
   governed: boolean;
+  /** The files this Mac's binding records for the item. */
+  files: string[];
 }
 
 type Upload = ListStatusInput["uploads"][number];
@@ -83,13 +85,20 @@ const rules: {
       icon: FileWarningIcon,
     },
     // Memories show read failures for instruction files only.
-    holds: ({ resource, attention }) =>
+    holds: ({ resource, attention, files }) =>
       (resource.kind !== "memory" || isInstructionFile(resource)) &&
       Boolean(
-        attention?.errors.some(
-          ({ source, error }) =>
-            source.includes(":scan:") && isReadFailure(error),
-        ),
+        attention?.errors.some(({ source, error }) => {
+          // Errors carry only a source and a message, so the message's
+          // wording is all that says the file could not be read.
+          const scan = source.indexOf(":scan:");
+          if (scan < 0) return false;
+          const target = source.slice(scan + ":scan:".length);
+          return isReadFailure(
+            error,
+            target === resource.logicalPath || files.includes(target),
+          );
+        }),
       ),
   },
   {

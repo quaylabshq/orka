@@ -96,18 +96,21 @@ const unreadable =
 const legacyReadError =
   /^(?:IO error for operation on .+: )?(?:Operation not permitted|No such file or directory|Input\/output error|Permission denied|Not a directory|Is a directory) \(os error (?:1|2|5|13|20|21)\)$/;
 
-/** Whether a scan error says the file or folder could not be read. */
-export const isReadFailure = (error: string) =>
-  unreadable.test(error) || legacyReadError.test(error);
+/**
+ * Whether a scan error says a file could not be read. A bare OS error names
+ * the file only through the error's source, so it counts only from a source
+ * that is the item's own file.
+ */
+export const isReadFailure = (error: string, ownFile: boolean) =>
+  unreadable.test(error) || (ownFile && legacyReadError.test(error));
 
 function couldNotRead(
   resource: ProjectResource,
   { source, error }: AttentionItem["errors"][number],
 ) {
-  return (
-    unreadable.test(error) ||
-    (source.endsWith(`:scan:skills/${resource.logicalPath}`) &&
-      legacyReadError.test(error))
+  return isReadFailure(
+    error,
+    source.endsWith(`:scan:skills/${resource.logicalPath}`),
   );
 }
 

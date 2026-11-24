@@ -215,6 +215,19 @@ test("a fork Orka made and has not shared yet reads On this Mac, on its row and 
   await expect(fork).toHaveCount(1);
 });
 
+test("Couldn’t read marks the plan whose own file failed, not one a rescan reported on", async ({
+  page,
+}) => {
+  await open(page, "Plans");
+  const row = (title: string) => rows(page).filter({ hasText: title });
+  await expect(
+    row("Library icon gaps").locator(".index-status-pill"),
+  ).toHaveText("Couldn’t read");
+  await expect(
+    row("Docs redesign table component").locator(".index-status-pill"),
+  ).toHaveCount(0);
+});
+
 test("Memories tell repeated file names apart by agent, and the Kind filter splits instruction files from memories", async ({
   page,
 }) => {

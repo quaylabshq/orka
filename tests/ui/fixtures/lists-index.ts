@@ -482,6 +482,19 @@ export async function listsIndexFixture(page: Page, scene: ListsScene = {}) {
     const located = new Map(
       all.filter(({ row }) => row.path).map(({ row }) => [row.id, row.path]),
     );
+    const scanOf = ({ kind, row }: { kind: Kind; row: Row }) =>
+      `one:${resource(kind, row).sourceId}:scan:`;
+    // An unreadable session or plan is the file this Mac's binding records;
+    // an instruction file is scanned by its path in the repository.
+    const unreadable = withStatus("unreadable").map((item) => ({
+      ...item,
+      file:
+        item.kind === "memory"
+          ? undefined
+          : `${home}/.${item.row.source ?? "claude"}/${item.kind}s/${item.row.id}`,
+    }));
+    // A rescan of a bound plan that failed for a reason other than reading it.
+    const rescanned = all.find(({ row }) => row.id === "plan-4")!;
     Object.assign(window, {
       listsCalls: [],
       isTauri: true,
@@ -505,12 +518,19 @@ export async function listsIndexFixture(page: Page, scene: ListsScene = {}) {
                 },
               ],
               resources: shared,
-              bindings: withStatus("review").map(({ kind, row }) => ({
-                resourceId: row.id,
-                projectId: "one",
-                base: resource(kind, row),
-                installationState: "review_pending",
-              })),
+              bindings: [
+                ...withStatus("review").map(({ kind, row }) => ({
+                  resourceId: row.id,
+                  projectId: "one",
+                  base: resource(kind, row),
+                  installationState: "review_pending",
+                })),
+                ...unreadable.flatMap(({ row, file }) =>
+                  file
+                    ? [{ resourceId: row.id, projectId: "one", paths: [file] }]
+                    : [],
+                ),
+              ],
               governance: [{ projectId: "one", catalog }],
               conflicts: withStatus("conflict").map(({ kind, row }) => ({
                 id: `conflict-${row.id}`,
@@ -539,10 +559,16 @@ export async function listsIndexFixture(page: Page, scene: ListsScene = {}) {
                     ),
                   ),
               ],
-              errors: withStatus("unreadable").map(({ kind, row }) => ({
-                source: `one:${resource(kind, row).sourceId}:scan:${row.id}`,
-                error: "Permission denied (os error 13)",
-              })),
+              errors: [
+                ...unreadable.map((item) => ({
+                  source: `${scanOf(item)}${item.file ?? resource(item.kind, item.row).logicalPath}`,
+                  error: "Permission denied (os error 13)",
+                })),
+                {
+                  source: `${scanOf(rescanned)}${rescanned.row.id}`,
+                  error: "Permission denied (os error 13)",
+                },
+              ],
               sync: { online: true },
               daemon: { running: true },
               devices: [],

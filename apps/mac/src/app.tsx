@@ -100,6 +100,8 @@ import {
 } from "./components/desktop-updates.js";
 import { WorkspaceHeader } from "./components/workspace-header.js";
 import {
+  bindingProjectId,
+  bindingResourceId,
   projectAttention,
   syncReviewItems,
   type SyncReviewItem,
@@ -726,6 +728,12 @@ function WorkspaceApp({
           ...(uploads.get(upload.resourceId) ?? []),
           upload,
         ]);
+    const files = new Map<string, string[]>();
+    for (const binding of state.bindings) {
+      const id = bindingResourceId(binding);
+      if (id && bindingProjectId(binding) === project)
+        files.set(id, binding.paths ?? []);
+    }
     const cache = new Map<string, IndexStatus | null>();
     return (resource: ProjectResource) => {
       const id = resource.resourceId;
@@ -747,6 +755,7 @@ function WorkspaceApp({
                 attention: items.get(id),
                 uploads: uploads.get(id) ?? [],
                 governed: Boolean(selectedProject?.governed),
+                files: files.get(id) ?? [],
               }),
         );
       return cache.get(id) ?? null;

@@ -54,8 +54,9 @@ const attention = (extra: Partial<AttentionItem>): AttentionItem => ({
   uploads: [],
   ...extra,
 });
+const readFailureFile = "/work/repo/.claude/a";
 const readFailure = {
-  source: "p:repo:scan:/work/repo/.claude/a",
+  source: `p:repo:scan:${readFailureFile}`,
   error: "Permission denied (os error 13)",
 };
 const stale =
@@ -69,11 +70,12 @@ interface Part {
   errors?: Snapshot["errors"];
   binding?: Binding;
   governed?: boolean;
+  files?: string[];
 }
 const produces: Record<ListStatusKey, (kind: ListKind) => Part> = {
   conflict: () => ({ conflicted: true }),
   "upload-failed": () => ({ uploads: [upload("503: Service unavailable")] }),
-  "could-not-read": () => ({ errors: [readFailure] }),
+  "could-not-read": () => ({ errors: [readFailure], files: [readFailureFile] }),
   "upload-refused": () => ({ uploads: [upload("403: Sharing is disabled")] }),
   "needs-review": (kind) =>
     kind === "plan"
@@ -95,6 +97,7 @@ const input = (kind: ListKind, ...parts: Part[]): ListStatusInput => {
     attention:
       errors.length || binding ? attention({ errors, binding }) : undefined,
     governed: parts.some((part) => part.governed),
+    files: parts.flatMap((part) => part.files ?? []),
   };
 };
 const keyOf = (kind: ListKind, ...parts: Part[]) =>
@@ -196,15 +199,23 @@ describe("listStatus edge cases", () => {
     expect(keyOf("plan", at(readFailure.source, "Cannot read plan.md"))).toBe(
       "could-not-read",
     );
+    const osError = at(
+      readFailure.source,
+      `IO error for operation on /work/a.jsonl: ${readFailure.error}`,
+    );
+    expect(keyOf("session", osError, { files: [readFailureFile] })).toBe(
+      "could-not-read",
+    );
+    // A bare OS error names its file only through the source, so another
+    // file's error, or a rescan of the item, is not this item's read failure.
+    expect(keyOf("session", osError, { files: ["/work/other.jsonl"] })).toBe(
+      null,
+    );
     expect(
-      keyOf(
-        "session",
-        at(
-          readFailure.source,
-          `IO error for operation on /work/a.jsonl: ${readFailure.error}`,
-        ),
-      ),
-    ).toBe("could-not-read");
+      keyOf("plan", at("p:repo:scan:a", readFailure.error), {
+        files: [readFailureFile],
+      }),
+    ).toBeNull();
     expect(
       keyOf("plan", at(readFailure.source, "Symlinked files are excluded")),
     ).toBeNull();
@@ -240,6 +251,9 @@ describe("listStatus from the project snapshot", () => {
   const statusIn = (state: Snapshot, resource: ProjectResource) =>
     listStatus({
       resource,
+      files: state.bindings
+        .filter((binding) => binding.resourceId === resource.resourceId)
+        .flatMap((binding) => binding.paths ?? []),
       conflicted: state.conflicts.some(
         (conflict) => conflict.resourceId === resource.resourceId,
       ),
@@ -252,7 +266,7 @@ describe("listStatus from the project snapshot", () => {
       governed: true,
     })?.key ?? null;
 
-  it("ties scan read failures to sessions and plans through their bound files, and to instruction files by path", () => {
+  it("names an OS read error only on the item whose own file it came from", () => {
     const file = "/work/repo/.claude/plans/rollout.md";
     const session = item("session", { resourceId: "s" });
     const plan = item("plan", { resourceId: "f" });
@@ -262,27 +276,37 @@ describe("listStatus from the project snapshot", () => {
       source: "codex",
     });
     const instructions = item("memory", { resourceId: "m" });
+    const rescanned = item("plan", {
+      resourceId: "r",
+      logicalPath: "claude/files/other.md",
+    });
     const state = snapshot({
-      resources: [session, plan, embedded, instructions],
+      resources: [session, plan, embedded, instructions, rescanned],
       bindings: [
         { resourceId: "s", projectId: "p", paths: ["/work/s1.jsonl"] },
         { resourceId: "f", projectId: "p", paths: [file] },
+        { resourceId: "r", projectId: "p", paths: ["/work/other.md"] },
       ],
       errors: [
         { source: "p:repo:scan:/work/s1.jsonl", error: readFailure.error },
         { source: `p:repo:scan:${file}`, error: readFailure.error },
         {
-          source: "p:repo:scan:plan:codex/thread/plan.md",
-          error: readFailure.error,
-        },
-        {
           source: "p:repo:scan:instructions/AGENTS.md",
           error: "No such file or directory (os error 2)",
         },
+        // A plan kept in a session transcript has no file of its own, and a
+        // rescan of a bound item reports on the item, not on reading a file.
+        {
+          source: "p:repo:scan:plan:codex/thread/plan.md",
+          error: readFailure.error,
+        },
+        { source: "p:repo:scan:r", error: readFailure.error },
       ],
     });
-    for (const resource of [session, plan, embedded, instructions])
+    for (const resource of [session, plan, instructions])
       expect(statusIn(state, resource)).toBe("could-not-read");
+    for (const resource of [embedded, rescanned])
+      expect(statusIn(state, resource)).toBeNull();
   });
 
   it("reads queued uploads with no error, which the attention list drops", () => {
