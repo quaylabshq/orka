@@ -72,8 +72,12 @@
   border-bottom: 0;
 }
 
+/* WebKit selects the word under a secondary click, and selected text gets
+   the native text menu in place of the row's own. */
 .index-table tbody tr {
   cursor: pointer;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .index-table tbody tr:hover > *,

@@ -297,6 +297,7 @@ test("a row in two states shows the more urgent pill, and the Status filter file
 
 test("a control-click anywhere on a row shows its menu and never opens the row", async ({
   page,
+  browserName,
 }) => {
   await open(page, "Plans");
   const row = rows(page).filter({ hasText: "Conflicts panel handoff" });
@@ -307,9 +308,11 @@ test("a control-click anywhere on a row shows its menu and never opens the row",
     row.locator(".index-table-updated"),
   ]) {
     // macOS turns a control-click into a secondary click, and WebKit still
-    // follows it with a click carrying the control key.
-    await target.click({ button: "right", modifiers: ["Control"] });
-    await target.dispatchEvent("click", { ctrlKey: true });
+    // follows it with a click carrying the control key. Chromium sends no
+    // such click, so there it is sent by hand.
+    await target.click({ modifiers: ["Control"] });
+    if (browserName !== "webkit")
+      await target.dispatchEvent("click", { ctrlKey: true });
     await expect(
       page.getByRole("menu", { name: "plan actions" }),
     ).toBeVisible();
