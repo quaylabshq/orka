@@ -455,6 +455,10 @@ describe("the memory, session, and plan pages", () => {
     ...defaultIndexFilters,
     sort: indexPages[kind].defaultSort,
   });
+  const projectRepositories = [
+    { id: "api", label: "orka-api" },
+    { id: "app", label: "orka-public" },
+  ];
   const run = (
     kind: "memory" | "session" | "plan",
     items: ProjectResource[],
@@ -476,7 +480,7 @@ describe("the memory, session, and plan pages", () => {
   const categoryLabels = (
     kind: keyof typeof indexPages,
     items: ProjectResource[],
-    repositories = true,
+    repositories = projectRepositories,
   ) =>
     filterCategories(indexPages[kind], items, defaultIndexFilters, {
       user: "me",
@@ -540,6 +544,7 @@ describe("the memory, session, and plan pages", () => {
       "Status",
       "Updated by",
       "Agent",
+      "Repository",
       "Location",
       "Kind",
     ]);
@@ -550,9 +555,9 @@ describe("the memory, session, and plan pages", () => {
 
   it("offers Repository only beside a Repository column", () => {
     expect(categoryLabels("session", sessions)).toContain("Repository");
-    expect(categoryLabels("session", sessions, false)).not.toContain(
-      "Repository",
-    );
+    expect(
+      categoryLabels("session", sessions, projectRepositories.slice(0, 1)),
+    ).not.toContain("Repository");
   });
 
   it("offers Agent only with two agents present, never counting shared items", () => {
@@ -624,7 +629,7 @@ describe("the memory, session, and plan pages", () => {
       indexPages.session,
       sessions,
       { ...defaultIndexFilters, picks: { repositories: ["removed"] } },
-      { user: "me", memberName: (id) => id, repositories: true },
+      { user: "me", memberName: (id) => id, repositories: projectRepositories },
     );
     expect(
       run("session", sessions, effectiveFilters(defaultIndexFilters, shown)),

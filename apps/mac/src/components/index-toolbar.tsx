@@ -14,6 +14,7 @@ import {
   type IndexFilterKey,
   type IndexFilters,
   type IndexPage,
+  type IndexRepository,
 } from "./index-pages.js";
 import { SearchField } from "./search-field.js";
 
@@ -24,7 +25,7 @@ export function useFilterCategories(
   filters: IndexFilters,
   user: string | null,
   memberName: (id: string) => string,
-  repositories: boolean,
+  repositories: IndexRepository[],
 ): FilterCategory[] {
   return useMemo(
     () =>

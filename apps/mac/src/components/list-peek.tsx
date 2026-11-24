@@ -12,7 +12,7 @@ interface SessionFamily {
   forks: number;
 }
 
-/** A plan kept inside a session's transcript has no file of its own. */
+/** A plan extracted from a session transcript. */
 const inSession = (plan: ProjectResource) =>
   /^[^/]+\/sessions\//.test(plan.logicalPath);
 
@@ -30,15 +30,19 @@ function Updated({ value }: { value: string }) {
 export function ListPeek({
   resource,
   family,
+  showLogicalPath,
 }: {
   resource: ProjectResource;
   family?: SessionFamily;
+  showLogicalPath?: boolean;
 }) {
   const session = resource.kind === "session";
-  const fileless = resource.kind === "plan" && inSession(resource);
+  const fromSession = resource.kind === "plan" && inSession(resource);
   // A session points at its repository folder; files would be transcripts.
-  const location = useLocalLocation(resource, !session && !fileless);
-  const path = session ? location.folder : location.files?.[0];
+  const location = useLocalLocation(resource, !session);
+  const path =
+    (session ? location.folder : location.files?.[0]) ??
+    (showLogicalPath ? resource.logicalPath : undefined);
   const forks = family?.forks ?? 0;
   const kind =
     resource.kind === "memory" ? (
@@ -52,7 +56,7 @@ export function ListPeek({
       </span>
     ) : resource.kind === "plan" ? (
       <span className="index-table-peek-kind">
-        {fileless ? "From a session" : "Plan file"}
+        {fromSession ? "From a session" : "Plan file"}
       </span>
     ) : (
       <>

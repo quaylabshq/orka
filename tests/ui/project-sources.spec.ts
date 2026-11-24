@@ -9,6 +9,17 @@ async function fixture(page: Page, names = ["desktop", "backend"]) {
       { id: "desktop", name: names[0], path: "/local/desktop" },
       { id: "backend", name: names[1], path: "/different/backend" },
     ];
+    const retiredName = names[2];
+    const sources = retiredName
+      ? [
+          ...repositories,
+          {
+            id: "retired-desktop",
+            name: retiredName,
+            removedAt: "2026-11-20T10:00:00Z",
+          },
+        ]
+      : repositories;
     const resources = repositories.flatMap((source) =>
       ["memory", "skill", "session", "plan"].map((kind) => ({
         resourceId: `${kind}-${source.id}`,
@@ -50,7 +61,7 @@ async function fixture(page: Page, names = ["desktop", "backend"]) {
                   id: "project",
                   name: "Product",
                   role: "owner",
-                  sources: repositories,
+                  sources,
                 },
                 {
                   id: "other",
@@ -403,6 +414,20 @@ test("duplicate repository names stay distinguishable in the custom picker", asy
   await pickRepository(page, "orka · backen");
   await expect(page.locator("tbody tr")).toHaveCount(1);
   await expect(page.locator("tbody tr")).toContainText("backend instructions");
+});
+
+test("an active repository keeps the same label in its rows and filter when a retired source has its name", async ({
+  page,
+}) => {
+  await fixture(page, ["desktop", "backend", "desktop"]);
+  await page.getByRole("button", { name: /^Memories/ }).click();
+  const row = page
+    .locator("tbody tr")
+    .filter({ hasText: "desktop instructions" });
+  await expect(row).toContainText("desktop · deskto");
+  await pickRepository(page, "desktop · deskto");
+  await expect(page.locator("tbody tr")).toHaveCount(1);
+  await expect(row).toBeVisible();
 });
 
 test("Home can open a resource outside the previous repository selection", async ({

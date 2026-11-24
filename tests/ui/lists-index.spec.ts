@@ -568,6 +568,33 @@ test("a plan peek says where the plan came from, with its file only when it has 
   );
 });
 
+test("same-title session plans remain distinguishable at the minimum window", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 900, height: 640 });
+  await open(page, "Plans", { duplicatePlans: true });
+  for (const [session, path] of [
+    ["s6", "~/code/orka-api/.orka/plans/claude/sessions/s6/plan.md"],
+    ["s7", "claude/sessions/s7/plan.md"],
+  ]) {
+    const plan = page.getByRole("button", {
+      name: `Pending reviews redesign, claude/sessions/${session}/plan.md`,
+      exact: true,
+    });
+    const suffix = plan.locator("+ .index-table-name-detail");
+    await expect(suffix).toHaveText(`${session}/plan.md`);
+    expect(
+      await suffix.evaluate((element) => element.scrollWidth),
+    ).toBeLessThanOrEqual(
+      await suffix.evaluate((element) => element.clientWidth),
+    );
+    await plan.hover();
+    const peek = page.locator(".index-table").getByRole("tooltip");
+    await expect(peek).toContainText("From a session");
+    await expect(peek).toContainText(path);
+  }
+});
+
 test("a memory peek gives its kind and version, then its file", async ({
   page,
 }) => {
@@ -734,6 +761,54 @@ test("a view-only member asks for editing access from beside the toolbar", async
   expect(
     Math.abs(ask!.y + ask!.height / 2 - (refresh!.y + refresh!.height / 2)),
   ).toBeLessThan(2);
+});
+
+test("a disconnected view-only member can still request editing access", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 900, height: 640 });
+  await open(page, "Plans", { disconnected: true, access: "read" });
+  const toolbar = tools(page, "plans");
+  await expect(
+    toolbar.getByRole("button", { name: "Not on this Mac" }),
+  ).toBeVisible();
+  await toolbar.getByRole("button", { name: "Request editing access" }).click();
+  const request = page.getByRole("dialog", { name: "Request access" });
+  await expect(request.getByRole("combobox")).toHaveText("Can edit");
+  await request.getByRole("button", { name: "Send request" }).click();
+  await expect(
+    toolbar.getByRole("button", { name: "Access requested" }),
+  ).toBeVisible();
+});
+
+test("an empty restricted project still offers to connect its folder", async ({
+  page,
+}) => {
+  await visit(page, "Memories", { access: "hidden", disconnected: true });
+  const empty = page.locator(".empty-state");
+  await expect(
+    empty.getByRole("button", { name: "Request access" }),
+  ).toBeVisible();
+  await expect(
+    empty.getByRole("button", { name: "Connect folder" }),
+  ).toBeVisible();
+});
+
+test("a repository filter stays selected when its only plan disappears", async ({
+  page,
+}) => {
+  await open(page, "Plans");
+  await pick(page, "Repository", "data-pipelines-and-analytics");
+  await expect(rows(page)).toHaveCount(1);
+  await expect(rows(page).first()).toContainText("Self-hosted server upgrade");
+  await page.evaluate(() => ((window as any).listsHidden = ["plan-14"]));
+  await expect(
+    page.getByRole("heading", { name: "No plans match" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Remove Repository filter" }),
+  ).toBeVisible();
+  await expect(rows(page)).toHaveCount(0);
 });
 
 test("loading draws skeleton rows under the toolbar", async ({ page }) => {

@@ -24,6 +24,8 @@ export type ListsScene = {
   discovery?: "pending" | "failed";
   /** A newest plan with a very long title and a deep file path. */
   longText?: boolean;
+  /** Two plans from different sessions with the same title and metadata. */
+  duplicatePlans?: boolean;
 };
 
 type Kind = "memory" | "session" | "plan";
@@ -417,6 +419,16 @@ export async function listsIndexFixture(page: Page, scene: ListsScene = {}) {
           }) as Row,
       ),
     };
+    if (scene.duplicatePlans) {
+      const plan = rows.plan[6];
+      plan.path = `${home}/code/orka-api/.orka/plans/${plan.logicalPath}`;
+      rows.plan.push({
+        ...plan,
+        id: "plan-duplicate",
+        logicalPath: "claude/sessions/s7/plan.md",
+        path: undefined,
+      });
+    }
     if (scene.solo)
       for (const kind of Object.keys(rows) as Kind[])
         for (const row of rows[kind]) row.owner = user;

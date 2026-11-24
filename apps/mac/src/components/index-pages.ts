@@ -30,6 +30,7 @@ import { sourceName } from "./source-label.js";
 export type IndexSort =
   "updated" | "title" | "author" | "status" | "repository";
 export type IndexSortDirection = "asc" | "desc";
+export type IndexRepository = { id: string; label: string };
 /** A category in an index's Filter menu. */
 export type IndexFilterKey =
   | "statuses"
@@ -269,8 +270,8 @@ interface IndexContext {
 }
 type OptionContext = Pick<IndexContext, "user" | "memberName"> & {
   page: IndexPage;
-  /** The table shows a Repository column; its filter needs one too. */
-  repositories: boolean;
+  /** Lists use active project sources. Skills use the repositories in their rows. */
+  repositories: IndexRepository[];
 };
 
 const categories: Record<
@@ -332,22 +333,19 @@ const categories: Record<
     label: () => "Repository",
     icon: FolderIcon,
     value: (resource) => resource.sourceId ?? undefined,
-    options: (resources, { repositories }) =>
-      [
-        ...new Map(
-          resources
-            .filter(
-              (resource) =>
-                repositories && resource.sourceId && resource.repositoryName,
-            )
-            .map((resource) => [
-              resource.sourceId as string,
-              resource.repositoryName as string,
-            ]),
-        ),
-      ]
+    options: (resources, { page, repositories }) => {
+      const names = new Map<string, string>();
+      if (page.kind === "skill") {
+        for (const { sourceId, repositoryName } of resources) {
+          if (sourceId && repositoryName) names.set(sourceId, repositoryName);
+        }
+      } else {
+        for (const { id, label } of repositories) names.set(id, label);
+      }
+      return [...names]
         .map(([value, label]) => ({ value, label, icon: FolderIcon }))
-        .sort((a, b) => a.label.localeCompare(b.label)),
+        .sort((a, b) => a.label.localeCompare(b.label));
+    },
     choice: true,
   },
   locations: {

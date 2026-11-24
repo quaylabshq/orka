@@ -14,6 +14,7 @@ import {
   activeSources,
   hasConnectedSource,
   repositoryLabel,
+  repositoryLabelSuffix,
 } from "./components/project-sources.js";
 import React, {
   lazy,
@@ -563,7 +564,13 @@ function WorkspaceApp({
   useEffect(() => {
     if (alreadyConnectedRepositories) setRepositorySetup("");
   }, [alreadyConnectedRepositories]);
-  const repositories = activeSources(selectedProject?.sources);
+  const repositories = useMemo(() => {
+    const sources = selectedProject?.sources ?? [];
+    return activeSources(sources).map((source) => ({
+      ...source,
+      label: source.name + repositoryLabelSuffix(sources, source),
+    }));
+  }, [selectedProject?.sources]);
   const repository = repositories.some(
     (source) => source.id === index.repository,
   )
@@ -1502,7 +1509,7 @@ function WorkspaceApp({
                     user={state.user}
                     displayTitle={displayTitle}
                     statusOf={statusOf}
-                    multiRepository={repositories.length > 1}
+                    repositories={repositories}
                     multiMember={
                       (state.governance?.find(
                         (item) => item.projectId === project,

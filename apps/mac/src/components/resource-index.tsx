@@ -29,6 +29,7 @@ import {
   sortDirection,
   type IndexFilterKey,
   type IndexFilters,
+  type IndexRepository,
 } from "./index-pages.js";
 import { LoadingRegion } from "./loading-region.js";
 import {
@@ -56,8 +57,8 @@ export interface ResourceIndexProps {
   displayTitle: (resource: Resource) => string;
   /** The one status each row shows. */
   statusOf?: (resource: Resource) => IndexStatus | null;
-  /** Lists name each row's repository only when the project has several. */
-  multiRepository?: boolean;
+  /** Active sources whose filter options survive an empty collection. */
+  repositories: IndexRepository[];
   /** Lists credit each row's person whenever the project has several members. */
   multiMember?: boolean;
   /** Whether this Mac has a connected folder; it changes the empty copy. */
@@ -95,7 +96,7 @@ export function ResourceIndex({
   user,
   displayTitle,
   statusOf = noStatus,
-  multiRepository = false,
+  repositories,
   multiMember = false,
   connected,
   connect,
@@ -160,14 +161,14 @@ export function ResourceIndex({
   const showRepository =
     kind === "skill"
       ? resources.some((skill) => skill.repositoryName)
-      : multiRepository;
+      : repositories.length > 1;
   const categories = useFilterCategories(
     page,
     resources,
     filters,
     user,
     memberName,
-    showRepository,
+    repositories,
   );
   // Filter by the picks that still have an option behind them.
   const applied = useMemo(
@@ -233,6 +234,21 @@ export function ResourceIndex({
       };
     };
   }, [kind, resources, displayTitle]);
+  const duplicatePlanTitles = useMemo(() => {
+    const seen = new Set<string>();
+    const duplicates = new Set<string>();
+    if (kind === "plan") {
+      for (const resource of resources) {
+        const title = displayTitle(resource).toLocaleLowerCase();
+        if (seen.has(title)) duplicates.add(title);
+        seen.add(title);
+      }
+    }
+    return duplicates;
+  }, [kind, resources, displayTitle]);
+  const duplicatePlan = (resource: Resource) =>
+    duplicatePlanTitles.size > 0 &&
+    duplicatePlanTitles.has(displayTitle(resource).toLocaleLowerCase());
   const picked = filterPicksActive(applied);
   const searched = filters.query.trim();
   const filtered = Boolean(searched) || picked;
@@ -277,20 +293,22 @@ export function ResourceIndex({
     </Button>
   );
   // Lists explain a page-wide limit beside the toolbar; Skills keep theirs above it.
-  const access = !list ? null : !connected && connect ? (
+  const connection = !connected && connect && (
     <AccessPill
       label="Not on this Mac"
       title="This project isn’t on this Mac"
       icon={FolderIcon}
     >
       <p className="index-access-description">
-        You can read the team’s shared {noun}. Connect{" "}
-        {connect.repositories ? "its repositories" : "the project folder"} to{" "}
-        {connectPurposes[kind]}.
+        {!noAccess && `You can read the team’s shared ${noun}. `}
+        Connect{" "}
+        {connect.repositories ? "its repositories" : "the project folder"}{" "}
+        {noAccess ? "to find local items." : `to ${connectPurposes[kind]}.`}
       </p>
       {connectButton}
     </AccessPill>
-  ) : noAccess ? (
+  );
+  const access = noAccess ? (
     <AccessPill
       label="Restricted"
       title={`Shared ${noun} are restricted`}
@@ -319,6 +337,7 @@ export function ResourceIndex({
     list && toolbarShown ? (
       <>
         {refreshButton}
+        {connection}
         {access}
       </>
     ) : emptyRefresh ? (
@@ -527,8 +546,12 @@ export function ResourceIndex({
               connected={connected}
               restricted={noAccess}
               actions={
-                list &&
-                (restrictedEmpty ? accessRequest : !connected && connectButton)
+                list && (
+                  <>
+                    {restrictedEmpty && accessRequest}
+                    {!connected && connectButton}
+                  </>
+                )
               }
             />
           )
@@ -564,6 +587,11 @@ export function ResourceIndex({
                 />
               )
             }
+            titleDetail={(resource) =>
+              duplicatePlan(resource)
+                ? resource.logicalPath.split("/").slice(-2).join("/")
+                : undefined
+            }
             peek={(resource) =>
               kind === "skill" ? (
                 <SkillPeek
@@ -571,7 +599,11 @@ export function ResourceIndex({
                   summary={skillSummaries[skillSummaryKey(resource)]}
                 />
               ) : (
-                <ListPeek resource={resource} family={family?.(resource)} />
+                <ListPeek
+                  resource={resource}
+                  family={family?.(resource)}
+                  showLogicalPath={duplicatePlan(resource)}
+                />
               )
             }
           />

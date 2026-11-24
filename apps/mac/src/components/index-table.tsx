@@ -186,6 +186,7 @@ export function IndexTable({
   onRowIntent,
   peek: peekContent,
   titleTrailing,
+  titleDetail,
 }: {
   page: IndexPage;
   resources: Resource[];
@@ -209,6 +210,8 @@ export function IndexTable({
   peek: (resource: Resource) => React.ReactNode;
   /** A marker right after a row's title, such as a session's fork. */
   titleTrailing?: (resource: Resource) => React.ReactNode;
+  /** The path suffix that distinguishes a plan from another with the same title. */
+  titleDetail?: (resource: Resource) => string | undefined;
 }) {
   const peekId = useId();
   const [peek, setPeek] = useState<{ id: string; above: boolean }>();
@@ -223,8 +226,20 @@ export function IndexTable({
     end: Math.min(count, Math.ceil(window.innerHeight / ROW_HEIGHT) + OVERSCAN),
     height: ROW_HEIGHT,
   }));
-  // The row last focused or given a menu.
-  const held = useRef<string>(undefined);
+  const [held, setHeld] = useState<string>();
+  useEffect(() => {
+    const release = ({ target }: FocusEvent) => {
+      if (
+        target instanceof Element &&
+        !body.current?.contains(target) &&
+        !target.closest('[role="menu"], [role="dialog"]')
+      )
+        setHeld(undefined);
+    };
+    // Portalled menus and dialogs can still return focus to a row.
+    document.addEventListener("focusin", release);
+    return () => document.removeEventListener("focusin", release);
+  }, []);
   const latest = useRef({ menu, onOpen, onRowIntent });
   useLayoutEffect(() => {
     latest.current = { menu, onOpen, onRowIntent };
@@ -238,7 +253,7 @@ export function IndexTable({
       open: (id) => latest.current.onOpen(id),
       intent: (resource) => latest.current.onRowIntent?.(resource),
       focus: (resource) => {
-        held.current = resource.resourceId;
+        setHeld(resource.resourceId);
         latest.current.onRowIntent?.(resource);
       },
       peek: (id, row, delay) => {
@@ -259,7 +274,7 @@ export function IndexTable({
       menu: (id, open) => {
         if (open) {
           unpeek();
-          held.current = id;
+          setHeld(id);
         }
         setMenu((current) =>
           open ? id : current === id ? undefined : current,
@@ -440,10 +455,10 @@ export function IndexTable({
   );
   const start = Math.min(span.start, count);
   const end = Math.min(span.end, count);
-  // The row last focused or given a menu, and the row about to take focus,
-  // are drawn wherever the list scrolls, so focus stays put and a closing
-  // menu can hand focus back.
-  const pinned = [held.current, focusResource].flatMap((id) => {
+  // Keep rows mounted while they own focus or a menu, or are about to
+  // receive focus from Back.
+  const pinned = [held, menu, focusResource].flatMap((id) => {
+    if (id === undefined) return [];
     const index = resources.findIndex(({ resourceId }) => resourceId === id);
     return index >= 0 && (index < start || index >= end) ? [index] : [];
   });
@@ -476,6 +491,7 @@ export function IndexTable({
         index={index}
         resource={resource}
         title={displayTitle(resource)}
+        titleDetail={titleDetail?.(resource)}
         status={statusOf(resource)}
         trailing={titleTrailing?.(resource)}
         person={person}
@@ -529,6 +545,7 @@ const IndexRow = React.memo(function IndexRow({
   index,
   resource,
   title,
+  titleDetail,
   status,
   trailing,
   person,
@@ -542,6 +559,7 @@ const IndexRow = React.memo(function IndexRow({
   index: number;
   resource: Resource;
   title: string;
+  titleDetail?: string;
   status: IndexStatus | null;
   trailing: React.ReactNode;
   person?: string;
@@ -553,6 +571,7 @@ const IndexRow = React.memo(function IndexRow({
   events: RowEvents;
 }) {
   const id = resource.resourceId;
+  const rowLabel = titleDetail ? `${title}, ${resource.logicalPath}` : title;
   const location = locationOf(resource);
   // A row that leaves the list takes its open menu with it, and that menu
   // never reports closing.
@@ -647,6 +666,7 @@ const IndexRow = React.memo(function IndexRow({
                 className="index-table-open"
                 data-resource-id={id}
                 title={resource.title}
+                aria-label={titleDetail ? rowLabel : undefined}
                 aria-describedby={peek ? peekId : undefined}
                 onClick={(event) => {
                   event.stopPropagation();
@@ -656,6 +676,15 @@ const IndexRow = React.memo(function IndexRow({
                 {title}
               </button>
               {trailing}
+              {titleDetail && (
+                <span
+                  className="index-table-name-detail"
+                  title={resource.logicalPath}
+                  aria-hidden="true"
+                >
+                  {titleDetail}
+                </span>
+              )}
             </span>
             {peek && (
               <span
@@ -676,7 +705,7 @@ const IndexRow = React.memo(function IndexRow({
             {actions.length > 0 && (
               <ItemMenuButton
                 actions={actions}
-                label={`Actions for ${title}`}
+                label={`Actions for ${rowLabel}`}
                 onOpenChange={(open) => events.menu(id, open)}
               />
             )}

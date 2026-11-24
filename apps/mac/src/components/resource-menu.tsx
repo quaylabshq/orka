@@ -361,6 +361,7 @@ export function useLocalLocation(resource: ProjectResource, files: boolean) {
       resource.projectId,
       resource.resourceId,
       resource.hash,
+      folder,
     ],
     enabled: files && Boolean(context && folder),
     queryFn: async () =>

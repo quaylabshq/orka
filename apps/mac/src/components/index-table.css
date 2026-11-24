@@ -199,6 +199,17 @@
   outline-offset: 2px;
 }
 
+.index-table-name-detail {
+  min-width: 0;
+  max-width: 50%;
+  flex-shrink: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: var(--body-xs-font-size);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .index-table-fork {
   flex-shrink: 0;
   margin-left: -2px;

@@ -149,6 +149,7 @@ function SessionIndex({ local = false }: { local?: boolean }) {
         onFilters={() => {}}
         user="alice"
         displayTitle={(item) => item.title}
+        repositories={[]}
         connected
         onOpen={() => setOpen(true)}
       />

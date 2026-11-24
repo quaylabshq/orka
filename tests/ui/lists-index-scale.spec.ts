@@ -243,6 +243,26 @@ test("Tab walks the rows in order past the ones first drawn", async ({
   );
 });
 
+test("Tab from the scrolled toolbar leaves a previously focused row behind", async ({
+  page,
+  browserName,
+}) => {
+  await open(page, "Sessions", { sessions: 300 });
+  const first = page.locator('.index-table-open[data-resource-id="session-0"]');
+  const refresh = page.getByRole("button", { name: "Refresh local items" });
+  await first.focus();
+  await body(page).evaluate((element) => {
+    element.scrollTop = element.scrollHeight / 2;
+  });
+  await expect(first).toBeFocused();
+  await expect(first).not.toBeInViewport();
+  await refresh.focus();
+  await expect(first).toHaveCount(0);
+  await tab(page, browserName);
+  await expect(page.locator(".index-table-open:focus")).toBeInViewport();
+  expect(await scrollTop(page)).toBeGreaterThan(5000);
+});
+
 test("a peek with a long path stays inside the list at the minimum window", async ({
   page,
 }) => {
