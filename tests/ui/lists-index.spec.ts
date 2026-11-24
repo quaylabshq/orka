@@ -429,7 +429,7 @@ test("several hundred sessions list without a pager and scroll under a fixed too
 }) => {
   await page.setViewportSize({ width: 1160, height: 800 });
   await open(page, "Sessions", { sessions: 500 });
-  await expect(rows(page)).toHaveCount(516);
+  await expect(page.getByRole("table")).toHaveAttribute("aria-rowcount", "517");
   await expect(page.getByRole("navigation", { name: /pages$/ })).toHaveCount(0);
   const body = page.locator(".resource-index-body");
   await body.evaluate((element) => element.scrollTo(0, element.scrollHeight));

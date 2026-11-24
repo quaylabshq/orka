@@ -53,7 +53,9 @@ for (const viewport of [regular, compact]) {
         (element) => !element.classList.contains("index-toolbar-actions"),
       );
       const rowIssues: string[] = [];
-      for (const row of Array.from(table.querySelectorAll("tbody tr"))) {
+      for (const row of Array.from(
+        table.querySelectorAll("tbody tr[aria-rowindex]"),
+      )) {
         const name = row.querySelector(".index-table-open")!;
         const more = row.querySelector(".index-table-actions button");
         if (box(row).height !== 44) rowIssues.push(`height ${box(row).height}`);
@@ -382,7 +384,7 @@ test("two hundred skills scroll under a fixed toolbar, and the last row's menu s
 }) => {
   await page.setViewportSize(compact);
   await skillsIndexFixture(page, { count: 200 });
-  await expect(rows(page)).toHaveCount(200);
+  await expect(page.getByRole("table")).toHaveAttribute("aria-rowcount", "201");
   const add = page.getByRole("button", { name: "Add skills", exact: true });
   const before = await add.boundingBox();
   const list = page.locator(".resource-index-body");

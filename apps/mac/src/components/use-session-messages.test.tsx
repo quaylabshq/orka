@@ -63,8 +63,19 @@ const reads = () =>
 
 beforeEach(() => {
   vi.mocked(invoke).mockReset();
+  // The index table follows its list's size, which jsdom never lays out.
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      disconnect() {}
+    },
+  );
 });
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 test("a second visit renders cached turns without a loading state", async () => {
   vi.mocked(invoke).mockResolvedValue(page("First turn"));

@@ -81,6 +81,19 @@
   background: var(--state-hover);
 }
 
+/* Rows not drawn: only their height, so the list scrolls its full length.
+   Drawing rows never moves what is on screen. */
+.index-table tbody .index-table-spacer {
+  overflow-anchor: none;
+  cursor: default;
+}
+
+.index-table tbody .index-table-spacer > td {
+  padding: 0;
+  border: 0;
+  background: none;
+}
+
 .index-table tbody tr:last-child > :first-child {
   border-bottom-left-radius: calc(var(--radius-surface) - 1px);
 }

@@ -501,6 +501,7 @@ export function ResourceIndex({
             sort={filters.sort}
             direction={sortDirection(filters)}
             busy={kind === "skill" ? undefined : loading}
+            focusResource={focusResource}
             onOpen={onOpen}
             onRowIntent={
               kind === "session"

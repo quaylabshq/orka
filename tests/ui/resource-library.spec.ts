@@ -1,10 +1,20 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Locator, type Page } from "@playwright/test";
 import { AxeBuilder } from "@axe-core/playwright";
 import { readFileSync } from "node:fs";
 import {
   resourceLibraryFixture,
   type LibraryWindow,
 } from "./fixtures/resource-library.js";
+
+/** Scrolls the list, as a person would, until a row not drawn yet is in view. */
+async function reveal(page: Page, target: Locator) {
+  const body = page.locator(".resource-index-body");
+  while (!(await target.count()))
+    await body.evaluate((element) => {
+      element.scrollTop += element.clientHeight / 2;
+    });
+  await target.scrollIntoViewIfNeeded();
+}
 
 const kinds = [
   { kind: "memory", label: "Memories" },
@@ -800,7 +810,7 @@ for (const { kind, label } of kinds)
     await page.getByRole("button", { name: new RegExp(`^${label}`) }).click();
     const table = page.getByRole("table");
     const rows = table.locator("tbody tr");
-    await expect(rows).toHaveCount(52);
+    await expect(table).toHaveAttribute("aria-rowcount", "53");
     await expect(page.getByRole("navigation", { name: /pages$/ })).toHaveCount(
       0,
     );
@@ -808,7 +818,7 @@ for (const { kind, label } of kinds)
       name: `Archive ${kind} 49`,
       exact: true,
     });
-    await item.scrollIntoViewIfNeeded();
+    await reveal(page, item);
     await item.press("Enter");
     await page
       .getByRole("button", { name: `Back to ${label}`, exact: true })
@@ -821,7 +831,7 @@ for (const { kind, label } of kinds)
     await search.fill(`Archive ${kind} 1`);
     await expect(rows).toHaveCount(11);
     await search.clear();
-    await expect(rows).toHaveCount(52);
+    await expect(table).toHaveAttribute("aria-rowcount", "53");
   });
 
 test("a session fork lists flat with a marker after its title", async ({
@@ -838,6 +848,7 @@ test("a session fork lists flat with a marker after its title", async ({
     exact: true,
   });
   const row = page.getByRole("row", { name: /Archived session fork/ });
+  await reveal(page, row);
   await expect(row.getByRole("img", { name: "Forked session" })).toBeVisible();
   await expect(
     page.getByRole("row", { name: /Archive session 37/ }).getByRole("img", {

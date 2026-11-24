@@ -1,4 +1,4 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Locator, type Page } from "@playwright/test";
 import { listsIndexFixture, type ListsScene } from "./fixtures/lists-index.js";
 
 const peek = (page: Page) => page.locator(".index-table").getByRole("tooltip");
@@ -9,6 +9,14 @@ const actions = (page: Page, name: string) =>
 const body = (page: Page) => page.locator(".resource-index-body");
 const scrollTop = (page: Page) =>
   body(page).evaluate((element) => element.scrollTop);
+/** Scrolls the list down, as a person would, until `row` is drawn and in view. */
+const reveal = async (page: Page, row: Locator) => {
+  while (!(await row.count()))
+    await body(page).evaluate((element) => {
+      element.scrollTop += element.clientHeight / 2;
+    });
+  await row.scrollIntoViewIfNeeded();
+};
 
 const open = async (page: Page, label: string, scene: ListsScene = {}) => {
   await listsIndexFixture(page, scene);
@@ -153,11 +161,84 @@ test("a focused row in view that a refresh moves stays in view", async ({
   await open(page, "Sessions", { sessions: 60 });
   const name = "Archived session 40";
   const row = title(page, name);
-  await row.scrollIntoViewIfNeeded();
+  await reveal(page, row);
   await row.focus();
   await page.evaluate(() => ((window as any).listsBumped = "session-55"));
   await nextSnapshot(page);
   await expect(page.locator(".index-table-open").first()).toHaveText(name);
   await expect(row).toBeInViewport();
   await expect(row).toBeFocused();
+});
+
+test("two thousand sessions draw only the rows near view and reach the last one", async ({
+  page,
+}) => {
+  await open(page, "Sessions", { sessions: 2000 });
+  const table = page.getByRole("table");
+  await expect(table).toHaveAttribute("aria-rowcount", "2017");
+  const drawn = page.locator(".index-table tbody tr[aria-rowindex]");
+  expect(await drawn.count()).toBeLessThan(80);
+  await body(page).evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+  });
+  const last = page.locator('.index-table tr[aria-rowindex="2017"]');
+  await expect(last).toBeInViewport();
+  expect(await drawn.count()).toBeLessThan(80);
+  // Headers and the rows drawn are what a screen reader is told about.
+  await expect(table.getByRole("columnheader").first()).toHaveText("Session");
+  await expect(last.getByRole("rowheader")).toHaveCount(1);
+});
+
+test("Back focuses a row far down the list that was not drawn", async ({
+  page,
+}) => {
+  await open(page, "Sessions", { sessions: 300 });
+  const name = "Archived session 270";
+  const row = title(page, name);
+  await expect(row).toHaveCount(0);
+  await reveal(page, row);
+  await row.click();
+  await page
+    .getByRole("button", { name: "Back to Sessions", exact: true })
+    .click();
+  await expect(row).toBeFocused();
+  await expect(row).toBeInViewport();
+  await expect(peek(page)).toHaveCount(0);
+});
+
+test("focus survives scrolling its row out of view, and a menu returns focus there", async ({
+  page,
+}) => {
+  await open(page, "Sessions", { sessions: 300 });
+  const name = "Fix packaged launcher identity on reinstall";
+  await actions(page, name).focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("menu")).toBeVisible();
+  await body(page).evaluate((element) => {
+    element.scrollTop = element.scrollHeight / 2;
+  });
+  await expect(page.getByRole("menu")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(actions(page, name)).toBeFocused();
+  await body(page).evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+  });
+  await expect(actions(page, name)).toBeFocused();
+  await expect(actions(page, name)).not.toBeInViewport();
+});
+
+test("Tab walks the rows in order past the ones first drawn", async ({
+  page,
+  browserName,
+}) => {
+  await open(page, "Sessions", { sessions: 300 });
+  const names = page.locator(".index-table-open");
+  await names.first().focus();
+  for (let step = 0; step < 2 * 60; step++) await tab(page, browserName);
+  const focused = page.locator(".index-table-open:focus");
+  await expect(focused).toBeInViewport();
+  await expect(focused.locator("xpath=ancestor::tr")).toHaveAttribute(
+    "aria-rowindex",
+    "62",
+  );
 });
