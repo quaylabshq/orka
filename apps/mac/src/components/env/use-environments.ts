@@ -1,3 +1,4 @@
+import { productAction } from "../desktop-usage.js";
 import { activeSources, sourcePath } from "../project-sources.js";
 import { useRef, useState } from "react";
 import type { EnvMember } from "@portable/protocol";
@@ -130,6 +131,7 @@ export function useEnvironments(
           setId: id,
         });
         setOrigin("pulled");
+        productAction()("env_set_pulled");
         setSelected(id);
         await replaceDraft(next);
       });
@@ -312,6 +314,7 @@ export function useEnvironments(
       }
     });
   const reviewPublication = () => {
+    productAction()("env_publish_reviewed");
     if (draft?.revision) void reviewConflict(true);
     else publish();
   };

@@ -1,3 +1,4 @@
+import { productAction } from "./desktop-usage.js";
 import {
   ChevronRightIcon,
   FolderIcon,
@@ -88,7 +89,7 @@ export function ResourceIndex({
   kind,
   resources,
   filters,
-  onFilters,
+  onFilters: updateFilters,
   user,
   displayTitle,
   statusOf = noStatus,
@@ -105,7 +106,7 @@ export function ResourceIndex({
   floatingAction,
   focusResource,
   onFocusHandled,
-  onOpen,
+  onOpen: openResource,
 }: ResourceIndexProps) {
   const memberName = useMemberLabel(user);
   const client = useQueryClient();
@@ -140,6 +141,18 @@ export function ResourceIndex({
       });
   }, [discovering, discoveryResult, refreshRequest, kind, notify]);
   const page = indexPages[kind];
+  const onFilters = (next: IndexFilters) => {
+    if (next.sort !== filters.sort || next.direction !== filters.direction)
+      productAction()("resource_sort_changed");
+    else if (next.query === filters.query)
+      productAction()("resource_filter_applied");
+    updateFilters(next);
+  };
+  const onOpen = (id: string) => {
+    if (filters.query.trim()) productAction()("resource_search_result_opened");
+    openResource(id);
+  };
+  const lastSearch = useRef("");
   const root = useRef<HTMLElement>(null);
   const showRepository =
     kind === "skill"
@@ -166,8 +179,8 @@ export function ResourceIndex({
       (applied.picks?.[id as IndexFilterKey]?.length ?? 0),
   );
   useEffect(() => {
-    if (stalePicks) onFilters(applied);
-  }, [stalePicks, applied, onFilters]);
+    if (stalePicks) updateFilters(applied);
+  }, [stalePicks, applied, updateFilters]);
   const visible = useMemo(
     () =>
       applyPageFilters(page, resources, applied, {
@@ -178,6 +191,31 @@ export function ResourceIndex({
       }),
     [page, resources, applied, displayTitle, user, memberName, statusOf],
   );
+  useEffect(() => {
+    const query = filters.query.trim();
+    if (!query) {
+      lastSearch.current = "";
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      if (
+        query === lastSearch.current ||
+        document.hidden ||
+        !document.hasFocus()
+      )
+        return;
+      lastSearch.current = query;
+      productAction()(
+        "resource_search_completed",
+        visible.length === 0
+          ? "zero"
+          : visible.length === 1
+            ? "one"
+            : "several",
+      );
+    }, 750);
+    return () => window.clearTimeout(timer);
+  }, [filters.query, visible.length]);
   // Forks and their parents come from the whole collection, so a filter
   // never hides who a session forked from.
   const family = useMemo(() => {

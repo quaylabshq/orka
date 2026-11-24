@@ -1,3 +1,4 @@
+import { useProductView } from "./desktop-usage.js";
 import { TriangleAlertIcon } from "lucide-react";
 import React from "react";
 import type { SessionConflict } from "@portable/protocol";
@@ -33,6 +34,7 @@ export function ConflictPanel({
     selected: SessionVersion,
   ) => void;
 }) {
+  useProductView("conflict_viewed", conflict.id);
   const local: SessionVersion =
     conflict.deviceId === deviceId ? "candidate" : "current";
   const remote: SessionVersion = local === "current" ? "candidate" : "current";

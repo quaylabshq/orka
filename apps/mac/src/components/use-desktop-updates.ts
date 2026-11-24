@@ -1,3 +1,4 @@
+import { productAction } from "./desktop-usage.js";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -48,6 +49,7 @@ export function useDesktopUpdates(scope: string, owner: string | null) {
         installingRef.current
       )
         return;
+      if (manual) productAction()("desktop_update_check_requested");
       const request = { scope };
       checkingRef.current = request;
       setChecking(true);
@@ -123,6 +125,8 @@ export function useDesktopUpdates(scope: string, owner: string | null) {
   const install = async () => {
     const update = status?.update;
     if (!update || installingRef.current || checkingRef.current) return;
+    const record = productAction();
+    record("desktop_update_install_started");
     installingRef.current = true;
     setInstalling(true);
     setProgress(undefined);
@@ -141,6 +145,7 @@ export function useDesktopUpdates(scope: string, owner: string | null) {
         owner,
       });
     } catch (reason) {
+      record("desktop_update_failed");
       if (active.current)
         setActionError(
           typeof reason === "string"

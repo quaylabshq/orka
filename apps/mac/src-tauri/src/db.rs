@@ -113,7 +113,16 @@ impl CacheScope {
         })
     }
 
+    pub(crate) fn record_usage(&self, name: &'static str) {
+        if self.account != "guest" && !self.origin.is_empty() {
+            crate::desktop_usage::native_event(&self.account, &self.origin, name);
+        }
+    }
+
     pub(crate) fn claude_worktree_scope(&self) -> Option<String> {
+        self.account_scope_digest()
+    }
+    pub(crate) fn account_scope_digest(&self) -> Option<String> {
         (self.account != "guest" && !self.origin.is_empty()).then(|| {
             digest(
                 json!([self.root, self.account, self.origin])

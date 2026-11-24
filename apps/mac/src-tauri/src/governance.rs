@@ -834,6 +834,11 @@ pub async fn governance_command(action: String, input: Value) -> Result<Value> {
     let db = db::open()?;
     let account = db::get(&db, "user")?;
     let service = db::get(&db, "config")?["apiUrl"].clone();
+    let record_usage = |name| {
+        if let (Some(user), Some(origin)) = (account.as_str(), service.as_str()) {
+            crate::desktop_usage::governance_event(user, origin, name);
+        }
+    };
     let project_id = input["projectId"].as_str().ok_or("Choose a project")?;
     let p = project(&db, project_id)?;
     let p = if matches!(action.as_str(), "context" | "save-candidate") {
@@ -883,7 +888,7 @@ pub async fn governance_command(action: String, input: Value) -> Result<Value> {
             let candidate_key=json!({"project":project_id,"sourceId":p["sourceId"],"files":r["files"],"memory":r["memory"],"sessionSources":r["contextSources"],"exposedSources":db::get(&db,&crate::sources::meta_key(&p, "exposedSources")?)?});
             let stable=Uuid::new_v5(&Uuid::NAMESPACE_URL,candidate_key.to_string().as_bytes()).to_string();
             r["resourceId"]=json!(stable);r["logicalPath"]=json!(format!("knowledge/{stable}.md"));
-            return Ok(json!({"id":capture(&db,&p,&r,&json!([]))?,"status":"local"}));
+            let id=capture(&db,&p,&r,&json!([]))?; record_usage("memory_candidate_saved"); return Ok(json!({"id":id,"status":"local"}));
         }
         "refresh-draft"=>{
             let id=input["id"].as_str().ok_or("Choose a draft")?;
@@ -957,6 +962,7 @@ pub async fn governance_command(action: String, input: Value) -> Result<Value> {
             sync::upload(owner.as_str().ok_or("Sign in required")?,project_id,&request["resource"]).await?;
             let accepted=remote("submit",&json!({"projectId":project_id,"change":request})).await?;
             draft["status"]=json!("proposed");draft["request"]=accepted.clone();db::upsert(&db,"drafts",id,project_id,&draft)?;
+            if r["kind"]=="memory" {record_usage("memory_candidate_submitted");}
             return Ok(accepted);
         }
         "preview-install"=>{
@@ -1007,6 +1013,7 @@ pub async fn governance_command(action: String, input: Value) -> Result<Value> {
             let cwd=input["cwd"].as_str().map(PathBuf::from).unwrap_or(root.clone());
             if !cwd.starts_with(&root) {return Err("Context scope must be inside the project".into());}
             let text=if let Some(query)=input["query"].as_str(){context_with_query(&db,&p,&cwd,Some(query),None)?.0}else{context(&db,&p,&cwd)?.0};
+            record_usage("context_retrieved");
             return Ok(json!({"status":"local","projectId":project_id,"executable":crate::updates::executable().map_err(|e|e.to_string())?,"profile":crate::profiles::current(),"content":text,"contextToken":db::get(&db,&crate::sources::meta_key(&p, "contextToken")?)?,"access":db::get(&db,&format!("governance:{project_id}"))?["access"]}));
         }
         _=>{}

@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { productAction } from "./desktop-usage.js";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { Project, ProjectSharing } from "../types.js";
@@ -13,24 +14,34 @@ import {
 import { useInvitePreview } from "./use-invite-preview.js";
 import { useToastNotice } from "./toasts.js";
 import { useSourceFolders } from "./source-folders.js";
+import { useDesktopFeature } from "./desktop-usage.js";
 
 const LOCK_WAIT_CANCELLED = "Cancelled while waiting for sync to finish.";
 
-export async function connectProject(
-  id: string,
-  sourceId?: string,
-  defaultPath?: string,
-) {
-  const path = await open({
-    directory: true,
-    multiple: !sourceId,
-    title: "Connect source folders on this Mac",
-    defaultPath,
-  });
-  const paths = typeof path === "string" ? [path] : (path ?? []);
-  if (paths.length)
-    await invoke("connect_project_sources", { id, paths, sourceId });
-  return paths.length > 0;
+export function useConnectProject() {
+  const startFeature = useDesktopFeature();
+  return useCallback(
+    async (id: string, sourceId?: string, defaultPath?: string) => {
+      const recordConnected = startFeature("feature:source_connected");
+      productAction()("source_picker_opened");
+      const path = await open({
+        directory: true,
+        multiple: !sourceId,
+        title: "Connect source folders on this Mac",
+        defaultPath,
+      });
+      const paths = typeof path === "string" ? [path] : (path ?? []);
+      if (!paths.length) return false;
+      const connected = await invoke<boolean>("connect_project_sources", {
+        id,
+        paths,
+        sourceId,
+      });
+      if (connected === true) recordConnected();
+      return true;
+    },
+    [startFeature],
+  );
 }
 
 export function useProjectSetup(
@@ -41,6 +52,8 @@ export function useProjectSetup(
   existingProjects: readonly Project[] = [],
   accountScope = apiUrl,
 ) {
+  const startFeature = useDesktopFeature();
+  const connectProject = useConnectProject();
   const setNotice = useToastNotice();
   const [repositoryEnabled, setRepositoryEnabled] = useState(false);
   const [sourceChoice, setSourceChoice] = useState<"github" | "folder" | null>(
@@ -115,13 +128,15 @@ export function useProjectSetup(
   };
   const close = () => complete(currentConnection?.id);
   const attachFolders = async (id: string) => {
+    const recordConnected = startFeature("feature:source_connected");
     const connection = { id, scope: accountScope, error: "" };
     setFolderConnection(connection);
     try {
-      await invoke("connect_project_sources", {
+      const connected = await invoke<boolean>("connect_project_sources", {
         id,
         paths: selection.folders,
       });
+      if (connected === true) recordConnected();
     } catch (error) {
       setFolderConnection({ ...connection, error: String(error) });
       return;
@@ -158,6 +173,7 @@ export function useProjectSetup(
         return;
       }
     }
+    const record = productAction();
     let result: { id: string; repositorySetup?: boolean };
     const name = input.trim();
     if (creating && createRequest.current?.name !== name) {
@@ -167,6 +183,7 @@ export function useProjectSetup(
       setPending(value.waiting ? "waiting" : null),
     );
     try {
+      record(creating ? "project_create_started" : "project_join_started");
       result = await invoke("cloud_action", {
         action: currentDialog,
         input: creating
@@ -183,6 +200,7 @@ export function useProjectSetup(
       }
       // Keep setup feedback with the dialog even if a deep link selected
       // another project while the native request was waiting.
+      if (!creating) record("invite_redemption_failed");
       onError(creating ? message : joinErrorMessage(error));
       return;
     }

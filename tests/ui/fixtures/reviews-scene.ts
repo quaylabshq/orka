@@ -207,6 +207,8 @@ export async function open(page: Page, scene: Scene = {}, viewport = wide) {
               },
             ];
       const w = window as any;
+      const usageSignals: string[] = [];
+      w.reviewUsageSignals = usageSignals;
       w.setReviewRequests = (next: typeof requests) => {
         requests = next;
       };
@@ -218,8 +220,16 @@ export async function open(page: Page, scene: Scene = {}, viewport = wide) {
           unregisterCallback: () => {},
           invoke: async (
             command: string,
-            args: { action?: string; input?: Record<string, any> } = {},
+            args: {
+              action?: string;
+              input?: Record<string, any>;
+              events?: string[];
+            } = {},
           ) => {
+            if (command === "record_desktop_usage") {
+              usageSignals.push(...(args.events ?? []));
+              return;
+            }
             if (command === "snapshot")
               return {
                 user: me,

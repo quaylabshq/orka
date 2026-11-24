@@ -211,9 +211,53 @@ pub fn clean_exit() {
     mark("clean");
 }
 
+fn update_usage_binding(directory: &std::path::Path, binding: Option<&str>) {
+    let path = directory.join("product-scope");
+    if let Some(binding) = binding {
+        let _ = crate::db::atomic(&path, binding.as_bytes());
+    } else {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 #[tauri::command]
 pub fn update_ready() {
     mark("ready");
+    let Some(dir) = state_dir() else {
+        return;
+    };
+    let Ok(scope) = crate::db::CacheScope::current() else {
+        return;
+    };
+    let binding = scope.account_scope_digest();
+    let receipt = dir.join("product-outcome.json");
+    if let Ok(bytes) = std::fs::read(&receipt) {
+        if std::fs::remove_file(&receipt).is_ok() && bytes.len() < 1024 {
+            if let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
+                if binding.is_some()
+                    && value["scope"].as_str() == binding.as_deref()
+                    && value["version"] == env!("CARGO_PKG_VERSION")
+                    && value["at"].as_i64().is_some_and(|at| {
+                        (0..=86400).contains(&(chrono::Utc::now().timestamp().saturating_sub(at)))
+                    })
+                {
+                    match value["event"].as_str() {
+                        Some("desktop_update_installed") => {
+                            scope.record_usage("desktop_update_installed")
+                        }
+                        Some("desktop_recovery_completed") => {
+                            scope.record_usage("desktop_recovery_completed")
+                        }
+                        Some("desktop_recovery_failed") => {
+                            scope.record_usage("desktop_recovery_failed")
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+    update_usage_binding(&dir, binding.as_deref());
 }
 
 #[tauri::command]
@@ -254,6 +298,12 @@ pub async fn update_install(
 ) -> Result<()> {
     bundled_app().ok_or("Updates are unavailable for this build.")?;
     let token = rollout_token(owner).await;
+    if let Some(dir) = state_dir() {
+        let scope = crate::db::CacheScope::current()
+            .ok()
+            .and_then(|scope| scope.account_scope_digest());
+        update_usage_binding(&dir, scope.as_deref());
+    }
     tauri::async_runtime::spawn_blocking(move || {
         let mut command = Command::new(executable().map_err(|error| error.to_string())?);
         command.args([

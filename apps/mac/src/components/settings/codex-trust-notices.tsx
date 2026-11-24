@@ -1,3 +1,4 @@
+import { productAction } from "../desktop-usage.js";
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { Project } from "../../types.js";
@@ -127,6 +128,7 @@ export function CodexTrustNotices({
     label: string,
     folderToken: string,
   ) => {
+    const record = productAction();
     setPending(sourceId);
     setError("");
     try {
@@ -139,6 +141,11 @@ export function CodexTrustNotices({
         },
       );
       if (action === "approve-codex-hooks") {
+        record(
+          result?.state === "trusted"
+            ? "integration_hook_approved"
+            : "integration_trust_blocked",
+        );
         if (result?.state === "trusted")
           notice(`Codex will load Orka in ${label} from its next session`);
         else if (result?.state !== "folder-not-trusted")

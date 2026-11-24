@@ -170,6 +170,7 @@ export function SkillDetail({
       {shared && (
         <SkillActionTooltip label="Copy skill link">
           <CopyLinkButton
+            usageEvent="resource_link_copied"
             iconOnly
             nativeTooltip={false}
             value={`orka://project/${project.id}/${resource.resourceId}`}

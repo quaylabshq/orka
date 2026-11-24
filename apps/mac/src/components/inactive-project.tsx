@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./product-command.js";
 import { save } from "@tauri-apps/plugin-dialog";
 import { DownloadIcon, FolderIcon, PauseIcon } from "lucide-react";
 import type { Project } from "../types.js";

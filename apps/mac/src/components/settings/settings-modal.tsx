@@ -6,7 +6,8 @@ import {
   useRef,
   useState,
 } from "react";
-import { invoke, isTauri } from "@tauri-apps/api/core";
+import { isTauri } from "@tauri-apps/api/core";
+import { invoke } from "../product-command.js";
 import { listen } from "@tauri-apps/api/event";
 import { forgetShapes } from "skullet";
 import type { Snapshot } from "../../types.js";
@@ -16,8 +17,9 @@ import { Switch } from "../switch.js";
 import { SegmentedControl } from "../segmented-control.js";
 import { ActivityIndicator } from "../activity-indicator.js";
 import { LoadingRegion } from "../loading-region.js";
+import { productAction, DesktopUsageScreen } from "../desktop-usage.js";
 import { legacySharing, ProjectSharingChoices } from "../project-sharing.js";
-import { connectProject } from "../use-project-setup.js";
+import { useConnectProject } from "../use-project-setup.js";
 import {
   SettingsNavigation,
   type SettingsSection,
@@ -151,6 +153,7 @@ export const SettingsModal = forwardRef<
     locked = useRef(false),
     active = useRef(true),
     heading = useRef<HTMLDivElement>(null);
+  const connectProject = useConnectProject();
   useEffect(() => {
     active.current = true;
     return () => {
@@ -408,13 +411,18 @@ export const SettingsModal = forwardRef<
       );
       return false;
     }
-    if (section === "account" || section === "permissions")
+    if (section === "account" || section === "permissions") {
+      const record = productAction();
       return run(async () => {
         const result = await editor.current?.save();
-        if (result !== true)
+        if (result !== true) {
+          record("settings_save_failed", section);
           throw new Error(result ?? "This editor is unavailable.");
+        }
       });
+    }
     if (!dirty()) return true;
+    const record = productAction();
     if (section === "general") {
       if (!project) {
         setError(
@@ -467,6 +475,11 @@ export const SettingsModal = forwardRef<
                   : {}),
               },
             });
+            record(
+              project.role === "owner"
+                ? "project_renamed"
+                : "project_alias_changed",
+            );
             if (active.current) setNameDraft(null);
             completed.push("Project name saved.");
           }
@@ -475,6 +488,12 @@ export const SettingsModal = forwardRef<
               action: "sharing",
               input: { projectId, sharing },
             });
+            for (const kind of Object.keys(
+              sharing,
+            ) as (keyof typeof sharing)[]) {
+              if (sharing[kind] !== savedSharing[kind])
+                record("settings_sharing_changed", kind, sharing[kind]);
+            }
             if (active.current) setSavedSharing(sharing);
             completed.push("Sharing choices saved.");
           }
@@ -488,6 +507,7 @@ export const SettingsModal = forwardRef<
             setNameDraft((draft) =>
               draft ? { ...draft, review: null } : draft,
             );
+          record("settings_save_failed", "general");
           throw new Error(`${completed.join(" ")} ${String(error)}`.trim(), {
             cause: error,
           });
@@ -510,6 +530,13 @@ export const SettingsModal = forwardRef<
             await invoke("configure", {
               config: { ...state.config, syncMinutes: Number(sync.minutes) },
             });
+            record(
+              "settings_sync_interval_changed",
+              ["1", "5", "15"].includes(savedSync.minutes)
+                ? savedSync.minutes
+                : "other",
+              sync.minutes,
+            );
             if (active.current)
               setSavedSync((current) => ({
                 ...current,
@@ -519,6 +546,10 @@ export const SettingsModal = forwardRef<
           }
           if (sync.background !== savedSync.background) {
             await invoke("background_agent", { enabled: sync.background });
+            record(
+              "settings_background_sync_changed",
+              sync.background === true,
+            );
             if (active.current)
               setSavedSync((current) => ({
                 ...current,
@@ -527,6 +558,12 @@ export const SettingsModal = forwardRef<
             completed.push("Background sync saved.");
           }
         } catch (error) {
+          record(
+            "settings_save_failed",
+            completed.length || sync.minutes === savedSync.minutes
+              ? "background_sync"
+              : "sync_interval",
+          );
           throw new Error(`${completed.join(" ")} ${String(error)}`.trim(), {
             cause: error,
           });
@@ -582,6 +619,8 @@ export const SettingsModal = forwardRef<
   return (
     <>
       <section className="settings-workspace" aria-label="Settings">
+        <DesktopUsageScreen screen="settings_viewed" />
+        <DesktopUsageScreen screen={`settings_section_viewed:${section}`} />
         <SettingsNavigation
           projects={state.projects}
           projectId={projectId}
@@ -919,6 +958,10 @@ export const SettingsModal = forwardRef<
                   <SettingsProfile
                     ref={editor}
                     state={state}
+                    startSettingsSave={() => {
+                      const record = productAction();
+                      return () => record("settings_profile_saved");
+                    }}
                     onSignedOut={onSignedOut}
                     onSignOut={() =>
                       request(() => setConfirmation({ action: "signout" }))
@@ -943,6 +986,10 @@ export const SettingsModal = forwardRef<
                     ref={editor}
                     state={state}
                     project={project}
+                    startSettingsSave={() => {
+                      const record = productAction();
+                      return () => record("permissions_policy_saved");
+                    }}
                   />
                 )}
               </>
@@ -1015,7 +1062,14 @@ export const SettingsModal = forwardRef<
             <Button disabled={saving} onClick={() => setPending(null)}>
               Stay
             </Button>
-            <Button disabled={saving} onClick={() => navigate(pending)}>
+            <Button
+              disabled={saving}
+              onClick={() => {
+                if (!editor.current?.pendingSave)
+                  productAction()("settings_draft_discarded");
+                navigate(pending);
+              }}
+            >
               {editor.current?.pendingSave
                 ? "Leave and check later"
                 : "Discard"}

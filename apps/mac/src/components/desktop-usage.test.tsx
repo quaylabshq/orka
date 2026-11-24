@@ -15,12 +15,15 @@ import {
   type DesktopScreen,
 } from "./desktop-usage.js";
 import { useResourceActions } from "./use-resource-actions.js";
+import { useConnectProject } from "./use-project-setup.js";
 
 const native = vi.hoisted(() => ({
   invoke: vi.fn(),
   isTauri: vi.fn(),
+  open: vi.fn(),
 }));
 vi.mock("@tauri-apps/api/core", () => native);
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: native.open }));
 
 const origin = "https://api.tryorka.ai";
 const alice = {
@@ -44,6 +47,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   native.invoke.mockReset();
   native.isTauri.mockReset();
+  native.open.mockReset();
 });
 
 async function advance(ms: number) {
@@ -153,7 +157,7 @@ test("keeps a single bounded batch and drops completed actions from an old accou
   expect(batches()).toHaveLength(1);
 });
 
-test("limits an account to 60 events across sign-outs and resets at UTC midnight", async () => {
+test("limits an account to 180 events across sign-outs and resets at UTC midnight", async () => {
   vi.setSystemTime(new Date("2030-06-15T12:00:00Z"));
   const state = { ...alice, user: "metered" };
   const trackAccount = () =>
@@ -163,25 +167,93 @@ test("limits an account to 60 events across sign-outs and resets at UTC midnight
       ),
     });
   const app = trackAccount();
-  for (let batch = 0; batch < 4; batch += 1) {
+  for (let batch = 0; batch < 12; batch += 1) {
     for (let event = 0; event < 16; event += 1)
       app.result.current("feature:skill_imported")();
     await advance(1_250);
   }
   expect(batches().map(({ events }) => events.length)).toEqual([
-    16, 16, 16, 12,
+    ...Array(11).fill(16),
+    4,
   ]);
   app.unmount();
 
   const signedInAgain = trackAccount();
   signedInAgain.result.current("feature:memory_shared")();
   await advance(1_250);
-  expect(batches()).toHaveLength(4);
+  expect(batches()).toHaveLength(12);
 
   vi.setSystemTime(new Date("2030-06-16T00:00:00Z"));
   signedInAgain.result.current("feature:memory_shared")();
   await advance(1_250);
   expect(batches().at(-1)?.events).toEqual(["feature:memory_shared"]);
+});
+
+test("reserves room for successful actions after an account reaches its screen limit", async () => {
+  const state = { ...alice, user: "frequent-navigation" };
+  function Visit({ screen }: { screen: DesktopScreen }) {
+    const startFeature = useDesktopFeature();
+    return (
+      <>
+        <DesktopUsageScreen screen={screen} />
+        <button
+          type="button"
+          onClick={() => startFeature("feature:settings_saved")()}
+        >
+          Save
+        </button>
+      </>
+    );
+  }
+  const visit = (screen: DesktopScreen) => (
+    <DesktopUsageProvider state={state}>
+      <Visit screen={screen} />
+    </DesktopUsageProvider>
+  );
+  const app = render(visit("screen:logs"));
+  await advance(3_000);
+  for (let i = 1; i < 50; i += 1) {
+    app.rerender(visit(i % 2 ? "screen:envs" : "screen:logs"));
+    await advance(3_000);
+  }
+  fireEvent.click(app.getByRole("button", { name: "Save" }));
+  await advance(1_250);
+  const events = batches().flatMap(({ events }) => events);
+  expect(events).toHaveLength(46);
+  expect(events.at(-1)).toBe("feature:settings_saved");
+});
+
+test("reports a source connection only after native confirms a new local binding", async () => {
+  const app = renderHook(() => useConnectProject(), {
+    wrapper: ({ children }: { children: ReactNode }) => (
+      <DesktopUsageProvider state={alice}>{children}</DesktopUsageProvider>
+    ),
+  });
+  native.open.mockResolvedValueOnce(null);
+  expect(await app.result.current("private-project")).toBe(false);
+  expect(native.invoke).not.toHaveBeenCalled();
+
+  native.open.mockResolvedValue("/private/folder");
+  native.invoke
+    .mockResolvedValueOnce(false)
+    .mockRejectedValueOnce(new Error("Rejected source path"))
+    .mockResolvedValueOnce(true);
+  expect(await app.result.current("private-project")).toBe(true);
+  await expect(app.result.current("private-project")).rejects.toThrow(
+    "Rejected source path",
+  );
+  expect(await app.result.current("private-project")).toBe(true);
+  await advance(1_250);
+  expect(batches()).toEqual([
+    {
+      accountId: "alice",
+      serviceOrigin: origin,
+      events: [
+        ...Array(4).fill("source_picker_opened"),
+        "feature:source_connected",
+      ],
+    },
+  ]);
 });
 
 const resource = {
@@ -233,12 +305,13 @@ test("records a confirmed launch when the reader changes before it finishes", as
   await advance(1_250);
   expect(onNotice).not.toHaveBeenCalled();
   expect(batches().flatMap(({ events }) => events)).toEqual([
+    "session_resume_started",
     "feature:session_resumed",
   ]);
 });
 
 test.each([
-  [{ opened: true }, undefined, false, true],
+  [{ opened: true }, undefined, false, "feature:session_resumed"],
   [
     { opened: false, manualCommand: "private command" },
     undefined,
@@ -248,8 +321,10 @@ test.each([
   [{ opened: true, handoff: "private path" }, undefined, false, false],
   [{ opened: true }, "iterm2", false, false],
   [{ opened: true }, undefined, true, false],
+  [{ opened: true, forked: true }, undefined, true, "feature:session_forked"],
+  [{ opened: true, forked: true }, undefined, false, "feature:session_resumed"],
 ] as const)(
-  "only reports a confirmed session resume from the foreground",
+  "only reports a confirmed session resume or explicit fork from the foreground",
   async (reply, destination, fork, reported) => {
     native.invoke.mockImplementation(async (command) => {
       if (command === "resume_session") {
@@ -282,16 +357,16 @@ test.each([
       await actions.result.current.resume(target, fork);
     });
     await advance(2_000);
-    expect(batches()).toEqual(
-      reported
-        ? [
-            {
-              accountId: "alice",
-              serviceOrigin: origin,
-              events: ["feature:session_resumed"],
-            },
-          ]
-        : [],
-    );
+    expect(batches()).toEqual([
+      {
+        accountId: "alice",
+        serviceOrigin: origin,
+        events: [
+          fork ? "session_fork_started" : "session_resume_started",
+          ...("handoff" in reply ? ["session_handoff_prepared"] : []),
+          ...(reported ? [reported] : []),
+        ],
+      },
+    ]);
   },
 );

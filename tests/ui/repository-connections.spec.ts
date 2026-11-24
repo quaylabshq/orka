@@ -16,10 +16,11 @@ type ConnectionCheck = "capabilities" | "status" | "access-status";
 declare global {
   interface Window {
     repositoryCalls: Call[];
+    repositoryUsageSignals: string[];
     repositoryControl: {
       access: (value: string) => void;
       fail: (value: boolean) => void;
-      complete: () => void;
+      complete: (confirmAttachment?: boolean) => void;
       install: () => void;
       revokeClone: () => void;
       finishCheck: (stage: ConnectionCheck) => void;
@@ -203,8 +204,13 @@ async function fixture(
         canReview: true,
       },
     ];
+    const cloneReceipts = new Map<
+      string,
+      { onmessage: (value: boolean) => void }
+    >();
     Object.assign(window, {
       repositoryCalls: [],
+      repositoryUsageSignals: [],
       repositoryControl: {
         holdCheck,
         finishCheck: (stage: ConnectionCheck) => finishChecks.get(stage)?.(),
@@ -222,7 +228,7 @@ async function fixture(
         fail: (value: boolean) => {
           failure = value;
         },
-        complete: () => {
+        complete: (confirmAttachment = false) => {
           for (const job of jobs) {
             job.state = "connected";
             job.message = "Repository connected";
@@ -233,6 +239,7 @@ async function fixture(
               item.path = job.destination;
               item.folderState = "connected";
             }
+            if (confirmAttachment) cloneReceipts.get(job.id)?.onmessage(true);
           }
         },
       },
@@ -242,6 +249,10 @@ async function fixture(
         transformCallback: () => 1,
         unregisterCallback: () => {},
         invoke: async (command: string, args: Record<string, unknown> = {}) => {
+          if (command === "record_desktop_usage") {
+            window.repositoryUsageSignals.push(...(args.events as string[]));
+            return;
+          }
           if (command === "snapshot")
             return structuredClone({
               user: "user",
@@ -431,6 +442,13 @@ async function fixture(
                 destination: `${input.directory}/${input.folderName}`,
               };
               jobs.unshift(job);
+              if (args.onCloneConnected)
+                cloneReceipts.set(
+                  job.id,
+                  args.onCloneConnected as {
+                    onmessage: (value: boolean) => void;
+                  },
+                );
               return structuredClone(job);
             }
             if (action === "cancel-clone") {
@@ -729,6 +747,36 @@ for (const width of [1160, 900])
       folderName: "web-app",
     });
   });
+
+test("records a confirmed clone attachment after closing repository settings", async ({
+  page,
+}) => {
+  await fixture(page);
+  await panel(page)
+    .getByRole("button", { name: "Connect", exact: true })
+    .click();
+  await picker(page)
+    .getByRole("button", { name: "Connect repository", exact: true })
+    .click();
+  await expect(picker(page)).toHaveCount(0);
+  await expect(panel(page).getByText("Git transfer: 45%")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(
+    page.getByRole("region", { name: "Settings", exact: true }),
+  ).toHaveCount(0);
+  const features = () =>
+    page.evaluate(() =>
+      window.repositoryUsageSignals.filter((event) =>
+        event.startsWith("feature:"),
+      ),
+    );
+  expect(await features()).toEqual([]);
+  await page.evaluate(() => {
+    window.repositoryControl.complete(true);
+    window.repositoryControl.complete(true);
+  });
+  await expect.poll(features).toEqual(["feature:source_connected"]);
+});
 
 test("a failed clone retains its repository binding for retry", async ({
   page,

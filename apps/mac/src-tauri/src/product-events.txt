@@ -1,0 +1,202 @@
+# Origin(s), event name, then ordered allowlisted dimensions. Colons separate their values on the wire.
+api auth_signin_started method=password,github,magic_link,pkce
+api auth_signin_completed method=password,github,magic_link,pkce
+api auth_signin_failed method=password,github,magic_link,pkce
+desktop,dashboard auth_signin_cancelled
+desktop auth_recovery_completed
+desktop,dashboard auth_signout_completed
+desktop onboarding_started
+desktop onboarding_step_viewed step=location,profile,discover,scanning,empty,access_error,folder,partial_access,select,review,syncing,retrying,ready,offline,sync_error,background,background_off,finish_setup,invite,claude,codex
+desktop onboarding_discovery_completed result_count=zero,one,several
+desktop onboarding_selection_confirmed
+desktop onboarding_sync_started
+desktop onboarding_sync_completed
+desktop onboarding_sync_failed
+desktop onboarding_deferred
+desktop onboarding_resumed
+desktop onboarding_completed
+desktop,dashboard project_list_viewed
+desktop,dashboard project_home_viewed
+desktop project_create_started
+api project_created
+desktop project_join_started
+api project_joined
+desktop project_switched
+desktop project_renamed
+desktop project_alias_changed
+desktop project_left
+desktop project_archived
+desktop project_restored
+desktop project_deleted
+desktop project_purged
+desktop invite_preview_viewed
+desktop invite_email_sent
+desktop invite_email_failed
+desktop invite_link_created
+desktop invite_link_copied
+desktop invite_redemption_failed
+desktop member_list_viewed
+desktop member_role_changed
+desktop member_removed
+desktop source_picker_opened
+desktop source_connected
+desktop source_disconnected
+desktop source_removed
+desktop source_remote_reset
+desktop repository_auth_started
+desktop repository_auth_completed
+desktop repository_auth_cancelled
+desktop repository_linked
+desktop repository_unlinked
+desktop repository_clone_started
+desktop repository_clone_completed
+desktop repository_clone_failed
+desktop repository_clone_cancelled
+desktop repository_access_requested
+desktop repository_access_reviewed
+desktop resource_list_viewed resource_kind=session,memory,skill,plan
+desktop resource_detail_viewed resource_kind=session,memory,skill,plan
+desktop resource_search_completed result_count=zero,one,several
+desktop resource_filter_applied
+desktop resource_sort_changed
+desktop resource_search_result_opened
+desktop resource_revision_viewed
+desktop resource_revisions_compared
+desktop resource_editor_opened
+desktop resource_finder_opened
+desktop resource_path_copied
+desktop resource_link_copied
+desktop resource_bundle_imported
+desktop resource_bundle_exported
+desktop project_exported
+desktop resource_deleted
+desktop session_reader_viewed mode=conversation,transcript
+desktop session_launcher_opened
+desktop session_resume_started
+desktop session_resumed
+desktop session_fork_started
+desktop session_forked
+desktop session_handoff_prepared
+desktop session_launch_failed
+desktop session_prompt_copied
+desktop session_command_copied
+desktop skill_import_started
+desktop skill_imported
+desktop skill_import_failed
+desktop skill_file_viewed
+desktop skill_install_reviewed
+desktop skill_installed
+desktop skill_install_failed
+desktop skill_local_copy_kept
+desktop skill_removal_applied
+desktop memory_candidate_saved
+desktop,api memory_candidate_submitted
+api memory_revision_published
+api instruction_revision_published
+api plan_updated
+api plan_revision_published
+desktop,connector context_retrieved
+desktop share_preview_viewed
+desktop share_submitted
+desktop share_queued
+desktop share_failed
+desktop memory_shared
+desktop skill_shared
+desktop plan_shared
+desktop session_shared
+desktop upload_review_viewed
+desktop upload_retry_requested
+desktop review_list_viewed
+desktop review_detail_viewed
+desktop review_diff_viewed
+desktop review_approved
+desktop review_rejected
+desktop review_decision_failed
+desktop access_requested
+desktop permissions_preview_viewed
+desktop permissions_policy_saved
+desktop permissions_override_changed
+desktop permissions_migration_completed
+desktop conflict_viewed
+desktop conflict_resolved
+desktop env_list_viewed
+desktop env_set_viewed
+desktop env_draft_imported
+desktop env_set_cloned
+desktop env_publish_reviewed
+desktop env_set_published
+desktop env_publish_failed
+desktop env_set_pulled
+desktop env_apply_previewed
+desktop env_apply_completed
+desktop env_apply_blocked
+desktop env_access_changed
+desktop env_device_requested
+desktop env_device_approved
+desktop env_device_unlocked
+desktop env_conflict_resolved
+desktop env_set_deleted
+desktop settings_viewed
+desktop settings_section_viewed section=account,devices,projects,updates,connections,sync,general,members,permissions,folder,sharing
+desktop settings_profile_saved
+desktop settings_sync_interval_changed from_minutes=1,5,15,other to_minutes=1,5,15
+desktop settings_background_sync_changed enabled=true,false
+desktop settings_sharing_changed resource_kind=memory,session,skill,plan,env enabled=true,false
+desktop settings_draft_discarded
+desktop settings_save_failed setting=account,general,permissions,sync,background_sync,sync_interval,sharing,project_name
+desktop sync_manual_requested
+desktop sync_manual_completed
+desktop sync_manual_failed
+desktop sync_issue_viewed
+desktop sync_retry_requested
+connector sync_repair_completed
+connector sync_repair_failed
+api sync_registration_seen
+desktop project_logs_viewed
+desktop desktop_menubar_opened
+desktop desktop_workspace_opened
+desktop desktop_update_offered
+desktop desktop_update_check_requested
+desktop desktop_update_install_started
+desktop desktop_update_installed
+desktop desktop_update_failed
+desktop desktop_recovery_completed
+desktop desktop_recovery_failed
+desktop connector_consent_viewed
+desktop connector_authorized
+desktop connector_consent_cancelled
+desktop connector_revoked
+desktop connector_reconnect_failed
+connector connector_tool_completed tool=get_project_context,get_profile,list_projects,list_team_members,list_sessions,fetch_resource,prepare_claude_handoff,search_resources,get_resource_history,compare_revisions,list_skills,create_memory,update_plan,get_permissions,update_permissions,list_requests,review_request,resolve_conflict,list_local_resources,preview_share,share_selected,list_local_skills,install_skill,get_sync_status,retry_sync,repair_sync
+connector connector_tool_failed tool=get_project_context,get_profile,list_projects,list_team_members,list_sessions,fetch_resource,prepare_claude_handoff,search_resources,get_resource_history,compare_revisions,list_skills,create_memory,update_plan,get_permissions,update_permissions,list_requests,review_request,resolve_conflict,list_local_resources,preview_share,share_selected,list_local_skills,install_skill,get_sync_status,retry_sync,repair_sync
+desktop integration_hook_approved
+desktop integration_trust_blocked
+dashboard library_viewed
+dashboard library_collection_changed resource_kind=skill,session,plan
+dashboard library_sort_changed sort=name,repository,recent
+dashboard library_page_changed destination=first,next
+dashboard library_search_completed result_count=zero,one,several
+dashboard library_filter_applied
+dashboard artifact_viewed
+dashboard artifact_revision_viewed
+api artifact_downloaded
+dashboard artifact_download_failed
+dashboard account_viewed
+api public_link_created
+api public_link_replaced
+api public_link_revoked
+desktop,dashboard public_link_copied
+dashboard release_console_viewed
+dashboard release_draft_staged
+dashboard release_draft_activated
+dashboard release_allowlist_updated
+dashboard release_early_started
+dashboard release_rollout_paused
+dashboard release_public_started
+dashboard release_publication_retried
+dashboard health_overview_viewed
+dashboard health_routes_viewed
+dashboard health_alerts_viewed
+dashboard health_alert_settings_saved
+dashboard admin_access_viewed
+dashboard admin_access_changed

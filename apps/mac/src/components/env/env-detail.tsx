@@ -1,3 +1,4 @@
+import { useProductView } from "../desktop-usage.js";
 import {
   ClockIcon,
   GitCommitHorizontalIcon,
@@ -29,6 +30,10 @@ export function EnvDetail({
   const { draft, selectedSet: set, busy, origin } = c;
   const matchesRepository =
     repository === "all" || (draft?.sourceId ?? set?.sourceId) === repository;
+  useProductView(
+    set && matchesRepository ? "env_set_viewed" : undefined,
+    set?.setId,
+  );
   const disabled = Boolean(busy);
   const canPublish =
     !c.project.governed ||

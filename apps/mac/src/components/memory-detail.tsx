@@ -95,6 +95,7 @@ export function MemoryDetail({
           {shared && (
             <SkillActionTooltip label={`Copy ${noun} link`}>
               <CopyLinkButton
+                usageEvent="resource_link_copied"
                 iconOnly
                 nativeTooltip={false}
                 value={`orka://project/${project.id}/${resource.resourceId}`}

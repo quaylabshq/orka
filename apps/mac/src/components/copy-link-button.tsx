@@ -1,3 +1,4 @@
+import { productAction } from "./desktop-usage.js";
 import { CheckIcon, LinkIcon } from "lucide-react";
 import { type IconGlyph } from "./icons.js";
 import React, { useEffect, useRef, useState } from "react";
@@ -14,11 +15,14 @@ export function CopyLinkButton({
   onError,
   iconOnly = false,
   loadValue,
+  usageEvent,
   icon = LinkIcon,
   variant,
   role,
   nativeTooltip = true,
 }: {
+  usageEvent?:
+    "resource_link_copied" | "session_prompt_copied" | "session_command_copied";
   value: string;
   label?: string;
   accessibleLabel?: string;
@@ -48,6 +52,7 @@ export function CopyLinkButton({
   }, [value]);
   const copy = async (event: React.MouseEvent<HTMLButtonElement>) => {
     if (disabled || pending) return;
+    const record = productAction();
     const current = generation.current;
     setMotion(event.detail === 0 ? "instant" : "pointer");
     setPending(true);
@@ -57,6 +62,7 @@ export function CopyLinkButton({
       const text = loadValue ? await loadValue() : value;
       if (current !== generation.current) return;
       await navigator.clipboard.writeText(text);
+      if (usageEvent) record(usageEvent);
       if (current !== generation.current) return;
       setCopied(true);
       timer.current = setTimeout(() => setCopied(false), 2000);

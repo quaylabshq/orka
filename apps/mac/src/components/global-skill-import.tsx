@@ -1,3 +1,4 @@
+import { productAction } from "./desktop-usage.js";
 import {
   CheckIcon,
   ChevronDownIcon,
@@ -31,7 +32,7 @@ import { Icon } from "./icon.js";
 import { activeSources, repositoryLabel } from "./project-sources.js";
 import { readSkillMarkdown } from "./skill-markdown.js";
 import { useToastEscape, useToasts } from "./toasts.js";
-import { connectProject } from "./use-project-setup.js";
+import { useConnectProject } from "./use-project-setup.js";
 import "./item-menu.css";
 import "./global-skill-import.css";
 
@@ -224,6 +225,7 @@ function AddSkills({
   onClose: () => void;
 }) {
   const { notify } = useToasts();
+  const connectProject = useConnectProject();
   const startFeature = useDesktopFeature();
   const repositories = useMemo(
     () => activeSources(project.sources ?? []).filter((source) => source.path),
@@ -435,6 +437,8 @@ function AddSkills({
     });
   const add = async () => {
     if (locked || !target || !chosen.length) return;
+    const record = productAction();
+    record("skill_import_started");
     const recordImported = startFeature("feature:skill_imported");
     setPending(true);
     onAdding(true);
@@ -462,6 +466,7 @@ function AddSkills({
         // Native installs both local mirrors before returning a result. Its
         // queued status applies to publishing those files, not the import.
         if (added.length) recordImported();
+        if (added.length < attempted.length) record("skill_import_failed");
         let stale = results.filter((item) => item.error === STALE_SKILL);
         const dead = results.filter(
           (item) => item.error && item.error !== STALE_SKILL,
@@ -529,6 +534,7 @@ function AddSkills({
         closeOnSuccess = !keepsPickerOpen;
       });
     } catch (error) {
+      if (!answered) record("skill_import_failed");
       if (active.current && !answered)
         setRetry(
           `Couldn’t add ${attempted.length} ${plural(attempted.length)}.\n${String(error)}`,

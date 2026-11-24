@@ -173,7 +173,14 @@ fn main() {
                 }
                 tokio::runtime::Runtime::new()
                     .map_err(|e| e.to_string())?
-                    .block_on(governance::governance_command(action, v["input"].clone()))
+                    .block_on(async {
+                        let result =
+                            governance::governance_command(action, v["input"].clone()).await;
+                        if result.is_ok() {
+                            desktop_usage::finish_context().await;
+                        }
+                        result
+                    })
             });
         match result {
             Ok(value) => println!("{value}"),
@@ -316,7 +323,7 @@ fn main() {
                 menu_bar::menu_bar_resize,
                 settings_lifecycle::guard_settings_close,
                 settings_lifecycle::finish_settings_close,
-                onboarding::onboarding_command,
+                onboarding::onboarding_command_view,
                 commands::open_legal_link,
                 commands::open_web_link,
                 env::env_command,
@@ -355,7 +362,7 @@ fn main() {
                 commands::invite_preview,
                 commands::connect_project,
                 sources::connect_project_sources,
-                repositories::repository_command,
+                repositories::repository_command_view,
                 sources::disconnect_project_source,
                 sources::start_source_sync,
                 sources::scan_project_folders,

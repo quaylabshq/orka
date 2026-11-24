@@ -1,7 +1,9 @@
+import { productAction } from "../desktop-usage.js";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { Snapshot } from "../../types.js";
+import { useDesktopFeature } from "../desktop-usage.js";
 import {
   destinationCandidates,
   initialDraft,
@@ -15,8 +17,14 @@ export const onboardingCommand = <T>(
   action: string,
   input: unknown = {},
   context?: { user: string | null; service?: string },
+  onConnectionConfirmed?: Channel<boolean>,
 ) =>
-  invoke<T>("onboarding_command", { action, input, context: context ?? null });
+  invoke<T>("onboarding_command", {
+    action,
+    input,
+    context: context ?? null,
+    ...(onConnectionConfirmed && { onConnectionConfirmed }),
+  });
 
 function ranked(projects: DiscoveredProject[]) {
   return [...projects].sort(
@@ -113,10 +121,15 @@ export function useOnboarding(
   refresh: () => Promise<void>,
   onComplete: (projectId: string) => void,
 ) {
+  const startFeature = useDesktopFeature();
   const scope = useRef({ user: state.user, service: state.config?.apiUrl });
   const command = useCallback(
-    <T>(action: string, input: unknown = {}) =>
-      onboardingCommand<T>(action, input, scope.current),
+    <T>(
+      action: string,
+      input: unknown = {},
+      onConnectionConfirmed?: Channel<boolean>,
+    ) =>
+      onboardingCommand<T>(action, input, scope.current, onConnectionConfirmed),
     [],
   );
   const [draft, setDraft] = useState<OnboardingDraft>(() => {
@@ -425,6 +438,14 @@ export function useOnboarding(
         step: discoveryStep(projects),
         reviewed: false,
       });
+      productAction()(
+        "onboarding_discovery_completed",
+        projects.length === 0
+          ? "zero"
+          : projects.length === 1
+            ? "one"
+            : "several",
+      );
     } catch (e) {
       try {
         await checkpoint({ step: "access-error", folder: paths?.[0] ?? "" });
@@ -459,6 +480,7 @@ export function useOnboarding(
       const review = await command<
         Pick<OnboardingDraft, "catalog" | "matches">
       >("review", { paths: selected });
+      productAction()("onboarding_selection_confirmed");
       const choices = Object.fromEntries(
         Object.entries(review.matches ?? {}).flatMap(([path, match]) => {
           const previous = current.current.choices?.[path];
@@ -496,7 +518,10 @@ export function useOnboarding(
         reviewed: false,
       });
     });
-  const sync = (retry = false) =>
+  const sync = (retry = false) => {
+    const recordConnected = retry
+      ? undefined
+      : startFeature("feature:source_connected");
     void run(async () => {
       if (!retry) {
         // From here the native batch reads selected as the approved set to connect.
@@ -511,20 +536,34 @@ export function useOnboarding(
           sharing: { ...current.current.sharing, env: false },
         });
       } else await checkpoint({ step: "retrying" });
-      void command<OnboardingDraft>("batch-sync", { retry })
+      const connected = recordConnected
+        ? new Channel<boolean>((confirmed) => {
+            if (confirmed === true) recordConnected();
+          })
+        : undefined;
+      const record = productAction();
+      record("onboarding_sync_started");
+      void command<OnboardingDraft>("batch-sync", { retry }, connected)
         .then(async (next) => {
+          if (next.step === "ready") record("onboarding_sync_completed");
+          if (next.step === "sync-error" || next.step === "offline")
+            record("onboarding_sync_failed");
           if (active.current) {
             applyDraft(next);
             await refresh();
           }
         })
         .catch((e) => {
+          record("onboarding_sync_failed");
           if (active.current) setError(String(e));
         });
     });
+  };
   const complete = (projectId?: string, defer = false) =>
     void run(async () => {
+      const record = productAction();
       await command("complete", { defer });
+      record(defer ? "onboarding_deferred" : "onboarding_completed");
       if (!active.current) return;
       const connected = current.current.projects.find(
         (project) =>

@@ -116,9 +116,18 @@ export const SettingsProfile = forwardRef<
     run: (action: () => Promise<unknown>, message?: string) => Promise<boolean>;
     onServiceDirty: (dirty: boolean) => void;
     onStartService: (action: () => void) => void;
+    startSettingsSave: () => () => void;
   }
 >(function SettingsProfile(
-  { state, onSignedOut, onSignOut, run, onServiceDirty, onStartService },
+  {
+    state,
+    onSignedOut,
+    onSignOut,
+    run,
+    onServiceDirty,
+    onStartService,
+    startSettingsSave,
+  },
   ref,
 ) {
   const user = state.user,
@@ -184,6 +193,7 @@ export const SettingsProfile = forwardRef<
     if (!editable) return "This service does not support profile edits yet.";
     if (locked.current || preparing || !value)
       return "Wait for the current profile operation to finish.";
+    const record = startSettingsSave();
     locked.current = true;
     setSaving(true);
     setError("");
@@ -210,6 +220,7 @@ export const SettingsProfile = forwardRef<
         },
         context: context(),
       });
+      record();
       if (!active.current) return "The profile is no longer open.";
       setBaseline(result);
       query.confirm(result);

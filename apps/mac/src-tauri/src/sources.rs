@@ -677,7 +677,7 @@ pub async fn connect_project_sources(
     id: String,
     paths: Vec<String>,
     source_id: Option<String>,
-) -> Result<()> {
+) -> Result<bool> {
     connect_sources(id, paths, source_id, None, None).await
 }
 pub(crate) async fn connect_sources(
@@ -686,7 +686,7 @@ pub(crate) async fn connect_sources(
     source_id: Option<String>,
     context: Option<(&str, &str)>,
     sharing: Option<projects::Sharing>,
-) -> Result<()> {
+) -> Result<bool> {
     if paths.is_empty() || paths.len() > 100 || (source_id.is_some() && paths.len() != 1) {
         return Err("Choose between 1 and 100 source folders".into());
     }
@@ -710,7 +710,7 @@ pub(crate) async fn connect_sources_locked(
     sharing: Option<projects::Sharing>,
     binding: Option<(&str, u64)>,
     _lock: fs::File,
-) -> Result<()> {
+) -> Result<bool> {
     let mut db = db::open()?;
     if let Some((user, service)) = context {
         if db::get(&db, "user")? != user || db::get(&db, "config")?["apiUrl"] != service {
@@ -950,7 +950,7 @@ pub(crate) async fn connect_sources_locked(
             .await?;
         }
     }
-    Ok(())
+    Ok(!newly_connected.is_empty())
 }
 
 async fn finish_connection_pin(

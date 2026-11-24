@@ -1,3 +1,4 @@
+import { productAction } from "./desktop-usage.js";
 import {
   BookOpenIcon,
   CodeIcon,
@@ -26,8 +27,9 @@ import React, {
   useRef,
   useState,
 } from "react";
-import { Channel, invoke } from "@tauri-apps/api/core";
+import { Channel } from "@tauri-apps/api/core";
 import { useQuery } from "@tanstack/react-query";
+import { invoke } from "./product-command.js";
 import type {
   Project,
   ProjectResource,
@@ -56,6 +58,13 @@ import { useWorkspaceScope } from "./workspace-cache.js";
 
 type ResourceRequest =
   "share" | "delete" | "launch" | "retry-upload" | "public-link";
+
+const shareEvents = {
+  memory: "feature:memory_shared",
+  skill: "feature:skill_shared",
+  plan: "feature:plan_shared",
+  session: "feature:session_shared",
+} as const;
 
 interface ResourceMenuContextValue {
   scope: string;
@@ -437,13 +446,19 @@ function ResourceMenuTarget({
     projectId: project.id,
     resourceId: resource.resourceId,
   };
-  const copy = (load: () => Promise<string>, successTitle: string) => {
+  const copy = (
+    load: () => Promise<string>,
+    successTitle: string,
+    event?: "resource_path_copied" | "session_prompt_copied",
+  ) => {
+    const record = productAction();
     void context.act(
       async () => {
         const text = await load();
         if (!context.isCurrent(resource))
           throw new Error("This item changed. Open its actions again.");
         await navigator.clipboard.writeText(text);
+        if (event) record(event);
       },
       { successTitle, errorTitle: "Couldn’t copy", retryable: true },
     );
@@ -492,7 +507,12 @@ function ResourceMenuTarget({
       icon: CopyIcon,
       label: "Copy session prompt",
       disabled: context.busy,
-      onSelect: () => copy(actions.sessionPrompt, "Session prompt copied"),
+      onSelect: () =>
+        copy(
+          actions.sessionPrompt,
+          "Session prompt copied",
+          "session_prompt_copied",
+        ),
     });
     if (shared && !resource.localChanges)
       items.push({
@@ -591,6 +611,7 @@ function ResourceMenuTarget({
               })
             ).paths.join("\n"),
           "Local path copied",
+          "resource_path_copied",
         ),
     });
   }
@@ -921,7 +942,10 @@ function ResourceCommandDialog({
       onProgress,
     })
       .then((result) => {
-        if (!canceled) setPreview(result);
+        if (!canceled) {
+          if (kind === "share") productAction()("share_preview_viewed");
+          setPreview(result);
+        }
       })
       .catch((failure: unknown) => {
         if (!canceled) setError(String(failure));
@@ -938,7 +962,10 @@ function ResourceCommandDialog({
   }, [kind, attempt, accountId, serviceOrigin, projectId, resourceId]);
   const submit = async () => {
     if (busy || !preview || stale) return;
-    const recordShared = startFeature("feature:memory_shared");
+    const record = productAction();
+    if (kind === "share") record("share_submitted");
+    const recordShared =
+      kind === "share" ? startFeature(shareEvents[resource.kind]) : undefined;
     setBusy(true);
     setError("");
     setProgress({
@@ -957,12 +984,13 @@ function ResourceCommandDialog({
         input: { ...input, previewToken: preview.previewToken },
         onProgress,
       });
-      if (
-        kind === "share" &&
-        resource.kind === "memory" &&
-        result.status === "published"
-      )
-        recordShared();
+      if (result.status === "published") recordShared?.();
+      if (kind === "delete" && result.status === "deleted")
+        record("resource_deleted");
+      if (kind === "share" && result.status === "queued")
+        record("share_queued");
+      if (kind === "share" && result.status === "conflict")
+        record("share_failed");
       if (!active.current) return;
       if (kind === "delete" && result.status !== "deleted") {
         setError(
@@ -988,6 +1016,7 @@ function ResourceCommandDialog({
       await context.onRefresh();
       if (active.current) onClose();
     } catch (failure) {
+      if (kind === "share") record("share_failed");
       if (active.current) setError(String(failure));
     } finally {
       finished = true;

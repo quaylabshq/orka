@@ -7,6 +7,7 @@ import {
   type ReactNode,
 } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
+import type { ProductEvent } from "./product-event.js";
 import type { Snapshot } from "../types.js";
 
 export type DesktopScreen =
@@ -17,22 +18,34 @@ export type DesktopScreen =
   | "screen:plans"
   | "screen:reviews"
   | "screen:members"
+  | "screen:envs"
+  | "screen:logs"
   | "screen:settings";
 
 type DesktopFeature =
   | "feature:session_resumed"
+  | "feature:session_forked"
   | "feature:skill_imported"
-  | "feature:memory_shared";
+  | "feature:memory_shared"
+  | "feature:skill_shared"
+  | "feature:plan_shared"
+  | "feature:session_shared"
+  | "feature:source_connected"
+  | "feature:review_decided"
+  | "feature:settings_saved";
 
-type DesktopUsageEvent = DesktopScreen | DesktopFeature;
+type ProductSignal = ProductEvent | `${ProductEvent}:${string}`;
+export type ProductScreen = DesktopScreen | ProductSignal;
+type DesktopUsageEvent = DesktopScreen | DesktopFeature | ProductSignal;
 type Scope = { accountId: string; serviceOrigin: string };
 
 const screenDwellMs = 750;
 const batchDelayMs = 1_250;
 const batchLimit = 16;
-const dailyLimit = 60;
+const dailyScreenLimit = 45;
+const dailyLimit = 180;
 const utcDayMs = 86_400_000;
-const dailyCounts = new Map<string, number>();
+const dailyCounts = new Map<string, { total: number; screens: number }>();
 let budgetDay = Math.floor(Date.now() / utcDayMs);
 
 const isForeground = () => !document.hidden && document.hasFocus();
@@ -42,7 +55,7 @@ class DesktopUsage {
   private inFlight = false;
   private pending: DesktopUsageEvent[] = [];
   private timer: number | undefined;
-  private lastScreen: DesktopScreen | undefined;
+  private lastScreen: string | undefined;
   private readonly budgetKey: string;
 
   constructor(private readonly scope: Scope) {
@@ -61,13 +74,14 @@ class DesktopUsage {
     this.pending = [];
   }
 
-  screen(screen: DesktopScreen) {
-    if (screen !== this.lastScreen && this.enqueue(screen))
-      this.lastScreen = screen;
+  screen(screen: ProductScreen, localKey = "") {
+    const identity = JSON.stringify([screen, localKey]);
+    if (identity !== this.lastScreen && this.enqueue(screen))
+      this.lastScreen = identity;
   }
 
-  feature(feature: DesktopFeature) {
-    this.enqueue(feature);
+  feature(feature: DesktopFeature | ProductSignal) {
+    return this.enqueue(feature);
   }
 
   private enqueue(event: DesktopUsageEvent) {
@@ -78,9 +92,17 @@ class DesktopUsage {
       budgetDay = day;
       dailyCounts.clear();
     }
-    const count = dailyCounts.get(this.budgetKey) ?? 0;
-    if (count >= dailyLimit) return false;
-    dailyCounts.set(this.budgetKey, count + 1);
+    const count = dailyCounts.get(this.budgetKey) ?? { total: 0, screens: 0 };
+    const screen =
+      event.startsWith("screen:") || event.split(":", 1)[0].endsWith("_viewed");
+    if (
+      count.total >= dailyLimit ||
+      (screen && count.screens >= dailyScreenLimit)
+    )
+      return false;
+    count.total += 1;
+    if (screen) count.screens += 1;
+    dailyCounts.set(this.budgetKey, count);
     this.pending.push(event);
     this.schedule();
     return true;
@@ -109,6 +131,22 @@ class DesktopUsage {
   }
 }
 
+let foregroundUsage: DesktopUsage | undefined;
+
+/** Capture scope at the user's action. A later account switch deactivates the old queue. */
+export function productAction() {
+  const usage = isForeground() ? foregroundUsage : undefined;
+  return (
+    event: ProductEvent,
+    ...dimensions: (string | number | boolean)[]
+  ) => {
+    const signal: ProductSignal = dimensions.length
+      ? `${event}:${dimensions.join(":")}`
+      : event;
+    return usage?.feature(signal) ?? false;
+  };
+}
+
 const UsageContext = createContext<DesktopUsage | undefined>(undefined);
 
 export function DesktopUsageProvider({
@@ -130,7 +168,11 @@ export function DesktopUsageProvider({
   );
   useLayoutEffect(() => {
     usage?.start();
-    return () => usage?.stop();
+    foregroundUsage = usage;
+    return () => {
+      usage?.stop();
+      if (foregroundUsage === usage) foregroundUsage = undefined;
+    };
   }, [usage]);
   return (
     <UsageContext.Provider value={usage}>{children}</UsageContext.Provider>
@@ -138,7 +180,7 @@ export function DesktopUsageProvider({
 }
 
 /** Mount alongside the visible screen so a pending Suspense branch does not count. */
-export function DesktopUsageScreen({ screen }: { screen?: DesktopScreen }) {
+export function useProductView(screen?: ProductScreen, localKey = "") {
   const usage = useContext(UsageContext);
   useLayoutEffect(() => {
     if (!usage || !screen) return;
@@ -149,7 +191,7 @@ export function DesktopUsageScreen({ screen }: { screen?: DesktopScreen }) {
       if (recorded || !isForeground()) return;
       dwell = window.setTimeout(() => {
         if (isForeground()) {
-          usage.screen(screen);
+          usage.screen(screen, localKey);
           recorded = true;
         }
       }, screenDwellMs);
@@ -164,7 +206,17 @@ export function DesktopUsageScreen({ screen }: { screen?: DesktopScreen }) {
       window.removeEventListener("blur", update);
       document.removeEventListener("visibilitychange", update);
     };
-  }, [screen, usage]);
+  }, [screen, usage, localKey]);
+}
+
+export function DesktopUsageScreen({
+  screen,
+  localKey,
+}: {
+  screen?: ProductScreen;
+  localKey?: string;
+}) {
+  useProductView(screen, localKey);
   return null;
 }
 
@@ -176,9 +228,9 @@ export function useDesktopFeature() {
       const current = isForeground() ? usage : undefined;
       let recorded = false;
       return () => {
-        if (recorded) return;
+        if (recorded) return false;
         recorded = true;
-        current?.feature(feature);
+        return current?.feature(feature) ?? false;
       };
     },
     [usage],

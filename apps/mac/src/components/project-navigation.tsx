@@ -1,3 +1,4 @@
+import { productAction } from "./desktop-usage.js";
 import {
   CheckIcon,
   ChevronUpIcon,
@@ -319,6 +320,8 @@ export function ProjectPicker({
                       registerItem={hover.registerItem}
                       actions={actions(project)}
                       onChoose={() => {
+                        if (projectId && project.id !== projectId)
+                          productAction()("project_switched");
                         onProjectChange(project.id);
                         setOpen(false);
                       }}

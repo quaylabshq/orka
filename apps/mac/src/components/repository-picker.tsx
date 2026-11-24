@@ -16,7 +16,7 @@ import { Button } from "./button.js";
 import { Icon } from "./icon.js";
 import { IconButton } from "./icon-button.js";
 import { TextField } from "./text-field.js";
-import { connectProject } from "./use-project-setup.js";
+import { useConnectProject } from "./use-project-setup.js";
 import { ActionPopover } from "./resource-actions.js";
 import { PermissionSelect } from "./permission-select.js";
 
@@ -38,6 +38,7 @@ export function RepositoryPicker({
   onLocalFolder?: () => Promise<unknown>;
   onRequestAccess: (source: RepositorySource) => void;
 }) {
+  const connectProject = useConnectProject();
   const {
     call,
     status,

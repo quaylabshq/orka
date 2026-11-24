@@ -25,26 +25,9 @@ secret detection or control over arbitrary copies made outside Orka.
 
 ## Orka Cloud product analytics
 
-When enabled on Orka Cloud, the service counts daily desktop sync registrations,
-successful project creations, and successful joins via invite. A sync
-registration may come from the background daemon. The Mac sends its app version
-as part of the existing device registration request when the service advertises
-support. The service sends PostHog the milestone, time, a pseudonymous account ID,
-and the app version for desktop sync registrations. Event payloads exclude
-project content, names, paths, emails, IP addresses, and device identifiers.
-Self-hosted Orka servers leave this capability disabled.
+The [product event catalogue](../apps/mac/src-tauri/src/product-events.txt) lists the fixed names and dimensions available on a compatible managed service. Orka records foreground screens after a 750 ms dwell, explicit feature outcomes, and a daily sync registration. Examples include the section of Settings visited, a confirmed change from 15 minutes to 5 minutes, the category of sharing enabled, and a connector tool completing. Searches use result-count buckets. Repeated connector calls coalesce by tool and outcome. Events omit resource IDs, names, paths, query text, tool arguments and results, credentials, and ENV data.
 
-Compatible Mac builds also report foreground visits to Projects, Sessions,
-Memories, Skills, Plans, Reviews, Members, and Settings. A screen has to settle
-before Orka counts the visit. The Mac also counts successful session resumes,
-local skill imports, and published memory shares. Imports count once per
-completed operation, including when sharing the imported skills is queued
-separately.
-
-The Mac sends fixed screen and action names through the signed-in Cloud
-connection. The API attaches the app version, a capture time, and the same
-pseudonymous account ID as sync registration. Short in-memory batches,
-per-account and service budgets, and best-effort delivery keep capture bounded.
+Signed-in events share a stable HMAC of the account ID across desktop, dashboard and API. The managed API may update the PostHog person profile with the account's GoTrue-confirmed email. Anonymous authentication lifecycle events use independent random IDs, disable person profiles and omit email. Update or recovery outcomes require a matching local account scope and a compatible app to reopen within one day. Managed capture is best effort and bounded by account and service budgets. Self-hosted servers keep capture disabled.
 
 ## Environment-variable sets
 

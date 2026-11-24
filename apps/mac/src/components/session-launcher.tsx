@@ -1,3 +1,4 @@
+import { productAction } from "./desktop-usage.js";
 import React, {
   useEffect,
   useId,
@@ -257,6 +258,7 @@ export function SessionLauncher({
         label="Open session"
         className="session-launcher-popover"
         onOpenChange={(open) => {
+          if (open) productAction()("session_launcher_opened");
           if (open && current) setRefresh((value) => value + 1);
         }}
         trigger={
@@ -364,6 +366,7 @@ export function SessionLauncher({
           <CopyLinkButton
             value={key}
             label="Copy session prompt"
+            usageEvent="session_prompt_copied"
             errorTitle="Couldn’t copy session prompt"
             loadValue={actions.sessionPrompt}
             icon={CopyIcon}
@@ -434,6 +437,7 @@ export function SessionLauncher({
             <Button onClick={actions.dismissManualCommand}>Close</Button>
             <CopyLinkButton
               label="Copy command"
+              usageEvent="session_command_copied"
               errorTitle="Couldn’t copy command"
               value={actions.manualCommand}
               onError={onError}
