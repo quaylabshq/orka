@@ -26,6 +26,8 @@ export async function resourceLibraryFixture(
     emptyShared?: boolean;
     emptyLocal?: boolean;
     defer?: boolean;
+    /** The project lists you among its members, as a project you share does. */
+    team?: boolean;
     restricted?: boolean;
     withoutRepositories?: boolean;
     teammateAvatar?: string;
@@ -260,6 +262,9 @@ export async function resourceLibraryFixture(
                         }
                       : {},
                     members: [
+                      ...(options.team
+                        ? [{ id: "user", role: "owner", name: "Alex" }]
+                        : []),
                       {
                         id: "mira",
                         role: "member",

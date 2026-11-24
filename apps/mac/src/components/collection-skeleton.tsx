@@ -116,19 +116,20 @@ const Bar = ({ width }: { width?: number }) =>
 export function IndexTableSkeleton({
   page,
   showRepository,
+  showPerson,
   sort,
   direction,
 }: {
   page: IndexPage;
   showRepository: boolean;
+  showPerson: boolean;
   sort: IndexSort;
   direction: IndexSortDirection;
 }) {
-  // Nothing has loaded, so no one else is credited yet and the table has no
-  // person column.
   const columns = page.columns.filter(
     (column) =>
-      column !== "person" && (column !== "repository" || showRepository),
+      (column !== "person" || showPerson) &&
+      (column !== "repository" || showRepository),
   );
   const SortArrow = direction === "asc" ? ArrowUpIcon : ArrowDownIcon;
   const heading = (

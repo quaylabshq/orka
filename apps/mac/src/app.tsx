@@ -1503,6 +1503,11 @@ function WorkspaceApp({
                     displayTitle={displayTitle}
                     statusOf={statusOf}
                     multiRepository={repositories.length > 1}
+                    multiMember={
+                      (state.governance?.find(
+                        (item) => item.projectId === project,
+                      )?.catalog.members?.length ?? 0) > 1
+                    }
                     connected={hasConnectedSource(selectedProject)}
                     connect={connect}
                     noAccess={Boolean(

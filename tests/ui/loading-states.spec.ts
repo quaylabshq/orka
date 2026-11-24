@@ -91,6 +91,33 @@ for (const width of [1160, 900]) {
   }
 }
 
+for (const label of ["Sessions", "Memories", "Plans"])
+  test(`${label} loading in a shared project draws the columns its rows get`, async ({
+    page,
+  }) => {
+    await resourceLibraryFixture(page, {
+      emptyShared: true,
+      defer: true,
+      team: true,
+    });
+    await page.getByRole("button", { name: new RegExp(`^${label}`) }).click();
+    const collection = page.getByRole("region", {
+      name: new RegExp(`^${label}$`, "i"),
+    });
+    const skeleton = collection.locator(".collection-skeleton");
+    await expect(skeleton).toBeVisible();
+    const headings = await skeleton.locator("thead th").allTextContents();
+    expect(headings).toContain(label === "Memories" ? "Updated by" : "Owner");
+    await page.evaluate(() =>
+      (window as unknown as LibraryWindow).library.finishCatalog?.(),
+    );
+    await expect(skeleton).toHaveCount(0);
+    await expect(collection.locator("thead th")).toHaveText([
+      ...headings.slice(0, -1),
+      "Actions",
+    ]);
+  });
+
 test("loading breathes softly, stops with reduced motion, and refresh retains real rows", async ({
   page,
 }) => {

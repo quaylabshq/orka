@@ -58,6 +58,8 @@ export interface ResourceIndexProps {
   statusOf?: (resource: Resource) => IndexStatus | null;
   /** Lists name each row's repository only when the project has several. */
   multiRepository?: boolean;
+  /** Lists credit each row's person whenever the project has several members. */
+  multiMember?: boolean;
   /** Whether this Mac has a connected folder; it changes the empty copy. */
   connected: boolean;
   /** How lists connect this Mac while it has no connected folder. */
@@ -94,6 +96,7 @@ export function ResourceIndex({
   displayTitle,
   statusOf = noStatus,
   multiRepository = false,
+  multiMember = false,
   connected,
   connect,
   noAccess,
@@ -235,6 +238,11 @@ export function ResourceIndex({
   const filtered = Boolean(searched) || picked;
   const noun = collectionNoun(kind);
   const list = kind !== "skill";
+  // A project with nobody else in it has no one to credit. A list of a shared
+  // project credits people from the start, so its columns hold while it loads.
+  const showPerson =
+    (list && multiMember) ||
+    resources.some((resource) => creditedMember(page, resource, user) !== user);
   // Loading rows draw under the toolbar; Empty, No access, and Could not load hide it.
   const toolbarShown = resources.length > 0 || filtered || discovering;
   const restrictedEmpty = Boolean(noAccess) && !resources.length;
@@ -423,6 +431,7 @@ export function ResourceIndex({
                 <IndexTableSkeleton
                   page={page}
                   showRepository={showRepository}
+                  showPerson={showPerson}
                   sort={filters.sort}
                   direction={sortDirection(filters)}
                 />
@@ -532,10 +541,7 @@ export function ResourceIndex({
             statusOf={statusOf}
             displayTitle={displayTitle}
             showRepository={showRepository}
-            // A project with nobody else in it has no one to credit.
-            showPerson={resources.some(
-              (resource) => creditedMember(page, resource, user) !== user,
-            )}
+            showPerson={showPerson}
             sort={filters.sort}
             direction={sortDirection(filters)}
             busy={kind === "skill" ? undefined : loading}
