@@ -12,19 +12,27 @@ import {
   type GovernanceCatalog,
 } from "./project-permissions.js";
 
+export interface RequestAccessProps {
+  project: Project;
+  kind: Resource["kind"];
+  state: Snapshot;
+  onRefresh: () => Promise<void>;
+  className?: string;
+  /** Show these controls inside a dialog owned by the caller. */
+  renderInDialog?: (
+    request: React.ReactNode,
+    busy: boolean,
+  ) => React.ReactElement;
+}
+
 export function RequestAccess({
   project,
   kind,
   state,
   onRefresh,
   className,
-}: {
-  project: Project;
-  kind: Resource["kind"];
-  state: Snapshot;
-  onRefresh: () => Promise<void>;
-  className?: string;
-}) {
+  renderInDialog,
+}: RequestAccessProps) {
   const { id: projectId, governed, role, policyRevision } = project;
   const usesRolePolicies = Boolean(project.rolePolicies);
   const [permissions, setPermissions] = useState<{
@@ -32,7 +40,7 @@ export function RequestAccess({
     roleBased: boolean;
   } | null>(null);
   const [open, setOpen] = useState(false);
-  const [mode, setMode] = useState<"read" | "suggest" | "publish">("read");
+  const [mode, setMode] = useState<"read" | "suggest" | "publish">();
   const [requestId, setRequestId] = useState(() => crypto.randomUUID());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -91,13 +99,87 @@ export function RequestAccess({
     !permissions ||
     permissions.modes.every((value) => value === "publish")
   )
-    return null;
+    return renderInDialog?.(null, busy) ?? null;
   const needsRead = permissions.modes.some((value) => value === "hidden");
-  if (permissions.roleBased)
-    return (
+  if (permissions.roleBased) {
+    const notice = (
       <p className={className}>
         The project Owner manages access for your role.
       </p>
+    );
+    return renderInDialog?.(notice, busy) ?? notice;
+  }
+  const defaultMode = needsRead ? "read" : "publish";
+  const requestedMode = mode ?? defaultMode;
+  const alreadyRequested = pending || sent;
+  const sendRequest = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      await governanceCall("request-access", {
+        projectId: project.id,
+        id: requestId,
+        class: kind,
+        mode: requestedMode,
+      });
+      setSubmittedId(requestId);
+      setRequestId(crypto.randomUUID());
+      setOpen(false);
+      await onRefresh();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const fields = (
+    <>
+      <label>
+        Permission
+        <PermissionSelect
+          label="Requested permission"
+          value={requestedMode}
+          disabled={busy}
+          options={[
+            { value: "read", label: "View only" },
+            { value: "suggest", label: "Suggest changes" },
+            { value: "publish", label: "Can edit" },
+          ]}
+          onChange={(value) => {
+            setMode(value);
+            setRequestId(crypto.randomUUID());
+          }}
+        />
+      </label>
+      {error && <p role="alert">{error}</p>}
+      <div className="actions">
+        <Button
+          size={renderInDialog ? "sm" : undefined}
+          disabled={busy}
+          onClick={() => void sendRequest()}
+        >
+          {busy ? "Sending…" : "Send request"}
+        </Button>
+        {!renderInDialog && (
+          <Button
+            variant="tertiary"
+            disabled={busy}
+            onClick={() => setOpen(false)}
+          >
+            Cancel
+          </Button>
+        )}
+      </div>
+    </>
+  );
+  if (renderInDialog)
+    return renderInDialog(
+      alreadyRequested ? (
+        <p role="status">Access requested</p>
+      ) : (
+        <div className="index-access-request-fields">{fields}</div>
+      ),
+      busy,
     );
   return (
     <>
@@ -105,15 +187,15 @@ export function RequestAccess({
         className={className}
         size="sm"
         variant="secondary"
-        disabled={busy || pending || sent}
+        disabled={busy || alreadyRequested}
         onClick={() => {
-          setMode(needsRead ? "read" : "publish");
+          setMode(defaultMode);
           setRequestId(crypto.randomUUID());
           setError("");
           setOpen(true);
         }}
       >
-        {pending || sent
+        {alreadyRequested
           ? "Access requested"
           : needsRead
             ? "Request access"
@@ -140,59 +222,7 @@ export function RequestAccess({
               onClick={() => setOpen(false)}
             />
           </div>
-          <label>
-            Permission
-            <PermissionSelect
-              label="Requested permission"
-              value={mode}
-              disabled={busy}
-              options={[
-                { value: "read", label: "View only" },
-                { value: "suggest", label: "Suggest changes" },
-                { value: "publish", label: "Can edit" },
-              ]}
-              onChange={(value) => {
-                setMode(value);
-                setRequestId(crypto.randomUUID());
-              }}
-            />
-          </label>
-          {error && <p role="alert">{error}</p>}
-          <div className="actions">
-            <Button
-              disabled={busy}
-              onClick={() =>
-                void (async () => {
-                  setBusy(true);
-                  setError("");
-                  try {
-                    await governanceCall("request-access", {
-                      projectId: project.id,
-                      id: requestId,
-                      class: kind,
-                      mode,
-                    });
-                    setSubmittedId(requestId);
-                    setOpen(false);
-                    await onRefresh();
-                  } catch (e) {
-                    setError(String(e));
-                  } finally {
-                    setBusy(false);
-                  }
-                })()
-              }
-            >
-              {busy ? "Sending…" : "Send request"}
-            </Button>
-            <Button
-              variant="tertiary"
-              disabled={busy}
-              onClick={() => setOpen(false)}
-            >
-              Cancel
-            </Button>
-          </div>
+          {fields}
         </Overlay>
       )}
     </>

@@ -14,7 +14,8 @@ import { IconButton } from "./icon-button.js";
 import { Button } from "./button.js";
 import { Icon } from "./icon.js";
 import { EmptyState } from "./empty-state.js";
-import { AccessPill } from "./index-access.js";
+import { AccessPill, IndexAccessDialog } from "./index-access.js";
+import type { RequestAccessProps } from "./request-access.js";
 import { useToasts } from "./toasts.js";
 import {
   applyPageFilters,
@@ -73,7 +74,7 @@ export interface ResourceIndexProps {
   onRefreshLocal?: () => void;
   /** A notice above the toolbar, such as unavailable session titles. */
   status?: React.ReactNode;
-  accessRequest?: React.ReactNode;
+  accessRequest?: React.ReactElement<RequestAccessProps>;
   floatingAction?: React.ReactNode;
   /**
    * The resource whose reading view was just closed. Its row or card takes
@@ -281,47 +282,80 @@ export function ResourceIndex({
     !noAccess &&
     connected,
   );
-  const connectButton = connect && (
-    <Button
-      size="md"
-      variant="primary"
-      disabled={connect.busy}
-      onClick={connect.onConnect}
+  const connectButton = ({
+    compact = false,
+    blocked = false,
+  }: { compact?: boolean; blocked?: boolean } = {}) =>
+    connect && (
+      <Button
+        size={compact ? "sm" : "md"}
+        variant={compact ? "secondary" : "primary"}
+        disabled={connect.busy || blocked}
+        onClick={connect.onConnect}
+      >
+        <Icon icon={FolderIcon} />
+        {connect.repositories ? "Connect repositories" : "Connect folder"}
+      </Button>
+    );
+  const renderConnection = (request: React.ReactNode, sending: boolean) => (
+    <IndexAccessDialog
+      label={request || noAccess ? "Access limited" : "Not on this Mac"}
+      busy={sending}
     >
-      <Icon icon={FolderIcon} />
-      {connect.repositories ? "Connect repositories" : "Connect folder"}
-    </Button>
+      <section className="index-access-section">
+        <FolderIcon size={16} aria-hidden="true" />
+        <div className="index-access-section-body">
+          <h3 className="index-access-title">Not on this Mac</h3>
+          <p className="index-access-description">
+            Connect{" "}
+            {connect?.repositories ? "the repositories" : "the project folder"}{" "}
+            {noAccess ? "to find local items." : `to ${connectPurposes[kind]}.`}
+          </p>
+          <div className="index-access-connect">
+            {connectButton({ compact: true, blocked: sending })}
+          </div>
+        </div>
+      </section>
+      {(request || noAccess) && (
+        <section className="index-access-section">
+          <LockIcon size={16} aria-hidden="true" />
+          <div className="index-access-section-body">
+            <h3 className="index-access-title">
+              {noAccess ? `Shared ${noun} are restricted` : "Editing access"}
+            </h3>
+            <p className="index-access-description">
+              {noAccess
+                ? `Your role cannot see ${noun} shared in this project.`
+                : `You need editing access to update the team’s shared ${noun}.`}
+            </p>
+            {request}
+          </div>
+        </section>
+      )}
+    </IndexAccessDialog>
   );
   // Lists explain a page-wide limit beside the toolbar; Skills keep theirs above it.
-  const connection = !connected && connect && (
-    <AccessPill
-      label="Not on this Mac"
-      title="This project isn’t on this Mac"
-      icon={FolderIcon}
-    >
-      <p className="index-access-description">
-        {!noAccess && `You can read the team’s shared ${noun}. `}
-        Connect{" "}
-        {connect.repositories ? "its repositories" : "the project folder"}{" "}
-        {noAccess ? "to find local items." : `to ${connectPurposes[kind]}.`}
-      </p>
-      {connectButton}
-    </AccessPill>
-  );
-  const access = noAccess ? (
-    <AccessPill
-      label="Restricted"
-      title={`Shared ${noun} are restricted`}
-      icon={LockIcon}
-    >
-      <p className="index-access-description">
-        Your role cannot see {noun} shared in this project.
-      </p>
-      {accessRequest}
-    </AccessPill>
-  ) : (
-    accessRequest
-  );
+  const access =
+    !connected && connect ? (
+      accessRequest ? (
+        React.cloneElement(accessRequest, { renderInDialog: renderConnection })
+      ) : (
+        renderConnection(null, false)
+      )
+    ) : noAccess ? (
+      <AccessPill
+        label="Restricted"
+        title={`Shared ${noun} are restricted`}
+        icon={LockIcon}
+      >
+        <p className="index-access-description">
+          Your role cannot see {noun} shared in this project.
+        </p>
+        {accessRequest}
+      </AccessPill>
+    ) : (
+      accessRequest
+    );
   const refreshButton = onRefreshLocal && (
     <IconButton
       icon={RefreshCwIcon}
@@ -337,7 +371,6 @@ export function ResourceIndex({
     list && toolbarShown ? (
       <>
         {refreshButton}
-        {connection}
         {access}
       </>
     ) : emptyRefresh ? (
@@ -549,7 +582,7 @@ export function ResourceIndex({
                 list && (
                   <>
                     {restrictedEmpty && accessRequest}
-                    {!connected && connectButton}
+                    {!connected && connectButton()}
                   </>
                 )
               }
@@ -623,9 +656,9 @@ const emptyDescriptions: Record<Resource["kind"], string> = {
 
 /** What connecting this Mac adds for each list. */
 const connectPurposes: Partial<Record<Resource["kind"], string>> = {
-  session: "continue them on this Mac and share your own",
-  memory: "open them in your editor",
-  plan: "open them in your editor",
+  session: "continue shared sessions and share your own",
+  memory: "open shared memories in your editor",
+  plan: "open shared plans in your editor",
 };
 
 function ResourceEmptyState({

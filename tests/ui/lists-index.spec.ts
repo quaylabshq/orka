@@ -654,11 +654,14 @@ test("a project not on this Mac keeps its rows and explains itself in a pill bes
   });
   await pill.click();
   const panel = page.getByRole("dialog", {
-    name: "This project isn’t on this Mac",
+    name: "Project access",
   });
   await expect(panel).toContainText(
-    "You can read the team’s shared sessions. Connect the project folder to continue them on this Mac and share your own.",
+    "Connect the project folder to continue shared sessions and share your own.",
   );
+  await expect(
+    panel.getByRole("heading", { name: "Editing access" }),
+  ).toHaveCount(0);
   await panel.getByRole("button", { name: "Connect folder" }).click();
   await expect
     .poll(() =>
@@ -763,34 +766,68 @@ test("a view-only member asks for editing access from beside the toolbar", async
   ).toBeLessThan(2);
 });
 
-test("a disconnected view-only member can still request editing access", async ({
+test("one warning opens the folder and editing access actions in the same dialog", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 900, height: 640 });
   await open(page, "Plans", { disconnected: true, access: "read" });
   const toolbar = tools(page, "plans");
+  const warning = toolbar.getByRole("button", { name: "Access limited" });
+  await expect(warning).toBeVisible();
   await expect(
     toolbar.getByRole("button", { name: "Not on this Mac" }),
-  ).toBeVisible();
-  const ask = toolbar.getByRole("button", { name: "Ask to edit" });
-  await expect(ask).toBeVisible();
+  ).toHaveCount(0);
+  await expect(
+    toolbar.getByRole("button", { name: "Ask to edit" }),
+  ).toHaveCount(0);
   await page.evaluate(() => document.fonts.ready.then(() => {}));
-  const [searchBox, askBox] = await Promise.all([
+  const [searchBox, warningBox] = await Promise.all([
     toolbar.getByRole("searchbox").boundingBox(),
-    ask.boundingBox(),
+    warning.boundingBox(),
   ]);
   expect(
     Math.abs(
-      searchBox!.y + searchBox!.height / 2 - (askBox!.y + askBox!.height / 2),
+      searchBox!.y +
+        searchBox!.height / 2 -
+        (warningBox!.y + warningBox!.height / 2),
     ),
   ).toBeLessThan(2);
-  await ask.click();
-  const request = page.getByRole("dialog", { name: "Request access" });
-  await expect(request.getByRole("combobox")).toHaveText("Can edit");
-  await request.getByRole("button", { name: "Send request" }).click();
+  await warning.press("Enter");
+  const dialog = page.getByRole("dialog", { name: "Project access" });
+  await expect(page.getByRole("dialog")).toHaveCount(1);
   await expect(
-    toolbar.getByRole("button", { name: "Access requested" }),
+    dialog.getByRole("heading", { name: "Not on this Mac" }),
   ).toBeVisible();
+  await expect(
+    dialog.getByRole("button", { name: "Connect folder" }),
+  ).toBeVisible();
+  await expect(
+    dialog.getByRole("heading", { name: "Editing access" }),
+  ).toBeVisible();
+  await expect(dialog.getByRole("combobox")).toHaveText("Can edit");
+  await dialog.getByRole("button", { name: "Send request" }).click();
+  await expect(dialog.getByRole("status")).toHaveText("Access requested");
+  expect(
+    await page.evaluate(() =>
+      (window as any).listsCalls
+        .filter(
+          ({ name, args }: { name: string; args: { action: string } }) =>
+            name === "governance_command" && args.action === "request-access",
+        )
+        .map(({ args }: { args: { input: { class: string } } }) => args.input),
+    ),
+  ).toMatchObject([{ class: "plan", mode: "publish" }]);
+  await expect(
+    dialog.getByRole("button", { name: "Close project access" }),
+  ).toBeEnabled();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await expect(warning).toBeFocused();
+  await warning.click();
+  await expect(dialog.getByRole("status")).toHaveText("Access requested");
+  await expect(
+    dialog.getByRole("button", { name: "Send request" }),
+  ).toHaveCount(0);
 });
 
 test("an empty restricted project still offers to connect its folder", async ({

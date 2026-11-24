@@ -114,12 +114,6 @@
   .index-menu-value {
     display: none;
   }
-
-  .index-toolbar-actions:has(
-    .index-access-pill + button.resource-access-request
-  ) {
-    column-gap: 8px;
-  }
 }
 
 /* Search, Filter, Sort and the chips stay put while the list scrolls under.
@@ -194,6 +188,96 @@
   color: var(--text-secondary);
   font-size: 13px;
   line-height: 20px;
+}
+
+.modal.index-access-dialog {
+  display: flex;
+  flex-direction: column;
+  padding: 20px;
+}
+
+.index-access-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border-default);
+}
+
+.modal .index-access-dialog-header h2 {
+  margin: 0;
+  font-size: var(--heading-settings-font-size);
+  font-weight: var(--heading-settings-font-weight);
+  line-height: var(--heading-settings-line-height);
+  letter-spacing: var(--heading-settings-letter-spacing);
+}
+
+.index-access-section {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  column-gap: 8px;
+  padding-top: 12px;
+}
+
+.index-access-section > svg {
+  margin-top: 2px;
+  color: var(--text-secondary);
+}
+
+.index-access-section-body {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.index-access-section + .index-access-section {
+  margin-top: 12px;
+  border-top: 1px solid var(--border-default);
+}
+
+.index-access-dialog .index-access-section p {
+  margin: 0;
+}
+
+.index-access-connect {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+
+.index-access-request-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.index-access-request-fields > label {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--label-xs-font-size);
+  line-height: var(--label-xs-line-height);
+}
+
+.index-access-request-fields .permission-select-trigger {
+  padding: 5px 10px;
+  line-height: var(--body-sm-line-height);
+}
+
+.index-access-request-fields > .actions {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.index-access-request-fields > [role="alert"] {
+  grid-column: 1 / -1;
+  color: var(--red-text);
+  overflow-wrap: anywhere;
 }
 
 .index-access-panel > .ui-button {
