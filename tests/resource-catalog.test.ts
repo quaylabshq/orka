@@ -6,7 +6,7 @@ import {
   applyPageFilters,
   defaultIndexFilters,
   indexPages,
-} from "../apps/mac/src/components/skill-index.js";
+} from "../apps/mac/src/components/index-pages.js";
 
 const resource = (
   id: string,

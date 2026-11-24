@@ -20,7 +20,7 @@ export function AccessPill({
       <Popover.Trigger asChild>
         <button
           type="button"
-          className="skill-status-pill index-access-pill"
+          className="index-status-pill index-access-pill"
           data-tone="amber"
         >
           {label}

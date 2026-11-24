@@ -14,7 +14,7 @@ import {
   type IndexFilterKey,
   type IndexFilters,
   type IndexPage,
-} from "./skill-index.js";
+} from "./index-pages.js";
 import { SearchField } from "./search-field.js";
 
 /** The filter categories this collection can offer, with the current picks. */
@@ -32,7 +32,7 @@ export function useFilterCategories(
 }
 
 /** Search, Filter, Sort, then the trailing controls and whatever the page adds. */
-export function SkillToolbar({
+export function IndexToolbar({
   page,
   showTools,
   categories,
@@ -79,9 +79,9 @@ export function SkillToolbar({
       actions
     );
   return (
-    <div className={showTools ? "skill-index-head" : undefined}>
+    <div className={showTools ? "index-head" : undefined}>
       <div
-        className={showTools ? "index-toolbar skill-toolbar" : undefined}
+        className={showTools ? "index-toolbar" : undefined}
         role={showTools ? "group" : undefined}
         aria-label={showTools ? `${noun} tools` : undefined}
       >

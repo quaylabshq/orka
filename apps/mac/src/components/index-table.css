@@ -1,5 +1,5 @@
-.skill-table {
-  --skill-cell-padding: 16px;
+.index-table {
+  --index-cell-padding: 16px;
   width: 100%;
   table-layout: fixed;
   border: 1px solid var(--border-default);
@@ -9,52 +9,52 @@
   text-align: left;
 }
 
-.skill-table-col-repository {
+.index-table-col-repository {
   width: 26%;
 }
 
-.skill-table-col-person {
+.index-table-col-person {
   width: 156px;
 }
 
-.skill-table-col-status {
+.index-table-col-status {
   width: 180px;
 }
 
-.skill-table-col-actions {
+.index-table-col-actions {
   width: 52px;
 }
 
-.skill-table-col-agent {
+.index-table-col-agent {
   width: 132px;
 }
 
-.skill-table-col-updated {
+.index-table-col-updated {
   width: 124px;
 }
 
 /* Memories, Sessions, and Plans keep their own widths for shared columns. */
-.skill-table:not([data-kind="skill"]) .skill-table-col-repository {
+.index-table:not([data-kind="skill"]) .index-table-col-repository {
   width: 224px;
 }
 
-.skill-table:not([data-kind="skill"]) .skill-table-col-person {
+.index-table:not([data-kind="skill"]) .index-table-col-person {
   width: 160px;
 }
 
-.skill-table:not([data-kind="skill"]) .skill-table-col-status {
+.index-table:not([data-kind="skill"]) .index-table-col-status {
   width: 168px;
 }
 
-.skill-table:not([data-kind="skill"]) .skill-table-col-actions {
+.index-table:not([data-kind="skill"]) .index-table-col-actions {
   width: 44px;
 }
 
-.skill-table th,
-.skill-table td {
+.index-table th,
+.index-table td {
   height: 44px;
   padding-block: 0;
-  padding-inline: var(--skill-cell-padding);
+  padding-inline: var(--index-cell-padding);
   border-bottom: 1px solid var(--border-default);
   vertical-align: middle;
   font-size: 12px;
@@ -63,67 +63,67 @@
   color: var(--text-secondary);
 }
 
-.skill-table thead th {
+.index-table thead th {
   height: 36px;
   color: var(--text-tertiary);
 }
 
-.skill-table tbody tr:last-child > * {
+.index-table tbody tr:last-child > * {
   border-bottom: 0;
 }
 
-.skill-table tbody tr {
+.index-table tbody tr {
   cursor: pointer;
 }
 
-.skill-table tbody tr:hover > *,
-.skill-table tbody tr:focus-within > * {
+.index-table tbody tr:hover > *,
+.index-table tbody tr:focus-within > * {
   background: var(--state-hover);
 }
 
-.skill-table tbody tr:last-child > :first-child {
+.index-table tbody tr:last-child > :first-child {
   border-bottom-left-radius: calc(var(--radius-surface) - 1px);
 }
 
-.skill-table tbody tr:last-child > :last-child {
+.index-table tbody tr:last-child > :last-child {
   border-bottom-right-radius: calc(var(--radius-surface) - 1px);
 }
 
-.skill-table-heading {
+.index-table-heading {
   display: flex;
   min-width: 0;
   align-items: center;
   gap: 6px;
 }
 
-.skill-table-heading > svg {
+.index-table-heading > svg {
   flex-shrink: 0;
 }
 
-.skill-table-heading-label {
+.index-table-heading-label {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.skill-table-name {
+.index-table-name {
   position: relative;
 }
 
-.skill-table-name-content {
+.index-table-name-content {
   display: flex;
   min-width: 0;
   align-items: center;
   gap: 8px;
 }
 
-.skill-table-leading {
+.index-table-leading {
   flex-shrink: 0;
   color: var(--text-tertiary);
 }
 
-.skill-table-open {
+.index-table-open {
   min-width: 0;
   margin: 0;
   padding: 0;
@@ -141,17 +141,17 @@
   user-select: none;
 }
 
-.skill-table-open:focus-visible {
+.index-table-open:focus-visible {
   outline-offset: 2px;
 }
 
-.skill-table-fork {
+.index-table-fork {
   flex-shrink: 0;
   margin-left: -2px;
   color: var(--blue-text);
 }
 
-.skill-table-repository-label {
+.index-table-repository-label {
   display: flex;
   min-width: 0;
   align-items: center;
@@ -159,36 +159,36 @@
   color: var(--text-secondary);
 }
 
-.skill-table-repository-label > svg {
+.index-table-repository-label > svg {
   flex-shrink: 0;
   color: var(--text-tertiary);
 }
 
-.skill-table-repository-label > span {
+.index-table-repository-label > span {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.skill-table-agent .source-label {
+.index-table-agent .source-label {
   display: flex;
 }
 
-.skill-table-updated {
+.index-table-updated {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.skill-table-person {
+.index-table-person {
   display: flex;
   min-width: 0;
   align-items: center;
   gap: 6px;
 }
 
-.skill-table-avatar {
+.index-table-avatar {
   position: relative;
   display: inline-flex;
   width: 20px;
@@ -205,7 +205,7 @@
   line-height: 1;
 }
 
-.skill-table-avatar > img {
+.index-table-avatar > img {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -213,14 +213,14 @@
   object-fit: cover;
 }
 
-.skill-table-person-name {
+.index-table-person-name {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.skill-status-pill {
+.index-status-pill {
   display: inline-flex;
   max-width: 100%;
   height: 22px;
@@ -236,44 +236,44 @@
   white-space: nowrap;
 }
 
-.skill-status-pill > svg {
+.index-status-pill > svg {
   flex-shrink: 0;
 }
 
-.skill-status-pill[data-tone="red"] {
+.index-status-pill[data-tone="red"] {
   background: var(--red-surface);
   color: var(--red-text);
 }
 
-.skill-status-pill[data-tone="amber"] {
+.index-status-pill[data-tone="amber"] {
   background: var(--amber-surface);
   color: var(--amber-text);
 }
 
-.skill-status-pill[data-tone="blue"] {
+.index-status-pill[data-tone="blue"] {
   background: var(--blue-surface);
   color: var(--blue-text);
 }
 
-.skill-table-actions {
+.index-table-actions {
   padding-inline: 0 2px !important;
   text-align: right;
 }
 
-.skill-table-actions .ui-icon-button {
+.index-table-actions .ui-icon-button {
   color: var(--text-tertiary);
 }
 
-.skill-table tbody tr:hover .skill-table-actions .ui-icon-button,
-.skill-table-actions .ui-icon-button[data-state="open"] {
+.index-table tbody tr:hover .index-table-actions .ui-icon-button,
+.index-table-actions .ui-icon-button[data-state="open"] {
   color: var(--text-primary);
 }
 
-.skill-table-peek {
+.index-table-peek {
   position: absolute;
   z-index: 20;
   top: calc(100% - 4px);
-  left: calc(var(--skill-cell-padding) + 22px);
+  left: calc(var(--index-cell-padding) + 22px);
   display: flex;
   width: min(340px, calc(100vw - 320px));
   flex-direction: column;
@@ -291,12 +291,12 @@
   pointer-events: none;
 }
 
-.skill-table-peek[data-side="above"] {
+.index-table-peek[data-side="above"] {
   top: auto;
   bottom: calc(100% - 4px);
 }
 
-.skill-table-peek-description {
+.index-table-peek-description {
   display: -webkit-box;
   overflow: hidden;
   overflow-wrap: anywhere;
@@ -304,68 +304,68 @@
   -webkit-line-clamp: 4;
 }
 
-.skill-table-peek-empty {
+.index-table-peek-empty {
   color: var(--text-tertiary);
 }
 
-.skill-table-peek-origin {
+.index-table-peek-origin {
   color: var(--text-tertiary);
 }
 
-.skill-table-peek-path {
+.index-table-peek-path {
   overflow-wrap: anywhere;
   color: var(--text-tertiary);
 }
 
 /* Updated has its own column until the window is too narrow for it. */
-.skill-table-peek-updated {
+.index-table-peek-updated {
   display: none;
   color: var(--text-tertiary);
 }
 
-.skill-table-peek-loading {
+.index-table-peek-loading {
   display: flex;
   flex-direction: column;
   gap: 8px;
   padding-block: 4px;
 }
 
-.skill-table-peek-loading > span {
+.index-table-peek-loading > span {
   display: block;
   height: 8px;
   border-radius: var(--radius-detail);
   background: var(--border-default);
 }
 
-.skill-table-peek-loading > span:nth-child(2) {
+.index-table-peek-loading > span:nth-child(2) {
   width: 70%;
 }
 
 /* Default window: the repository column gives width back to skill names. */
 @media (max-width: 1280px) {
-  .skill-table-col-repository {
+  .index-table-col-repository {
     width: 22%;
   }
 }
 
 /* Default window: list agents and people become a logo and an avatar. */
 @media (max-width: 1280px) {
-  .skill-table-col-agent,
-  .skill-table:not([data-kind="skill"]) .skill-table-col-person {
+  .index-table-col-agent,
+  .index-table:not([data-kind="skill"]) .index-table-col-person {
     width: 52px;
   }
 
-  .skill-table:not([data-kind="skill"]) .skill-table-col-repository {
+  .index-table:not([data-kind="skill"]) .index-table-col-repository {
     width: 150px;
   }
 
   /* Hidden from sight only: the names still label the logo and the avatar. */
-  .skill-table-agent .source-label > span,
-  .skill-table-agent-heading .skill-table-heading-label,
-  .skill-table:not([data-kind="skill"]) .skill-table-person-name,
-  .skill-table:not([data-kind="skill"])
-    .skill-table-person-heading
-    .skill-table-heading-label {
+  .index-table-agent .source-label > span,
+  .index-table-agent-heading .index-table-heading-label,
+  .index-table:not([data-kind="skill"]) .index-table-person-name,
+  .index-table:not([data-kind="skill"])
+    .index-table-person-heading
+    .index-table-heading-label {
     position: absolute;
     width: 1px;
     height: 1px;
@@ -378,52 +378,52 @@
 /* Minimum window: list rows move Updated into the peek. The repository
    keeps the Skills width, enough for its heading and a short name. */
 @media (max-width: 1000px) {
-  .skill-table:not([data-kind="skill"]) .skill-table-col-repository {
+  .index-table:not([data-kind="skill"]) .index-table-col-repository {
     width: 134px;
   }
 
-  .skill-table:not([data-kind="skill"]) .skill-table-col-actions {
+  .index-table:not([data-kind="skill"]) .index-table-col-actions {
     width: 36px;
   }
 
-  .skill-table-col-updated,
-  .skill-table-updated {
+  .index-table-col-updated,
+  .index-table-updated {
     display: none;
   }
 
-  .skill-table-peek-updated {
+  .index-table-peek-updated {
     display: block;
   }
 
-  .skill-table-peek-kind .skill-table-peek-updated {
+  .index-table-peek-kind .index-table-peek-updated {
     display: inline;
   }
 }
 
 /* A peek that would say only when the row was updated waits for that width. */
 @media (min-width: 1001px) {
-  .skill-table-peek:not(:has(> :not(.skill-table-peek-updated))) {
+  .index-table-peek:not(:has(> :not(.index-table-peek-updated))) {
     display: none;
   }
 }
 
 /* Minimum window: Shared by becomes an avatar, and the repository narrows. */
 @media (max-width: 1000px) {
-  .skill-table-col-repository {
+  .index-table-col-repository {
     width: 134px;
   }
 
-  .skill-table-col-person {
+  .index-table-col-person {
     width: 52px;
   }
 
-  .skill-table-col-status {
+  .index-table-col-status {
     width: 168px;
   }
 
   /* Hidden from sight only: the name still labels the avatar and the column. */
-  .skill-table-person-name,
-  .skill-table-person-heading .skill-table-heading-label {
+  .index-table-person-name,
+  .index-table-person-heading .index-table-heading-label {
     position: absolute;
     width: 1px;
     height: 1px;
@@ -434,13 +434,13 @@
 }
 
 @media (prefers-reduced-motion: no-preference) {
-  .skill-table-peek {
-    animation: skill-table-peek-in var(--motion-control-duration)
+  .index-table-peek {
+    animation: index-table-peek-in var(--motion-control-duration)
       var(--motion-control-ease);
   }
 }
 
-@keyframes skill-table-peek-in {
+@keyframes index-table-peek-in {
   from {
     opacity: 0;
   }

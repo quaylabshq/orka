@@ -1556,7 +1556,7 @@ test("read-only shared skills retain copy and export but omit sharing and deleti
   page,
 }) => {
   await skillFixture(page, { role: "member", access: "read", open: false });
-  await page.locator(".skill-table tbody tr").click({
+  await page.locator(".index-table tbody tr").click({
     button: "right",
     position: { x: 8, y: 8 },
   });

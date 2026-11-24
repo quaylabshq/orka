@@ -1,8 +1,8 @@
 import { test, expect, type Page } from "@playwright/test";
 import { listsIndexFixture, type ListsScene } from "./fixtures/lists-index.js";
 
-const rows = (page: Page) => page.locator(".skill-table tbody tr");
-const pills = (page: Page) => page.locator(".skill-status-pill");
+const rows = (page: Page) => page.locator(".index-table tbody tr");
+const pills = (page: Page) => page.locator(".index-status-pill");
 const filter = (page: Page) => page.getByRole("button", { name: /^Filter/ });
 const pick = async (page: Page, category: string, option: string) => {
   await filter(page).click();
@@ -120,7 +120,7 @@ for (const scene of pages) {
       .click();
     // Red first, then amber, then neutral; rows with no status sink.
     await expect(pills(page).first()).toHaveAttribute("data-tone", "red");
-    await expect(rows(page).last().locator(".skill-status-pill")).toHaveCount(
+    await expect(rows(page).last().locator(".index-status-pill")).toHaveCount(
       0,
     );
   });
@@ -145,11 +145,11 @@ for (const scene of pages) {
   }) => {
     await page.setViewportSize({ width: 1160, height: 800 });
     await open(page, scene.label);
-    const name = rows(page).first().locator(".skill-table-person-name");
+    const name = rows(page).first().locator(".index-table-person-name");
     await expect(name).toHaveText("Mira");
     expect(await name.evaluate((element) => element.clientWidth)).toBe(1);
     await expect(
-      rows(page).first().locator(".skill-table-person"),
+      rows(page).first().locator(".index-table-person"),
     ).toHaveAttribute("title", "Mira");
     await expect(
       page.getByRole("columnheader", { name: scene.person }),
@@ -157,7 +157,7 @@ for (const scene of pages) {
     // The sorted Updated heading keeps its whole label beside the arrow.
     const updated = page
       .getByRole("columnheader", { name: "Updated", exact: true })
-      .locator(".skill-table-heading-label");
+      .locator(".index-table-heading-label");
     expect(
       await updated.evaluate((label) => label.scrollWidth <= label.clientWidth),
     ).toBe(true);
@@ -193,18 +193,18 @@ test("Memories tell repeated file names apart by agent, and the Kind filter spli
   await open(page, "Memories");
   const repeated = rows(page).filter({ hasText: "MEMORY.md" });
   await expect(repeated).toHaveCount(2);
-  await expect(repeated.locator(".skill-table-agent")).toHaveText([
+  await expect(repeated.locator(".index-table-agent")).toHaveText([
     "Claude",
     "Codex",
   ]);
   await pick(page, "Kind", "Instruction file");
-  await expect(page.locator(".skill-table-open")).toHaveText([
+  await expect(page.locator(".index-table-open")).toHaveText([
     "AGENTS.md",
     "CLAUDE.md",
     "Sharded pull request checks",
   ]);
   await pick(page, "Agent", "Codex");
-  await expect(page.locator(".skill-table-open")).toHaveText(["AGENTS.md"]);
+  await expect(page.locator(".index-table-open")).toHaveText(["AGENTS.md"]);
 });
 
 test("at 1160 the agent is a logo whose name stays available on hover and to assistive technology", async ({
@@ -212,7 +212,7 @@ test("at 1160 the agent is a logo whose name stays available on hover and to ass
 }) => {
   await page.setViewportSize({ width: 1160, height: 800 });
   await open(page, "Memories");
-  const agent = rows(page).first().locator(".skill-table-agent");
+  const agent = rows(page).first().locator(".index-table-agent");
   await expect(agent).toHaveAttribute("title", "Codex");
   const name = agent.locator(".source-label > span");
   await expect(name).toHaveText("Codex");
@@ -235,9 +235,9 @@ test("Sessions list forks flat with a marker after the title, and the Forks filt
   const marked = rows(page).filter({
     has: page.getByRole("img", { name: "Forked session" }),
   });
-  await expect(marked.locator(".skill-table-open")).toHaveText(forks);
+  await expect(marked.locator(".index-table-open")).toHaveText(forks);
   const marker = marked.first().getByRole("img", { name: "Forked session" });
-  const title = marked.first().locator(".skill-table-open");
+  const title = marked.first().locator(".index-table-open");
   const [markerBox, titleBox] = [
     (await marker.boundingBox())!,
     (await title.boundingBox())!,
@@ -246,7 +246,7 @@ test("Sessions list forks flat with a marker after the title, and the Forks filt
   expect(markerBox.x).toBeGreaterThan(titleBox.x + titleBox.width);
   expect(markerBox.x - (titleBox.x + titleBox.width)).toBeLessThan(10);
   await pick(page, "Forks", "Forks");
-  await expect(page.locator(".skill-table-open")).toHaveText(forks);
+  await expect(page.locator(".index-table-open")).toHaveText(forks);
   await pick(page, "Forks", "Originals");
   await expect(rows(page)).toHaveCount(16);
 });
@@ -263,7 +263,7 @@ test("hovering or focusing a session row prefetches its messages", async ({
     );
   await rows(page).nth(4).hover();
   await expect.poll(prefetched).toContain("session-4");
-  await page.locator(".skill-table-open").nth(6).focus();
+  await page.locator(".index-table-open").nth(6).focus();
   await expect.poll(prefetched).toContain("session-6");
   expect(await prefetched()).not.toContain("session-9");
 });
@@ -593,11 +593,11 @@ for (const label of ["Sessions", "Plans", "Memories"])
       await whole(
         page
           .getByRole("columnheader", { name: "Repository" })
-          .locator(".skill-table-heading-label"),
+          .locator(".index-table-heading-label"),
       ),
     ).toBe(true);
     const name = page
-      .locator(".skill-table-repository-label > span")
+      .locator(".index-table-repository-label > span")
       .filter({ hasText: /^orka-public$/ })
       .first();
     expect(await whole(name)).toBe(true);

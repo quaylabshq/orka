@@ -71,12 +71,12 @@ for (const width of [1160, 900]) {
     await page.setViewportSize({ width, height: width === 900 ? 640 : 800 });
     await metadataLoadingFixture(page);
     await page.getByRole("button", { name: /^Skills/ }).click();
-    const table = page.locator(".skill-table");
+    const table = page.locator(".index-table");
     const row = (id: string) =>
       table.locator("tbody tr", {
         has: page.locator(`[data-resource-id="${id}"]`),
       });
-    await expect(table.locator(".skill-table-open")).toHaveText([
+    await expect(table.locator(".index-table-open")).toHaveText([
       "Review skill 1",
       "Review skill 2",
       "Review skill 3",
@@ -171,7 +171,7 @@ test("Home and Skills placeholders stop breathing when reduced motion changes", 
     if (pageName === "Skills") {
       await page.getByRole("button", { name: /^Skills/ }).click();
       // On Skills the only placeholder is inside a row's description peek.
-      await page.locator(".skill-table tbody tr").first().hover();
+      await page.locator(".index-table tbody tr").first().hover();
     }
     const placeholder = page.locator(".loading-fade").first();
     await expectFadingPlaceholder(placeholder);

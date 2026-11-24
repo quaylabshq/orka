@@ -14,11 +14,11 @@ const busy: SkillsScene = {
   governed: true,
   extremes: true,
 };
-const rows = (page: Page) => page.locator(".skill-table tbody tr");
-const names = (page: Page) => page.locator(".skill-table-open");
+const rows = (page: Page) => page.locator(".index-table tbody tr");
+const names = (page: Page) => page.locator(".index-table-open");
 const filter = (page: Page) => page.getByRole("button", { name: /^Filter/ });
 const sort = (page: Page) => page.getByRole("button", { name: /^Sort/ });
-const pills = (page: Page) => page.locator(".skill-status-pill");
+const pills = (page: Page) => page.locator(".index-status-pill");
 const pick = async (page: Page, category: string, option: string) => {
   await filter(page).click();
   await page.getByRole("menuitem", { name: category }).click();
@@ -44,18 +44,18 @@ for (const viewport of [regular, compact]) {
     );
     const layout = await page.evaluate(() => {
       const box = (element: Element) => element.getBoundingClientRect();
-      const table = document.querySelector(".skill-table")!;
+      const table = document.querySelector(".index-table")!;
       const toolbar = Array.from(
         document.querySelectorAll(
-          ".skill-toolbar > *, .index-toolbar-actions > *",
+          ".index-toolbar > *, .index-toolbar-actions > *",
         ),
       ).filter(
         (element) => !element.classList.contains("index-toolbar-actions"),
       );
       const rowIssues: string[] = [];
       for (const row of Array.from(table.querySelectorAll("tbody tr"))) {
-        const name = row.querySelector(".skill-table-open")!;
-        const more = row.querySelector(".skill-table-actions button");
+        const name = row.querySelector(".index-table-open")!;
+        const more = row.querySelector(".index-table-actions button");
         if (box(row).height !== 44) rowIssues.push(`height ${box(row).height}`);
         if (more && box(name).right > box(more).left)
           rowIssues.push(`name under more: ${name.textContent}`);
@@ -64,7 +64,7 @@ for (const viewport of [regular, compact]) {
           if (inner && box(inner).right > box(cell).right + 0.5)
             rowIssues.push(`overflow in ${name.textContent}`);
         }
-        const pill = row.querySelector(".skill-status-pill");
+        const pill = row.querySelector(".index-status-pill");
         if (pill && pill.scrollWidth > pill.clientWidth)
           rowIssues.push(`status cut: ${pill.textContent}`);
       }
@@ -85,11 +85,11 @@ for (const viewport of [regular, compact]) {
         overlaps,
         longTruncated:
           Array.from(
-            table.querySelectorAll<HTMLElement>(".skill-table-open"),
+            table.querySelectorAll<HTMLElement>(".index-table-open"),
           ).find((element) => element.textContent!.includes("followup"))!
             .scrollWidth >
           Array.from(
-            table.querySelectorAll<HTMLElement>(".skill-table-open"),
+            table.querySelectorAll<HTMLElement>(".index-table-open"),
           ).find((element) => element.textContent!.includes("followup"))!
             .clientWidth,
         toolbarRight: Math.max(...toolbar.map((element) => box(element).right)),
@@ -101,7 +101,7 @@ for (const viewport of [regular, compact]) {
     expect(layout.longTruncated).toBe(true);
     // A long repository name is cut inside its cell and kept whole in its title.
     const repository = page
-      .locator(".skill-table-repository-label")
+      .locator(".index-table-repository-label")
       .filter({ hasText: "infrastructure-and-deployment" })
       .first();
     await expect(repository).toHaveAttribute(
@@ -118,7 +118,7 @@ for (const viewport of [regular, compact]) {
     expect(layout.toolbarRight).toBeLessThanOrEqual(viewport.width);
     // The full name and description stay reachable in the peek.
     await long.hover();
-    const peek = page.locator(".skill-table").getByRole("tooltip");
+    const peek = page.locator(".index-table").getByRole("tooltip");
     await expect(peek).toContainText("Act on an issue-investigate report");
     const peekBox = (await peek.boundingBox())!;
     expect(peekBox.x).toBeGreaterThanOrEqual(0);
@@ -141,7 +141,7 @@ test("a skill with an empty or unreadable description says so in the peek", asyn
     await expect(row.getByRole("tooltip")).toHaveText("No description");
     await page.mouse.move(0, 0);
   }
-  await expect(page.locator(".skill-table").getByRole("tooltip")).toHaveCount(
+  await expect(page.locator(".index-table").getByRole("tooltip")).toHaveCount(
     0,
   );
 });
@@ -151,7 +151,7 @@ test("only one description peek is open, and scrolling closes it", async ({
 }) => {
   await skillsIndexFixture(page, { count: 60 });
   await rows(page).nth(1).hover();
-  const peek = page.locator(".skill-table").getByRole("tooltip");
+  const peek = page.locator(".index-table").getByRole("tooltip");
   await expect(peek).toHaveCount(1);
   await rows(page).nth(4).hover();
   await expect(peek).toHaveCount(1);
@@ -244,12 +244,12 @@ test("sorting by status puts the most urgent first and the direction reverses it
   ).toHaveAttribute("aria-sort", "ascending");
   await expect(pills(page).first()).toHaveText("Conflict");
   // Skills with no status sink to the bottom.
-  await expect(rows(page).last().locator(".skill-status-pill")).toHaveCount(0);
+  await expect(rows(page).last().locator(".index-status-pill")).toHaveCount(0);
   await sort(page).click();
   await page
     .getByRole("menuitemradio", { name: "Least urgent first", exact: true })
     .click();
-  await expect(rows(page).first().locator(".skill-status-pill")).toHaveCount(0);
+  await expect(rows(page).first().locator(".index-status-pill")).toHaveCount(0);
   await expect(pills(page).last()).toHaveText("Conflict");
   // Picking the current sort again keeps its direction.
   await sort(page).click();
@@ -323,7 +323,7 @@ test("a row menu is one flat list, and after dismissing it Enter still opens the
 }) => {
   await skillsIndexFixture(page, busy);
   const row = rows(page).nth(3);
-  const name = row.locator(".skill-table-open");
+  const name = row.locator(".index-table-open");
   const title = (await name.textContent())!;
   await row.click({ button: "right", position: { x: 40, y: 20 } });
   const menu = page.getByRole("menu", { name: "skill actions", exact: true });
@@ -342,7 +342,7 @@ test("a row menu is one flat list, and after dismissing it Enter still opens the
   await actions.click();
   await expect(page.getByRole("menu")).toBeVisible();
   // An open menu keeps the description out of its way.
-  await expect(page.locator(".skill-table").getByRole("tooltip")).toHaveCount(
+  await expect(page.locator(".index-table").getByRole("tooltip")).toHaveCount(
     0,
   );
   await page.keyboard.press("Escape");
@@ -394,7 +394,7 @@ test("two hundred skills scroll under a fixed toolbar, and the last row's menu s
   // Rows pass under the toolbar, not over it.
   const covered = await page.evaluate(() => {
     const button = document.querySelector(
-      ".skill-toolbar .index-menu-trigger",
+      ".index-toolbar .index-menu-trigger",
     )!;
     const box = button.getBoundingClientRect();
     const top = document.elementFromPoint(
@@ -427,8 +427,8 @@ test("skills with no repository leave the cell empty and are not offered as a fi
 }) => {
   await skillsIndexFixture(page, { repositories: "removed" });
   await expect(rows(page).first()).toBeVisible();
-  const cells = page.locator(".skill-table-repository");
-  const labelled = page.locator(".skill-table-repository-label");
+  const cells = page.locator(".index-table-repository");
+  const labelled = page.locator(".index-table-repository-label");
   expect(await labelled.count()).toBeLessThan(await cells.count());
   await filter(page).click();
   await page.getByRole("menuitem", { name: "Repository" }).click();
@@ -441,7 +441,7 @@ test("an empty project keeps its own Add button, which opens the same popover", 
   page,
 }) => {
   await skillsIndexFixture(page, { count: 0 });
-  await expect(page.locator(".skill-table")).toHaveCount(0);
+  await expect(page.locator(".index-table")).toHaveCount(0);
   await expect(
     page.getByRole("searchbox", { name: "Search skills" }),
   ).toHaveCount(0);
@@ -469,7 +469,7 @@ test("a member whose role hides shared skills sees the restriction, not an empty
       name: "Access to shared skills is restricted.",
     }),
   ).toBeVisible();
-  await expect(page.locator(".skill-table")).toHaveCount(0);
+  await expect(page.locator(".index-table")).toHaveCount(0);
 });
 
 test("the Add skills popover and its details fit the minimum window", async ({
@@ -528,12 +528,12 @@ test("at the minimum window the Shared by column keeps its name for assistive te
   await expect(
     page.getByRole("columnheader", { name: "Shared by" }),
   ).toBeVisible();
-  const person = rows(page).first().locator(".skill-table-person");
-  await expect(person.locator(".skill-table-person-name")).not.toBeEmpty();
+  const person = rows(page).first().locator(".index-table-person");
+  await expect(person.locator(".index-table-person-name")).not.toBeEmpty();
   // The name is visually hidden, not removed.
   expect(
     await person
-      .locator(".skill-table-person-name")
+      .locator(".index-table-person-name")
       .evaluate((element) => getComputedStyle(element).display),
   ).not.toBe("none");
   expect((await person.boundingBox())!.width).toBeLessThanOrEqual(24);
@@ -559,7 +559,7 @@ test("a description near the bottom of the window opens upward and names its row
   await expect(peek).toBeVisible();
   const box = (await peek.boundingBox())!;
   expect(box.y + box.height).toBeLessThanOrEqual(view.y + view.height);
-  await expect(row.locator(".skill-table-open")).toHaveAttribute(
+  await expect(row.locator(".index-table-open")).toHaveAttribute(
     "aria-describedby",
     (await peek.getAttribute("id"))!,
   );
@@ -652,7 +652,7 @@ test("a read failure outranks an available update and appears in the status filt
   const row = rows(page).filter({
     has: page.getByRole("button", { name: "code-review", exact: true }),
   });
-  await expect(row.locator(".skill-status-pill")).toHaveText("Could not read");
+  await expect(row.locator(".index-status-pill")).toHaveText("Could not read");
   await pick(page, "Status", "Could not read");
   await expect(rows(page)).toHaveCount(1);
   await expect(row).toBeVisible();

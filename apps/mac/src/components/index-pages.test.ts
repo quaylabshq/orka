@@ -7,7 +7,7 @@ import {
   filterCategories,
   indexPages,
   sortDirection,
-} from "./skill-index.js";
+} from "./index-pages.js";
 import { listStatuses } from "./list-status.js";
 import type { SkillReviewState } from "./skill-review-state.js";
 import type { AttentionItem } from "./sync-attention.js";

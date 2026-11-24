@@ -4,7 +4,7 @@ import {
   defaultIndexFilters,
   indexPages,
   type IndexFilters,
-} from "./skill-index.js";
+} from "./index-pages.js";
 
 type Kind = Resource["kind"];
 const opening = (kind: Kind): IndexFilters => ({

@@ -373,7 +373,7 @@ test("skills switch files from the rail or the compact selector", async ({
 }) => {
   await resourceFixture(page);
   await page.getByRole("button", { name: /^Skills/ }).click();
-  const grid = page.locator(".skill-table");
+  const grid = page.locator(".index-table");
   await expect(grid.locator("tbody tr")).toHaveCount(2);
   // Rows carry the name only; the description waits in the hover peek.
   await expect(grid).not.toContainText("How we write.");
@@ -381,14 +381,14 @@ test("skills switch files from the rail or the compact selector", async ({
   await expect(grid).not.toContainText("2 files");
   await expect(page.locator(".inspector")).toHaveCount(0);
   await page
-    .locator(".skill-table tbody tr")
+    .locator(".index-table tbody tr")
     .filter({ hasText: "Review checklist" })
     .click();
   const view = page.locator(".resource-detail--skill");
   await expect(view.locator("h2").first()).toHaveText("Review checklist");
   await expect(view.locator(".skill-description")).toHaveText("How we write.");
   await expect(view).toContainText("Some content");
-  await expect(page.locator(".skill-table")).toHaveCount(0);
+  await expect(page.locator(".index-table")).toHaveCount(0);
   await expect(view).toHaveAttribute("data-layout", "wide");
   // The Files card switches the inspected file; the title card stays put.
   const rail = view.getByRole("complementary", { name: "Skill information" });
@@ -417,7 +417,7 @@ test("a failed file read clears old content and retries only on request", async 
   await resourceFixture(page);
   await page.getByRole("button", { name: /^Skills/ }).click();
   await page
-    .locator(".skill-table tbody tr")
+    .locator(".index-table tbody tr")
     .filter({ hasText: "Review checklist" })
     .click();
   const view = page.locator(".resource-detail--skill");
@@ -478,7 +478,7 @@ for (const outcome of ["success", "failure"] as const)
     await resourceFixture(page);
     await page.getByRole("button", { name: /^Skills/ }).click();
     await page
-      .locator(".skill-table tbody tr")
+      .locator(".index-table tbody tr")
       .filter({ hasText: "Review checklist" })
       .click();
     const view = page.locator(".resource-detail--skill");
@@ -544,7 +544,7 @@ test("index toolbar searches title, path, and agent, filters by agent, sorts, an
 }) => {
   await resourceFixture(page);
   await page.getByRole("button", { name: /^Memories/ }).click();
-  const titles = () => page.locator(".skill-table-open").allTextContents();
+  const titles = () => page.locator(".index-table-open").allTextContents();
   await expect.poll(titles).toEqual(["Design decisions", "Architecture notes"]);
   // The toolbar never counts items.
   await expect(page.getByText(/^\d+ memor(y|ies)$/)).toHaveCount(0);
@@ -591,7 +591,7 @@ test("skill title sorting follows frontmatter names instead of folder titles", a
 }) => {
   await resourceFixture(page, true);
   await page.getByRole("button", { name: /^Skills/ }).click();
-  const titles = page.locator(".skill-table-open");
+  const titles = page.locator(".index-table-open");
   // Name A to Z is the default order.
   await expect(titles).toHaveText(["Alpha writing", "Zebra review"]);
   await page.getByRole("button", { name: "Sort Name", exact: true }).click();

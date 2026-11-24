@@ -249,11 +249,11 @@ for (const viewport of [
       if (kind === "env") {
         await expect(page.locator(".env-list-item")).toHaveCount(2);
       } else {
-        const row = page.locator(".skill-table tbody tr", {
+        const row = page.locator(".index-table tbody tr", {
           has: page.locator(`[data-resource-id="${kind}-desktop"]`),
         });
         await expect(
-          row.locator(".skill-table-repository-label"),
+          row.locator(".index-table-repository-label"),
         ).toHaveAttribute("title", longName);
         await page.getByRole("button", { name: "Filter", exact: true }).click();
         await page.getByRole("menuitem", { name: "Repository" }).click();

@@ -26,14 +26,14 @@ import {
   isFork,
   sortDirection,
   type IndexFilters,
-} from "./skill-index.js";
+} from "./index-pages.js";
 import { LoadingRegion } from "./loading-region.js";
 import { CollectionSkeleton } from "./collection-skeleton.js";
 import { skillSummaryKey, type SkillSummaries } from "./use-skill-summaries.js";
-import { SkillPeek, SkillTable } from "./skill-table.js";
+import { SkillPeek, IndexTable } from "./index-table.js";
 import { ListPeek } from "./list-peek.js";
 import { sessionTree } from "./session-tree.js";
-import { SkillToolbar, useFilterCategories } from "./skill-toolbar.js";
+import { IndexToolbar, useFilterCategories } from "./index-toolbar.js";
 import type { IndexStatus } from "./skill-status.js";
 import { useMemberLabel } from "./member-names.js";
 import { SessionMessagesQuery } from "./use-session-messages.js";
@@ -248,7 +248,7 @@ export function ResourceIndex({
   );
   // Keep the popover mounted when the first import moves its trigger into the toolbar.
   const toolbar = (
-    <SkillToolbar
+    <IndexToolbar
       key="index-toolbar"
       page={page}
       showTools={toolbarShown}
@@ -420,7 +420,7 @@ export function ResourceIndex({
             />
           )
         ) : (
-          <SkillTable
+          <IndexTable
             page={page}
             resources={visible}
             user={user}
@@ -451,7 +451,7 @@ export function ResourceIndex({
               isFork(resource) && (
                 <GitForkIcon
                   size={12}
-                  className="skill-table-fork"
+                  className="index-table-fork"
                   role="img"
                   aria-label="Forked session"
                 />

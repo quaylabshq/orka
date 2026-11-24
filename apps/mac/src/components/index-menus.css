@@ -117,7 +117,7 @@
 }
 
 /* Search, Filter, Sort and the chips stay put while the list scrolls under. */
-.skill-index-head {
+.index-head {
   position: sticky;
   z-index: 10;
   top: 0;
@@ -125,7 +125,7 @@
 }
 
 /* First in the page, it also covers the page's top padding as rows pass. */
-.skill-index-head:first-child {
+.index-head:first-child {
   top: -20px;
   margin-top: -20px;
   padding-top: 20px;

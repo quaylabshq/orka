@@ -25,7 +25,7 @@ import {
   type IndexPage,
   type IndexSort,
   type IndexSortDirection,
-} from "./skill-index.js";
+} from "./index-pages.js";
 import { ItemMenuButton } from "./item-menu.js";
 import { useMemberPhoto } from "./member-names.js";
 import { ResourceItemMenu } from "./resource-menu.js";
@@ -33,7 +33,7 @@ import type { IndexStatus } from "./skill-status.js";
 import { SourceLabel, sourceName } from "./source-label.js";
 import { UpdatedTime } from "./updated-time.js";
 import type { SkillSummaries } from "./use-skill-summaries.js";
-import "./skill-table.css";
+import "./index-table.css";
 
 /** How long the pointer rests on a row before its description opens. */
 const PEEK_DELAY = 400;
@@ -52,7 +52,7 @@ const headings: Record<
   agent: {
     label: () => "Agent",
     icon: SquareTerminalIcon,
-    className: "skill-table-agent-heading",
+    className: "index-table-agent-heading",
   },
   repository: {
     sort: "repository",
@@ -63,13 +63,13 @@ const headings: Record<
     sort: "author",
     label: (page) => page.person.label,
     icon: UserIcon,
-    className: "skill-table-person-heading",
+    className: "index-table-person-heading",
   },
   updated: {
     sort: "updated",
     label: () => "Updated",
     icon: ClockIcon,
-    className: "skill-table-updated",
+    className: "index-table-updated",
   },
   status: { sort: "status", label: () => "Status", icon: CircleCheckIcon },
 };
@@ -77,8 +77,8 @@ const headings: Record<
 function Person({ id, name }: { id: string; name: string }) {
   const photo = useMemberPhoto(id);
   return (
-    <span className="skill-table-person" title={name}>
-      <span className="skill-table-avatar" aria-hidden="true">
+    <span className="index-table-person" title={name}>
+      <span className="index-table-avatar" aria-hidden="true">
         {name.trim().charAt(0).toLocaleUpperCase() || "?"}
         {photo && (
           <img
@@ -94,14 +94,14 @@ function Person({ id, name }: { id: string; name: string }) {
           />
         )}
       </span>
-      <span className="skill-table-person-name">{name}</span>
+      <span className="index-table-person-name">{name}</span>
     </span>
   );
 }
 
-export function SkillStatusPill({ status }: { status: IndexStatus }) {
+function IndexStatusPill({ status }: { status: IndexStatus }) {
   return (
-    <span className="skill-status-pill" data-tone={status.tone}>
+    <span className="index-status-pill" data-tone={status.tone}>
       <status.icon size={12} aria-hidden="true" />
       {status.label}
     </span>
@@ -120,27 +120,27 @@ export function SkillPeek({
     <>
       {summary === undefined ? (
         <span
-          className="skill-table-peek-loading loading-fade"
+          className="index-table-peek-loading loading-fade"
           aria-hidden="true"
         >
           <span />
           <span />
         </span>
       ) : summary?.description ? (
-        <span className="skill-table-peek-description">
+        <span className="index-table-peek-description">
           {summary.description}
         </span>
       ) : (
-        <span className="skill-table-peek-empty">No description</span>
+        <span className="index-table-peek-empty">No description</span>
       )}
       {skill.global && (
-        <span className="skill-table-peek-origin">From your global skills</span>
+        <span className="index-table-peek-origin">From your global skills</span>
       )}
     </>
   );
 }
 
-export function SkillTable({
+export function IndexTable({
   page,
   resources,
   user,
@@ -249,9 +249,9 @@ export function SkillTable({
           : undefined
       }
     >
-      <span className="skill-table-heading">
+      <span className="index-table-heading">
         <Glyph size={14} aria-hidden="true" />
-        <span className="skill-table-heading-label">{label}</span>
+        <span className="index-table-heading-label">{label}</span>
         {key && sort === key && <SortArrow size={12} aria-hidden="true" />}
       </span>
     </th>
@@ -273,7 +273,7 @@ export function SkillTable({
         return (
           <td
             key={column}
-            className="skill-table-agent"
+            className="index-table-agent"
             title={agent && sourceName(agent)}
           >
             {agent && <SourceLabel source={agent} />}
@@ -282,10 +282,10 @@ export function SkillTable({
       }
       case "repository":
         return (
-          <td key={column} className="skill-table-repository">
+          <td key={column} className="index-table-repository">
             {resource.repositoryName && (
               <span
-                className="skill-table-repository-label"
+                className="index-table-repository-label"
                 title={resource.repositoryName}
                 aria-label={`Repository: ${resource.repositoryName}`}
               >
@@ -305,19 +305,19 @@ export function SkillTable({
       }
       case "updated":
         return (
-          <td key={column} className="skill-table-updated">
+          <td key={column} className="index-table-updated">
             <UpdatedTime value={resource.updatedAt} now={now} />
           </td>
         );
       case "status":
         return (
-          <td key={column}>{status && <SkillStatusPill status={status} />}</td>
+          <td key={column}>{status && <IndexStatusPill status={status} />}</td>
         );
     }
   };
   return (
     <table
-      className="skill-table"
+      className="index-table"
       data-kind={page.kind}
       data-compact-people={showPerson || undefined}
       aria-busy={busy}
@@ -325,9 +325,9 @@ export function SkillTable({
       <colgroup>
         <col />
         {columns.map((column) => (
-          <col key={column} className={`skill-table-col-${column}`} />
+          <col key={column} className={`index-table-col-${column}`} />
         ))}
-        <col className="skill-table-col-actions" />
+        <col className="index-table-col-actions" />
       </colgroup>
       <thead>
         <tr>
@@ -378,16 +378,16 @@ export function SkillTable({
                       closePeek();
                   }}
                 >
-                  <th scope="row" className="skill-table-name">
-                    <span className="skill-table-name-content">
+                  <th scope="row" className="index-table-name">
+                    <span className="index-table-name-content">
                       <location.icon
                         size={14}
-                        className="skill-table-leading"
+                        className="index-table-leading"
                         aria-label={location.label}
                       />
                       <button
                         type="button"
-                        className="skill-table-open"
+                        className="index-table-open"
                         data-resource-id={resource.resourceId}
                         title={resource.title}
                         aria-describedby={peeking ? peekId : undefined}
@@ -403,7 +403,7 @@ export function SkillTable({
                     {peeking && (
                       <span
                         id={peekId}
-                        className="skill-table-peek"
+                        className="index-table-peek"
                         data-side={peek.above ? "above" : "below"}
                         role="tooltip"
                       >
@@ -413,7 +413,7 @@ export function SkillTable({
                   </th>
                   {columns.map((column) => cell(column, resource, status))}
                   <td
-                    className="skill-table-actions"
+                    className="index-table-actions"
                     onClick={(event) => event.stopPropagation()}
                   >
                     {actions.length > 0 && (

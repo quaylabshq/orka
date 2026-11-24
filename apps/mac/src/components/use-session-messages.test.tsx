@@ -11,7 +11,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import type { ProjectResource, SessionPage } from "../types.js";
 import { ResourceIndex } from "./resource-index.js";
-import { defaultIndexFilters } from "./skill-index.js";
+import { defaultIndexFilters } from "./index-pages.js";
 import { ToastProvider } from "./toasts.js";
 import { WorkspaceCacheProvider } from "./workspace-cache.js";
 import { useSessionMessages } from "./use-session-messages.js";

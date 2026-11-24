@@ -576,7 +576,7 @@ test("skeleton shapes never persist resource URLs or paths", async ({
   });
   await page.getByRole("button", { name: /^Skills/ }).click();
   await page
-    .locator(".skill-table tbody tr")
+    .locator(".index-table tbody tr")
     .filter({ hasText: "Review checklist" })
     .click();
   await expect(
@@ -696,9 +696,9 @@ for (const [width, height, memberCatalog] of [
         });
         // Every plan here is yours, so Plans have no one else to credit.
         if (collection === "Plans")
-          await expect(row.locator(".skill-table-person")).toHaveCount(0);
+          await expect(row.locator(".index-table-person")).toHaveCount(0);
         else
-          await expect(row.locator(".skill-table-person")).toHaveAttribute(
+          await expect(row.locator(".index-table-person")).toHaveAttribute(
             "title",
             author,
           );
@@ -760,7 +760,7 @@ test("author sorting follows displayed member names", async ({ page }) => {
   await expect
     .poll(() =>
       page
-        .locator(".skill-table-person")
+        .locator(".index-table-person")
         .evaluateAll((people) =>
           people.map((person) => person.getAttribute("title")),
         ),
@@ -774,7 +774,7 @@ test("unavailable member names use readable fallbacks", async ({ page }) => {
   await expect
     .poll(() =>
       page
-        .locator(".skill-table-person")
+        .locator(".index-table-person")
         .evaluateAll((people) =>
           people.map((person) => person.getAttribute("title")),
         ),
@@ -1043,7 +1043,7 @@ test("ZIP export sits in Skill info for skills and moves into the session launch
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: /^Skills/ }).click();
   await page
-    .locator(".skill-table tbody tr")
+    .locator(".index-table tbody tr")
     .filter({ hasText: "Review checklist" })
     .click();
   const skillInfo = page.getByRole("complementary", {
@@ -1127,7 +1127,7 @@ for (const size of [
 
     await page.getByRole("button", { name: /^Skills/ }).click();
     await page
-      .locator(".skill-table tbody tr")
+      .locator(".index-table tbody tr")
       .filter({ hasText: "Review checklist" })
       .click();
     if (size.width === 900) {
@@ -1191,7 +1191,7 @@ test("switching project clears the index filters", async ({ page }) => {
   await detailFixture(page);
   await page.getByRole("button", { name: /^Memories/ }).click();
   const search = page.getByRole("searchbox", { name: "Search memories" });
-  const rows = page.locator(".skill-table tbody tr");
+  const rows = page.locator(".index-table tbody tr");
   await search.fill("archi");
   await page.getByRole("button", { name: /^Filter/ }).click();
   await page.getByRole("menuitem", { name: "Agent" }).click();
@@ -1311,7 +1311,7 @@ test("the skill reader keeps the document heading order beside its rail", async 
   await detailFixture(page);
   await page.getByRole("button", { name: /^Skills/ }).click();
   await page
-    .locator(".skill-table tbody tr")
+    .locator(".index-table tbody tr")
     .filter({ hasText: "Review checklist" })
     .click();
   const view = page.locator(".resource-detail--skill");
@@ -1386,7 +1386,7 @@ for (const failure of ["error", "null content"] as const) {
     await page.getByRole("button", { name: /^Skills/ }).click();
     await page.waitForTimeout(200);
     expect(await page.evaluate(() => (window as any).failedSkillReads)).toBe(1);
-    await expect(page.locator(".skill-table tbody tr")).toContainText(
+    await expect(page.locator(".index-table tbody tr")).toContainText(
       "Review checklist",
     );
   });
@@ -1401,7 +1401,7 @@ for (const dimension of ["profile", "user", "service"] as const) {
       skillContent: "---\nname: Original scope\n---\nOriginal instructions\n",
     });
     await page.getByRole("button", { name: /^Skills/ }).click();
-    await expect(page.locator(".skill-table tbody tr")).toContainText(
+    await expect(page.locator(".index-table tbody tr")).toContainText(
       "Original scope",
     );
     await page.evaluate((dimension) => {
@@ -1479,7 +1479,7 @@ for (const dimension of ["profile", "user", "service"] as const) {
       (window as any).summaryStage = 2;
     });
     await page.clock.runFor(3100);
-    await expect(page.locator(".skill-table tbody tr")).toContainText(
+    await expect(page.locator(".index-table tbody tr")).toContainText(
       "New scope",
     );
     expect(
@@ -1487,10 +1487,10 @@ for (const dimension of ["profile", "user", "service"] as const) {
     ).toBe(1);
     await page.evaluate(() => (window as any).finishOldSummary());
     await page.clock.runFor(100);
-    await expect(page.locator(".skill-table tbody tr")).toContainText(
+    await expect(page.locator(".index-table tbody tr")).toContainText(
       "New scope",
     );
-    await expect(page.locator(".skill-table tbody tr")).not.toContainText(
+    await expect(page.locator(".index-table tbody tr")).not.toContainText(
       "Late previous scope",
     );
   });
@@ -1556,12 +1556,12 @@ test("skill search and sorting use the displayed frontmatter name", async ({
       "---\nname: Code audit\ndescription: How we review.\n---\n# Code audit",
   });
   await page.getByRole("button", { name: /^Skills/ }).click();
-  await expect(page.locator(".skill-table tbody tr")).toContainText(
+  await expect(page.locator(".index-table tbody tr")).toContainText(
     "Code audit",
   );
   await page.getByRole("searchbox").fill("Code audit");
-  await expect(page.locator(".skill-table tbody tr")).toHaveCount(1);
-  await expect(page.locator(".skill-table tbody tr")).toContainText(
+  await expect(page.locator(".index-table tbody tr")).toHaveCount(1);
+  await expect(page.locator(".index-table tbody tr")).toContainText(
     "Code audit",
   );
 });
@@ -1651,7 +1651,7 @@ test("forks list flat with a marker, filter, and restore focus on nested session
 }) => {
   await detailFixture(page, { forks: 7 });
   await page.getByRole("button", { name: /^Sessions/ }).click();
-  const rows = page.locator(".skill-table tbody tr");
+  const rows = page.locator(".index-table tbody tr");
   for (const title of ["Fork 1", "Fork 7", "Fork 8"])
     await expect(
       page.getByRole("row", { name: new RegExp(title) }).getByRole("img", {
@@ -1779,7 +1779,7 @@ for (const viewport of [
       ),
     ).toBe(true);
     const results = await new AxeBuilder({ page })
-      .include(".skill-table")
+      .include(".index-table")
       .analyze();
     expect(results.violations).toEqual([]);
     await page.screenshot({

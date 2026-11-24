@@ -20,13 +20,13 @@ for (const width of [1160, 900]) {
   }) => {
     await page.setViewportSize({ width, height: 800 });
     await skillFixture(page, { open: false });
-    const row = page.locator(".skill-table tbody tr");
+    const row = page.locator(".index-table tbody tr");
     await expect(row.getByLabel("Shared with team")).toBeVisible();
     await expect(row).not.toContainText("4 files");
     await expect(row.locator("time")).toHaveCount(0);
     const metrics = await row.evaluate((element) => {
-      const title = element.querySelector(".skill-table-open")!;
-      const menu = element.querySelector(".skill-table-actions button")!;
+      const title = element.querySelector(".index-table-open")!;
+      const menu = element.querySelector(".index-table-actions button")!;
       return {
         height: element.getBoundingClientRect().height,
         titleRight: title.getBoundingClientRect().right,
@@ -149,7 +149,7 @@ test("the wide reader shows frontmatter, facts, files, and header navigation", a
   await page
     .getByRole("button", { name: "Back to Skills", exact: true })
     .click();
-  await expect(page.locator(".skill-table tbody tr")).toBeVisible();
+  await expect(page.locator(".index-table tbody tr")).toBeVisible();
 });
 
 test("file selection reads each type and scopes the editor action", async ({
@@ -647,14 +647,14 @@ test("loading content keeps known metadata and disables content-dependent action
   page,
 }) => {
   await skillFixture(page, { open: false });
-  await page.locator(".skill-table tbody tr").first().hover();
-  await expect(page.locator(".skill-table").getByRole("tooltip")).toContainText(
+  await page.locator(".index-table tbody tr").first().hover();
+  await expect(page.locator(".index-table").getByRole("tooltip")).toContainText(
     "Act on an issue-investigate report",
   );
   await page.evaluate(() => {
     (window as any).slowInspect = "SKILL.md";
   });
-  await page.locator(".skill-table tbody tr").first().click();
+  await page.locator(".index-table tbody tr").first().click();
   const view = detail(page);
   await expect(view.locator(".skill-content-skeleton")).toBeVisible();
   await expect(view.locator(".skill-description")).toContainText(
@@ -690,14 +690,14 @@ test("failed inspection preserves a summary already read in the collection", asy
   page,
 }) => {
   await skillFixture(page, { open: false });
-  await page.locator(".skill-table tbody tr").first().hover();
-  const summary = page.locator(".skill-table-peek-description");
+  await page.locator(".index-table tbody tr").first().hover();
+  const summary = page.locator(".index-table-peek-description");
   await expect(summary).toContainText("Act on an issue-investigate report");
   const description = await summary.textContent();
   await page.evaluate(() => {
     (window as any).failInspect = "SKILL.md";
   });
-  await page.locator(".skill-table tbody tr").first().click();
+  await page.locator(".index-table tbody tr").first().click();
   await expect(detail(page).locator(".reader-state-title")).toHaveText(
     "Couldn’t load SKILL.md",
   );

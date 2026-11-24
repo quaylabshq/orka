@@ -34,7 +34,7 @@ for (const width of [1160, 900]) {
     await pick(page, "Agent", "Pi");
     const table = page.getByRole("table");
     await expect(table.locator("tbody tr")).toHaveCount(1);
-    await expect(table.locator(".skill-table-agent")).toHaveAttribute(
+    await expect(table.locator(".index-table-agent")).toHaveAttribute(
       "title",
       "Pi",
     );
@@ -120,11 +120,11 @@ for (const width of [1160, 900]) {
       local.getByLabel("On this Mac", { exact: true }),
     ).toBeVisible();
     await expect(table).not.toContainText("Local Only");
-    await expect(local.locator(".skill-table-agent")).toHaveAttribute(
+    await expect(local.locator(".index-table-agent")).toHaveAttribute(
       "title",
       "Codex",
     );
-    await expect(local.locator(".skill-table-person")).toHaveAttribute(
+    await expect(local.locator(".index-table-person")).toHaveAttribute(
       "title",
       "You",
     );
@@ -132,11 +132,11 @@ for (const width of [1160, 900]) {
     await expect(
       teammate.getByLabel("Shared with team", { exact: true }),
     ).toBeVisible();
-    await expect(teammate.locator(".skill-table-agent")).toHaveAttribute(
+    await expect(teammate.locator(".index-table-agent")).toHaveAttribute(
       "title",
       "Claude",
     );
-    await expect(teammate.locator(".skill-table-person")).toHaveAttribute(
+    await expect(teammate.locator(".index-table-person")).toHaveAttribute(
       "title",
       "Mira",
     );
@@ -185,7 +185,7 @@ test("GitHub teammate photos obey the packaged image policy and failures keep a 
   });
   await resourceLibraryFixture(page, { teammateAvatar: avatar });
   await page.getByRole("button", { name: /^Sessions/ }).click();
-  const person = page.locator('.skill-table-person[title="Mira"]');
+  const person = page.locator('.index-table-person[title="Mira"]');
   const photo = person.locator("img");
   await expect
     .poll(() => photo.evaluate((img: HTMLImageElement) => img.naturalWidth))
@@ -195,7 +195,7 @@ test("GitHub teammate photos obey the packaged image policy and failures keep a 
   await page.reload();
   await page.getByRole("button", { name: /^Sessions/ }).click();
   await expect(photo).toBeHidden();
-  await expect(person.locator(".skill-table-avatar")).toHaveText("M");
+  await expect(person.locator(".index-table-avatar")).toHaveText("M");
 });
 
 for (const { kind, label } of kinds)
@@ -867,7 +867,7 @@ test("a focused session stays focused when its display title moves it", async ({
     (window as unknown as LibraryWindow).library.finishTitle?.("Zulu Page B"),
   );
   await expect(item).toHaveText("Zulu Page B");
-  await expect(page.locator(".skill-table-open").last()).toHaveText(
+  await expect(page.locator(".index-table-open").last()).toHaveText(
     "Zulu Page B",
   );
   await expect(item).toBeFocused();

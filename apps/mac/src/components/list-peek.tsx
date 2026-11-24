@@ -2,7 +2,7 @@ import React from "react";
 import type { ProjectResource } from "../types.js";
 import { isInstructionFile } from "./list-status.js";
 import { useLocalLocation } from "./resource-menu.js";
-import { isFork } from "./skill-index.js";
+import { isFork } from "./index-pages.js";
 import { UpdatedTime } from "./updated-time.js";
 
 /** A session's place among its forks, read from the whole collection. */
@@ -20,7 +20,7 @@ const homeFolder = /^\/Users\/[^/]+(?=\/|$)/;
 
 function Updated({ value }: { value: string }) {
   return (
-    <span className="skill-table-peek-updated">
+    <span className="index-table-peek-updated">
       Updated <UpdatedTime value={value} now={new Date()} />
     </span>
   );
@@ -42,27 +42,27 @@ export function ListPeek({
   const forks = family?.forks ?? 0;
   const kind =
     resource.kind === "memory" ? (
-      <span className="skill-table-peek-kind">
+      <span className="index-table-peek-kind">
         {isInstructionFile(resource) ? "Instruction file" : "Memory"}
         {resource.revision > 0 && ` · Version ${resource.revision}`}
-        <span className="skill-table-peek-updated">
+        <span className="index-table-peek-updated">
           {" · "}
           Updated <UpdatedTime value={resource.updatedAt} now={new Date()} />
         </span>
       </span>
     ) : resource.kind === "plan" ? (
-      <span className="skill-table-peek-kind">
+      <span className="index-table-peek-kind">
         {fileless ? "From a session" : "Plan file"}
       </span>
     ) : (
       <>
         {isFork(resource) && (
-          <span className="skill-table-peek-kind">
+          <span className="index-table-peek-kind">
             {family?.parent ? `Fork of ${family.parent}` : "Fork"}
           </span>
         )}
         {forks > 0 && (
-          <span className="skill-table-peek-kind">
+          <span className="index-table-peek-kind">
             {forks} {forks === 1 ? "fork" : "forks"}
           </span>
         )}
@@ -72,7 +72,7 @@ export function ListPeek({
     <>
       {kind}
       {path && (
-        <span className="skill-table-peek-path" title={path}>
+        <span className="index-table-peek-path" title={path}>
           {path.replace(homeFolder, "~")}
         </span>
       )}
