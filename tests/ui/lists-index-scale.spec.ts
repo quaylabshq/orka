@@ -55,3 +55,19 @@ test("a row's peek opens when Tab reaches it, but not when focus comes back to i
   await page.waitForTimeout(peekWait);
   await expect(peek(page)).toHaveCount(0);
 });
+
+test("after a row leaves under its open menu, other rows still open their peek", async ({
+  page,
+}) => {
+  await open(page, "Plans");
+  const leaving = page.locator('.index-table [data-resource-id="plan-6"]');
+  const name = (await leaving.textContent())!;
+  await actions(page, name).click();
+  await expect(page.getByRole("menu")).toBeVisible();
+  await page.evaluate(() => ((window as any).listsHidden = ["plan-6"]));
+  await expect(leaving).toHaveCount(0);
+  await expect(page.getByRole("menu")).toHaveCount(0);
+  await page.mouse.move(0, 0);
+  await title(page, "Repository filter across collections").hover();
+  await expect(peek(page)).toBeVisible();
+});
