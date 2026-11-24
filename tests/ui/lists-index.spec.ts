@@ -448,6 +448,78 @@ const peekOf = async (page: Page, title: string) => {
   return peek;
 };
 
+test("at 900 × 640 a long title truncates in its row and a long path's peek stays inside the list", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 900, height: 640 });
+  await open(page, "Plans", { longText: true });
+  const title = page
+    .locator(".index-table-open")
+    .filter({ hasText: "Rework the repository picker" });
+  await expect(title).toHaveAttribute("title", /hiding the status column$/);
+  const layout = await title.evaluate((name) => {
+    const box = (element: Element) => element.getBoundingClientRect();
+    const row = name.closest("tr")!;
+    return {
+      height: box(row).height,
+      truncated: name.scrollWidth > name.clientWidth,
+      contained: box(name).right <= box(name.closest("th")!).right,
+      pageOverflow:
+        document.documentElement.scrollWidth > window.innerWidth ||
+        document.querySelector(".resource-index-body")!.scrollWidth >
+          document.querySelector(".resource-index-body")!.clientWidth,
+    };
+  });
+  expect(layout).toEqual({
+    height: 44,
+    truncated: true,
+    contained: true,
+    pageOverflow: false,
+  });
+  // Sorted by name, rows follow it, so it can sit just above the list's end.
+  await page.getByRole("button", { name: /^Sort/ }).click();
+  await page.getByRole("menuitemradio", { name: "Name", exact: true }).click();
+  await page.keyboard.press("Escape");
+  for (const [room, side] of [
+    [150, "below"],
+    [100, "above"],
+  ] as const) {
+    await page.mouse.move(0, 0);
+    await title.evaluate((name, room) => {
+      const body = name.closest<HTMLElement>(".resource-index-body")!;
+      const row = name.closest("tr")!;
+      const view = body.getBoundingClientRect();
+      const top = row.getBoundingClientRect().top - view.top + body.scrollTop;
+      body.scrollTo({ top: top + row.offsetHeight - (view.height - room) });
+    }, room);
+    await title.hover();
+    const peek = page.getByRole("tooltip");
+    await expect(peek).toHaveAttribute("data-side", side);
+    const fit = await peek.evaluate((element) => {
+      const box = element.getBoundingClientRect();
+      const list = element
+        .closest(".resource-index-body")!
+        .getBoundingClientRect();
+      const path = element.querySelector(".index-table-peek-path")!;
+      return {
+        insideList: box.bottom <= list.bottom && box.top >= list.top,
+        insideWindow:
+          box.left >= 0 &&
+          box.right <= window.innerWidth &&
+          box.bottom <= window.innerHeight,
+        pathWhole: path.scrollWidth <= path.clientWidth,
+      };
+    });
+    expect(fit).toEqual({
+      insideList: true,
+      insideWindow: true,
+      pathWhole: true,
+    });
+    await expect(peek).toContainText("plans/rework-the-repository-picker");
+    await expect(peek).toContainText("Updated");
+  }
+});
+
 test("a session peek names the fork's parent or counts its forks, then the repository folder", async ({
   page,
 }) => {

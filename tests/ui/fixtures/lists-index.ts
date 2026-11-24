@@ -22,6 +22,8 @@ export type ListsScene = {
    * `window.listsDiscovery` to "ok".
    */
   discovery?: "pending" | "failed";
+  /** A newest plan with a very long title and a deep file path. */
+  longText?: boolean;
 };
 
 type Kind = "memory" | "session" | "plan";
@@ -122,6 +124,16 @@ export async function listsIndexFixture(page: Page, scene: ListsScene = {}) {
         ],
         ["Self-hosted server upgrade", 3, "dev", "2026-11-09T10:00:00"],
         ["Release checklist for 0.3.19", 0, "user", "2026-11-06T10:00:00"],
+        ...(scene.longText
+          ? [
+              [
+                "Rework the repository picker so long names, removed sources, and reconnect prompts fit the compact window without hiding the status column",
+                0,
+                "user",
+                1,
+              ],
+            ]
+          : []),
       ].map(([title, repo, owner, updated, status, local, also], index) => {
         const slug = String(title).toLowerCase().replace(/\W+/g, "-");
         const fromSession = index === 6;
