@@ -9,12 +9,22 @@ use fs2::FileExt;
 use rusqlite::{params, Transaction, TransactionBehavior};
 use serde_json::{json, Value};
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs,
     ops::ControlFlow::{self, Break, Continue},
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
+
+#[cfg(test)]
+thread_local! {
+    static PULL_APPLIED_RESOURCES: std::cell::RefCell<std::collections::BTreeMap<String, usize>> = Default::default();
+}
+
+#[cfg(test)]
+pub(crate) fn pull_applied_resources(project: &str) -> usize {
+    PULL_APPLIED_RESOURCES.with_borrow(|counts| counts.get(project).copied().unwrap_or(0))
+}
 
 const PLAN_REVISION_CONFLICT: &str =
     "409: Resource changed; refresh and review the exact version again";
@@ -1078,6 +1088,7 @@ fn materialize_install(
         return Err("Skill installation recovery pending; local copies preserved".into());
     }
     let mut b = crate::repair::binding(db, resource, indexer::binding(db, id)?)?;
+    let original_binding = b.clone();
     if resource["kind"] == "skill" && b["mirrorReview"] == true {
         return Err(indexer::SKILL_MIRROR_REVIEW.into());
     }
@@ -1096,7 +1107,10 @@ fn materialize_install(
         && b["reviewedRevision"] != resource["revision"]
     {
         if let Some(current) = crate::attention::matching_instruction(db, project, resource, &b)? {
-            return db::upsert(db, "bindings", id, project_id, &current);
+            if current != original_binding {
+                db::upsert(db, "bindings", id, project_id, &current)?;
+            }
+            return Ok(());
         }
         b["availableRevision"] = resource["revision"].clone();
         b["installationState"] = json!(if b["base"]["revision"].is_null() {
@@ -1104,13 +1118,16 @@ fn materialize_install(
         } else {
             "update_available"
         });
-        return db::upsert(
-            db,
-            "bindings",
-            id,
-            project["id"].as_str().ok_or("Missing project")?,
-            &b,
-        );
+        if b != original_binding {
+            db::upsert(
+                db,
+                "bindings",
+                id,
+                project["id"].as_str().ok_or("Missing project")?,
+                &b,
+            )?;
+        }
+        return Ok(());
     }
     if project["governed"] == true
         && resource["kind"] == "memory"
@@ -1148,7 +1165,10 @@ fn materialize_install(
         if kind == "skill" {
             crate::codex_skills::queue(db, project, false)?;
         }
-        return db::upsert(db, "bindings", id, project_id, &b);
+        if b != original_binding {
+            db::upsert(db, "bindings", id, project_id, &b)?;
+        }
+        return Ok(());
     }
     let pending:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM outbox WHERE json_extract(value,'$.resource.resourceId')=? OR json_extract(value,'$.resourceId')=?)",params![id,id],|r|r.get(0)).map_err(|e|e.to_string())?;
     if kind == "plan" && pending && plan_upload_needs_review(db, project_id, id)? {
@@ -1373,8 +1393,25 @@ fn materialize_install(
                 check_claude_memory_claim(db, project_id, id, &path)?;
             }
             guard_unbound_destinations(&b, resource, &root, std::slice::from_ref(&path))?;
-            fs::create_dir_all(&base).map_err(|e| e.to_string())?;
-            packages::write_file(&base, &path, files.first().ok_or("Missing memory file")?)?;
+            let accepted_file = files.first().ok_or("Missing memory file")?;
+            let blobs = db::BlobStore::current()?;
+            let already_matches = fs::symlink_metadata(&path)
+                .is_ok_and(|meta| meta.is_file() && !meta.file_type().is_symlink())
+                && path
+                    .parent()
+                    .is_some_and(|parent| packages::safe_directory(&base, parent).is_ok())
+                && blobs.all_present(std::slice::from_ref(accepted_file))
+                && crate::scan_cache::package_file(db, &blobs, &path, "content.md").is_ok_and(
+                    |local| {
+                        local["hash"] == accepted_file["hash"]
+                            && local["size"] == accepted_file["size"]
+                            && local["executable"] == accepted_file["executable"]
+                    },
+                );
+            if !already_matches {
+                fs::create_dir_all(&base).map_err(|e| e.to_string())?;
+                packages::write_file(&base, &path, accepted_file)?;
+            }
             vec![path]
         };
         b["paths"] = json!(paths);
@@ -1750,6 +1787,20 @@ fn preflight_project(db: &rusqlite::Connection, project: &Value, retry_only: boo
     Ok(())
 }
 
+fn run_preflight_scan(
+    db: &rusqlite::Connection,
+    project: &Value,
+    retry_only: bool,
+    reconcile: bool,
+) -> Result<()> {
+    let scan = || preflight_project(db, project, retry_only);
+    if reconcile {
+        crate::scan_cache::reconcile(scan)
+    } else {
+        scan()
+    }
+}
+
 fn scan_off_runtime<T: Send + 'static>(
     db: &rusqlite::Connection,
     project: &Value,
@@ -1801,6 +1852,243 @@ enum ProjectMode {
     RetryOnly,
 }
 
+struct PullApplyState {
+    blobs: db::BlobStore,
+    bindings: HashMap<String, Value>,
+    conflicts: HashSet<String>,
+    errors: HashSet<String>,
+    installations: HashSet<String>,
+    codex_skill_refreshed: HashSet<String>,
+    valid_sources: HashMap<Option<String>, bool>,
+}
+
+impl PullApplyState {
+    fn load(db: &rusqlite::Connection, project: &Value) -> Result<Self> {
+        let project_id = project["id"].as_str().ok_or("Missing project")?;
+        let mut bindings = HashMap::new();
+        {
+            let mut stmt = db
+                .prepare("SELECT id, value FROM bindings WHERE project=?")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([project_id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(|e| e.to_string())?;
+            for row in rows {
+                let (id, raw) = row.map_err(|e| e.to_string())?;
+                let value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+                bindings.insert(id, value);
+            }
+        }
+        let mut conflicts = HashSet::new();
+        {
+            let mut stmt = db
+                .prepare("SELECT DISTINCT json_extract(value,'$.resourceId') FROM conflicts WHERE project=?")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([project_id], |row| row.get::<_, Option<String>>(0))
+                .map_err(|e| e.to_string())?;
+            for row in rows {
+                if let Some(id) = row.map_err(|e| e.to_string())? {
+                    conflicts.insert(id);
+                }
+            }
+        }
+        let mut errors = HashSet::new();
+        {
+            let mut stmt = db
+                .prepare("SELECT source FROM errors")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(|e| e.to_string())?;
+            for row in rows {
+                errors.insert(row.map_err(|e| e.to_string())?);
+            }
+        }
+        let mut installations = HashSet::new();
+        {
+            let mut stmt = db
+                .prepare("SELECT substr(key, 14) FROM meta WHERE key LIKE 'installation:%' AND value <> 'null'")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(|e| e.to_string())?;
+            for row in rows {
+                installations.insert(row.map_err(|e| e.to_string())?);
+            }
+        }
+        let mut codex_skill_refreshed = HashSet::new();
+        {
+            let prefix = format!("codex-skill-refresh:{project_id}:%");
+            let mut stmt = db
+                .prepare("SELECT key FROM meta WHERE key LIKE ? AND value <> 'null'")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([&prefix], |row| row.get::<_, String>(0))
+                .map_err(|e| e.to_string())?;
+            for row in rows {
+                codex_skill_refreshed.insert(row.map_err(|e| e.to_string())?);
+            }
+        }
+        let mut valid_sources = HashMap::new();
+        for view in crate::sources::views(project) {
+            let key = view["sourceId"].as_str().map(str::to_owned);
+            valid_sources.insert(key, crate::sources::validate(&view).is_ok());
+        }
+        Ok(Self {
+            blobs: db::BlobStore::current()?,
+            bindings,
+            conflicts,
+            errors,
+            installations,
+            codex_skill_refreshed,
+            valid_sources,
+        })
+    }
+
+    fn is_current(&self, project: &Value, resource: &Value) -> bool {
+        let Some(id) = resource["resourceId"].as_str() else {
+            return false;
+        };
+        if self.conflicts.contains(id)
+            || self.errors.contains(id)
+            || self.installations.contains(id)
+        {
+            return false;
+        }
+        let Some(files) = resource["files"].as_array() else {
+            return false;
+        };
+        let kind = resource["kind"].as_str().unwrap_or("");
+        if kind == "plan" && crate::plans::validate_manifest(resource).is_err() {
+            return false;
+        }
+        if kind == "skill" && packages::reject_env_files(files).is_err() {
+            return false;
+        }
+        if !self.blobs.all_present(files) {
+            return false;
+        }
+        let Some(source) = crate::sources::for_resource(project, resource) else {
+            return true;
+        };
+        let source_key = source["sourceId"].as_str().map(str::to_owned);
+        if !self
+            .valid_sources
+            .get(&source_key)
+            .copied()
+            .unwrap_or(false)
+        {
+            return false;
+        }
+        if !crate::projects::sharing_allowed(&source, kind) {
+            return true;
+        }
+        let Some(b) = self.bindings.get(id) else {
+            return false;
+        };
+        if b["base"]["revision"] != resource["revision"]
+            || b["base"]["deleted"] != resource["deleted"]
+            || b["base"]["files"] != resource["files"]
+        {
+            return false;
+        }
+        if kind == "session" && resource["source"] == "codex" {
+            if let (Some(_), Some(path)) = (b["nativeId"].as_str(), b["paths"][0].as_str()) {
+                if !Path::new(path).try_exists().unwrap_or(false) {
+                    return false;
+                }
+            }
+        }
+        if kind == "skill" {
+            if b["mirrorReview"] == true {
+                return false;
+            }
+            if source["governed"] == true
+                && resource["revision"].as_u64().unwrap_or(0) > 0
+                && b["reviewedRevision"] != resource["revision"]
+            {
+                return false;
+            }
+            let Ok(refresh_key) = crate::codex_skills::refresh_key(&source) else {
+                return false;
+            };
+            if !self.codex_skill_refreshed.contains(&refresh_key) {
+                return false;
+            }
+            if let Some(paths) = b["paths"].as_array() {
+                for path in paths {
+                    let Some(path) = path.as_str().map(Path::new) else {
+                        return false;
+                    };
+                    if path.exists() && packages::check_skill_directory(path).is_err() {
+                        return false;
+                    }
+                }
+            }
+        }
+        if source["governed"] == true
+            && crate::governance::protected(resource)
+            && b["reviewedRevision"] != resource["revision"]
+        {
+            return false;
+        }
+        if source["governed"] == true
+            && kind == "memory"
+            && !crate::governance::protected(resource)
+            && !project_memory(&source, resource)
+                .ok()
+                .is_some_and(|(_, destination)| b["paths"][0].as_str() == destination.to_str())
+        {
+            return false;
+        }
+        true
+    }
+}
+
+fn validate_preflight_folders(project: &Value) -> bool {
+    for source in crate::sources::views(project) {
+        let Some(raw) = source["path"].as_str() else {
+            continue;
+        };
+        let root = Path::new(raw);
+        if !root.is_dir() {
+            return false;
+        }
+        let Ok(root) = root.canonicalize() else {
+            return false;
+        };
+        if let Some(identity) = source["folderIdentity"].as_str() {
+            if !indexer::folder_identity_matches(&root, identity).unwrap_or(false) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+const RECONCILE_AFTER: u64 = 5;
+
+fn reconciliation_key(project: &str) -> String {
+    format!("syncReconciliation:{project}")
+}
+
+fn syncs_since_reconciliation(db: &rusqlite::Connection, project: &str) -> Result<u64> {
+    let value = db::get(db, &reconciliation_key(project))?;
+    Ok(value.as_u64().unwrap_or(0).min(RECONCILE_AFTER))
+}
+
+pub(crate) fn clear_reconciliation(db: &rusqlite::Connection, project: &str) -> Result<()> {
+    db.execute(
+        "DELETE FROM meta WHERE key=?",
+        [reconciliation_key(project)],
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
 /// One sync cycle. `sync_workspace_global` holds the workspace-wide stages and
 /// `sync_project` one project's stages. A whole-workspace cycle interleaves the
 /// same stages stage by stage across projects, in `sync_workspace`.
@@ -1813,6 +2101,9 @@ struct SyncPass<'a> {
     blocked: HashSet<String>,
     held: HashSet<String>,
     deferred: HashSet<Value>,
+    preflight_at: HashMap<String, Instant>,
+    reconciled_preflight: HashSet<String>,
+    reconciliation_progress: HashMap<String, (Value, u64)>,
 }
 
 impl<'a> SyncPass<'a> {
@@ -1834,6 +2125,9 @@ impl<'a> SyncPass<'a> {
             blocked: HashSet::new(),
             held: HashSet::new(),
             deferred: HashSet::new(),
+            preflight_at: HashMap::new(),
+            reconciled_preflight: HashSet::new(),
+            reconciliation_progress: HashMap::new(),
         }
     }
 
@@ -1875,6 +2169,7 @@ impl<'a> SyncPass<'a> {
             return Ok(Break(()));
         }
         crate::codex_skills::retry_project(self.db, project)?;
+        self.finish_reconciliation()?;
         Ok(Continue(()))
     }
 
@@ -1966,20 +2261,49 @@ impl<'a> SyncPass<'a> {
             0,
             None,
         )?;
-        match scan_off_runtime(db, p, move |db, p| preflight_project(db, p, retry_only)).await {
+        let reconcile = !retry_only
+            && syncs_since_reconciliation(db, p["id"].as_str().ok_or("Missing project")?)?
+                == RECONCILE_AFTER;
+        match scan_off_runtime(db, p, move |db, p| {
+            run_preflight_scan(db, p, retry_only, reconcile)
+        })
+        .await
+        {
             Ok(()) => {
-                if !retry_only && waiting.is_none() {
-                    db::set(
-                        db,
-                        &format!("firstScan:{}", p["id"].as_str().unwrap_or("")),
-                        &json!(db::now()),
-                    )?;
+                if !retry_only {
+                    if let Some(id) = p["id"].as_str() {
+                        let source_error_prefix = format!("{id}:source:%");
+                        let has_source_errors: bool = db
+                            .query_row(
+                                "SELECT EXISTS(SELECT 1 FROM errors WHERE source LIKE ?)",
+                                [&source_error_prefix],
+                                |row| row.get(0),
+                            )
+                            .map_err(|e| e.to_string())?;
+                        if has_source_errors {
+                            self.preflight_at.remove(id);
+                        } else {
+                            self.preflight_at.insert(id.to_string(), Instant::now());
+                            if reconcile {
+                                self.reconciled_preflight.insert(id.to_string());
+                            }
+                        }
+                    }
+                    if waiting.is_none() {
+                        db::set(
+                            db,
+                            &format!("firstScan:{}", p["id"].as_str().unwrap_or("")),
+                            &json!(db::now()),
+                        )?;
+                    }
                 }
-                db.execute("DELETE FROM errors WHERE source=?", [p["id"].as_str()])
-                    .map_err(|e| e.to_string())?;
+                record_result(db, p["id"].as_str().unwrap_or(""), Ok(()))?;
             }
             Err(error) => {
-                db.execute("INSERT INTO errors VALUES(?,?) ON CONFLICT(source) DO UPDATE SET error=excluded.error",params![p["id"].as_str(),error]).map_err(|e|e.to_string())?;
+                if let Some(id) = p["id"].as_str() {
+                    self.preflight_at.remove(id);
+                }
+                record_result(db, p["id"].as_str().unwrap_or(""), Err(error))?;
             }
         }
         Ok(Continue(()))
@@ -2020,6 +2344,8 @@ impl<'a> SyncPass<'a> {
         }
         if p["governed"] == true {
             let id = p["id"].as_str().ok_or("Missing project")?;
+            let previous_catalog = db::get(db, &format!("governance:{id}"))?;
+            let mut catalog_changed = false;
             let result: Result<()> = async {
                 crate::projects::active(db, id)?;
                 let catalog = api_as(
@@ -2029,6 +2355,9 @@ impl<'a> SyncPass<'a> {
                     Some(&json!({"action":"catalog","input":{"projectId":id}})),
                 )
                 .await?;
+                if catalog != previous_catalog {
+                    catalog_changed = true;
+                }
                 db::set(db, &format!("governance:{id}"), &catalog)?;
                 // A lifecycle refusal must leave queued work unchanged. Only
                 // prepare legacy knowledge after current access is confirmed.
@@ -2043,6 +2372,9 @@ impl<'a> SyncPass<'a> {
                 Ok(())
             }
             .await;
+            if catalog_changed {
+                self.preflight_at.remove(id);
+            }
             return self.record_authorization(id, result);
         }
         Ok(Continue(()))
@@ -2080,27 +2412,7 @@ impl<'a> SyncPass<'a> {
         }
         let blocked_projects = &mut self.blocked;
         let mut outbox = ProjectOutbox::open(db, project)?;
-        let paused_sources = crate::sources::paused_upload_sources(p);
-        let queued: Vec<_> = outbox
-            .queued(db)?
-            .into_iter()
-            .filter(|q| {
-                // Unattributed older rows may belong to the paused source.
-                // Keep the bytes and request ID untouched for a verified retry.
-                if crate::sources::upload_paused(&paused_sources, &q["sourceId"]) {
-                    return false;
-                }
-                if q["path"] == crate::selective_sharing::QUEUE_PATH {
-                    crate::selective_sharing::authorized_origin(db, q)
-                        .is_ok_and(|origin| origin.is_some())
-                } else {
-                    crate::projects::sharing_allowed(
-                        p,
-                        crate::projects::queued_kind(q["path"].as_str().unwrap_or(""), &q["value"]),
-                    )
-                }
-            })
-            .collect();
+        let queued = outbox.eligible(db, p)?;
         deferred.extend(
             queued
                 .iter()
@@ -2111,6 +2423,9 @@ impl<'a> SyncPass<'a> {
                 .map(|q| q["id"].clone()),
         );
         let uploads = outbox.batch(&queued);
+        if !uploads.is_empty() {
+            self.preflight_at.remove(project);
+        }
         for (index, original) in uploads.iter().enumerate() {
             let mut q = (*original).clone();
             if crate::projects::foreground_waiting()? || SyncQueue::cancelled(db, project)? {
@@ -2307,15 +2622,36 @@ impl<'a> SyncPass<'a> {
         {
             return Ok(Continue(()));
         }
-        progress(
-            db,
-            "Checking for new local changes",
-            crate::projects::display_name(p),
-            0,
-            None,
-        )?;
         let project = p["id"].as_str().ok_or("Missing project")?;
-        let scan = scan_off_runtime(db, p, move |db, p| preflight_project(db, p, retry_only)).await;
+        let completed = if retry_only {
+            0
+        } else {
+            syncs_since_reconciliation(db, project)?
+        };
+        let reconcile = completed == RECONCILE_AFTER;
+        let reconcile_on_pull = reconcile && !self.reconciled_preflight.contains(project);
+        let preflight_fresh = !retry_only
+            && !reconcile
+            && self
+                .preflight_at
+                .get(project)
+                .is_some_and(|at| at.elapsed() < Duration::from_secs(2))
+            && validate_preflight_folders(p);
+        let scan = if preflight_fresh {
+            Ok(())
+        } else {
+            progress(
+                db,
+                "Checking for new local changes",
+                crate::projects::display_name(p),
+                0,
+                None,
+            )?;
+            scan_off_runtime(db, p, move |db, p| {
+                run_preflight_scan(db, p, retry_only, reconcile_on_pull)
+            })
+            .await
+        };
         let scanned = scan.is_ok();
         record_result(db, project, scan)?;
         // A failed project preflight must not run permission-reset filesystem
@@ -2346,6 +2682,9 @@ impl<'a> SyncPass<'a> {
         if !pulled {
             return Ok(Continue(()));
         }
+        if crate::projects::foreground_waiting()? || boundary(db, project)?.is_break() {
+            return Ok(Break(()));
+        }
         // Prepare unsent context only after pending approvals and accepted
         // revisions have arrived; exact-base resources must not freeze early.
         if !retry_only {
@@ -2364,7 +2703,24 @@ impl<'a> SyncPass<'a> {
             "SELECT value FROM resources WHERE project=?",
             &[&project],
         )?;
-        for (index, r) in resources.iter().enumerate() {
+        let apply_state = PullApplyState::load(db, p)?;
+        let classify = || {
+            resources
+                .iter()
+                .filter(|r| !apply_state.is_current(p, r))
+                .collect::<Vec<_>>()
+        };
+        let pending = if reconcile {
+            crate::scan_cache::reconcile(classify)
+        } else {
+            classify()
+        };
+        #[cfg(test)]
+        PULL_APPLIED_RESOURCES.with_borrow_mut(|counts| {
+            *counts.entry(project.to_owned()).or_default() += pending.len();
+        });
+        let mut last_progress: Option<Instant> = None;
+        for (index, r) in pending.iter().enumerate() {
             if crate::projects::foreground_waiting()? || SyncQueue::cancelled(db, project)? {
                 return Ok(Break(()));
             }
@@ -2376,13 +2732,16 @@ impl<'a> SyncPass<'a> {
                     .or(r["logicalPath"].as_str())
                     .unwrap_or("Update")
             );
-            progress(
-                db,
-                "Applying updates on this Mac",
-                Some(&detail),
-                index,
-                Some(resources.len()),
-            )?;
+            if last_progress.is_none_or(|at| at.elapsed() >= Duration::from_millis(100)) {
+                progress(
+                    db,
+                    "Applying updates on this Mac",
+                    Some(&detail),
+                    index,
+                    Some(pending.len()),
+                )?;
+                last_progress = Some(Instant::now());
+            }
             let id = r["resourceId"].as_str().ok_or("Missing resource")?;
             let result: Result<()> = async {
                 download(owner, r).await?;
@@ -2398,13 +2757,21 @@ impl<'a> SyncPass<'a> {
                 return result.map(Continue);
             }
             record_result(db, id, result)?;
-            progress(
-                db,
-                "Applying updates on this Mac",
-                Some(&detail),
-                index + 1,
-                Some(resources.len()),
-            )?;
+            if index + 1 == pending.len()
+                || last_progress.is_none_or(|at| at.elapsed() >= Duration::from_millis(100))
+            {
+                progress(
+                    db,
+                    "Applying updates on this Mac",
+                    Some(&detail),
+                    index + 1,
+                    Some(pending.len()),
+                )?;
+                last_progress = Some(Instant::now());
+            }
+        }
+        if crate::projects::foreground_waiting()? || boundary(db, project)?.is_break() {
+            return Ok(Break(()));
         }
         record_result(
             db,
@@ -2418,12 +2785,48 @@ impl<'a> SyncPass<'a> {
             0,
             None,
         )?;
-        record_result(
-            db,
-            &format!("{project}:memory-index"),
-            indexer::memory_index(db, p),
-        )?;
+        let build_index = || indexer::memory_index(db, p);
+        let result = if reconcile {
+            crate::scan_cache::reconcile(build_index)
+        } else {
+            build_index()
+        };
+        record_result(db, &format!("{project}:memory-index"), result)?;
+        if !retry_only
+            && crate::sources::views(p)
+                .iter()
+                .any(|source| source["path"].is_string())
+        {
+            let next = if reconcile { 0 } else { completed + 1 };
+            self.reconciliation_progress
+                .insert(project.to_owned(), (p.clone(), next));
+        }
         Ok(Continue(()))
+    }
+
+    /// Checkpoint a completed reconciliation after the final sync stage.
+    /// Work that the upload stage intentionally excludes must not stall it.
+    fn finish_reconciliation(&mut self) -> Result<()> {
+        for (project, (view, next)) in std::mem::take(&mut self.reconciliation_progress) {
+            if crate::projects::foreground_waiting()?
+                || project_has_retryable_errors(self.db, &project)?
+            {
+                continue;
+            }
+            let outbox = ProjectOutbox::open(self.db, &project)?;
+            if !outbox.eligible(self.db, &view)?.is_empty() {
+                continue;
+            }
+            let tx = rusqlite::Transaction::new_unchecked(self.db, TransactionBehavior::Immediate)
+                .map_err(|error| error.to_string())?;
+            // Serialize the checkpoint with cancellation. A cancel after this
+            // checkpoint does not undo a reconciliation that already finished.
+            if boundary(&tx, &project)?.is_continue() {
+                db::set(&tx, &reconciliation_key(&project), &json!(next))?;
+            }
+            tx.commit().map_err(|error| error.to_string())?;
+        }
+        Ok(())
     }
 
     /// Retries pending Codex skill refreshes and records the account's devices.
@@ -2439,7 +2842,7 @@ impl<'a> SyncPass<'a> {
         }
         let devices = api_as(owner, "GET", "/v2/devices", None).await?;
         crate::device_metadata::update_devices(db, &devices)?;
-        Ok(())
+        self.finish_reconciliation()
     }
 }
 
@@ -2751,13 +3154,27 @@ pub(crate) fn record_result(
     result: Result<()>,
 ) -> Result<()> {
     match result {
-        Ok(()) => db.execute("DELETE FROM errors WHERE source=?", [source]),
-        Err(error) => db.execute(
-            "INSERT INTO errors VALUES(?,?) ON CONFLICT(source) DO UPDATE SET error=excluded.error",
-            params![source, error],
-        ),
+        Ok(()) => {
+            let exists: bool = db
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM errors WHERE source=?)",
+                    [source],
+                    |r| r.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            if exists {
+                db.execute("DELETE FROM errors WHERE source=?", [source])
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        Err(error) => {
+            db.execute(
+                "INSERT INTO errors VALUES(?,?) ON CONFLICT(source) DO UPDATE SET error=excluded.error",
+                params![source, error],
+            )
+            .map_err(|e| e.to_string())?;
+        }
     }
-    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -2866,6 +3283,30 @@ impl<'p> ProjectOutbox<'p> {
     fn queued(&self, db: &rusqlite::Connection) -> Result<Vec<Value>> {
         let source = crate::sources::OUTBOX_SOURCE;
         db::rows(db, &format!("SELECT json_object('sequence',o.rowid,'id',o.id,'project',o.project,'path',o.path,'value',json(o.value),'error',o.error,'sourceId',{source}) FROM outbox o WHERE o.project=? AND (EXISTS(SELECT 1 FROM meta WHERE key='sessionOutboxRedaction:'||o.id) OR o.error IS NULL OR o.error NOT GLOB '4[0-9][0-9]:*' OR substr(o.error,1,3) IN ('401','408','429')) ORDER BY o.rowid"), &[&self.project])
+    }
+
+    fn eligible(&self, db: &rusqlite::Connection, p: &Value) -> Result<Vec<Value>> {
+        let paused_sources = crate::sources::paused_upload_sources(p);
+        Ok(self
+            .queued(db)?
+            .into_iter()
+            .filter(|q| {
+                // Unattributed older rows may belong to the paused source.
+                // Keep the bytes and request ID untouched for a verified retry.
+                if crate::sources::upload_paused(&paused_sources, &q["sourceId"]) {
+                    return false;
+                }
+                if q["path"] == crate::selective_sharing::QUEUE_PATH {
+                    crate::selective_sharing::authorized_origin(db, q)
+                        .is_ok_and(|origin| origin.is_some())
+                } else {
+                    crate::projects::sharing_allowed(
+                        p,
+                        crate::projects::queued_kind(q["path"].as_str().unwrap_or(""), &q["value"]),
+                    )
+                }
+            })
+            .collect())
     }
 
     fn batch<'q>(&self, queued: &'q [Value]) -> Vec<&'q Value> {

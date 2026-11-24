@@ -144,6 +144,22 @@ pub fn reconcile_project(db: &Connection, project: &Value, apply: bool) -> Resul
     // read snapshot, then reserve the writer only to apply the staged changes.
     let tx = Transaction::new_unchecked(db, TransactionBehavior::Deferred)
         .map_err(|error| error.to_string())?;
+    let has_local_drafts: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM drafts WHERE project=? AND json_extract(value,'$.status')='local')",
+            [project_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    let any_governed = sources::views(project)
+        .iter()
+        .any(|source| source["governed"] == true);
+    if !has_local_drafts && !any_governed {
+        tx.commit().map_err(|error| error.to_string())?;
+        return Ok(
+            json!({"projectId":project_id,"applied":apply,"instructionsReconciled":0,"draftsArchived":0,"draftsPreserved":0}),
+        );
+    }
     for resource in db::rows(
         &tx,
         "SELECT value FROM resources WHERE project=? AND (json_extract(value,'$.kind')='skill' OR (json_extract(value,'$.kind')='memory' AND json_extract(value,'$.logicalPath') LIKE 'instructions/%'))",
@@ -160,6 +176,9 @@ pub fn reconcile_project(db: &Connection, project: &Value, apply: bool) -> Resul
                 updates.push(("bindings", id.to_owned(), next.clone()));
                 binding = next;
             }
+        }
+        if !has_local_drafts {
+            continue;
         }
         let drafts = db::rows(
             &tx,

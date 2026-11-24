@@ -631,6 +631,7 @@ pub fn remove_local(db: &Connection, id: &str) -> Result<()> {
     .map_err(|e| e.to_string())?;
     tx.execute("DELETE FROM meta WHERE (key LIKE 'share-preview:%' OR key LIKE 'selected-share:%' OR key LIKE 'resource-delete:%') AND json_extract(value,'$.projectId')=?",[id]).map_err(|e|e.to_string())?;
     crate::scan_cache::clear_project(&tx, id)?;
+    crate::sync::clear_reconciliation(&tx, id)?;
     tx.commit().map_err(|e| e.to_string())?;
     env::clear();
     Ok(())

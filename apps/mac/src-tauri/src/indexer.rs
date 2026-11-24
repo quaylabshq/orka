@@ -6,7 +6,8 @@ use crate::{
 use rusqlite::params;
 use serde_json::{json, Value};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    cell::RefCell,
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fs,
     io::Read,
     path::{Path, PathBuf},
@@ -1625,6 +1626,7 @@ fn scan_source(
         return Err("Connected folder unavailable; deletions paused".into());
     }
     let root = root.canonicalize().map_err(|e| e.to_string())?;
+    let progress_state: RefCell<(Option<Instant>, Option<String>)> = RefCell::new((None, None));
     let report_file = |path: &Path| -> Result<()> {
         if let Some(progress) = progress {
             progress("Checking local files", Some(path));
@@ -1634,17 +1636,22 @@ fn scan_source(
             let path = relative
                 .or_else(|| path.file_name().map(Path::new))
                 .unwrap_or(path);
-            crate::sync::progress(
-                db,
-                "Checking local files",
-                Some(&format!(
-                    "{} · {}",
-                    crate::projects::display_name(project).unwrap_or("Project"),
-                    path.display()
-                )),
-                0,
-                None,
-            )?;
+            let detail = format!(
+                "{} · {}",
+                crate::projects::display_name(project).unwrap_or("Project"),
+                path.display()
+            );
+            let mut state = progress_state.borrow_mut();
+            if state
+                .0
+                .is_none_or(|last| last.elapsed() >= Duration::from_millis(100))
+            {
+                crate::sync::progress(db, "Checking local files", Some(&detail), 0, None)?;
+                state.0 = Some(Instant::now());
+                state.1 = None;
+            } else {
+                state.1 = Some(detail);
+            }
         }
         Ok(())
     };
@@ -2666,6 +2673,11 @@ fn scan_source(
                     }
                     continue;
                 };
+                if scan_cache::is_reconciling() {
+                    if let Some(cache) = &negative {
+                        cache.forget(db)?;
+                    }
+                }
                 report_file(e.path())?;
                 if tool == "codex" {
                     match codex_index.current_path(e.path(), &id) {
@@ -3056,6 +3068,9 @@ fn scan_source(
         })();
         crate::sync::record_result(db, &format!("{scan_id}:scan:{id}"), result)?;
     }
+    if let Some(detail) = progress_state.borrow_mut().1.take() {
+        crate::sync::progress(db, "Checking local files", Some(&detail), 0, None)?;
+    }
     Ok(())
 }
 pub fn memory_index(db: &rusqlite::Connection, project: &Value) -> Result<()> {
@@ -3072,6 +3087,80 @@ pub fn memory_index(db: &rusqlite::Connection, project: &Value) -> Result<()> {
         )?;
     }
     Ok(())
+}
+
+fn memory_index_fingerprint(
+    project: &Value,
+    memory_id: &str,
+    blobs: &db::BlobStore,
+    resources: &[Value],
+) -> String {
+    let entries: Vec<Value> = resources
+        .iter()
+        .map(|r| {
+            let blobs_present = r["files"]
+                .as_array()
+                .is_some_and(|files| blobs.all_present(files));
+            json!([
+                r["resourceId"],
+                r["sourceId"],
+                r["revision"],
+                r["logicalPath"],
+                r["title"],
+                r["source"],
+                r["updatedAt"],
+                r["updatedBy"],
+                r["memory"],
+                r["access"],
+                r["files"],
+                blobs_present
+            ])
+        })
+        .collect();
+    db::digest(
+        json!([
+            memory_id,
+            project["governed"],
+            project["sourceId"],
+            project["path"],
+            project["sharing"],
+            entries
+        ])
+        .to_string()
+        .as_bytes(),
+    )
+}
+
+fn memory_index_cache_valid(
+    blobs: &db::BlobStore,
+    root: &Path,
+    index_path: &Path,
+    fingerprint: &str,
+    cached: &scan_cache::CachedMemoryIndex,
+) -> bool {
+    if cached.fingerprint != fingerprint {
+        return false;
+    }
+    if scan_cache::FileStamp::of(index_path).as_ref() != Some(&cached.index_stamp) {
+        return false;
+    }
+    let mut checked_parents = HashSet::new();
+    for target in &cached.targets {
+        let Some(parent) = target.path.parent() else {
+            return false;
+        };
+        if checked_parents.insert(parent)
+            && packages::check_existing_directory(root, parent).is_err()
+        {
+            return false;
+        }
+        if scan_cache::FileStamp::of(&target.path).as_ref() != Some(&target.stamp)
+            || !blobs.present(&target.hash, target.size)
+        {
+            return false;
+        }
+    }
+    true
 }
 
 fn source_memory_index(db: &rusqlite::Connection, project: &Value) -> Result<()> {
@@ -3092,15 +3181,44 @@ fn source_memory_index(db: &rusqlite::Connection, project: &Value) -> Result<()>
         .map(|source| format!("{project_id}:{source}"))
         .unwrap_or(project_id.into());
     let resources=db::rows(db,"SELECT value FROM resources WHERE project=? AND json_extract(value,'$.kind')='memory' AND json_extract(value,'$.deleted')=0 ORDER BY id",&[&project_id])?;
-    let canonical: BTreeSet<_> = memory_context::catalog(db, project)?
+    let error_glob = format!("{memory_id}:memory-index:*");
+    let has_errors: bool = db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM errors WHERE source GLOB ?)",
+            [&error_glob],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    let blobs = db::BlobStore::current()?;
+    let index_path = directory.join("index.md");
+    let fingerprint = memory_index_fingerprint(project, &memory_id, &blobs, &resources);
+    let cache_key = scan_cache::memory_index_key(project_id, &memory_id);
+    if !has_errors {
+        if let Some(cached) = scan_cache::load_memory_index(db, &cache_key)? {
+            if memory_index_cache_valid(&blobs, root, &index_path, &fingerprint, &cached) {
+                db::set(
+                    db,
+                    &format!("contextSources:{project_id}"),
+                    &json!(cached.sources),
+                )?;
+                return Ok(());
+            }
+        }
+    }
+    #[cfg(test)]
+    scan_cache::record_memory_index_build(&memory_id);
+    let canonical_text: HashMap<String, String> = memory_context::catalog(db, project)?
         .into_iter()
-        .filter_map(|entry| entry.resource["resourceId"].as_str().map(str::to_owned))
+        .filter_map(|entry| {
+            entry.resource["resourceId"]
+                .as_str()
+                .map(|id| (id.to_owned(), entry.text))
+        })
         .collect();
-    db.execute(
-        "DELETE FROM errors WHERE source GLOB ?",
-        [format!("{memory_id}:memory-index:*")],
-    )
-    .map_err(|e| e.to_string())?;
+    if has_errors {
+        db.execute("DELETE FROM errors WHERE source GLOB ?", [&error_glob])
+            .map_err(|e| e.to_string())?;
+    }
     let superseded = resources
         .iter()
         .flat_map(|r| {
@@ -3112,6 +3230,10 @@ fn source_memory_index(db: &rusqlite::Connection, project: &Value) -> Result<()>
         .collect::<Vec<_>>();
     let mut text=String::from("# Shared project knowledge\n\nUse these as scoped reference facts. Keep personal learning in your native memory. Submit changes through Orka; local drafts are private.\n\n");
     let mut sources = Vec::new();
+    let mut targets = Vec::new();
+    let mut had_error = false;
+    let mut cacheable = true;
+    let mut checked_parents = HashSet::new();
     for r in resources {
         if !crate::sources::matches(project, &r) {
             continue;
@@ -3122,7 +3244,7 @@ fn source_memory_index(db: &rusqlite::Connection, project: &Value) -> Result<()>
             continue;
         }
         let id = r["resourceId"].as_str().ok_or("Missing resource")?;
-        let result: Result<String> = (|| {
+        let result: Result<(String, Option<scan_cache::CachedMemoryIndexTarget>)> = (|| {
             let target = if project["governed"] == true {
                 directory.join("resources").join(id).join("content.md")
             } else {
@@ -3134,50 +3256,134 @@ fn source_memory_index(db: &rusqlite::Connection, project: &Value) -> Result<()>
                 .as_array()
                 .and_then(|v| v.first())
                 .ok_or("Missing memory file")?;
+            let hash = file["hash"].as_str().ok_or("Missing hash")?;
+            let size = file["size"].as_u64().ok_or("Missing size")?;
+            let parent = target.parent().ok_or("No parent")?;
+            let before = scan_cache::FileStamp::of(&target);
+            let is_regular = before.is_some();
+            let mut local_file: Option<Value> = None;
             if project["governed"] == true && target.is_file() {
-                let local = packages::file(&target, "content.md")?;
+                if !checked_parents.contains(parent) {
+                    packages::check_existing_directory(root, parent)?;
+                    checked_parents.insert(parent.to_path_buf());
+                }
+                let local = if is_regular {
+                    scan_cache::package_file(db, &blobs, &target, "content.md")?
+                } else {
+                    packages::file(&target, "content.md")?
+                };
                 if local["hash"] != file["hash"] {
                     let mut draft = r.clone();
                     draft["files"] = json!([local]);
                     crate::governance::capture(db, project, &draft, &json!([target]))?;
                 }
+                local_file = Some(local);
             }
-            let content =
-                String::from_utf8(db::blob_read(file["hash"].as_str().ok_or("Missing hash")?)?)
-                    .map_err(|_| "Memory must be UTF-8")?;
-            packages::write_file(root, &target, file)?;
-            if !canonical.contains(id) {
-                return Ok(String::new());
+            let owned_content;
+            let content = if let Some(text) = canonical_text.get(id) {
+                text.as_str()
+            } else {
+                owned_content =
+                    String::from_utf8(db::blob_read(hash)?).map_err(|_| "Memory must be UTF-8")?;
+                owned_content.as_str()
+            };
+            let parent_safe_existing = checked_parents.contains(parent)
+                || packages::check_existing_directory(root, parent)
+                    .map(|()| {
+                        checked_parents.insert(parent.to_path_buf());
+                    })
+                    .is_ok();
+            let already_written = if is_regular && parent_safe_existing && blobs.present(hash, size)
+            {
+                let local = match local_file {
+                    Some(local) => local,
+                    None => scan_cache::package_file(db, &blobs, &target, "content.md")?,
+                };
+                local["hash"] == file["hash"]
+                    && local["size"] == file["size"]
+                    && local["executable"] == file["executable"]
+            } else {
+                false
+            };
+            let stamp = if already_written {
+                before.filter(|stamp| scan_cache::FileStamp::of(&target).as_ref() == Some(stamp))
+            } else {
+                packages::write_file(root, &target, file)?;
+                checked_parents.insert(parent.to_path_buf());
+                scan_cache::verified_stamp(&target, hash, size)
+            };
+            let cached_target = stamp.map(|stamp| scan_cache::CachedMemoryIndexTarget {
+                path: target.clone(),
+                stamp,
+                hash: hash.to_owned(),
+                size,
+            });
+            if !canonical_text.contains_key(id) {
+                return Ok((String::new(), cached_target));
             }
-            Ok(format!(
-                "## {} [{}]\nScope: {} | Author: {} | Resource: {}\nFile: {}\n{}\n\n",
-                r["title"].as_str().unwrap_or("Knowledge"),
-                r["memory"]["provider"]
-                    .as_str()
-                    .or(r["source"].as_str())
-                    .unwrap_or("shared"),
-                r["memory"]["scope"]
-                    .as_str()
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or("project"),
-                r["updatedBy"].as_str().unwrap_or("unknown"),
-                id,
-                target.display(),
-                memory_context::preview(&content)
+            Ok((
+                format!(
+                    "## {} [{}]\nScope: {} | Author: {} | Resource: {}\nFile: {}\n{}\n\n",
+                    r["title"].as_str().unwrap_or("Knowledge"),
+                    r["memory"]["provider"]
+                        .as_str()
+                        .or(r["source"].as_str())
+                        .unwrap_or("shared"),
+                    r["memory"]["scope"]
+                        .as_str()
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or("project"),
+                    r["updatedBy"].as_str().unwrap_or("unknown"),
+                    id,
+                    target.display(),
+                    memory_context::preview(content)
+                ),
+                cached_target,
             ))
         })();
         let source = format!("{memory_id}:memory-index:{id}");
         match result {
-            Ok(entry) => {
+            Ok((entry, cached_target)) => {
+                if let Some(target) = cached_target {
+                    targets.push(target);
+                } else {
+                    cacheable = false;
+                }
                 if entry.is_empty() {
                     continue;
                 }
                 text.push_str(&entry);
                 sources.push(json!(id));
             }
-            Err(err) => error(db, &source, &err)?,
+            Err(err) => {
+                had_error = true;
+                error(db, &source, &err)?;
+            }
         }
     }
     db::set(db, &format!("contextSources:{project_id}"), &json!(sources))?;
-    db::atomic(&directory.join("index.md"), text.as_bytes())
+    let index_hash = db::digest(text.as_bytes());
+    let index_size = text.len() as u64;
+    let mut index_stamp = scan_cache::verified_stamp(&index_path, &index_hash, index_size);
+    if index_stamp.is_none() {
+        db::atomic(&index_path, text.as_bytes())?;
+        index_stamp = scan_cache::verified_stamp(&index_path, &index_hash, index_size);
+    }
+    if !had_error && cacheable {
+        if let Some(index_stamp) = index_stamp {
+            scan_cache::save_memory_index(
+                db,
+                &cache_key,
+                &scan_cache::CachedMemoryIndex {
+                    fingerprint,
+                    index_stamp,
+                    targets,
+                    sources,
+                },
+            )?;
+        }
+    } else {
+        scan_cache::clear_memory_index(db, &cache_key)?;
+    }
+    Ok(())
 }

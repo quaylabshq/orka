@@ -885,3 +885,938 @@ fn paginated_scan_resolves_compact_codex_ancestor_ids() {
         "compact ancestor identities should resolve: {errors:?}"
     );
 }
+
+#[test]
+fn memory_index_skips_unchanged_rewrites_and_rebuilds_only_when_inputs_or_files_change() {
+    let f = Fixture::new();
+    let project_id = f.project["id"].as_str().unwrap();
+    let agents = f.root.join("AGENTS.md");
+    let docs_claude = f.root.join("docs/CLAUDE.md");
+    fs::create_dir_all(docs_claude.parent().unwrap()).unwrap();
+    fs::write(&agents, "# Agents memory\n\nAlpha fact.\n").unwrap();
+    fs::write(&docs_claude, "# Docs memory\n\nBeta fact.\n").unwrap();
+
+    indexer::scan(&f.db, &f.project).unwrap();
+    for item in f.outbox() {
+        f.accept(&item["resource"]);
+    }
+    f.db.execute("DELETE FROM outbox", []).unwrap();
+
+    let out_agents = f.root.join(".orka/memory/instructions/AGENTS.md");
+    let out_docs = f.root.join(".orka/memory/instructions/docs/CLAUDE.md");
+    let out_index = f.root.join(".orka/memory/index.md");
+
+    let before_builds = scan_cache::memory_index_builds(project_id);
+    indexer::memory_index(&f.db, &f.project).unwrap();
+    assert_eq!(
+        scan_cache::memory_index_builds(project_id),
+        before_builds + 1
+    );
+    let stamp_agents_1 = scan_cache::FileStamp::of(&out_agents).unwrap();
+    let stamp_docs_1 = scan_cache::FileStamp::of(&out_docs).unwrap();
+    let stamp_index_1 = scan_cache::FileStamp::of(&out_index).unwrap();
+
+    // Repeat with zero changes: fast path skips rebuild and leaves all files untouched.
+    indexer::memory_index(&f.db, &f.project).unwrap();
+    assert_eq!(
+        scan_cache::memory_index_builds(project_id),
+        before_builds + 1
+    );
+    assert_eq!(
+        scan_cache::FileStamp::of(&out_agents).unwrap(),
+        stamp_agents_1
+    );
+    assert_eq!(scan_cache::FileStamp::of(&out_docs).unwrap(), stamp_docs_1);
+    assert_eq!(
+        scan_cache::FileStamp::of(&out_index).unwrap(),
+        stamp_index_1
+    );
+
+    // Update only AGENTS.md: rebuilds index, updates AGENTS mirror & index.md, keeps docs mirror untouched.
+    fs::write(&agents, "# Agents memory\n\nAlpha fact updated.\n").unwrap();
+    indexer::scan(&f.db, &f.project).unwrap();
+    for item in f.outbox() {
+        f.accept(&item["resource"]);
+    }
+    f.db.execute("DELETE FROM outbox", []).unwrap();
+
+    indexer::memory_index(&f.db, &f.project).unwrap();
+    assert_eq!(
+        scan_cache::memory_index_builds(project_id),
+        before_builds + 2
+    );
+    let stamp_agents_2 = scan_cache::FileStamp::of(&out_agents).unwrap();
+    let stamp_index_2 = scan_cache::FileStamp::of(&out_index).unwrap();
+    assert_ne!(stamp_agents_2, stamp_agents_1);
+    assert_ne!(stamp_index_2, stamp_index_1);
+    assert_eq!(scan_cache::FileStamp::of(&out_docs).unwrap(), stamp_docs_1);
+    assert!(fs::read_to_string(&out_index)
+        .unwrap()
+        .contains("Alpha fact updated."));
+
+    // Deleting a mirrored file on disk invalidates the fast path, restores that file,
+    // and leaves unchanged files (AGENTS mirror & index.md) untouched.
+    fs::remove_file(&out_docs).unwrap();
+    indexer::memory_index(&f.db, &f.project).unwrap();
+    assert_eq!(
+        scan_cache::memory_index_builds(project_id),
+        before_builds + 3
+    );
+    assert!(out_docs.is_file());
+    assert_eq!(
+        scan_cache::FileStamp::of(&out_agents).unwrap(),
+        stamp_agents_2
+    );
+    assert_eq!(
+        scan_cache::FileStamp::of(&out_index).unwrap(),
+        stamp_index_2
+    );
+
+    // Governed mode: editing a mirrored memory file on disk invalidates cache, captures a local draft, and restores it.
+    let mut governed = f.project.clone();
+    governed["governed"] = json!(true);
+    let learned_id = uuid::Uuid::new_v4().to_string();
+    let shared_bytes = b"# Shared Fact\n\nOriginal governed content.\n";
+    let learned = json!({
+        "resourceId": learned_id,
+        "projectId": project_id,
+        "kind": "memory",
+        "source": "claude",
+        "logicalPath": "claude/learned.md",
+        "title": "Shared Fact",
+        "revision": 1,
+        "deleted": false,
+        "files": [{"path":"content.md","hash":db::blob(shared_bytes).unwrap(),"size":shared_bytes.len(),"executable":false}]
+    });
+    db::upsert(&f.db, "resources", &learned_id, project_id, &learned).unwrap();
+    indexer::memory_index(&f.db, &governed).unwrap();
+    let governed_path = f
+        .root
+        .join(".orka/memory/resources")
+        .join(&learned_id)
+        .join("content.md");
+    let builds_after_governed = scan_cache::memory_index_builds(project_id);
+    // Warm governed pass hits cache.
+    indexer::memory_index(&f.db, &governed).unwrap();
+    assert_eq!(
+        scan_cache::memory_index_builds(project_id),
+        builds_after_governed
+    );
+    // Mutating the governed mirror on disk triggers rebuild, draft capture, and restoration.
+    fs::write(&governed_path, "# Shared Fact\n\nLocal private edit.\n").unwrap();
+    indexer::memory_index(&f.db, &governed).unwrap();
+    assert_eq!(
+        scan_cache::memory_index_builds(project_id),
+        builds_after_governed + 1
+    );
+    assert_eq!(
+        fs::read(&governed_path).unwrap(),
+        shared_bytes,
+        "governed mirror should be restored to shared content"
+    );
+    let drafts = db::rows(
+        &f.db,
+        "SELECT value FROM drafts WHERE project=?",
+        &[&project_id],
+    )
+    .unwrap();
+    assert!(
+        drafts
+            .iter()
+            .any(|draft| draft["resource"]["resourceId"] == learned_id),
+        "editing a governed memory mirror should still capture a private draft"
+    );
+
+    // Replacing a governed memory's parent directory with a symlink must fail closed without capturing a draft.
+    f.db.execute("DELETE FROM drafts WHERE project=?", [&project_id])
+        .unwrap();
+    let outside_dir = f._home.path().join("outside-memory-dir");
+    fs::create_dir_all(&outside_dir).unwrap();
+    fs::write(outside_dir.join("content.md"), "# Secret external memory\n").unwrap();
+    let governed_parent = governed_path.parent().unwrap();
+    fs::remove_dir_all(governed_parent).unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&outside_dir, governed_parent).unwrap();
+    indexer::memory_index(&f.db, &governed).unwrap();
+    let drafts_after_symlink = db::rows(
+        &f.db,
+        "SELECT value FROM drafts WHERE project=?",
+        &[&project_id],
+    )
+    .unwrap();
+    assert!(
+        drafts_after_symlink.is_empty(),
+        "symlinked parent directory must not ingest or capture external files as drafts: {drafts_after_symlink:?}"
+    );
+    let symlink_errors = db::rows(
+        &f.db,
+        "SELECT json_object('source',source,'error',error) FROM errors",
+        &[],
+    )
+    .unwrap();
+    assert!(
+        symlink_errors
+            .iter()
+            .any(|e| e["error"] == "Directory contains symlink or file"),
+        "expected parent symlink error, got {symlink_errors:?}"
+    );
+}
+
+#[test]
+fn materialize_skips_rewriting_matching_memory_file_and_writes_remote_updates() {
+    let f = Fixture::new();
+    let agents = f.root.join("AGENTS.md");
+    fs::write(&agents, "# Local instructions\n").unwrap();
+
+    indexer::scan(&f.db, &f.project).unwrap();
+    let queued = f.outbox().remove(0)["resource"].clone();
+    let stamp_before = scan_cache::FileStamp::of(&agents).unwrap();
+
+    // Accepting our own uploaded bytes should update the binding without rewriting AGENTS.md.
+    f.accept(&queued);
+    assert_eq!(
+        scan_cache::FileStamp::of(&agents).unwrap(),
+        stamp_before,
+        "materialize should not rewrite an already-matching memory file on disk"
+    );
+
+    // Accepting a different remote revision must write the new bytes.
+    let remote_bytes = b"# Remote instructions v2\n";
+    let mut remote = queued.clone();
+    remote["revision"] = json!(2);
+    remote["files"] = json!([{
+        "path": "content.md",
+        "hash": db::blob(remote_bytes).unwrap(),
+        "size": remote_bytes.len(),
+        "executable": false
+    }]);
+    db::upsert(
+        &f.db,
+        "resources",
+        remote["resourceId"].as_str().unwrap(),
+        f.project["id"].as_str().unwrap(),
+        &remote,
+    )
+    .unwrap();
+    sync::materialize(&f.db, &f.project, &remote).unwrap();
+    assert_eq!(fs::read(&agents).unwrap(), remote_bytes);
+}
+
+#[test]
+fn incremental_sync_skips_current_resources_repairs_stale_caches_and_honors_cancel() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    };
+
+    let f = Fixture::new();
+    let project_id = f.project["id"].as_str().unwrap().to_owned();
+    let agents = f.root.join("AGENTS.md");
+    let docs_claude = f.root.join("docs/CLAUDE.md");
+    fs::create_dir_all(docs_claude.parent().unwrap()).unwrap();
+    fs::write(&agents, "# Agents\n").unwrap();
+    fs::write(&docs_claude, "# Docs\n").unwrap();
+    let skill_dir = f.root.join(".agents/skills/alpha");
+    fs::create_dir_all(&skill_dir).unwrap();
+    fs::write(skill_dir.join("SKILL.md"), "# Alpha\n").unwrap();
+    let plan_file = f.root.join(".codex/plans/one.md");
+    fs::create_dir_all(plan_file.parent().unwrap()).unwrap();
+    fs::write(&plan_file, "# Plan One\n").unwrap();
+
+    // Minimal loopback mock server supporting register, catalog, blobs, push, pull, devices.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let addr = listener.local_addr().unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_srv = Arc::clone(&stop);
+    let blobs_store: Arc<Mutex<std::collections::HashMap<String, Vec<u8>>>> =
+        Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let revisions: Arc<Mutex<std::collections::HashMap<String, u64>>> =
+        Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let project_json = f.project.clone();
+
+    let cancel_pull = Arc::new(AtomicBool::new(false));
+    let cancel_on_server = Arc::clone(&cancel_pull);
+    let fail_finish = Arc::new(AtomicBool::new(false));
+    let fail_on_server = Arc::clone(&fail_finish);
+    let server_project = project_id.clone();
+    let server_blobs = Arc::clone(&blobs_store);
+    let server = std::thread::spawn(move || {
+        while !stop_srv.load(Ordering::Relaxed) {
+            let Ok((mut stream, _)) = listener.accept() else {
+                std::thread::sleep(std::time::Duration::from_millis(2));
+                continue;
+            };
+            stream.set_nonblocking(false).unwrap();
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 4096];
+            let header_end = loop {
+                let n = stream.read(&mut chunk).unwrap_or(0);
+                if n == 0 {
+                    break None;
+                }
+                buf.extend_from_slice(&chunk[..n]);
+                if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                    break Some(pos + 4);
+                }
+            };
+            let Some(header_end) = header_end else {
+                continue;
+            };
+            let header_str = String::from_utf8_lossy(&buf[..header_end]).to_string();
+            let content_len = header_str
+                .lines()
+                .find_map(|line| {
+                    let (k, v) = line.split_once(':')?;
+                    k.eq_ignore_ascii_case("content-length")
+                        .then(|| v.trim().parse::<usize>().ok())
+                        .flatten()
+                })
+                .unwrap_or(0);
+            while buf.len() < header_end + content_len {
+                let n = stream.read(&mut chunk).unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&chunk[..n]);
+            }
+            let first = header_str.lines().next().unwrap_or("");
+            let mut parts = first.split_whitespace();
+            let method = parts.next().unwrap_or("");
+            let path = parts.next().unwrap_or("");
+            let body = &buf[header_end..header_end + content_len];
+
+            let (status, content_type, resp_bytes): (&str, &str, Vec<u8>) = if method == "PUT"
+                && path.starts_with("/v2/blobs/")
+            {
+                let hash = path.rsplit('/').next().unwrap_or("").to_owned();
+                server_blobs.lock().unwrap().insert(hash, body.to_vec());
+                ("200 OK", "application/json", b"{\"ok\":true}".to_vec())
+            } else if method == "GET" && path.starts_with("/v2/blobs/") {
+                let hash = path.rsplit('/').next().unwrap_or("");
+                if let Some(data) = server_blobs.lock().unwrap().get(hash).cloned() {
+                    ("200 OK", "application/octet-stream", data)
+                } else {
+                    ("404 Not Found", "application/json", b"{}".to_vec())
+                }
+            } else if method == "POST" && path == "/v2/devices/register" {
+                (
+                    "200 OK",
+                    "application/json",
+                    json!({"capabilities": {}}).to_string().into_bytes(),
+                )
+            } else if method == "GET" && path.starts_with("/v2/projects/capabilities") {
+                ("200 OK", "application/json", b"{}".to_vec())
+            } else if method == "GET" && path.starts_with("/v2/projects") {
+                (
+                    "200 OK",
+                    "application/json",
+                    json!([project_json]).to_string().into_bytes(),
+                )
+            } else if method == "GET" && path == "/v2/devices" {
+                if fail_on_server.load(Ordering::SeqCst) {
+                    (
+                        "503 Service Unavailable",
+                        "application/json",
+                        b"{}".to_vec(),
+                    )
+                } else {
+                    ("200 OK", "application/json", b"[]".to_vec())
+                }
+            } else if method == "GET" && path.starts_with("/v2/sync/pull") {
+                if cancel_on_server.swap(false, Ordering::SeqCst) {
+                    crate::sync_queue::SyncQueue::mark_cancelled(
+                        &db::open().unwrap(),
+                        &server_project,
+                    )
+                    .unwrap();
+                }
+                (
+                        "200 OK",
+                        "application/json",
+                        json!({"events":[],"cursor":1,"hasMore":false,"policyRevision":1,"requests":[],"presence":[]})
+                            .to_string()
+                            .into_bytes(),
+                    )
+            } else if method == "POST" && path == "/v2/sync/push" {
+                let payload: Value = serde_json::from_slice(body).unwrap();
+                let mut resource = payload["resource"].clone();
+                let rid = resource["resourceId"].as_str().unwrap().to_owned();
+                let mut revs = revisions.lock().unwrap();
+                let next = revs.get(&rid).copied().unwrap_or(0) + 1;
+                revs.insert(rid, next);
+                resource["revision"] = json!(next);
+                resource["projectId"] = project_json["id"].clone();
+                let receipt = json!({
+                    "conflict": false,
+                    "event": {
+                        "resource": resource,
+                        "conflicts": [],
+                        "related": [],
+                        "activity": null
+                    }
+                });
+                (
+                    "200 OK",
+                    "application/json",
+                    receipt.to_string().into_bytes(),
+                )
+            } else {
+                ("200 OK", "application/json", b"{}".to_vec())
+            };
+            let head = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                resp_bytes.len()
+            );
+            let _ = stream.write_all(head.as_bytes());
+            let _ = stream.write_all(&resp_bytes);
+            let _ = stream.flush();
+        }
+    });
+
+    let origin = format!("http://{addr}");
+    db::set(&f.db, "config", &json!({"apiUrl": origin})).unwrap();
+    crate::env::test_support::install_memory_keychain();
+    let owner = db::get(&f.db, "user").unwrap().as_str().unwrap().to_owned();
+    crate::auth::test_session(&json!({
+        "user": {"id": owner},
+        "access_token": "test-token",
+        "refresh_token": "test-refresh",
+        "expires_at": i64::MAX
+    }))
+    .unwrap();
+    let account_db = db::open().unwrap();
+    db::set(&account_db, "user", &json!(owner)).unwrap();
+    db::upsert(
+        &account_db,
+        "projects",
+        &project_id,
+        &project_id,
+        &f.project,
+    )
+    .unwrap();
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+
+    // Sync 1 (cold): pushes & applies all 4 resources.
+    let applied_0 = sync::pull_applied_resources(&project_id);
+    rt.block_on(sync::once()).unwrap();
+    let applied_1 = sync::pull_applied_resources(&project_id);
+    assert_eq!(applied_1 - applied_0, 4);
+    let sync1_errors = db::rows(
+        &account_db,
+        "SELECT json_object('source',source,'error',error) FROM errors",
+        &[],
+    )
+    .unwrap();
+    assert!(
+        sync1_errors.is_empty(),
+        "unexpected sync1 errors: {sync1_errors:?}"
+    );
+
+    let out_agents = f.root.join(".orka/memory/instructions/AGENTS.md");
+    let out_docs = f.root.join(".orka/memory/instructions/docs/CLAUDE.md");
+    let out_index = f.root.join(".orka/memory/index.md");
+    let stamp_out_agents = scan_cache::FileStamp::of(&out_agents).unwrap();
+    let stamp_out_docs = scan_cache::FileStamp::of(&out_docs).unwrap();
+    let stamp_out_index = scan_cache::FileStamp::of(&out_index).unwrap();
+    let builds_1 = scan_cache::memory_index_builds(&project_id);
+
+    // Sync 2 (idle): applies 0 resources and skips rebuilding memory index.
+    rt.block_on(sync::once()).unwrap();
+    let applied_2 = sync::pull_applied_resources(&project_id);
+    assert_eq!(
+        applied_2 - applied_1,
+        0,
+        "idle sync should skip applying already-current resources"
+    );
+    assert_eq!(scan_cache::memory_index_builds(&project_id), builds_1);
+    assert_eq!(
+        scan_cache::FileStamp::of(&out_agents).unwrap(),
+        stamp_out_agents
+    );
+    assert_eq!(
+        scan_cache::FileStamp::of(&out_docs).unwrap(),
+        stamp_out_docs
+    );
+    assert_eq!(
+        scan_cache::FileStamp::of(&out_index).unwrap(),
+        stamp_out_index
+    );
+
+    // Sync 3 (1-file edit): applies only the 1 changed resource (not all 4).
+    fs::write(&agents, "# Agents edited once\n").unwrap();
+    let agents_stamp_after_edit = scan_cache::FileStamp::of(&agents).unwrap();
+    rt.block_on(sync::once()).unwrap();
+    let applied_3 = sync::pull_applied_resources(&project_id);
+    assert_eq!(
+        applied_3 - applied_2,
+        1,
+        "editing one file should only apply that 1 resource"
+    );
+    assert_eq!(
+        scan_cache::FileStamp::of(&agents).unwrap(),
+        agents_stamp_after_edit,
+        "own edited file should not be rewritten back onto disk"
+    );
+    assert_eq!(
+        scan_cache::FileStamp::of(&out_docs).unwrap(),
+        stamp_out_docs
+    );
+
+    // Sync 4 (missing blob on a remote snapshot): deleting its cached blob forces only
+    // that 1 resource to re-download from the server in pull_project.
+    let remote_bytes = b"{\"type\":\"session_meta\",\"payload\":{\"id\":\"remote-1\"}}\n";
+    let remote_hash = db::digest(remote_bytes);
+    let remote_id = uuid::Uuid::new_v4().to_string();
+    let remote_session = json!({
+        "resourceId": remote_id,
+        "projectId": project_id,
+        "kind": "session",
+        "source": "codex",
+        "logicalPath": "codex/remote-1.jsonl",
+        "title": "Remote Session",
+        "revision": 1,
+        "deleted": false,
+        "files": [{"path":"transcript.jsonl","hash":remote_hash,"size":remote_bytes.len(),"executable":false}]
+    });
+    let remote_binding = json!({
+        "base": remote_session,
+        "paths": [],
+        "guards": [],
+        "managed": true,
+        "installationState": "current",
+        "lastSeenHash": indexer::manifest_hash(&remote_session["files"]),
+        "writeGuard": indexer::manifest_hash(&remote_session["files"])
+    });
+    blobs_store
+        .lock()
+        .unwrap()
+        .insert(remote_hash.clone(), remote_bytes.to_vec());
+    db::upsert(
+        &account_db,
+        "resources",
+        &remote_id,
+        &project_id,
+        &remote_session,
+    )
+    .unwrap();
+    db::upsert(
+        &account_db,
+        "bindings",
+        &remote_id,
+        &project_id,
+        &remote_binding,
+    )
+    .unwrap();
+    let remote_blob = db::blob_path(&remote_hash).unwrap();
+    assert!(!remote_blob.exists());
+    rt.block_on(sync::once()).unwrap();
+    let applied_4 = sync::pull_applied_resources(&project_id);
+    assert_eq!(
+        applied_4 - applied_3,
+        1,
+        "missing blob should force only that 1 resource to re-download"
+    );
+    assert!(remote_blob.exists());
+
+    let cadence = format!("syncReconciliation:{project_id}");
+    assert_eq!(db::get(&account_db, &cadence).unwrap(), 4);
+
+    // Rejected rows stay visible for manual resolution and must not starve
+    // reconciliation for the rest of the project.
+    let rejected = uuid::Uuid::new_v4().to_string();
+    account_db
+        .execute(
+            "INSERT INTO outbox VALUES(?,?,?,?,?)",
+            rusqlite::params![
+                rejected,
+                project_id,
+                "/v2/sync/push",
+                json!({
+                    "id":rejected,
+                    "resource":{"resourceId":uuid::Uuid::new_v4().to_string()}
+                })
+                .to_string(),
+                "403: Access denied"
+            ],
+        )
+        .unwrap();
+
+    // Prime the verified-blob memo before replacing the stored bytes.
+    let blobs = db::BlobStore::current().unwrap();
+    assert!(blobs.present(&remote_hash, remote_bytes.len() as u64));
+    fs::write(&remote_blob, vec![b'X'; remote_bytes.len()]).unwrap();
+
+    // Simulate a missed local edit by keeping the old manifest behind an
+    // otherwise-current file stamp. The fifth pass still takes the fast path.
+    let old_hash = db::digest(&fs::read(&agents).unwrap());
+    let old_stamp = json!(scan_cache::FileStamp::of(&agents).unwrap());
+    let revised = b"# Agents edited behind a stale manifest\n";
+    fs::write(&agents, revised).unwrap();
+    let mut cached = db::rows(
+        &account_db,
+        "SELECT json_object('key',key,'value',json(value)) FROM meta WHERE key LIKE 'scanCache:%:file:%' AND json_extract(value,'$.file.hash')=?",
+        &[&old_hash],
+    ).unwrap();
+    cached.retain(|entry| entry["value"]["stamp"] == old_stamp);
+    assert_eq!(cached.len(), 1);
+    let mut cached = cached.pop().unwrap();
+    cached["value"]["stamp"] = json!(scan_cache::FileStamp::of(&agents).unwrap());
+    db::set(
+        &account_db,
+        cached["key"].as_str().unwrap(),
+        &cached["value"],
+    )
+    .unwrap();
+
+    let agents_resource = || {
+        let rows = db::rows(&account_db, "SELECT value FROM resources WHERE json_extract(value,'$.logicalPath')='instructions/AGENTS.md'", &[]).unwrap();
+        assert_eq!(rows.len(), 1);
+        rows.into_iter().next().unwrap()
+    };
+    rt.block_on(sync::once()).unwrap();
+    assert_eq!(db::blob_read(&remote_hash).unwrap(), remote_bytes);
+    assert_eq!(agents_resource()["files"][0]["hash"], old_hash);
+    assert_eq!(db::get(&account_db, &cadence).unwrap(), 5);
+
+    // The sixth pass bypasses the cached manifest and uploads the edit. A
+    // failure in the final remote stage leaves the durable cadence due.
+    fail_finish.store(true, Ordering::SeqCst);
+    assert!(rt.block_on(sync::once()).is_err());
+    fail_finish.store(false, Ordering::SeqCst);
+    assert_eq!(agents_resource()["files"][0]["hash"], db::digest(revised));
+    let reopened = db::open().unwrap();
+    assert_eq!(db::get(&reopened, &cadence).unwrap(), 5);
+    rt.block_on(sync::once()).unwrap();
+    assert_eq!(db::get(&account_db, &cadence).unwrap(), 0);
+    let rejected_status: String = account_db
+        .query_row("SELECT error FROM outbox WHERE id=?", [&rejected], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(rejected_status, "403: Access denied");
+
+    // Cancellation while pulling an already-current project must stop local
+    // post-pull work and must not consume any reconciliation credit.
+    fs::remove_file(&out_index).unwrap();
+    cancel_pull.store(true, Ordering::SeqCst);
+    rt.block_on(sync::once()).unwrap();
+    assert!(!cancel_pull.load(Ordering::SeqCst));
+    assert!(!out_index.exists());
+    assert_eq!(db::get(&account_db, &cadence).unwrap(), 0);
+
+    stop.store(true, Ordering::Relaxed);
+    let _ = server.join();
+}
+
+#[test]
+fn memory_index_multi_source_hits_cache_rebuilds_on_source_reattribution_and_prunes_on_remove_local(
+) {
+    let f = Fixture::new();
+    let project_id = f.project["id"].as_str().unwrap().to_owned();
+    let root_a = f._home.path().join("repo-a");
+    let root_b = f._home.path().join("repo-b");
+    fs::create_dir_all(&root_a).unwrap();
+    fs::create_dir_all(&root_b).unwrap();
+    let source_a = uuid::Uuid::new_v4().to_string();
+    let source_b = uuid::Uuid::new_v4().to_string();
+    let multi_project = json!({
+        "id": project_id,
+        "name": "multi",
+        "sources": [
+            {"id": source_a, "name": "Repo A", "path": root_a, "folderIdentity": indexer::folder_identity(&root_a).unwrap()},
+            {"id": source_b, "name": "Repo B", "path": root_b, "folderIdentity": indexer::folder_identity(&root_b).unwrap()}
+        ]
+    });
+    db::upsert(&f.db, "projects", &project_id, &project_id, &multi_project).unwrap();
+
+    let id_a = uuid::Uuid::new_v4().to_string();
+    let id_b = uuid::Uuid::new_v4().to_string();
+    let bytes_a = b"# Memory A\n\nFact from repo A.\n";
+    let bytes_b = b"# Memory B\n\nFact from repo B.\n";
+    let mut mem_a = json!({
+        "resourceId": id_a,
+        "projectId": project_id,
+        "sourceId": source_a,
+        "kind": "memory",
+        "source": "shared",
+        "logicalPath": "instructions/AGENTS.md",
+        "title": "AGENTS A",
+        "revision": 1,
+        "deleted": false,
+        "files": [{"path":"content.md","hash":db::blob(bytes_a).unwrap(),"size":bytes_a.len(),"executable":false}]
+    });
+    let mem_b = json!({
+        "resourceId": id_b,
+        "projectId": project_id,
+        "sourceId": source_b,
+        "kind": "memory",
+        "source": "shared",
+        "logicalPath": "instructions/CLAUDE.md",
+        "title": "CLAUDE B",
+        "revision": 1,
+        "deleted": false,
+        "files": [{"path":"content.md","hash":db::blob(bytes_b).unwrap(),"size":bytes_b.len(),"executable":false}]
+    });
+    db::upsert(&f.db, "resources", &id_a, &project_id, &mem_a).unwrap();
+    db::upsert(&f.db, "resources", &id_b, &project_id, &mem_b).unwrap();
+
+    let key_a = format!("{project_id}:{source_a}");
+    let key_b = format!("{project_id}:{source_b}");
+    let builds_a_0 = scan_cache::memory_index_builds(&key_a);
+    let builds_b_0 = scan_cache::memory_index_builds(&key_b);
+
+    // Run 1 builds both sources.
+    indexer::memory_index(&f.db, &multi_project).unwrap();
+    assert_eq!(scan_cache::memory_index_builds(&key_a), builds_a_0 + 1);
+    assert_eq!(scan_cache::memory_index_builds(&key_b), builds_b_0 + 1);
+    let idx_a_stamp = scan_cache::FileStamp::of(&root_a.join(".orka/memory/index.md")).unwrap();
+    let idx_b_stamp = scan_cache::FileStamp::of(&root_b.join(".orka/memory/index.md")).unwrap();
+
+    // Run 2 with zero changes hits cache for BOTH sources (no contextSources thrashing).
+    indexer::memory_index(&f.db, &multi_project).unwrap();
+    assert_eq!(scan_cache::memory_index_builds(&key_a), builds_a_0 + 1);
+    assert_eq!(scan_cache::memory_index_builds(&key_b), builds_b_0 + 1);
+    assert_eq!(
+        scan_cache::FileStamp::of(&root_a.join(".orka/memory/index.md")).unwrap(),
+        idx_a_stamp
+    );
+    assert_eq!(
+        scan_cache::FileStamp::of(&root_b.join(".orka/memory/index.md")).unwrap(),
+        idx_b_stamp
+    );
+
+    // Re-attributing mem_a to source_b at the same revision invalidates both sources.
+    mem_a["sourceId"] = json!(source_b);
+    db::upsert(&f.db, "resources", &id_a, &project_id, &mem_a).unwrap();
+    indexer::memory_index(&f.db, &multi_project).unwrap();
+    assert_eq!(scan_cache::memory_index_builds(&key_a), builds_a_0 + 2);
+    assert_eq!(scan_cache::memory_index_builds(&key_b), builds_b_0 + 2);
+    assert!(fs::read_to_string(root_b.join(".orka/memory/index.md"))
+        .unwrap()
+        .contains("Fact from repo A."));
+
+    // Replacing index.md with a symlink must be rejected on warm cache.
+    let outside = f._home.path().join("outside-index.md");
+    fs::write(&outside, "# outside\n").unwrap();
+    let idx_a = root_a.join(".orka/memory/index.md");
+    fs::remove_file(&idx_a).unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&outside, &idx_a).unwrap();
+    indexer::memory_index(&f.db, &multi_project).unwrap();
+    let errors = db::rows(
+        &f.db,
+        "SELECT json_object('source',source,'error',error) FROM errors",
+        &[],
+    )
+    .unwrap();
+    assert!(
+        errors
+            .iter()
+            .any(|e| e["error"] == "Destination is a symlink"),
+        "expected symlink rejection, got {errors:?}"
+    );
+
+    // remove_local must prune scanCache memoryIndex rows for this project.
+    let before_cache: i64 =
+        f.db.query_row(
+            "SELECT count(*) FROM meta WHERE key LIKE ?",
+            [format!("scanCache:%:memoryIndex:{project_id}:%")],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(before_cache > 0);
+    crate::projects::remove_local(&f.db, &project_id).unwrap();
+    let after_cache: i64 =
+        f.db.query_row(
+            "SELECT count(*) FROM meta WHERE key LIKE ?",
+            [format!("scanCache:%:memoryIndex:{project_id}:%")],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(after_cache, 0);
+}
+
+#[test]
+fn preflight_fresh_preserves_multi_source_scan_errors_and_runs_post_authorize_scan_on_governed_first_sync(
+) {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+
+    let f = Fixture::new();
+    let multi_id = uuid::Uuid::new_v4().to_string();
+    let gov_id = uuid::Uuid::new_v4().to_string();
+    let root_ok = f._home.path().join("multi-ok");
+    let root_bad = f._home.path().join("multi-bad");
+    let root_gov = f._home.path().join("gov-repo");
+    fs::create_dir_all(&root_ok).unwrap();
+    fs::create_dir_all(root_bad.join(".codex")).unwrap();
+    fs::create_dir_all(&root_gov).unwrap();
+    // Create a symlinked .codex/plans directory in root_bad (scan-only error; sources::validate passes).
+    let ext_plans = f._home.path().join("ext-plans");
+    fs::create_dir_all(&ext_plans).unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&ext_plans, root_bad.join(".codex/plans")).unwrap();
+    fs::write(root_gov.join("AGENTS.md"), "# Governed first sync\n").unwrap();
+
+    let src_ok = uuid::Uuid::new_v4().to_string();
+    let src_bad = uuid::Uuid::new_v4().to_string();
+    let multi_project = json!({
+        "id": multi_id,
+        "name": "multi-errors",
+        "sources": [
+            {"id": src_ok, "name": "Ok", "path": root_ok, "folderIdentity": indexer::folder_identity(&root_ok).unwrap()},
+            {"id": src_bad, "name": "Bad", "path": root_bad, "folderIdentity": indexer::folder_identity(&root_bad).unwrap()}
+        ]
+    });
+    let gov_project = json!({
+        "id": gov_id,
+        "name": "gov-first",
+        "governed": true,
+        "path": root_gov,
+        "folderIdentity": indexer::folder_identity(&root_gov).unwrap()
+    });
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let addr = listener.local_addr().unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_srv = Arc::clone(&stop);
+    let projects_payload = json!([multi_project, gov_project]);
+
+    let server = std::thread::spawn(move || {
+        while !stop_srv.load(Ordering::Relaxed) {
+            let Ok((mut stream, _)) = listener.accept() else {
+                std::thread::sleep(std::time::Duration::from_millis(2));
+                continue;
+            };
+            stream.set_nonblocking(false).unwrap();
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 4096];
+            let header_end = loop {
+                let n = stream.read(&mut chunk).unwrap_or(0);
+                if n == 0 {
+                    break None;
+                }
+                buf.extend_from_slice(&chunk[..n]);
+                if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                    break Some(pos + 4);
+                }
+            };
+            let Some(header_end) = header_end else {
+                continue;
+            };
+            let header_str = String::from_utf8_lossy(&buf[..header_end]).to_string();
+            let content_len = header_str
+                .lines()
+                .find_map(|line| {
+                    let (k, v) = line.split_once(':')?;
+                    k.eq_ignore_ascii_case("content-length")
+                        .then(|| v.trim().parse::<usize>().ok())
+                        .flatten()
+                })
+                .unwrap_or(0);
+            while buf.len() < header_end + content_len {
+                let n = stream.read(&mut chunk).unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&chunk[..n]);
+            }
+            let first = header_str.lines().next().unwrap_or("");
+            let mut parts = first.split_whitespace();
+            let method = parts.next().unwrap_or("");
+            let path = parts.next().unwrap_or("");
+
+            let resp_bytes: Vec<u8> = if method == "POST" && path == "/v2/devices/register" {
+                json!({"capabilities": {}}).to_string().into_bytes()
+            } else if method == "GET" && path.starts_with("/v2/projects/capabilities") {
+                b"{}".to_vec()
+            } else if method == "GET" && path.starts_with("/v2/projects") {
+                projects_payload.to_string().into_bytes()
+            } else if method == "GET" && path == "/v2/devices" {
+                b"[]".to_vec()
+            } else if method == "POST" && path == "/v2/governance/action" {
+                json!({"owner": true, "access": {"instructions": {"create": "publish"}}})
+                    .to_string()
+                    .into_bytes()
+            } else if method == "GET" && path.starts_with("/v2/sync/pull") {
+                json!({"events":[],"cursor":1,"hasMore":false,"policyRevision":1,"requests":[],"presence":[]})
+                    .to_string()
+                    .into_bytes()
+            } else {
+                b"{}".to_vec()
+            };
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                resp_bytes.len()
+            );
+            let _ = stream.write_all(head.as_bytes());
+            let _ = stream.write_all(&resp_bytes);
+            let _ = stream.flush();
+        }
+    });
+
+    let origin = format!("http://{addr}");
+    db::set(&f.db, "config", &json!({"apiUrl": origin})).unwrap();
+    crate::env::test_support::install_memory_keychain();
+    let owner = db::get(&f.db, "user").unwrap().as_str().unwrap().to_owned();
+    crate::auth::test_session(&json!({
+        "user": {"id": owner},
+        "access_token": "test-token",
+        "refresh_token": "test-refresh",
+        "expires_at": i64::MAX
+    }))
+    .unwrap();
+    let account_db = db::open().unwrap();
+    db::set(&account_db, "user", &json!(owner)).unwrap();
+    db::upsert(
+        &account_db,
+        "projects",
+        &multi_id,
+        &multi_id,
+        &multi_project,
+    )
+    .unwrap();
+    db::upsert(&account_db, "projects", &gov_id, &gov_id, &gov_project).unwrap();
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(sync::once()).unwrap();
+
+    // Finding #1: multi-source scan error on src_bad must NOT be wiped by pull_project.
+    let bad_source_key = format!("{multi_id}:source:{src_bad}");
+    let bad_errors = db::rows(
+        &account_db,
+        "SELECT json_object('source',source,'error',error) FROM errors WHERE source=?",
+        &[&bad_source_key],
+    )
+    .unwrap();
+    assert_eq!(
+        bad_errors.len(),
+        1,
+        "expected multi-source scan error to be preserved, got {bad_errors:?}"
+    );
+
+    // Finding #2: governed first sync must invalidate preflight_fresh after authorize()
+    // so automatic sharing queues AGENTS.md in the same sync cycle.
+    let gov_outbox = db::rows(
+        &account_db,
+        "SELECT value FROM outbox WHERE project=?",
+        &[&gov_id],
+    )
+    .unwrap();
+    assert!(
+        !gov_outbox.is_empty(),
+        "expected governed first sync to queue AGENTS.md after authorize() fetched permissions"
+    );
+
+    stop.store(true, Ordering::Relaxed);
+    let _ = server.join();
+}

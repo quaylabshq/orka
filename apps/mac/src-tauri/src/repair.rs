@@ -4,7 +4,11 @@ use crate::{
     history, indexer, native, sync,
 };
 use serde_json::{json, Value};
-use std::{fs, path::Path};
+use std::{
+    fs,
+    path::Path,
+    time::{Duration, Instant},
+};
 
 pub fn workspace(db: &rusqlite::Connection) -> Result<()> {
     for project in db::rows(
@@ -38,22 +42,31 @@ pub(crate) fn project_state(db: &rusqlite::Connection, project: &Value) -> Resul
         return Ok(());
     }
     let project_id = project["id"].as_str().ok_or("Missing project")?;
-    let resources = db::rows(
+    let candidates: Vec<Value> = db::rows(
         db,
-        "SELECT value FROM resources WHERE project=?",
+        "SELECT value FROM resources WHERE project=? AND (json_extract(value,'$.resourceId') IS NULL OR json_extract(value,'$.deleted')=1 OR (json_extract(value,'$.kind')='session' AND json_extract(value,'$.source')='codex'))",
         &[&project_id],
-    )?;
-    for (index, resource) in resources.iter().enumerate() {
-        if !crate::sources::matches(project, resource) {
-            continue;
+    )?
+    .into_iter()
+    .filter(|resource| crate::sources::matches(project, resource))
+    .collect();
+    if candidates.is_empty() {
+        return Ok(());
+    }
+    let mut last_progress: Option<Instant> = None;
+    for (index, resource) in candidates.iter().enumerate() {
+        if last_progress.is_none_or(|at| at.elapsed() >= Duration::from_millis(100))
+            || index + 1 == candidates.len()
+        {
+            sync::progress(
+                db,
+                "Repairing local sync state",
+                project["name"].as_str(),
+                index,
+                Some(candidates.len()),
+            )?;
+            last_progress = Some(Instant::now());
         }
-        sync::progress(
-            db,
-            "Repairing local sync state",
-            project["name"].as_str(),
-            index,
-            Some(resources.len()),
-        )?;
         let id = resource["resourceId"].as_str().ok_or("Missing resource")?;
         let result = recover(db, project, resource);
         match result {
@@ -78,6 +91,17 @@ fn recover(db: &rusqlite::Connection, project: &Value, resource: &Value) -> Resu
         return Ok(false);
     }
     if deletion_complete(resource, &b)? {
+        let settled = settled_deletion(resource, b.clone());
+        let has_error: bool = db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM errors WHERE source=?)",
+                [id],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if settled == b && !has_error {
+            return Ok(false);
+        }
         settle_deletion(db, project, resource, b)?;
         return Ok(true);
     }
@@ -124,12 +148,7 @@ fn recover(db: &rusqlite::Connection, project: &Value, resource: &Value) -> Resu
     Ok(true)
 }
 
-pub fn settle_deletion(
-    db: &rusqlite::Connection,
-    project: &Value,
-    resource: &Value,
-    mut binding: Value,
-) -> Result<()> {
+fn settled_deletion(resource: &Value, mut binding: Value) -> Value {
     binding["base"] = resource.clone();
     if !binding["paths"].is_array() || (resource["kind"] == "session" && resource["source"] == "pi")
     {
@@ -139,6 +158,16 @@ pub fn settle_deletion(
     binding["lastSeenHash"] = json!(empty);
     binding["writeGuard"] = json!(empty);
     binding["guards"] = json!(vec![empty; binding["paths"].as_array().map_or(0, Vec::len)]);
+    binding
+}
+
+pub fn settle_deletion(
+    db: &rusqlite::Connection,
+    project: &Value,
+    resource: &Value,
+    binding: Value,
+) -> Result<()> {
+    let binding = settled_deletion(resource, binding);
     db::upsert(
         db,
         "bindings",

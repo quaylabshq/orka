@@ -6,13 +6,19 @@ use rusqlite::Connection;
 use serde_json::{json, Value};
 use std::path::Path;
 
+pub(crate) fn refresh_key(project: &Value) -> Result<String> {
+    let root = Path::new(project["path"].as_str().ok_or("Connect a folder")?);
+    let project_id = project["id"].as_str().ok_or("Missing project")?;
+    Ok(format!(
+        "codex-skill-refresh:{project_id}:{}",
+        db::digest(root.to_string_lossy().as_bytes())
+    ))
+}
+
 pub fn queue(db: &Connection, project: &Value, changed: bool) -> Result<()> {
     let root = Path::new(project["path"].as_str().ok_or("Connect a folder")?);
     let project_id = project["id"].as_str().ok_or("Missing project")?;
-    let key = format!(
-        "codex-skill-refresh:{project_id}:{}",
-        db::digest(root.to_string_lossy().as_bytes())
-    );
+    let key = refresh_key(project)?;
     if changed || db::get(db, &key)?.is_null() {
         db::set(
             db,

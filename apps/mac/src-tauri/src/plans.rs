@@ -108,7 +108,7 @@ pub fn title(text: &str, fallback: &str) -> String {
         .collect()
 }
 
-pub fn validate(resource: &Value) -> Result<()> {
+pub(crate) fn validate_manifest(resource: &Value) -> Result<()> {
     let source = resource["source"].as_str().ok_or("Missing plan source")?;
     let logical = resource["logicalPath"]
         .as_str()
@@ -134,6 +134,15 @@ pub fn validate(resource: &Value) -> Result<()> {
     {
         return Err("Invalid plan manifest".into());
     }
+    Ok(())
+}
+
+pub fn validate(resource: &Value) -> Result<()> {
+    validate_manifest(resource)?;
+    if resource["deleted"] == true {
+        return Ok(());
+    }
+    let files = resource["files"].as_array().ok_or("Missing plan files")?;
     let bytes = db::blob_read(files[0]["hash"].as_str().ok_or("Missing plan hash")?)?;
     if bytes.len() as u64 != files[0]["size"].as_u64().ok_or("Missing plan size")?
         || std::str::from_utf8(&bytes).is_err()

@@ -259,9 +259,18 @@ pub fn set(db: &Connection, key: &str, value: &Value) -> Result<()> {
         }
         return atomic(&r.join(format!("{key}.json")), value.to_string().as_bytes());
     }
+    let encoded = value.to_string();
+    let existing = db
+        .query_row("SELECT value FROM meta WHERE key=?", [key], |r| {
+            r.get::<_, String>(0)
+        })
+        .ok();
+    if existing.as_deref() == Some(encoded.as_str()) {
+        return Ok(());
+    }
     db.execute(
         "INSERT INTO meta VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-        params![key, value.to_string()],
+        params![key, encoded],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -385,9 +394,10 @@ impl BlobStore {
         if stamp.length != expected_size {
             return false;
         }
-        if VERIFIED
-            .lock()
-            .is_ok_and(|cache| cache.get(&path) == Some(&stamp))
+        if !crate::scan_cache::is_reconciling()
+            && VERIFIED
+                .lock()
+                .is_ok_and(|cache| cache.get(&path) == Some(&stamp))
         {
             return true;
         }

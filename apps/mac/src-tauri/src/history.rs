@@ -62,7 +62,14 @@ impl NegativeAttribution {
     }
 
     pub(crate) fn contains(&self, db: &rusqlite::Connection) -> Result<bool> {
-        Ok(db::get(db, &self.key)? == json!([self.topology, self.fingerprint]))
+        Ok(!crate::scan_cache::is_reconciling()
+            && db::get(db, &self.key)? == json!([self.topology, self.fingerprint]))
+    }
+
+    pub(crate) fn forget(&self, db: &rusqlite::Connection) -> Result<()> {
+        db.execute("DELETE FROM meta WHERE key=?", [&self.key])
+            .map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     pub(crate) fn remember(&self, db: &rusqlite::Connection, path: &Path) -> Result<()> {
