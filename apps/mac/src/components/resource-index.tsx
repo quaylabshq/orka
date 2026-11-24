@@ -1,4 +1,5 @@
 import {
+  ChevronRightIcon,
   FolderIcon,
   GitForkIcon,
   LockIcon,
@@ -377,9 +378,24 @@ export function ResourceIndex({
           <EmptyState
             illustration={kind}
             title={`Couldn’t load ${noun}`}
-            // The cause, as local discovery reported it.
-            description={discoveryErrors.join(" ")}
+            description={`Orka couldn’t check this Mac for ${noun}.`}
             announce
+            details={
+              // The cause, as local discovery reported it.
+              <details className="resource-load-details">
+                <summary>
+                  <ChevronRightIcon
+                    className="resource-load-details-chevron"
+                    size={14}
+                    aria-hidden="true"
+                  />
+                  Details
+                </summary>
+                {discoveryErrors.map((error, index) => (
+                  <p key={index}>{error}</p>
+                ))}
+              </details>
+            }
             actions={
               onRefreshLocal && (
                 <Button

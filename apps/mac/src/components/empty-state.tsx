@@ -15,6 +15,7 @@ export function EmptyState({
   heading: Heading = "h2",
   announce = false,
   actions,
+  details,
 }: {
   title: string;
   description?: string;
@@ -24,6 +25,8 @@ export function EmptyState({
   heading?: "h2" | "h3";
   announce?: boolean;
   actions?: ReactNode;
+  /** More about the state below the actions, such as a reported cause. */
+  details?: ReactNode;
 }) {
   return (
     <div className={`empty-state empty-state--${size}`}>
@@ -49,6 +52,7 @@ export function EmptyState({
         )}
       </div>
       {actions && <div className="empty-state-actions">{actions}</div>}
+      {details}
     </div>
   );
 }

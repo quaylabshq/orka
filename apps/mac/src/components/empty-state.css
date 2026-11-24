@@ -78,3 +78,42 @@
   gap: 8px;
   margin-top: 8px;
 }
+
+/* A disclosure under the actions, such as the cause of a failed load. */
+.resource-load-details {
+  max-width: 48ch;
+  margin-top: 4px;
+  color: var(--text-tertiary);
+  font-size: var(--body-xs-font-size);
+  line-height: var(--body-xs-line-height);
+}
+
+.resource-load-details > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: var(--radius-control);
+  color: var(--text-secondary);
+  cursor: pointer;
+  list-style: none;
+}
+
+.resource-load-details > summary::-webkit-details-marker {
+  display: none;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .resource-load-details-chevron {
+    transition: transform var(--motion-control-duration)
+      var(--motion-control-ease);
+  }
+}
+
+.resource-load-details[open] .resource-load-details-chevron {
+  transform: rotate(90deg);
+}
+
+.resource-load-details > p {
+  margin: 8px 0 0;
+  overflow-wrap: anywhere;
+}

@@ -601,7 +601,14 @@ test("Could not load gives the cause and one action, Try again", async ({
   await expect(
     state.getByRole("heading", { name: "Couldn’t load memories" }),
   ).toBeVisible();
-  await expect(state).toContainText("Permission denied (os error 13)");
+  await expect(state.locator(".empty-state-description")).toHaveText(
+    "Orka couldn’t check this Mac for memories.",
+  );
+  // The cause as discovery reported it stays one click away.
+  const cause = state.getByText("Permission denied (os error 13)");
+  await expect(cause).toBeHidden();
+  await state.getByText("Details", { exact: true }).click();
+  await expect(cause).toBeVisible();
   await expect(state.getByRole("button")).toHaveText(["Try again"]);
   await expect(page.getByRole("searchbox")).toHaveCount(0);
   await expect(

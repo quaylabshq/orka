@@ -619,8 +619,12 @@ test("empty discovery failures explain the error and offer a retry", async ({
     plans.getByRole("heading", { name: "Couldn’t load plans" }),
   ).toBeVisible();
   await expect(plans.getByRole("status")).toContainText(
-    "Could not read the project folder.",
+    "Orka couldn’t check this Mac for plans.",
   );
+  await plans.getByText("Details", { exact: true }).click();
+  await expect(
+    plans.getByText("Could not read the project folder."),
+  ).toBeVisible();
   await expect(plans.getByText("Previously discovered items")).toHaveCount(0);
   await expect(plans.getByRole("searchbox")).toHaveCount(0);
   await expect(empty).toHaveCount(0);
