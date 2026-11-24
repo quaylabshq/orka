@@ -21,7 +21,7 @@ for (const width of [1160, 900]) {
     await page.setViewportSize({ width, height: 800 });
     await skillFixture(page, { open: false });
     const row = page.locator(".skill-table tbody tr");
-    await expect(row.getByLabel("Shared with the project")).toBeVisible();
+    await expect(row.getByLabel("Shared with team")).toBeVisible();
     await expect(row).not.toContainText("4 files");
     await expect(row.locator("time")).toHaveCount(0);
     const metrics = await row.evaluate((element) => {

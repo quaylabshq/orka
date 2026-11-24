@@ -164,6 +164,29 @@ for (const scene of pages) {
   });
 }
 
+test("the Location filter and each row's leading icon use the same words", async ({
+  page,
+}) => {
+  await open(page, "Plans");
+  await pick(page, "Location", "Shared with team");
+  await expect(rows(page)).toHaveCount(13);
+  await expect(rows(page).getByLabel("Shared with team")).toHaveCount(13);
+  await pick(page, "Location", "Shared with team");
+  await pick(page, "Location", "On this Mac");
+  await expect(rows(page)).toHaveCount(3);
+  await expect(rows(page).getByLabel("On this Mac")).toHaveCount(3);
+  await page.getByRole("button", { name: /^Sort/ }).click();
+  await expect(page.getByRole("menuitemradio")).toHaveText([
+    "Last updated",
+    "Name",
+    "Status",
+    "Repository",
+    "Owner",
+    "Oldest first",
+    "Newest first",
+  ]);
+});
+
 test("Memories tell repeated file names apart by agent, and the Kind filter splits instruction files from memories", async ({
   page,
 }) => {

@@ -6,9 +6,7 @@ import {
   ClockIcon,
   FileIcon,
   FolderIcon,
-  LaptopIcon,
   UserIcon,
-  UsersIcon,
 } from "lucide-react";
 import React, {
   useCallback,
@@ -26,6 +24,7 @@ import { ResourceItemMenu } from "./resource-menu.js";
 import {
   agentOf,
   creditedMember,
+  locationOf,
   type IndexColumn,
   type IndexPage,
 } from "./skill-index.js";
@@ -345,7 +344,7 @@ export function SkillTable({
         {resources.map((resource) => {
           const title = displayTitle(resource);
           const status = statusOf(resource);
-          const Leading = resource.local ? LaptopIcon : UsersIcon;
+          const location = locationOf(resource);
           const peeking = peek?.id === resource.resourceId;
           return (
             <ResourceItemMenu
@@ -380,14 +379,10 @@ export function SkillTable({
                 >
                   <th scope="row" className="skill-table-name">
                     <span className="skill-table-name-content">
-                      <Leading
+                      <location.icon
                         size={14}
                         className="skill-table-leading"
-                        aria-label={
-                          resource.local
-                            ? "On this Mac"
-                            : "Shared with the project"
-                        }
+                        aria-label={location.label}
                       />
                       <button
                         type="button"

@@ -689,7 +689,7 @@ test("local-only skills stay visible and a shared revision replaces the local ro
   await page.evaluate(() => (window as any).publishSkill());
   await expect(rows(page)).toHaveCount(1);
   await expect(rows(page).getByLabel("On this Mac")).toHaveCount(0);
-  await expect(rows(page).getByLabel("Shared with the project")).toBeVisible();
+  await expect(rows(page).getByLabel("Shared with team")).toBeVisible();
 });
 
 test("a new local import remains visible over an older shared deletion", async ({

@@ -272,7 +272,7 @@ test("search, filters and sort survive opening a skill, and focus returns to its
   page,
 }) => {
   await skillsIndexFixture(page, busy);
-  await pick(page, "Location", "Shared with the project");
+  await pick(page, "Location", "Shared with team");
   await sort(page).click();
   await page
     .getByRole("menuitemradio", { name: "Z to A", exact: true })

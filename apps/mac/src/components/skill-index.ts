@@ -107,6 +107,14 @@ const agents: ResourceSource[] = ["claude", "codex", "pi"];
 export const agentOf = (resource: ProjectResource) =>
   resource.source === "shared" ? undefined : resource.source;
 
+const locations = {
+  mac: { value: "mac", label: "On this Mac", icon: LaptopIcon },
+  shared: { value: "shared", label: "Shared with team", icon: UsersIcon },
+};
+/** Where a row lives, as its leading icon and the Location filter name it. */
+export const locationOf = (resource: ProjectResource) =>
+  locations[resource.local ? "mac" : "shared"];
+
 export const isFork = (resource: ProjectResource) =>
   Boolean(resource.fork || resource.nativeForkParentId);
 
@@ -298,11 +306,8 @@ const categories: Record<
   locations: {
     label: () => "Location",
     icon: MapPinIcon,
-    value: (resource) => (resource.local ? "mac" : "shared"),
-    options: () => [
-      { value: "mac", label: "On this Mac", icon: LaptopIcon },
-      { value: "shared", label: "Shared with the project", icon: UsersIcon },
-    ],
+    value: (resource) => locationOf(resource).value,
+    options: () => Object.values(locations),
   },
   forks: {
     label: () => "Forks",

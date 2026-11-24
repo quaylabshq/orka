@@ -130,7 +130,7 @@ for (const width of [1160, 900]) {
     );
     const teammate = row("Mira's session");
     await expect(
-      teammate.getByLabel("Shared with the project", { exact: true }),
+      teammate.getByLabel("Shared with team", { exact: true }),
     ).toBeVisible();
     await expect(teammate.locator(".skill-table-agent")).toHaveAttribute(
       "title",
