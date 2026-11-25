@@ -23,14 +23,9 @@ use uuid::Uuid;
 
 const RUNTIME_LOCK: &str = "session-storage.lock";
 const LEGACY_LOCKS: &[&str] = &["ui.lock", "daemon.lock", "workspace.lock"];
-const CORE_TABLES: &[&str] = &[
-    "meta",
-    "resources",
-    "bindings",
-    "outbox",
-    "conflicts",
-    "drafts",
-];
+// Historical account databases can predate drafts. Any existing drafts are
+// still scanned for references through VALUE_TABLES.
+const CORE_TABLES: &[&str] = &["meta", "resources", "bindings", "outbox", "conflicts"];
 const VALUE_TABLES: &[&str] = &[
     "projects",
     "resources",
@@ -374,7 +369,7 @@ fn scan_references(
     }
 
     let mut query = db
-        .prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+        .prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT GLOB 'sqlite_*'")
         .map_err(|_| "invalid_database")?;
     let tables = query
         .query_map([], |row| row.get::<_, String>(0))
@@ -383,8 +378,22 @@ fn scan_references(
     if !CORE_TABLES.iter().all(|name| tables.contains(*name))
         || tables.iter().any(|name| {
             !VALUE_TABLES.contains(&name.as_str())
-                && !matches!(name.as_str(), "meta" | "cursors" | "errors" | "sync_queue")
+                && !matches!(
+                    name.as_str(),
+                    "meta" | "cursors" | "errors" | "sync_queue" | "ai_usage_outbox"
+                )
         })
+    {
+        return Err("unsupported_database_schema");
+    }
+    // Some older profiles retain this auxiliary table. An empty table holds
+    // no references. Leave a profile with data in the table for investigation.
+    if tables.contains("ai_usage_outbox")
+        && db
+            .query_row("SELECT EXISTS(SELECT 1 FROM ai_usage_outbox)", [], |row| {
+                row.get::<_, bool>(0)
+            })
+            .map_err(|_| "invalid_database")?
     {
         return Err("unsupported_database_schema");
     }

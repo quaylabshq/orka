@@ -221,6 +221,77 @@ fn cleanup_skips_live_profiles_unsafe_files_and_ambiguous_databases() {
 }
 
 #[test]
+fn cleanup_accepts_legacy_database_without_drafts_and_empty_usage_outbox() {
+    let state = tempfile::tempdir().unwrap();
+    let root = state.path();
+    let legacy = root.join("blobs");
+    let service = root
+        .join("services")
+        .join(db::digest(b"https://fixture.invalid"));
+    let legacy_db = db::open_at(&root.join(Uuid::new_v4().to_string())).unwrap();
+    let service_db = db::open_at(&service.join(Uuid::new_v4().to_string())).unwrap();
+    legacy_db.execute_batch("DROP TABLE drafts").unwrap();
+    service_db
+        .execute_batch(
+            "CREATE TABLE ai_usage_outbox(
+                id TEXT PRIMARY KEY, value TEXT NOT NULL, uploaded INTEGER NOT NULL DEFAULT 0
+            )",
+        )
+        .unwrap();
+
+    let (hash, pending) = write_blob(&service.join("blobs"), &transcript("codex", "pending"));
+    legacy_db
+        .execute(
+            "INSERT INTO outbox VALUES ('queued','project','/v2/change',?,NULL)",
+            [manifest(&hash).to_string()],
+        )
+        .unwrap();
+    let (_, obsolete) = write_blob(&legacy, &transcript("claude", "obsolete"));
+    drop((legacy_db, service_db));
+
+    let dry = inspect(root, "fixture", false, 100);
+    assert!(!dry.blocked);
+    assert_eq!(dry.scopes[0].eligible_count, 1);
+    assert_eq!(dry.scopes[0].removed_count, 0);
+    assert_eq!(dry.scopes[1].skips["referenced"], 1);
+    assert!(obsolete.is_file());
+
+    let apply = inspect(root, "fixture", true, 100);
+    assert!(!apply.blocked);
+    assert_eq!(apply.scopes[0].removed_count, 1);
+    assert!(!obsolete.exists());
+    assert_eq!(db::digest(&fs::read(pending).unwrap()), hash);
+    assert_eq!(
+        inspect(root, "fixture", true, 100).scopes[0].removed_count,
+        0
+    );
+}
+
+#[test]
+fn cleanup_refuses_unrecognized_tables_and_nonempty_usage_outbox() {
+    for schema in [
+        "CREATE TABLE sqliteLookalike(value TEXT)",
+        "CREATE TABLE ai_usage_outbox(id TEXT PRIMARY KEY, value TEXT NOT NULL, uploaded INTEGER NOT NULL DEFAULT 0);
+         INSERT INTO ai_usage_outbox(id,value) VALUES ('report','{}')",
+        "DROP TABLE bindings",
+    ] {
+        let state = tempfile::tempdir().unwrap();
+        let root = state.path();
+        let database = db::open_at(&root.join("guest")).unwrap();
+        database.execute_batch(schema).unwrap();
+        drop(database);
+        let (_, obsolete) = write_blob(&root.join("blobs"), &transcript("codex", "obsolete"));
+        for apply in [false, true] {
+            let report = inspect(root, "fixture", apply, 100);
+            assert!(report.blocked, "{schema}");
+            assert_eq!(report.scopes[0].skips["unsupported_database_schema"], 1);
+            assert_eq!(report.scopes[0].removed_count, 0);
+            assert!(obsolete.is_file());
+        }
+    }
+}
+
+#[test]
 fn cleanup_resumes_after_partial_unlink() {
     let state = tempfile::tempdir().unwrap();
     let root = state.path();
