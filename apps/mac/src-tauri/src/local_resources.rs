@@ -5,7 +5,10 @@ use crate::{
 };
 use rusqlite::Connection;
 use serde_json::{json, Value};
-use std::{collections::BTreeMap, path::Path};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 use uuid::Uuid;
 
 fn shared(db: &Connection, id: &str) -> Result<Option<Value>> {
@@ -403,7 +406,7 @@ pub fn resource(db: &Connection, id: &str) -> Result<Value> {
     Ok(resource)
 }
 
-fn session_home(tool: &str) -> Result<std::path::PathBuf> {
+fn session_home(tool: &str) -> Result<PathBuf> {
     match tool {
         "codex" => native::codex_home(),
         "claude" => Ok(native::claude_home()?.join("projects")),
@@ -412,15 +415,25 @@ fn session_home(tool: &str) -> Result<std::path::PathBuf> {
     }
 }
 
+fn codex_home_location(home: &Path, path: &Path) -> Result<(PathBuf, PathBuf)> {
+    let relative = path
+        .strip_prefix(home)
+        .map_err(|_| "Item path is outside its source")?;
+    let home = home.canonicalize().map_err(history::native_read_error)?;
+    let path = home.join(relative);
+    Ok((home, path))
+}
+
 struct LocalSession<'a> {
     tool: &'a str,
     id: &'a str,
-    path: std::path::PathBuf,
+    path: PathBuf,
     size: usize,
     records: Vec<Value>,
     stamp: Option<crate::scan_cache::FileStamp>,
-    scope: Option<std::path::PathBuf>,
+    scope: Option<PathBuf>,
     codex: Option<history::CodexSegmentIndex>,
+    require_catalog_match: bool,
 }
 
 /// Resolve catalog history using the same native identity and source routing
@@ -429,6 +442,7 @@ fn resolve_session<'a>(
     db: &Connection,
     project: &Value,
     entry: &'a Value,
+    allow_catalog_snapshot: bool,
 ) -> Result<LocalSession<'a>> {
     let resource = &entry["resource"];
     let source =
@@ -456,6 +470,13 @@ fn resolve_session<'a>(
             .ok_or("Native session unavailable")?,
     );
     let home = session_home(tool)?;
+    // Trust the configured Codex home, including its alias. Validate the
+    // transcript's path beneath the resolved home without following child links.
+    let (home, path) = if tool == "codex" {
+        codex_home_location(&home, path)?
+    } else {
+        (home, path.to_path_buf())
+    };
     if !std::fs::symlink_metadata(&home)
         .map_err(history::native_read_error)?
         .is_dir()
@@ -463,9 +484,13 @@ fn resolve_session<'a>(
         return Err("Symlinked item locations are unavailable".into());
     }
     let codex = (tool == "codex").then(|| history::CodexSegmentIndex::new(&home));
+    let require_catalog_match = allow_catalog_snapshot
+        && codex
+            .as_ref()
+            .is_some_and(history::CodexSegmentIndex::traversal_unavailable);
     let path = match &codex {
-        Some(index) => index.current_path(path, id)?,
-        None => path.to_path_buf(),
+        Some(index) if !require_catalog_match => index.current_path(&path, id)?,
+        _ => path,
     };
     if !history::is_session(&path)
         || tool == "claude" && path.file_stem().and_then(|stem| stem.to_str()) != Some(id)
@@ -500,6 +525,7 @@ fn resolve_session<'a>(
         stamp,
         scope: (!checkout.historical).then_some(checkout.scope),
         codex,
+        require_catalog_match,
     })
 }
 
@@ -508,8 +534,8 @@ pub(crate) fn live_session(
     project: &Value,
     entry: &Value,
 ) -> Result<history::SessionSnapshot> {
-    let session = resolve_session(db, project, entry)?;
-    history::session_snapshot(
+    let session = resolve_session(db, project, entry, true)?;
+    let snapshot = history::session_snapshot(
         session.tool,
         &session.path,
         session.size,
@@ -517,7 +543,15 @@ pub(crate) fn live_session(
         session.stamp,
         session.scope.as_deref(),
         session.codex.as_ref(),
-    )
+    )?;
+    // An unreadable tree could contain a newer generation. An exact
+    // reconstruction is safe to show as the last cataloged snapshot.
+    if session.require_catalog_match
+        && entry["resource"]["files"] != json!(snapshot.content.manifest())
+    {
+        return Err(history::NATIVE_READ_UNAVAILABLE.into());
+    }
+    Ok(snapshot)
 }
 
 pub(crate) fn reading_session(
@@ -537,10 +571,12 @@ pub(crate) fn missing_or_unreadable_transcript(error: &str) -> bool {
         error,
         "Item is not available on this Mac"
             | history::NATIVE_READ_UNAVAILABLE
+            | history::INVALID_SEGMENT_METADATA
             | history::ANCESTOR_MISSING
             | history::ANCESTOR_BOUNDARY_UNAVAILABLE
             | "Unknown or corrupt native transcript; source preserved"
             | history::SESSION_SIZE_ERROR
+            | sources::SOURCE_UNAVAILABLE
     )
 }
 
@@ -569,11 +605,7 @@ pub(crate) fn export_session(
     }
     match live_session(db, project, &entry) {
         Ok(snapshot) => Ok(Some(snapshot)),
-        Err(error)
-            if missing_or_unreadable_transcript(&error) || error == sources::SOURCE_UNAVAILABLE =>
-        {
-            Ok(None)
-        }
+        Err(error) if missing_or_unreadable_transcript(&error) => Ok(None),
         Err(error) => Err(error),
     }
 }
@@ -607,7 +639,13 @@ pub(crate) fn unchanged_session_manifest(db: &Connection, resource: &Value) -> R
         return Ok(false);
     };
     let home = session_home(tool)?;
-    crate::resource_commands::canonical_path(&home, path)?;
+    // Scan-cache keys and dependency paths use the original, configured spelling.
+    if tool == "codex" {
+        let (canonical_home, canonical_path) = codex_home_location(&home, path)?;
+        crate::resource_commands::canonical_path(&canonical_home, &canonical_path)?;
+    } else {
+        crate::resource_commands::canonical_path(&home, path)?;
+    }
     let Some(stamp) = FileStamp::of(path) else {
         return Ok(false);
     };
@@ -652,7 +690,7 @@ pub fn native_binding(db: &Connection, resource: &Value) -> Result<Option<Value>
         return Ok(None);
     };
     if entry["resource"]["nativeSession"] == true {
-        let session = resolve_session(db, &project, &entry)?;
+        let session = resolve_session(db, &project, &entry, false)?;
         return Ok(Some(
             json!({"base":resource,"nativeId":session.id,"paths":[session.path]}),
         ));

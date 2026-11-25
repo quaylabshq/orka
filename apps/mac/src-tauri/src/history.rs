@@ -16,6 +16,7 @@ use walkdir::WalkDir;
 
 pub(crate) const MAX_FILE: u64 = 128 * 1024 * 1024;
 pub(crate) const NATIVE_READ_UNAVAILABLE: &str = "The native session file is unavailable.";
+pub(crate) const INVALID_SEGMENT_METADATA: &str = "Invalid native segment metadata";
 pub(crate) const ANCESTOR_MISSING: &str =
     "Inherited Codex history is missing. Sync this session again from the original device.";
 pub(crate) const ANCESTOR_BOUNDARY_UNAVAILABLE: &str = "Inherited Codex history is missing or has an invalid boundary. Sync this session again from the original device.";
@@ -294,8 +295,7 @@ struct Segment {
 
 fn parse_segment(path: &Path, id: &str) -> Result<Option<Segment>> {
     let first = first_line(path)?;
-    let record: Value =
-        serde_json::from_str(&first).map_err(|_| "Invalid native segment metadata")?;
+    let record: Value = serde_json::from_str(&first).map_err(|_| INVALID_SEGMENT_METADATA)?;
     if record["type"] == "session_meta" && record["payload"]["id"] == id {
         Ok(Some(Segment {
             ordinal: record["ordinal"].as_u64().unwrap_or(0),
@@ -351,15 +351,13 @@ impl CodexSegmentIndex {
         let mut by_id: HashMap<String, Vec<PathBuf>> = HashMap::new();
         let mut error = None;
         for directory in [home.join("sessions"), home.join("archived_sessions")] {
-            if !directory.exists() {
-                continue;
-            }
             match fs::symlink_metadata(&directory) {
                 Ok(meta) if meta.file_type().is_symlink() => {
                     error = Some("Native history directory is a symlink".into());
                     break;
                 }
                 Ok(_) => {}
+                Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
                 Err(err) => {
                     error = Some(native_read_error(err));
                     break;
@@ -450,6 +448,10 @@ impl CodexSegmentIndex {
     pub(crate) fn current_path(&self, path: &Path, id: &str) -> Result<PathBuf> {
         let candidates = self.segments(id)?;
         resolve_current_path(&self.home, path, id, &candidates)
+    }
+
+    pub(crate) fn traversal_unavailable(&self) -> bool {
+        self.error.as_deref() == Some(NATIVE_READ_UNAVAILABLE)
     }
 
     pub(crate) fn candidate_paths(&self, id: &str) -> Result<Vec<PathBuf>> {

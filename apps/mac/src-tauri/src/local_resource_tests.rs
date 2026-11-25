@@ -79,7 +79,7 @@ async fn private_session_refresh_read_and_export_leave_transcripts_in_the_native
 }
 
 #[tokio::test]
-async fn private_reader_uses_an_exact_frozen_share_if_the_original_is_missing() {
+async fn private_reader_and_exports_use_an_exact_frozen_share_when_unavailable() {
     let mut f = Fixture::new();
     prepare(&mut f);
     let entry = indexer::discover(&f.db, &f.project, "session")
@@ -101,6 +101,27 @@ async fn private_reader_uses_an_exact_frozen_share_if_the_original_is_missing() 
         unreadable_directory.unwrap()["messages"][0]["text"],
         "Private conversation"
     );
+    fs::write(path, b"{malformed Codex header\n").unwrap();
+    let corrupt = commands::session_messages(id.into(), None, Some(0), Some(1))
+        .await
+        .unwrap();
+    assert_eq!(corrupt["messages"][0]["text"], "Private conversation");
+    let project_zip = f._home.path().join("project.zip");
+    bundles::export_project(
+        &db::CacheScope::current().unwrap(),
+        f.project["id"].as_str().unwrap(),
+        &project_zip,
+    )
+    .unwrap();
+    let mut zip = zip::ZipArchive::new(fs::File::open(project_zip).unwrap()).unwrap();
+    let hash = preview["files"][0]["hash"].as_str().unwrap();
+    let mut exported = Vec::new();
+    zip.by_name(&format!("local-resources/{id}/blobs/{hash}"))
+        .unwrap()
+        .read_to_end(&mut exported)
+        .unwrap();
+    assert_eq!(db::digest(&exported), hash);
+
     fs::set_permissions(path, fs::Permissions::from_mode(0o000)).unwrap();
     let unreadable = commands::session_messages(id.into(), None, Some(0), Some(1))
         .await
@@ -111,7 +132,129 @@ async fn private_reader_uses_an_exact_frozen_share_if_the_original_is_missing() 
         .await
         .unwrap();
     assert_eq!(page["messages"][0]["text"], "Private conversation");
+    fs::rename(&f.root, f._home.path().join("unplugged")).unwrap();
+    let unplugged = commands::session_messages(id.into(), None, Some(0), Some(1))
+        .await
+        .unwrap();
+    assert_eq!(unplugged["messages"][0]["text"], "Private conversation");
+    bundles::export(&f.db, id, &f._home.path().join("session.zip")).unwrap();
     assert!(f.outbox().is_empty());
+}
+
+#[tokio::test]
+async fn private_codex_reader_can_reconstruct_only_the_exact_cataloged_snapshot() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut f = Fixture::new();
+    prepare(&mut f);
+    let archive = native::codex_home().unwrap().join("archived_sessions");
+    fs::create_dir(&archive).unwrap();
+    let entry = indexer::discover(&f.db, &f.project, "session")
+        .unwrap()
+        .remove(0);
+    let id = entry["resource"]["resourceId"].as_str().unwrap();
+    let path = entry["paths"][0].as_str().unwrap();
+    let read = || commands::session_messages(id.into(), None, Some(0), Some(200));
+    let permissions = fs::metadata(&archive).unwrap().permissions();
+    fs::set_permissions(&archive, fs::Permissions::from_mode(0o000)).unwrap();
+    let exact = read().await;
+    let resource = local_resources::resource(&f.db, id).unwrap();
+    let binding = local_resources::native_binding(&f.db, &resource);
+    let mut data = fs::read(path).unwrap();
+    data.extend(native::encode(&[json!({"type":"event_msg","payload":{"type":"user_message","message":"An uncataloged turn"}})]));
+    fs::write(path, data).unwrap();
+    let changed = read().await;
+    fs::set_permissions(&archive, permissions).unwrap();
+
+    assert_eq!(
+        exact.unwrap()["messages"][0]["text"],
+        "Private conversation"
+    );
+    assert!(binding.is_err());
+    assert_eq!(
+        changed.unwrap_err(),
+        crate::history::NATIVE_READ_UNAVAILABLE
+    );
+    let current = read().await.unwrap();
+    assert!(current["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|turn| turn["text"] == "An uncataloged turn"));
+    let hash = entry["resource"]["files"][0]["hash"].as_str().unwrap();
+    assert!(db::blob_read(hash).is_err());
+}
+
+#[test]
+fn private_codex_reader_requires_complete_ancestry_when_a_history_tree_is_unavailable() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut f = Fixture::new();
+    f.project["sharing"]["session"] = json!(false);
+    let project = f.project["id"].as_str().unwrap();
+    db::upsert(&f.db, "projects", project, project, &f.project).unwrap();
+    let (frozen, paths) = paginated_chain(&f);
+    let archive = native::codex_home().unwrap().join("archived_sessions");
+    fs::create_dir(&archive).unwrap();
+    fs::rename(&paths[0], archive.join(paths[0].file_name().unwrap())).unwrap();
+    let entry = indexer::discover(&f.db, &f.project, "session")
+        .unwrap()
+        .into_iter()
+        .find(|entry| entry["paths"][0] == json!(paths[2]))
+        .unwrap();
+    assert_eq!(entry["resource"]["files"], frozen["files"]);
+    let id = entry["resource"]["resourceId"].as_str().unwrap();
+    let inspect = || commands::inspect_resource(id.into(), "session.jsonl".into(), None, None);
+    let hash = frozen["files"][1]["hash"].as_str().unwrap();
+    let bytes = db::blob_read(hash).unwrap();
+    fs::remove_file(db::blob_path(hash).unwrap()).unwrap();
+    let permissions = fs::metadata(&archive).unwrap().permissions();
+    fs::set_permissions(&archive, fs::Permissions::from_mode(0o000)).unwrap();
+    let incomplete = inspect();
+    assert_eq!(db::blob(&bytes).unwrap(), hash);
+    let cached = inspect();
+    fs::set_permissions(&archive, permissions).unwrap();
+
+    assert_eq!(
+        incomplete.unwrap_err(),
+        crate::history::NATIVE_READ_UNAVAILABLE
+    );
+    let cached = cached.unwrap();
+    let content = cached["content"].as_str().unwrap();
+    assert!(content.contains("Ancestor α 🌊") && content.contains("Leaf γ"));
+}
+
+#[tokio::test]
+async fn private_codex_session_accepts_a_configured_home_alias_but_rejects_child_links() {
+    use std::os::unix::fs::symlink;
+
+    let mut f = Fixture::new();
+    prepare(&mut f);
+    let home = native::codex_home().unwrap();
+    let relocated = f._home.path().join("relocated-codex");
+    fs::rename(&home, &relocated).unwrap();
+    symlink(&relocated, &home).unwrap();
+    let entry = indexer::discover(&f.db, &f.project, "session")
+        .unwrap()
+        .remove(0);
+    let id = entry["resource"]["resourceId"].as_str().unwrap();
+    let read = || commands::session_messages(id.into(), None, Some(0), Some(1));
+    assert_eq!(
+        read().await.unwrap()["messages"][0]["text"],
+        "Private conversation"
+    );
+    let resource = local_resources::resource(&f.db, id).unwrap();
+    assert!(local_resources::native_binding(&f.db, &resource)
+        .unwrap()
+        .is_some());
+    let path = Path::new(entry["paths"][0].as_str().unwrap());
+    let elsewhere = relocated.join("not-a-session-path.jsonl");
+    fs::rename(path, &elsewhere).unwrap();
+    symlink(elsewhere, path).unwrap();
+    assert_eq!(
+        read().await.unwrap_err(),
+        "Symlinked item locations are unavailable"
+    );
 }
 
 #[tokio::test]
