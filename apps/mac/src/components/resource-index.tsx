@@ -422,7 +422,9 @@ export function ResourceIndex({
       tabIndex={-1}
     >
       {status}
-      <div className="resource-index-body">
+      <div
+        className={`resource-index-body${headShown ? " resource-index-body--sticky-toolbar" : ""}`}
+      >
         {(!list || (!toolbarShown && !restrictedEmpty)) && accessRequest}
         {discovering && resources.length > 0 && (
           <span className="sr-only" role="status">

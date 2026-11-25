@@ -315,7 +315,7 @@ test("a peek with a long path stays inside the list at the minimum window", asyn
 
 /**
  * Scrolls the list well past its start, then expects the heading row right
- * under the toolbar, with nothing from the rows passing beneath on top of it.
+ * under the toolbar, with the toolbar and headings covering the rows behind them.
  */
 const expectHeadingsUnderToolbar = async (page: Page) => {
   await body(page).evaluate((element) => {
@@ -326,6 +326,19 @@ const expectHeadingsUnderToolbar = async (page: Page) => {
   const headings = page.locator(".index-table thead th");
   await expect(headings.first()).toBeInViewport();
   const toolbar = (await page.locator(".index-head").boundingBox())!;
+  const strip = await body(page).evaluate((view) => {
+    const tools = view.querySelector(".index-toolbar")!.getBoundingClientRect();
+    const top = view.getBoundingClientRect().top;
+    const y = (top + tools.top) / 2;
+    return [
+      tools.left + 2,
+      (tools.left + tools.right) / 2,
+      tools.right - 2,
+    ].map(
+      (x) => !!document.elementFromPoint(x, y)?.closest(".index-table tbody"),
+    );
+  });
+  expect(strip).toEqual([false, false, false]);
   const box = (await headings.first().boundingBox())!;
   // Only the table's top edge, a pixel, lies between them.
   const gap = box.y - (toolbar.y + toolbar.height);
@@ -382,5 +395,15 @@ test("the headings stay under a wrapped toolbar with filter chips", async ({
   await page.keyboard.press("Escape");
   await page.keyboard.press("Escape");
   await expect(page.locator(".index-filter-chip")).toHaveCount(1);
+  await expectHeadingsUnderToolbar(page);
+});
+
+test("scrolled rows stay hidden above the toolbar after a discovery warning", async ({
+  page,
+}) => {
+  await open(page, "Sessions", { sessions: 200, discovery: "failed" });
+  await expect(
+    page.getByText("Some local sessions couldn’t be checked"),
+  ).toBeVisible();
   await expectHeadingsUnderToolbar(page);
 });
