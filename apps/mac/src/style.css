@@ -893,7 +893,7 @@
     padding-top: var(--index-top-inset);
   }
   /* Cover the scroll area's top padding even when a notice precedes the toolbar. */
-  .resource-index-body:has(> .index-head)::before {
+  .resource-index-body--sticky-toolbar::before {
     content: "";
     position: sticky;
     top: calc(-1 * var(--index-top-inset));
