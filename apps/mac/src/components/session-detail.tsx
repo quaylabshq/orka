@@ -76,12 +76,12 @@ export function SessionDetail({
     !view.preview &&
     (resource.source === "codex" || resource.source === "claude"),
   );
-  const { data, refetch } = useLiveStatus(identity, scope, enabled && !offline);
-  // A known publisher can still cancel locally during a network interruption.
-  const status =
-    enabled && (!offline || (data?.active && resource.owner === user))
-      ? data
-      : undefined;
+  const {
+    data,
+    refetch,
+    isError: liveStatusError,
+  } = useLiveStatus(identity, scope, enabled, offline);
+  const status = enabled && !liveStatusError ? data : undefined;
   const refresh = useCallback(() => {
     void refetch();
   }, [refetch]);
@@ -100,7 +100,9 @@ export function SessionDetail({
   const notes = [
     resource.local && "This session is on this Mac and hasn’t been shared.",
     resource.localChanges &&
-      "Local changes are only on this Mac. Shared links open the last shared snapshot.",
+      (status?.active
+        ? "The saved snapshot and the current live conversation can differ."
+        : "Local changes are only on this Mac. Shared links open the last shared snapshot."),
     resource.owner !== user && "Resuming saves your continuation as a copy.",
   ].filter((note): note is string => Boolean(note));
 
@@ -277,6 +279,14 @@ export function SessionDetail({
         ),
         context: (
           <>
+            {enabled && liveStatusError && data?.available && (
+              <p className="detail-info-note" role="status">
+                Live sharing is unavailable.{" "}
+                <Button variant="tertiary" size="sm" onClick={refresh}>
+                  Retry live connection
+                </Button>
+              </p>
+            )}
             {status?.available && (
               <LiveControls
                 key={status.episodeId ?? "inactive"}

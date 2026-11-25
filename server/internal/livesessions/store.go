@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"hash"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -63,23 +64,49 @@ type Mutation struct {
 }
 
 func validRows(records string) bool {
-	if !utf8.ValidString(records) || (records != "" && !strings.HasSuffix(records, "\n")) {
+	if records == "" {
+		return true
+	}
+	if !utf8.ValidString(records) || !strings.HasSuffix(records, "\n") {
 		return false
 	}
 	for line := range strings.SplitSeq(strings.TrimSuffix(records, "\n"), "\n") {
-		if line == "" {
-			return records == ""
-		}
-		if len(line)+1 > maxAppend {
+		if len(line) == 0 || len(line)+1 > maxAppend {
 			return false
 		}
-		var msg struct {
-			Role string  `json:"role"`
-			Text *string `json:"text"`
-		}
 		dec := json.NewDecoder(strings.NewReader(line))
-		dec.DisallowUnknownFields()
-		if !json.Valid([]byte(line)) || dec.Decode(&msg) != nil || msg.Text == nil || (msg.Role != "user" && msg.Role != "assistant") {
+		if tok, e := dec.Token(); e != nil || tok != json.Delim('{') {
+			return false
+		}
+		role, text := false, false
+		for dec.More() {
+			k, e := dec.Token()
+			if e != nil {
+				return false
+			}
+			var v *string
+			if e = dec.Decode(&v); e != nil || v == nil {
+				return false
+			}
+			switch k {
+			case "role":
+				if role || (*v != "user" && *v != "assistant") {
+					return false
+				}
+				role = true
+			case "text":
+				if text {
+					return false
+				}
+				text = true
+			default:
+				return false
+			}
+		}
+		if tok, e := dec.Token(); e != nil || tok != json.Delim('}') || !role || !text {
+			return false
+		}
+		if _, e := dec.Token(); e != io.EOF {
 			return false
 		}
 	}
@@ -100,15 +127,17 @@ type room struct {
 	body     []byte
 	sum      hash.Cloner
 	head     Position
+	frames   int // physical frames in the current journal
 	marks    []mark
 	receipts []receipt
 	changed  chan struct{}
 	watchers int
 	fault    bool
 	// The store mutex protects lifecycle and admission fields.
-	retired bool
-	users   int
-	touched time.Time
+	retired   bool
+	users     int
+	touched   time.Time
+	inspected time.Time
 }
 
 func newRoom() *room {
@@ -116,13 +145,14 @@ func newRoom() *room {
 }
 
 type Store struct {
-	dir   string
-	lock  *os.File
-	stop  chan struct{}
-	done  chan struct{}
-	mu    sync.Mutex
-	rooms map[Key]*room
-	bytes int
+	dir            string
+	lock           *os.File
+	stop           chan struct{}
+	done           chan struct{}
+	mu             sync.Mutex
+	rooms          map[Key]*room
+	bytes          int
+	lastInspection time.Time
 }
 
 func Open(dir string) (*Store, error) {
@@ -232,6 +262,35 @@ func (s *Store) restore() error {
 	}
 	return nil
 }
+
+// Recheck no more than one idle retained episode per second when a new room
+// would exceed a limit. Prefer the same resource, then retry other idle rooms.
+func (s *Store) reclaimCandidate(k Key) (Key, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.rooms[k] != nil || len(s.rooms) < maxRooms && s.bytes < maxBytes-maxSession || time.Since(s.lastInspection) < time.Second {
+		return Key{}, false
+	}
+	var candidate Key
+	var selected *room
+	for key, r := range s.rooms {
+		if r.users != 0 || r.retired || time.Since(r.inspected) < time.Second {
+			continue
+		}
+		// The oldest uninspected room wins. Same-resource ties are most
+		// likely to be visible to the current writer after a recent stop.
+		if selected == nil || r.inspected.Before(selected.inspected) || r.inspected.Equal(selected.inspected) && key.Project == k.Project && key.Resource == k.Resource {
+			candidate, selected = key, r
+		}
+	}
+	if selected == nil {
+		return Key{}, false
+	}
+	s.lastInspection = time.Now()
+	selected.inspected = s.lastInspection
+	return candidate, true
+}
+
 func (s *Store) acquire(k Key) (*room, func(), error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -351,7 +410,7 @@ func (s *Store) mutate(k Key, r *room, m Mutation, checkpoint bool) (Position, e
 		return r.head, errConflict
 	}
 	next := receipt{Position: Position{r.head.Cursor + 1, m.Hash}, ID: m.Request, Proof: proof}
-	reset := checkpoint || len(r.marks) >= historyLimit
+	reset := checkpoint || r.frames >= historyLimit
 	data := []byte(m.Records)
 	if reset && !checkpoint {
 		data = bytes.Join([][]byte{r.body, data}, nil)
@@ -362,6 +421,14 @@ func (s *Store) mutate(k Key, r *room, m Mutation, checkpoint bool) (Position, e
 		if len(frame.Prior) >= historyLimit {
 			frame.Prior = frame.Prior[1:]
 		}
+		// A physical compaction preserves the checked suffixes since the
+		// last actual rewrite. Their hashes already exist in the receipts.
+		if !checkpoint {
+			count := min(len(r.marks), len(frame.Prior))
+			for _, m := range r.marks[len(r.marks)-count:] {
+				frame.Ends = append(frame.Ends, m.End)
+			}
+		}
 	}
 	if e := saveFrame(s.dir, k.name(), frame, data); e != nil {
 		r.fault = true
@@ -370,14 +437,18 @@ func (s *Store) mutate(k Key, r *room, m Mutation, checkpoint bool) (Position, e
 	}
 	if reset {
 		r.body = data
-		r.marks = nil
+		r.frames = 0
 	} else {
 		r.body = append(r.body, data...)
 	}
+	if checkpoint {
+		r.marks = nil
+	}
+	r.frames++
 	r.sum = sum
 	r.head = next.Position
 	r.receipts = appendRecent(r.receipts, next)
-	r.marks = append(r.marks, mark{r.head, len(r.body)})
+	r.marks = appendRecent(r.marks, mark{r.head, len(r.body)})
 	close(r.changed)
 	r.changed = make(chan struct{})
 	reserved = false

@@ -62,3 +62,35 @@ test("an agent follow targets an explicitly chosen local conversation", async ({
     page.getByRole("button", { name: "Follow", exact: true }),
   ).toBeVisible();
 });
+
+test("an append preserves an older page and the reader can move forward one page", async ({
+  page,
+}) => {
+  await liveFixture(page, false);
+  await page.evaluate(() => (window as any).seedLiveMessages(128));
+  await page.getByRole("button", { name: "Watch live" }).click();
+  const feed = page.getByLabel("Live conversation", { exact: true });
+  await expect(
+    feed.getByText("Earlier turn 127", { exact: true }),
+  ).toBeVisible();
+  await feed.getByRole("button", { name: "Show earlier turns" }).click();
+  await feed.getByRole("button", { name: "Show earlier turns" }).click();
+  await expect(feed.getByText("Earlier turn 8", { exact: true })).toHaveCount(
+    1,
+  );
+  await feed
+    .getByRole("button", { name: "Jump to latest turns" })
+    .scrollIntoViewIfNeeded();
+  await page.evaluate(() => (window as any).finishLiveWait(false));
+  await expect(feed.getByText("Earlier turn 8", { exact: true })).toHaveCount(
+    1,
+  );
+  await feed.getByRole("button", { name: "Show newer turns" }).click();
+  await expect(feed.getByText("Earlier turn 48", { exact: true })).toHaveCount(
+    1,
+  );
+  await feed.getByRole("button", { name: "Jump to latest turns" }).click();
+  await expect(
+    feed.getByText("The migration preserves existing sessions."),
+  ).toBeVisible();
+});

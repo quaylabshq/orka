@@ -23,6 +23,13 @@ export async function liveFixture(page: Page, owner: boolean) {
         { index: 0, role: "user", text: "Review the migration with me." },
       ],
     };
+    w.seedLiveMessages = (count: number) => {
+      feed.messages = Array.from({ length: count }, (_, index) => ({
+        index,
+        role: "assistant",
+        text: "Earlier turn " + index,
+      }));
+    };
     w.liveActions = [];
     w.__TAURI_INTERNALS__.invoke = (command: string, args: any) => {
       if (command !== "live_session") return original(command, args);
@@ -65,7 +72,7 @@ export async function liveFixture(page: Page, owner: boolean) {
               status.following = false;
             } else
               feed.messages.push({
-                index: 1,
+                index: feed.messages.length,
                 role: "assistant",
                 text: "The migration preserves existing sessions.",
               });

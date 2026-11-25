@@ -268,7 +268,7 @@ func TestHeldAndOutgoingCapacity(t *testing.T) {
 	}
 	k := testKey
 	k.Episode = id(1000)
-	call(t, h, k, "content", "GET", "peer", nil).require(t, 429, nil)
+	call(t, h, k, "checkpoint", "PUT", "owner", mutation(21, Position{Hash: emptyHash}, first, first)).require(t, 429, nil)
 	bad := mutation(12, head, "{\"role\":\"assistant\",\"text\":\"x\",\"tool\":\"hidden\"}\n", "")
 	call(t, h, testKey, "append", "POST", "owner", bad).require(t, 400, nil)
 }
@@ -321,5 +321,175 @@ func TestAuthorityBindsScopeAndRejectsRedirects(t *testing.T) {
 	}
 	if unexpected.Load() {
 		t.Fatal("credentials followed redirect")
+	}
+}
+
+func TestContentIsFixedBeforeFinalAuthorityCheck(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	var reads atomic.Int32
+	entered, complete := make(chan struct{}), make(chan struct{})
+	h := New(store, func(_ context.Context, _ string, scope AuthRequest) int {
+		if scope.Action == "read" {
+			if reads.Add(1) == 1 {
+				close(entered)
+			}
+			<-complete
+		}
+		return 200
+	})
+	var head Position
+	call(t, h, testKey, "checkpoint", "PUT", "owner", mutation(11, Position{Hash: emptyHash}, first, first)).require(t, 200, &head)
+	done := make(chan exchange, 1)
+	go func() { done <- call(t, h, testKey, "content", "GET", "peer", nil) }()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		close(complete)
+		t.Fatal("content authorization was not requested")
+	}
+	change := call(t, h, testKey, "append", "POST", "owner", mutation(12, head, second, first+second))
+	close(complete)
+	change.require(t, 200, nil)
+	var view content
+	(<-done).require(t, 200, &view)
+	if view.Records != first || view.Position != head || reads.Load() != 1 {
+		t.Fatal("unexpected authorized content or auth count", view, reads.Load())
+	}
+}
+
+func TestPresentationRecordFields(t *testing.T) {
+	for _, row := range []string{
+		`{"text":"hello","role":"assistant"}`,
+		`{"role":"user","text":""}`,
+	} {
+		if !validRows(row + "\n") {
+			t.Fatalf("valid row rejected: %s", row)
+		}
+	}
+	for _, row := range []string{
+		`{"role":"user","text":"one","text":"two"}`,
+		`{"role":"tool","role":"user","text":"x"}`,
+		`{"Role":"user","text":"x"}`,
+		`{"role":"user","Text":"x"}`,
+		`{"role":"user","text":null}`,
+		`{"role":"user","text":4}`,
+		`{"role":"user","text":"x","tool":"private"}`,
+		`{"role":"user","text":"x"} true`,
+	} {
+		if validRows(row + "\n") {
+			t.Fatalf("invalid row accepted: %s", row)
+		}
+	}
+}
+
+func TestFullRelayReclaimsOnlyVerifiedTerminalRooms(t *testing.T) {
+	for _, status := range []int{200, 403, 404, 410, 503} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			s, err := Open(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			for i := range maxRooms {
+				key := Key{id(i + 100), id(i + 200), id(i + 300)}
+				if i == 0 {
+					key = testKey
+				}
+				_, release, err := s.acquire(key)
+				if err != nil {
+					t.Fatal(err)
+				}
+				release()
+			}
+			var probes int
+			h := New(s, func(_ context.Context, _ string, scope AuthRequest) int {
+				if scope.Action == "read" {
+					probes++
+					if scope.Key != testKey {
+						t.Error("did not probe previous episode", scope.Key)
+					}
+					return status
+				}
+				return 200
+			})
+			next := Key{testKey.Project, testKey.Resource, id(600)}
+			cp := mutation(11, Position{Hash: emptyHash}, first, first)
+			want := 429
+			if status == 410 {
+				want = 200
+			}
+			call(t, h, next, "checkpoint", "PUT", "owner", cp).require(t, want, nil)
+			call(t, h, next, "checkpoint", "PUT", "owner", cp).require(t, want, nil)
+			if probes != 1 {
+				t.Fatal("unexpected pressure probes", probes)
+			}
+		})
+	}
+}
+
+func TestFiveWarmReadersStayIncrementalAcrossJournalCompaction(t *testing.T) {
+	dir := t.TempDir()
+	store, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { store.Close() }()
+	allow := func(context.Context, string, AuthRequest) int { return 200 }
+	h := New(store, allow)
+	// One KiB per turn makes retransfers and envelope overhead visible.
+	line := fmt.Sprintf("{\"role\":\"assistant\",\"text\":\"%s\"}\n", strings.Repeat("x", 1024-len("{\"role\":\"assistant\",\"text\":\"\"}\n")))
+	base := strings.Repeat(line, 1024)
+	total := base
+	head := Position{Hash: emptyHash}
+	call(t, h, testKey, "checkpoint", "PUT", "owner", mutation(10, head, base, base)).require(t, 200, &head)
+	// The last append here fills the first physical journal.
+	for i := 1; i < historyLimit; i++ {
+		total += line
+		change := mutation(10+i, head, line, total)
+		call(t, h, testKey, "append", "POST", "owner", change).require(t, 200, &head)
+	}
+	old := head
+	for i := range 5 {
+		var start content
+		call(t, h, testKey, "content", "GET", fmt.Sprint(i), nil).require(t, 200, &start)
+		if start.Records != total || start.Position != old {
+			t.Fatal("could not warm reader", i)
+		}
+	}
+	total += line
+	call(t, h, testKey, "append", "POST", "owner", mutation(10+historyLimit, head, line, total)).require(t, 200, &head)
+	readFive := func() {
+		t.Helper()
+		route := fmt.Sprintf("content?cursor=%d&hash=%s", old.Cursor, old.Hash)
+		var bytes int
+		for i := range 5 {
+			var tail content
+			reply := call(t, h, testKey, route, "GET", fmt.Sprint(i), nil)
+			reply.require(t, 200, &tail)
+			if tail.Reset || tail.Records != line || tail.Position != head {
+				t.Fatalf("reader %d lost warm cursor", i)
+			}
+			bytes += len(reply.body)
+		}
+		t.Logf("five checked warm tails: %d useful bytes, %d HTTP body bytes", 5*len(line), bytes)
+	}
+	readFive()
+	store.Close()
+	store, err = Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h = New(store, allow)
+	readFive()
+	// A semantic rewrite still fences the earlier suffixes.
+	call(t, h, testKey, "checkpoint", "PUT", "owner", mutation(11+historyLimit, head, second, second)).require(t, 200, &head)
+	var reset content
+	call(t, h, testKey, fmt.Sprintf("content?cursor=%d&hash=%s", old.Cursor, old.Hash), "GET", "peer", nil).require(t, 200, &reset)
+	if !reset.Reset || reset.Records != second {
+		t.Fatal("rewrite kept obsolete cursor")
 	}
 }

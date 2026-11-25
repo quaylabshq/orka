@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    history, native, scan_cache::FileStamp, session_presentation,
+    history, native, resource_commands, scan_cache::FileStamp, session_presentation,
     session_redaction::SessionRedactor,
 };
 use std::path::{Path, PathBuf};
@@ -28,23 +28,52 @@ fn path(s: &Session) -> Result<PathBuf> {
     let native = field(&s.binding, "nativeId")?;
     let db = s.checked_source()?;
     let activity=db::rows(&db,"SELECT value FROM active WHERE native_id=? AND json_extract(value,'$.project')=? AND json_extract(value,'$.source')=?", &[&native,&s.project.as_str(),&field(&s.resource,"source")?])?;
+    let binding = indexer::binding(&db, &s.id)?;
+    if binding["nativeId"] != native {
+        return Err("Native transcript identity changed".into());
+    }
     let path = activity
         .first()
         .and_then(|a| a["transcriptPath"].as_str())
-        .or_else(|| s.binding["paths"][0].as_str())
+        .or_else(|| binding["paths"][0].as_str())
         .ok_or("Native transcript unavailable")?;
-    let path = Path::new(path)
-        .canonicalize()
-        .map_err(|_| "Native transcript unavailable")?;
-    let home = if s.resource["source"] == "codex" {
+    let tool = field(&s.resource, "source")?;
+    let home = if tool == "codex" {
         native::codex_home()?
     } else {
-        native::claude_home()?
+        native::claude_home()?.join("projects")
     };
-    if !path.starts_with(home.canonicalize().map_err(|_| "Native home unavailable")?) {
-        return Err("Native transcript moved outside its provider home".into());
+    let original = Path::new(path);
+    // On rotation/archiving the stored path may disappear before the hook updates it.
+    let path = if tool == "codex" && !original.exists() {
+        history::current_path(original, native)?
+    } else {
+        original.to_path_buf()
+    };
+    checked_path(&home, tool, native, &path)
+}
+fn checked_path(home: &Path, tool: &str, id: &str, path: &Path) -> Result<PathBuf> {
+    // A configured Codex home can itself be an alias. Child links must not
+    // redirect reads outside the selected transcript's native store.
+    let root = if tool == "codex" {
+        home.canonicalize().map_err(|_| "Native home unavailable")?
+    } else {
+        home.to_path_buf()
+    };
+    let relative = path
+        .strip_prefix(home)
+        .or_else(|_| path.strip_prefix(&root))
+        .map_err(|_| "Native transcript moved outside its provider home")?;
+    if !history::is_session(path)
+        || (tool == "codex"
+            && !["sessions", "archived_sessions"]
+                .iter()
+                .any(|dir| relative.starts_with(dir)))
+        || (tool == "claude" && path.file_stem().and_then(|s| s.to_str()) != Some(id))
+    {
+        return Err("The session's native location changed".into());
     }
-    Ok(path)
+    resource_commands::canonical_path(&root, &root.join(relative))
 }
 fn project_records(mut rows: Vec<Value>) -> Result<String> {
     rows.iter_mut().for_each(SessionRedactor::redact);
@@ -62,26 +91,52 @@ fn project_records(mut rows: Vec<Value>) -> Result<String> {
     Ok(out)
 }
 fn current(s: &Session, path: &Path) -> Result<String> {
+    let mut db = s.checked_source()?;
     let root = Path::new(field(&s.source, "path")?);
     let tool = field(&s.resource, "source")?;
+    let id = field(&s.binding, "nativeId")?;
+    let sources = crate::worktrees::session_sources(&db, &s.source)?;
+    let home = crate::worktrees::home()?;
+    let scope =
+        crate::worktrees::SessionScope::new(&db, &s.source, root, &sources, &home)?.read_only();
+    let verify_source = |id: &str, records: &[Value]| -> Result<()> {
+        let cwd = native::session_cwd(tool, records)?;
+        let checkout = scope
+            .for_session(tool, id, &cwd)?
+            .ok_or("Native session belongs to another repository")?;
+        if checkout.historical
+            && (cwd.exists()
+                || !cwd.starts_with(&checkout.scope)
+                || cwd
+                    .components()
+                    .any(|part| part == std::path::Component::ParentDir))
+        {
+            return Err("The session's original worktree location changed".into());
+        }
+        Ok(())
+    };
     let records = if tool == "codex" {
-        let h = history::History::local(path, Some(root))?;
-        if h.rollouts.last().map(|r| r.id.as_str()) != Some(field(&s.binding, "nativeId")?) {
+        let h = history::History::local(path, None)?;
+        let leaf = h.rollouts.last().ok_or("No Codex session history")?;
+        if leaf.id != id || !history::eligible_codex_session(&db, id, &leaf.records)? {
             return Err("Codex transcript identity changed".into());
+        }
+        for rollout in &h.rollouts {
+            verify_source(&rollout.id, &rollout.records)?;
         }
         h.records()
     } else {
         let r = native::complete_records(&history::read_session(path)?)?;
-        let (id, cwd, _) = native::session_info(tool, &r)?;
-        if id != field(&s.binding, "nativeId")? || !cwd.starts_with(root) {
-            return Err("Claude transcript identity or source changed".into());
+        if native::session_info(tool, &r)?.0 != id {
+            return Err("Claude transcript identity changed".into());
         }
+        verify_source(id, &r)?;
         r
     };
     prepare(
-        &mut s.checked_source()?,
+        &mut db,
         &s.project,
-        field(&s.binding, "nativeId")?,
+        id,
         s.source["governed"] == true,
         records,
     )
@@ -141,7 +196,7 @@ pub(super) async fn start(s: &Session) -> Result<()> {
     db::set(&s.checked_db()?, &s.intent_key(), &intent)?;
     let result = s.control("start", body).await;
     if let Err(e) = &result {
-        if e.starts_with("409:") {
+        if denied(e) || e.starts_with("400:") || e.starts_with("409:") {
             db::set(&s.checked_db()?, &s.intent_key(), &Value::Null)?
         }
     }
@@ -201,6 +256,12 @@ async fn write(
         tail.unwrap_or_default()
     };
     let hash = db::digest(records.as_bytes());
+    let intent = db::get(&s.checked_source()?, &s.intent_key())?;
+    if intent["episodeId"] != ep
+        || !matches!(intent["phase"].as_str(), Some("starting" | "running"))
+    {
+        return Err("Live publication was stopped".into());
+    }
     let data = json!({"requestId":Uuid::new_v4().to_string(),"baseCursor":feed.cursor,"baseHash":feed.hash(),"hash":hash,"records":sent,"deviceId":s.device,"contextSources":sources(s)?});
     let (method, route) = if is_checkpoint {
         ("PUT", "checkpoint")
@@ -325,7 +386,7 @@ async fn stop_remote(s: &Session, ep: &str) -> Result<()> {
     }
     db::set(&db, &stop_key(s, ep), &Value::Null)
 }
-pub(super) async fn stop(s: &Session, ep: &str) -> Result<()> {
+pub(super) fn queue_stop(s: &Session, ep: &str) -> Result<()> {
     if s.resource["owner"] != s.user {
         return Err("Only the session owner can stop live sharing".into());
     }
@@ -339,8 +400,10 @@ pub(super) async fn stop(s: &Session, ep: &str) -> Result<()> {
         &db,
         &stop_key(s, ep),
         &json!({"session":s.input(),"episodeId":ep}),
-    )?;
-    drop(db);
+    )
+}
+pub(super) async fn stop(s: &Session, ep: &str) -> Result<()> {
+    queue_stop(s, ep)?;
     let result = stop_remote(s, ep).await;
     if result.is_err() {
         schedule_stop(s.clone(), ep.to_owned());
@@ -388,6 +451,49 @@ pub(super) fn schedule_stop(s: Session, ep: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_locations_reject_moved_identity_and_child_symlinks_but_accept_codex_home_alias() {
+        use std::fs;
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("provider");
+        let id = Uuid::new_v4().to_string();
+        let sessions = home.join("sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        let path = sessions.join(format!("{id}.jsonl"));
+        fs::write(&path, b"{}\n").unwrap();
+        let alias = dir.path().join("configured-alias");
+        symlink(&home, &alias).unwrap();
+        assert_eq!(
+            checked_path(
+                &alias,
+                "codex",
+                &id,
+                &alias.join("sessions").join(path.file_name().unwrap())
+            )
+            .unwrap(),
+            path.canonicalize().unwrap()
+        );
+        assert!(checked_path(
+            &home,
+            "codex",
+            &id,
+            &home.join("logs").join(path.file_name().unwrap())
+        )
+        .is_err());
+        assert!(checked_path(&home, "claude", &id, &path).is_ok());
+        assert!(checked_path(&home, "claude", "changed", &path).is_err());
+        let redirect = home.join("archived_sessions");
+        symlink(&sessions, &redirect).unwrap();
+        assert!(checked_path(
+            &home,
+            "codex",
+            &id,
+            &redirect.join(path.file_name().unwrap())
+        )
+        .is_err());
+    }
+
     #[test]
     fn redacts_provider_history_and_skips_tool_setup_and_incomplete_tail() {
         let secret = format!("sk-{}", "s".repeat(24));

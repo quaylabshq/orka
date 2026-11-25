@@ -1001,6 +1001,9 @@
   .live-session-panel {
     @apply my-3 flex min-w-0 flex-col gap-2 rounded-lg border border-line p-3 text-sm;
   }
+  .live-session-panel .detail-info-note + .live-session-actions {
+    @apply mt-2;
+  }
   .live-session-actions,
   .live-session-target {
     @apply flex flex-wrap items-center gap-2;

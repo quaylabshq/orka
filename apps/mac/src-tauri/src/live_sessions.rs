@@ -201,6 +201,21 @@ impl Session {
             self.project, self.id, episode, route
         )
     }
+    fn offline_status(&self) -> Result<Value> {
+        let intent = db::get(&self.checked_db()?, &self.intent_key())?;
+        let owned = self.resource["owner"] == self.user
+            && intent["deviceId"] == self.device
+            && intent["session"] == self.input();
+        let episode = owned.then(|| intent["episodeId"].as_str()).flatten();
+        let stopping = episode.is_some() && intent["phase"] == "stopping";
+        let publishing =
+            episode.is_some() && matches!(intent["phase"].as_str(), Some("running" | "starting"));
+        Ok(
+            json!({"offline":true,"available":stopping || publishing,"eligible":false,"active":publishing,
+            "episodeId":episode,"publishing":publishing,"stopping":stopping,"following":false,"agentFollowing":false,
+            "reason":stopping.then_some("Finishing stop when connected.")}),
+        )
+    }
     async fn status(&self) -> Result<Value> {
         static PROBE: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
         let available = if matches!(self.resource["source"].as_str(), Some("claude" | "codex")) {
@@ -255,10 +270,12 @@ impl Session {
             None
         };
         let intent = db::get(&db, &self.intent_key())?;
+        let stopping =
+            episode.is_some_and(|ep| intent["episodeId"] == ep && intent["phase"] == "stopping");
         Ok(
             json!({"available":available,"eligible":eligible,"active":episode.is_some(),"episodeId":episode,
-            "publishing":episode.is_some() && remote["deviceId"]==self.device && self.resource["owner"]==self.user,
-            "following":following,"agentFollowing":ag,"reason":intent["error"].as_str().or(reason)}),
+            "publishing":episode.is_some() && !stopping && remote["deviceId"]==self.device && self.resource["owner"]==self.user,
+            "stopping":stopping,"following":following,"agentFollowing":ag,"reason":intent["error"].as_str().or(reason)}),
         )
     }
 }
@@ -270,13 +287,28 @@ pub(crate) fn hook_context(project: &Value, tool: &str, id: &str, event: &str) -
 pub async fn live_session(action: String, input: Value) -> Result<Value> {
     let s = Session::load(&input)?;
     match action.as_str() {
+        "status" if input["offline"] == true => s.offline_status(),
         "status" => s.status().await,
+        "stop" if input["offline"] == true => {
+            let _guard = MUTATIONS.lock().await;
+            let ep = uuid(&input, "episodeId")?;
+            if s.offline_status()?["episodeId"] != ep {
+                return Err("This Mac has no matching local live episode".into());
+            }
+            publisher::queue_stop(&s, &ep)?;
+            publisher::schedule_stop(s.clone(), ep);
+            s.offline_status()
+        }
         "start" | "stop" => {
             let _guard = MUTATIONS.lock().await;
             if action == "start" {
                 publisher::start(&s).await?
-            } else {
-                publisher::stop(&s, &uuid(&input, "episodeId")?).await?
+            } else if let Err(error) = publisher::stop(&s, &uuid(&input, "episodeId")?).await {
+                let offline = s.offline_status()?;
+                if error.starts_with("Cloud unavailable") && offline["stopping"] == true {
+                    return Ok(offline);
+                }
+                return Err(error);
             }
             s.status().await
         }

@@ -1,8 +1,8 @@
 {
   "repository": "https://github.com/whysosaket/orka-api",
-  "commit": "e3fd00053534396d96c692019d9f19eaf0c0eb24",
+  "commit": "1b3582ac0eb46db3d8b1339b858735ccea59c54d",
   "candidate": false,
-  "sourceTreeSha256": "b9e7fa54c70b4fb90dbed897221312b49e266e952134180c2add1df82ba0cbba",
+  "sourceTreeSha256": "57fb5e36756eebabcaa2ae8a3a2979e4e9410593fab07e5eb41a3271c2d528bb",
   "files": [
     {
       "path": ".dockerignore",
@@ -196,7 +196,7 @@
     },
     {
       "path": "docs/live-session-relay.md",
-      "sha256": "064a24db1f1fe217f888efb9a17c650dcd8f6608b1408569b6e3d4458a0ec5e9",
+      "sha256": "6e481aba641849ec142e7e1c48d38a9ac1550a8fb3c3d481e4e38ef9e3bc8aab",
       "mode": 420
     },
     {
@@ -281,22 +281,22 @@
     },
     {
       "path": "internal/livesessions/http.go",
-      "sha256": "45e42a4edfc79c6d6ce33d5cce12afc5699eac54a17c9f7481642be6e294124d",
+      "sha256": "027f67d878aa15637a569f638e3de6f4cf34b70ab9cd4ce086ce1112a565acab",
       "mode": 420
     },
     {
       "path": "internal/livesessions/journal.go",
-      "sha256": "3ca659b0b74febaade8999912ada267822ed2391b6b33e422db0e519e750c795",
+      "sha256": "bbbd781b925b1dc3265fbaef187c4ceac404616ebd3fb88b251075f75399ac91",
       "mode": 420
     },
     {
       "path": "internal/livesessions/relay_test.go",
-      "sha256": "d82d7d43a6fabf0590d64245948089aa6d772b9b288849641d5c920aad9b7fd2",
+      "sha256": "8081870f99710dbc68345d4a527957ed05397e469b4b126a9febdd525a8c1e61",
       "mode": 420
     },
     {
       "path": "internal/livesessions/store.go",
-      "sha256": "27282d67db352086126cac399c2d2d744ae495cb65652f5a67ce07297e5c28f6",
+      "sha256": "dc85366960c1ce92433813871ffb07c54e86cd7db5ad57fd038da15b16917c34",
       "mode": 420
     },
     {
@@ -836,7 +836,7 @@
     },
     {
       "path": "tests/acceptance/self-hosted-e2e.ts",
-      "sha256": "044409d901db40c98fa374b79f7556a6ac2001da79c5e35d8a8bdf8354e6e236",
+      "sha256": "8975d4babea30f10b0e93797177f307a5b934027566abf03e7bea8732b71462e",
       "mode": 420
     },
     {
@@ -976,7 +976,7 @@
     },
     {
       "path": "tests/live-sessions-native.integration.ts",
-      "sha256": "92464e5999223b26187907e8ac177e1edaa4b66d04391299ffbf0fdee976ccee",
+      "sha256": "0b7f3064699ed0ddff7011a7c451321ab6fdbb875b7b952615151294a47e71f7",
       "mode": 420
     },
     {

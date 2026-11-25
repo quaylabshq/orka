@@ -42,3 +42,15 @@ Both mutation bodies contain `requestId`, `deviceId`, `contextSources`, `baseCur
 One process owns the journal directory through an exclusive file lock. It fsyncs each accepted frame before acknowledging it. A checksum and SHA-256 protect recovery. Restart truncates an incomplete final append to the last intact acknowledged frame and rejects corrupted complete frames. Checkpoints atomically replace prior contents. The relay retains up to 128 recent positions and receipts and compacts the journal as that window fills. It removes journals after verified terminal authorization or expiry. Core expiry is 24 hours and relay cleanup uses a 25-hour grace period.
 
 The default ceilings are 16 rooms, 16 MiB per complete presentation, 64 MiB total current presentations, 256 KiB per append or row, two concurrent incoming mutations, 16 MiB of in-flight content response payloads, 48 in-flight requests, 32 held requests and eight held requests per room. HTTP 429 signals admission pressure. A client can reconnect with its last verified position. Body reads, held requests, outgoing writes and core authorization have timeouts. Run `go test -race ./internal/livesessions` for the relay contract and durability checks.
+
+At room or byte pressure, a new checkpoint can recheck one idle retained episode per second. Only a terminal result from the core deletes it. Other projects' inaccessible episodes keep their journals until an authorized request observes their end or local retention expires.
+
+Five continuously waiting viewers generate about one core read authorization per second in total while idle. Each 10-second hold checks admission and completion. An active notification adds one content authorization per viewer fetching a suffix. Writes require one authorization per operation. The configured core timeout is three seconds.
+
+## Measured local workload
+
+One publisher sent 24 completed 1 KiB records to five signed-in viewers after each viewer had loaded a 10 MiB checkpoint. The disposable stack ran Caddy, the relay, the core API, GoTrue and PostgreSQL on one machine. Across 120 deliveries, time from the append becoming available to verification by a viewer was 155 ms at the median and 220 ms at p95.
+
+The five initial checkpoints used 52,890,165 response-body bytes. Subsequent notifications and suffix reads used 129,100 response-body bytes for 122,880 bytes of new content. The publisher sent 32,055 request-body bytes and received 2,104 acknowledgement bytes. These counts exclude HTTP headers and TLS. Retransmitting a full 10 MiB checkpoint after each of those appends would send at least 1,200 MiB to the same viewers.
+
+The relay peaked at 93.4 MiB in this run. During the 1.52-second burst, its container used 0.045 CPU-seconds, the core used 0.10, GoTrue used 0.84 and PostgreSQL used 2.23. These container counters include background work. Before enabling a pilot on a shared host, measure core and database headroom with the intended traffic and watch existing sync latency. The local run establishes neither Internet latency nor production capacity.

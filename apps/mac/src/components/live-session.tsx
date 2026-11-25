@@ -15,6 +15,8 @@ interface Status {
   agentFollowing: boolean;
   episodeId?: string;
   reason?: string;
+  offline?: boolean;
+  stopping?: boolean;
 }
 
 interface Target {
@@ -53,15 +55,18 @@ export function useLiveStatus(
   identity: Identity,
   scope: string,
   enabled: boolean,
+  offline: boolean,
 ) {
   const { id, projectId, userId } = identity;
   return useQuery({
-    queryKey: ["live-session", scope, projectId, userId, id],
-    queryFn: () => command<Status>("status", { id, projectId, userId }),
+    queryKey: ["live-session", scope, projectId, userId, id, offline],
+    queryFn: () =>
+      command<Status>("status", { id, projectId, userId }, { offline }),
     enabled,
     retry: false,
     gcTime: 0,
-    refetchInterval: (query) => (query.state.data?.available ? 30_000 : false),
+    refetchInterval: (query) =>
+      !offline && query.state.data?.available ? 30_000 : false,
   });
 }
 
@@ -89,6 +94,7 @@ export function LiveControls({
     identity.projectId,
     identity.userId,
     identity.id,
+    Boolean(status.offline),
   ];
   const targets = useQuery({
     queryKey: [...key, status.episodeId, "targets"],
@@ -104,6 +110,7 @@ export function LiveControls({
     mutationFn: ({ action, target }: { action: string; target?: Target }) =>
       command<Status>(action, identity, {
         episodeId: status.episodeId,
+        offline: Boolean(status.offline),
         provider: target?.provider,
         nativeId: target?.nativeId,
         previousResourceId: target?.otherFollow?.id,
@@ -132,7 +139,11 @@ export function LiveControls({
       <div className="live-session-actions">
         <span className="live-session-label">
           <RadioIcon aria-hidden="true" size={16} />
-          {status.active ? "Sharing live" : "Live sharing"}
+          {status.stopping
+            ? "Stopping live sharing"
+            : status.active
+              ? "Sharing live"
+              : "Live sharing"}
         </span>
         {status.active && owner && (
           <Button
@@ -148,7 +159,7 @@ export function LiveControls({
             Share live…
           </Button>
         )}
-        {status.active && !status.publishing && (
+        {status.active && !status.publishing && !status.offline && (
           <>
             <Button
               size="sm"
@@ -173,8 +184,9 @@ export function LiveControls({
       {confirm && !status.active && (
         <div>
           <p className="detail-info-note">
-            Teammates with access can read this session and its future completed
-            turns for up to 24 hours. You can stop sharing at any time.
+            Teammates with access can read the current conversation on this Mac,
+            including local changes, and its future completed turns for up to 24
+            hours. You can stop sharing at any time.
           </p>
           <div className="live-session-actions">
             <Button
@@ -278,16 +290,18 @@ export function LiveConversation({
   const [first, setFirst] = useState<number>();
   const last = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
+  const atLatestPage = !feed || (first ?? 0) + 40 >= feed.messages.length;
   useEffect(() => {
     const element = last.current?.closest(".detail-reader");
     if (!element) return;
     const scroll = () => {
       pinned.current =
+        atLatestPage &&
         element.scrollHeight - element.scrollTop - element.clientHeight < 80;
     };
     element.addEventListener("scroll", scroll, { passive: true });
     return () => element.removeEventListener("scroll", scroll);
-  }, []);
+  }, [atLatestPage]);
   useEffect(() => {
     let closed = false;
     const identity = { id, projectId, userId };
@@ -374,19 +388,35 @@ export function LiveConversation({
               source={source}
             />
           ))}
-          {(first ?? 0) + 40 < feed.messages.length && (
-            <Button
-              size="sm"
-              onClick={() => {
-                pinned.current = true;
-                setFirst(Math.max(0, feed.messages.length - 40));
-                requestAnimationFrame(() =>
-                  last.current?.scrollIntoView({ block: "end" }),
-                );
-              }}
-            >
-              Jump to latest turns
-            </Button>
+          {!atLatestPage && (
+            <div className="live-session-actions">
+              <Button
+                size="sm"
+                onClick={() => {
+                  pinned.current = false;
+                  setFirst(
+                    Math.min(
+                      (first ?? 0) + 40,
+                      Math.max(0, feed.messages.length - 40),
+                    ),
+                  );
+                }}
+              >
+                Show newer turns
+              </Button>
+              <Button
+                size="sm"
+                onClick={() => {
+                  pinned.current = true;
+                  setFirst(Math.max(0, feed.messages.length - 40));
+                  requestAnimationFrame(() =>
+                    last.current?.scrollIntoView({ block: "end" }),
+                  );
+                }}
+              >
+                Jump to latest turns
+              </Button>
+            </div>
           )}
         </>
       )}

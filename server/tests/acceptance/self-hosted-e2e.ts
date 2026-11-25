@@ -19,6 +19,12 @@ import { parseEnv } from "node:util";
 import { legacyMigrationNames } from "../bridge/migrations.js";
 
 const source = resolve(process.argv[2] ?? ".");
+const expectedMigrationLedger = (
+  await readdir(join(source, "packages/server-core/migrations"))
+)
+  .filter((name) => name.endsWith(".sql"))
+  .sort()
+  .join("\n");
 const temporary = await mkdtemp(join(tmpdir(), "orka-readme-e2e-"));
 const installation = join(temporary, "server");
 const recovery = join(temporary, "recovery");
@@ -240,10 +246,7 @@ try {
     );
   helper(installation, "status");
   helper(installation, "doctor");
-  assert.equal(
-    migrationLedger(installation),
-    "001_initial.sql\n002_github_repositories.sql\n003_email_invitations.sql\n004_mcp_operations.sql\n005_source_removal.sql\n006_github_authorization_completion.sql\n007_session_retention.sql\n008_project_soft_delete.sql\n009_project_tombstones.sql",
-  );
+  assert.equal(migrationLedger(installation), expectedMigrationLedger);
   console.log(
     "Fresh setup, repeated setup, port changes and diagnostics passed.",
   );
@@ -402,10 +405,7 @@ try {
       legacyMigrationNames.map((name) => `('${name}')`).join(","),
   ]);
   helper(installation, "upgrade", "--reset-ledger");
-  assert.equal(
-    migrationLedger(installation),
-    "001_initial.sql\n002_github_repositories.sql\n003_email_invitations.sql\n004_mcp_operations.sql\n005_source_removal.sql\n006_github_authorization_completion.sql\n007_session_retention.sql\n008_project_soft_delete.sql\n009_project_tombstones.sql",
-  );
+  assert.equal(migrationLedger(installation), expectedMigrationLedger);
   await verifyContent(origin, (await login(origin, owner)).access_token);
   console.log(
     "README setup, repeated setup, credentials, teammate join, real sync, cold restart, verified backup and upgrade passed.",
@@ -433,10 +433,7 @@ try {
     "--port",
     String(recoveryPort),
   );
-  assert.equal(
-    migrationLedger(recovery),
-    "001_initial.sql\n002_github_repositories.sql\n003_email_invitations.sql\n004_mcp_operations.sql\n005_source_removal.sql\n006_github_authorization_completion.sql\n007_session_retention.sql\n008_project_soft_delete.sql\n009_project_tombstones.sql",
-  );
+  assert.equal(migrationLedger(recovery), expectedMigrationLedger);
   const recoveredOrigin = `http://127.0.0.1:${recoveryPort}`;
   await verifyContent(
     recoveredOrigin,

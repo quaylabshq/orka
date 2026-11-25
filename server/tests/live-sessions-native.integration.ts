@@ -332,6 +332,9 @@ for (const publisher of ["claude", "codex"] as const)
       const start = await author.run("start");
       assert.equal(start.active, true);
       const episode = { episodeId: start.episodeId };
+      const offlineWriter = await author.run("status", { offline: true });
+      assert.equal(offlineWriter.episodeId, start.episodeId);
+      assert.equal(offlineWriter.publishing, true);
       await viewer.run("follow", episode);
       const first = await viewer.run("read", episode);
       assert.deepEqual(
@@ -412,7 +415,26 @@ for (const publisher of ["claude", "codex"] as const)
         reader,
       ]);
       await viewer.run("follow", episode);
-      assert.equal((await author.run("stop", episode)).active, false);
+      if (publisher === "codex") {
+        await assert.rejects(
+          author.run("stop", { offline: true, episodeId: randomUUID() }),
+        );
+        const pending = await author.run("stop", { ...episode, offline: true });
+        assert.equal(pending.active, false);
+        assert.equal(pending.stopping, true);
+        let active = true;
+        for (let i = 0; i < 60 && active; i++) {
+          active = (await author.run("status")).active;
+          if (active) await delay(100);
+        }
+        assert.equal(
+          active,
+          false,
+          "A queued stop must fence the remote episode after reconnect",
+        );
+      } else {
+        assert.equal((await author.run("stop", episode)).active, false);
+      }
       await assert.rejects(viewer.run("read", episode));
       assert.doesNotMatch(
         JSON.stringify(await hook("UserPromptSubmit")),

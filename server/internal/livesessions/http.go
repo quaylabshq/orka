@@ -136,8 +136,19 @@ func (h *Relay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		refuse(w, 404)
 		return
 	}
+	if op == "content" {
+		h.content(w, r, b, auth)
+		return
+	}
 	if !h.allowed(w, r, b, auth) {
 		return
+	}
+	// A stopped writer may disconnect before the relay sees the terminal result.
+	// Under pressure, probe at most one retained episode with this user's access.
+	if op == "checkpoint" {
+		if old, ok := h.store.reclaimCandidate(k); ok && h.auth(r.Context(), b, AuthRequest{Key: old, Action: "read"}) == http.StatusGone {
+			h.store.retire(old)
+		}
 	}
 	room, release, e := h.store.acquire(k)
 	if e != nil {
@@ -167,58 +178,73 @@ func (h *Relay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	q := r.URL.Query()
-	cursor := int64(-1)
-	if values, ok := q["cursor"]; ok {
-		cursor, e = strconv.ParseInt(q.Get("cursor"), 10, 64)
-		if e != nil || cursor < 0 || len(values) != 1 {
-			refuse(w, 400)
-			return
-		}
-	}
-	if op == "wait" {
-		if cursor < 0 {
-			refuse(w, 400)
-			return
-		}
-		h.wait(w, r, room, cursor, b, auth)
-		return
-	}
-	hash := q.Get("hash")
-	if (cursor >= 0 && (len(q["hash"]) != 1 || !digestPattern.MatchString(hash))) || (cursor < 0 && len(q["hash"]) != 0) {
+	cursor, e := strconv.ParseInt(r.URL.Query().Get("cursor"), 10, 64)
+	if e != nil || cursor < 0 || len(r.URL.Query()["cursor"]) != 1 {
 		refuse(w, 400)
 		return
 	}
-	room.mu.Lock()
-	if room.fault {
-		room.mu.Unlock()
-		refuse(w, 503)
+	h.wait(w, r, room, cursor, b, auth)
+}
+
+type contentView struct {
+	Position
+	Reset   bool   `json:"reset"`
+	Records string `json:"records"`
+}
+
+func (h *Relay) content(w http.ResponseWriter, r *http.Request, b string, scope AuthRequest) {
+	q := r.URL.Query()
+	cursor := int64(-1)
+	hash := q.Get("hash")
+	if _, ok := q["cursor"]; ok {
+		var err error
+		cursor, err = strconv.ParseInt(q.Get("cursor"), 10, 64)
+		if err != nil || cursor < 0 || len(q["cursor"]) != 1 || len(q["hash"]) != 1 || !digestPattern.MatchString(hash) {
+			refuse(w, 400)
+			return
+		}
+	} else if len(q["hash"]) != 0 {
+		refuse(w, 400)
 		return
 	}
-	offset, reset := room.tail(cursor, hash)
-	size := len(room.body) - offset
-	head := room.head
+	// Capture exactly one immutable revision before requesting its release. This
+	// avoids a second authorization trip and cannot reveal data committed later.
+	view, status := h.capture(scope.Key, cursor, hash)
+	defer func() { h.mu.Lock(); h.sending -= len(view.Records); h.mu.Unlock() }()
+	if !h.allowed(w, r, b, scope) {
+		return
+	}
+	if status != 200 {
+		refuse(w, status)
+		return
+	}
+	reply(w, 200, view)
+}
+
+func (h *Relay) capture(k Key, cursor int64, hash string) (contentView, int) {
+	h.store.mu.Lock()
+	r := h.store.rooms[k]
+	h.store.mu.Unlock()
+	if r == nil {
+		return contentView{Position: Position{Hash: emptyHash}, Reset: cursor != 0 || hash != emptyHash}, 200
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.fault {
+		return contentView{}, 503
+	}
+	offset, reset := r.tail(cursor, hash)
+	size := len(r.body) - offset
 	h.mu.Lock()
 	if h.sending+size > maxSession {
 		h.mu.Unlock()
-		room.mu.Unlock()
-		refuse(w, 429)
-		return
+		return contentView{}, 429
 	}
 	h.sending += size
 	h.mu.Unlock()
-	defer func() { h.mu.Lock(); h.sending -= size; h.mu.Unlock() }()
-	data := string(room.body[offset:])
-	room.mu.Unlock()
-	if !h.allowed(w, r, b, auth) {
-		return
-	}
-	reply(w, 200, struct {
-		Position
-		Reset   bool   `json:"reset"`
-		Records string `json:"records"`
-	}{head, reset, data})
+	return contentView{Position: r.head, Reset: reset, Records: string(r.body[offset:])}, 200
 }
+
 func (h *Relay) wait(w http.ResponseWriter, r *http.Request, room *room, cursor int64, b string, scope AuthRequest) {
 	if !admit(h.waiters) {
 		refuse(w, 429)

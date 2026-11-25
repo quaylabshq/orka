@@ -21,6 +21,7 @@ type journalFrame struct {
 	Reset   bool      `json:"reset"`
 	Bytes   int       `json:"bytes"`
 	Prior   []receipt `json:"prior,omitempty"`
+	Ends    []int     `json:"ends,omitempty"`
 }
 
 const maxHeader = 64 << 10
@@ -135,10 +136,10 @@ func restoreRoom(path string, r *room) error {
 		if e = json.Unmarshal(header, &frame); e != nil {
 			return e
 		}
-		if frame.Bytes < 0 || frame.Bytes > maxSession || len(frame.Prior) >= historyLimit || frame.Receipt.Cursor <= 0 || !uuid.MatchString(frame.Receipt.ID) || !digestPattern.MatchString(frame.Receipt.Proof) || (r.head.Cursor == 0) != frame.Reset {
+		if frame.Bytes < 0 || frame.Bytes > maxSession || len(frame.Prior) >= historyLimit || len(frame.Ends) > len(frame.Prior) || frame.Receipt.Cursor <= 0 || !uuid.MatchString(frame.Receipt.ID) || !digestPattern.MatchString(frame.Receipt.Proof) || (r.head.Cursor == 0) != frame.Reset {
 			return errors.New("invalid journal frame")
 		}
-		if !frame.Reset && (frame.Receipt.Cursor != r.head.Cursor+1 || frame.Bytes > maxAppend || len(r.body)+frame.Bytes > maxSession || len(r.marks) >= historyLimit) {
+		if !frame.Reset && (frame.Receipt.Cursor != r.head.Cursor+1 || frame.Bytes > maxAppend || len(r.body)+frame.Bytes > maxSession || r.frames >= historyLimit || len(frame.Ends) != 0 || len(frame.Prior) != 0) {
 			return errors.New("invalid journal append")
 		}
 		data := make([]byte, frame.Bytes)
@@ -160,20 +161,36 @@ func restoreRoom(path string, r *room) error {
 		if binary.BigEndian.Uint32(prefix[:]) != crc.Sum32() {
 			return errors.New("live journal checksum mismatch")
 		}
+		start := 0
 		if frame.Reset {
 			r.sum = sha256.New().(hash.Cloner)
 			r.body = data
 			r.receipts = frame.Prior
+			// Each offset belongs to one of the final consecutive prior
+			// receipts. Verify every retained prefix in a single pass.
+			for i, end := range frame.Ends {
+				prior := frame.Prior[len(frame.Prior)-len(frame.Ends)+i]
+				if prior.Cursor != frame.Receipt.Cursor-int64(len(frame.Ends)-i) || end < start || end >= len(data) || (end > 0 && data[end-1] != '\n') {
+					return errors.New("invalid compacted live cursor")
+				}
+				r.sum.Write(data[start:end])
+				if hex.EncodeToString(r.sum.Sum(nil)) != prior.Hash {
+					return errors.New("compacted live cursor digest mismatch")
+				}
+				r.marks = append(r.marks, mark{prior.Position, end})
+				start = end
+			}
 		} else {
 			r.body = append(r.body, data...)
 		}
-		r.sum.Write(data)
+		r.frames++
+		r.sum.Write(data[start:])
 		if hex.EncodeToString(r.sum.Sum(nil)) != frame.Receipt.Hash {
 			return errors.New("live journal digest mismatch")
 		}
 		r.receipts = appendRecent(r.receipts, frame.Receipt)
 		r.head = frame.Receipt.Position
-		r.marks = append(r.marks, mark{r.head, len(r.body)})
+		r.marks = appendRecent(r.marks, mark{r.head, len(r.body)})
 		offset += int64(8 + size + frame.Bytes)
 	}
 }
