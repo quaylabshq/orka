@@ -238,3 +238,50 @@ test("clears an invalidated page even when a jump is waiting", async ({
     await page.evaluate(() => (window as any).staleJumpExecuted),
   ).toBeUndefined();
 });
+
+test("reaches EOF through a dense transcript while keeping scroll geometry bounded", async ({
+  page,
+}) => {
+  const view = await detailGalleryFixture(page, { kind: "session" });
+  await page.evaluate(() => {
+    const w = window as any;
+    const invoke = w.__TAURI_INTERNALS__.invoke;
+    const transcript =
+      "Dense file begins\n" + "x\n".repeat(110_000) + "Dense file ends";
+    w.__TAURI_INTERNALS__.invoke = (command: string, request: any) => {
+      if (command !== "read_transcript") return invoke(command, request);
+      const offset = request.offset;
+      const nextOffset = Math.min(transcript.length, offset + request.maxBytes);
+      return Promise.resolve({
+        offset,
+        nextOffset,
+        text: transcript.slice(offset, nextOffset),
+        eof: nextOffset === transcript.length,
+      });
+    };
+  });
+  await view.getByRole("button", { name: "Transcript", exact: true }).click();
+  const content = view.locator(".transcript-blocks");
+  await expect(content).toContainText("Dense file begins");
+  const reader = view.locator(".detail-reader");
+  let maxHeight = 0;
+  await expect
+    .poll(
+      async () => {
+        const current = await reader.evaluate((element) => {
+          element.scrollTop = element.scrollHeight;
+          return {
+            height: element.scrollHeight,
+            atEnd: element.textContent?.includes("Dense file ends"),
+          };
+        });
+        maxHeight = Math.max(maxHeight, current.height);
+        return current.atEnd;
+      },
+      { intervals: [60], timeout: 12000 },
+    )
+    .toBe(true);
+  expect(maxHeight).toBeLessThan(1_650_000);
+  await expect(content.getByText(/Dense file ends/)).toBeInViewport();
+  await expect(content).not.toContainText("Dense file begins");
+});

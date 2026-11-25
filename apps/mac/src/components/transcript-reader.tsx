@@ -19,6 +19,8 @@ import {
 const CACHE_BYTES = 512 * 1024;
 const LOOKAHEAD_PX = 4800;
 const MAX_SELECTION_BLOCKS = 16;
+const MAX_WINDOW_BLOCKS = 512;
+const TRIM_WINDOW_BLOCKS = 64;
 const NO_BLOCKS: TranscriptBlock[] = [];
 
 interface TranscriptReaderProps {
@@ -190,7 +192,7 @@ function TranscriptText({
   const queuedJump = useRef<Read | null>(null);
   const generation = useRef(0);
   const anchor = useRef<Anchor | null>(null);
-  const bounds = useRef<{ start: number; end: number } | null>(null);
+  const loaded = useRef<TranscriptIndex | null>(null);
   const position = useRef<"start" | "end" | null>(null);
   const [index, setIndex] = useState<TranscriptIndex | null>(null);
   const [pending, setPending] = useState<Read | null>(null);
@@ -268,46 +270,61 @@ function TranscriptText({
       redraw((value) => value + 1);
       return;
     }
-    const currentBounds = bounds.current;
-    bounds.current =
-      request.kind === "before" && currentBounds
-        ? { ...currentBounds, start: range.offset }
-        : request.kind === "after" && currentBounds
-          ? { ...currentBounds, end: range.nextOffset }
-          : { start: range.offset, end: range.nextOffset };
     const nextBlocks = incoming.map(({ block }) => block);
-    setIndex((current) => {
-      if (
-        !current ||
-        request.kind === "initial" ||
-        request.kind === "start" ||
-        request.kind === "end"
-      )
-        return {
-          blocks: nextBlocks,
-          start: range.offset,
-          end: range.nextOffset,
-          eof: range.eof,
-        };
-      if (request.kind === "before")
-        return {
-          ...current,
-          blocks: [...nextBlocks, ...current.blocks],
-          start: range.offset,
-        };
-      return {
-        ...current,
-        blocks: [...current.blocks, ...nextBlocks],
-        end: range.nextOffset,
-        eof: range.eof,
+    const current = loaded.current;
+    let next: TranscriptIndex = {
+      blocks: nextBlocks,
+      start: range.offset,
+      end: range.nextOffset,
+      eof: range.eof,
+    };
+    if (current && (request.kind === "before" || request.kind === "after")) {
+      const backwards = request.kind === "before";
+      const combined = backwards
+        ? [...nextBlocks, ...current.blocks]
+        : [...current.blocks, ...nextBlocks];
+      next = {
+        blocks: combined,
+        start: backwards ? range.offset : current.start,
+        end: backwards ? current.end : range.nextOffset,
+        eof: backwards ? current.eof : range.eof,
       };
-    });
+
+      // Keep the scroll extent within a browser-safe height on dense logs.
+      // The discarded edge can be read again when the user reverses direction.
+      const view = virtualizer.range;
+      if (combined.length > MAX_WINDOW_BLOCKS && view) {
+        const excess = combined.length - MAX_WINDOW_BLOCKS + TRIM_WINDOW_BLOCKS;
+        const available = backwards
+          ? current.blocks.length - view.endIndex - 3
+          : view.startIndex - 2;
+        const trim = Math.max(0, Math.min(excess, available));
+        if (trim > 0) {
+          const retained = backwards
+            ? combined.slice(0, -trim)
+            : combined.slice(trim);
+          const discarded = backwards
+            ? combined.slice(-trim)
+            : combined.slice(0, trim);
+          for (const block of discarded)
+            virtualizer.itemSizeCache.delete(block.offset);
+          next = {
+            blocks: retained,
+            start: retained[0].offset,
+            end: retained.at(-1)!.end,
+            eof: !backwards && range.eof,
+          };
+        }
+      }
+    }
+    loaded.current = next;
+    setIndex(next);
   };
 
   const read = (request: Read) => {
     if (
-      (request.kind === "before" && bounds.current?.start !== request.offset) ||
-      (request.kind === "after" && bounds.current?.end !== request.offset)
+      (request.kind === "before" && loaded.current?.start !== request.offset) ||
+      (request.kind === "after" && loaded.current?.end !== request.offset)
     )
       return;
     const ticket = generation.current;
@@ -357,6 +374,7 @@ function TranscriptText({
           queuedJump.current = null;
           cache.current.clear();
           cachedBytes.current = 0;
+          loaded.current = null;
           setIndex(null);
           setSelected([]);
         }
@@ -449,10 +467,10 @@ function TranscriptText({
   }, [blocks, geometry, virtualizer]);
 
   useEffect(() => {
+    const elementAt = (node: Node | null) =>
+      node instanceof Element ? node : node?.parentElement;
     const onSelectionChange = () => {
       const cursor = window.getSelection();
-      const elementAt = (node: Node | null) =>
-        node instanceof Element ? node : node?.parentElement;
       const start = elementAt(cursor?.anchorNode ?? null)?.closest<HTMLElement>(
         ".transcript-block",
       );

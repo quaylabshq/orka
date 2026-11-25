@@ -298,7 +298,7 @@ impl TapeBuilder {
                 return Err("The temporary transcript exceeds its size limit. Download the session to read it.".into());
             }
             self.output
-                .write_all(part[..count].as_bytes())
+                .write_all(&part.as_bytes()[..count])
                 .map_err(|error| error.to_string())?;
             remaining -= count;
             if count < part.len() {

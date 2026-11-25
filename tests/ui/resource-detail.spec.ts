@@ -2699,12 +2699,15 @@ test("scrolling forward reaches the exact last line without jumping", async ({
   const reader = page.locator(".detail-reader");
   await expect(region).toContainText("First visible record");
   await expect
-    .poll(async () => {
-      await reader.evaluate((element) => {
-        element.scrollTop = element.scrollHeight;
-      });
-      return (await region.textContent())?.includes("Exact final record");
-    })
+    .poll(
+      async () => {
+        await reader.evaluate((element) => {
+          element.scrollTop = element.scrollHeight;
+        });
+        return (await region.textContent())?.includes("Exact final record");
+      },
+      { intervals: [60], timeout: 12000 },
+    )
     .toBe(true);
   const reads = await calls(page, "read_transcript");
   expect(reads.length).toBeGreaterThan(4);
