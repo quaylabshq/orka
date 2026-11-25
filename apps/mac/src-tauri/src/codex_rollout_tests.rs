@@ -95,10 +95,13 @@ fn codex_v2_canonical_replacement_is_discovered_once_without_sharing_or_source_w
     let resources = catalog["resources"].as_array().unwrap();
     assert_eq!(resources.len(), 1);
     assert_eq!(resources[0]["title"], "Complete v2 history");
+    let read = crate::session_forks::reading_resource(&f.db, &resources[0]).unwrap();
     assert_eq!(
-        History::resource(&resources[0]).unwrap().records(),
+        read.records().unwrap().as_ref(),
         records(&f, &id, true, 0, "Complete v2 history")
     );
+    let hash = resources[0]["files"][0]["hash"].as_str().unwrap();
+    assert!(!db::blob_path(hash).unwrap().exists());
     assert!(f.outbox().is_empty());
     assert!(f.resources().is_empty());
     unchanged(&before);

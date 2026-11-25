@@ -165,6 +165,43 @@ fn project_export_reads_private_cache_without_discovery_or_writes() {
 }
 
 #[test]
+fn project_export_reads_native_sessions_from_paused_project_sources() {
+    for deleted in [false, true] {
+        let mut f = Fixture::new();
+        let project_id = f.project["id"].as_str().unwrap().to_owned();
+        f.project["sharing"]["session"] = json!(false);
+        db::upsert(&f.db, "projects", &project_id, &project_id, &f.project).unwrap();
+        sharing_tests::seed(&f);
+        let catalog = crate::local_resources::catalog(&f.db, &f.project, "session").unwrap();
+        let session = &catalog["resources"][0];
+        let session_id = session["resourceId"].as_str().unwrap();
+        let hash = session["files"][0]["hash"].as_str().unwrap();
+        let stored = db::blob_path(hash).unwrap();
+        assert!(!stored.exists());
+        f.project["archivedAt"] = json!("2026-11-19T00:00:00Z");
+        if deleted {
+            f.project["deletedAt"] = json!("2026-11-19T00:00:00Z");
+            f.project["purgeAfter"] = json!("2026-12-19T00:00:00Z");
+        }
+        db::upsert(&f.db, "projects", &project_id, &project_id, &f.project).unwrap();
+        let archive = f.root.join("project.zip");
+        bundles::export_project(&db::CacheScope::current().unwrap(), &project_id, &archive)
+            .unwrap();
+        let mut zip = zip::ZipArchive::new(fs::File::open(archive).unwrap()).unwrap();
+        let bytes = blob(
+            &mut zip,
+            &format!("local-resources/{session_id}/blobs/{hash}"),
+        );
+        assert_eq!(db::digest(&bytes), hash);
+        assert!(String::from_utf8(bytes)
+            .unwrap()
+            .contains("Private conversation"));
+        assert!(!stored.exists());
+        assert!(f.outbox().is_empty());
+    }
+}
+
+#[test]
 fn project_export_does_not_resurrect_revoked_teammate_cache() {
     let f = Fixture::new();
     let id = f.project["id"].as_str().unwrap();

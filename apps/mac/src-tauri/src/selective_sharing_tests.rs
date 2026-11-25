@@ -97,7 +97,12 @@ async fn pi_session_discovery_reads_the_saved_branch_and_queues_only_an_explicit
     let prompt = crate::session_launcher::handoff_prompt(resource_id).unwrap();
     let prompt = prompt["text"].as_str().unwrap();
     assert!(prompt.contains("Saved answer") && !prompt.contains("Abandoned answer"));
-    let records = crate::history::resource_records(resource).unwrap();
+    let read = crate::session_forks::reading_resource(
+        &f.db,
+        &crate::local_resources::resource(&f.db, resource_id).unwrap(),
+    )
+    .unwrap();
+    let records = read.records().unwrap();
     assert_eq!(records.len(), 4);
     assert_eq!(records[2]["id"], "old");
     assert_eq!(fs::read(&path).unwrap(), original);

@@ -75,3 +75,30 @@ The desktop uses the checksummed client protocol package recorded in `vendor/man
 After building the debug executable, run `npm run test:plugin-native`. This uses separate native broker and thin stdio bridge processes, an in-memory test Keychain, a synthetic HTTP service and isolated agent homes. It exercises native approval/scopes/revocation, shared and local tools, account/service/sign-out roundtrips and old sessions, same-account app restart, and exact queued retries/complete skill installation. It uses no installed account or personal project. Pass `--binary` to `python3 -B scripts/plugin-native-acceptance.py` to select another debug executable. See the [plugin guide](../plugins/orka/README.md) for the one desktop login architecture.
 
 Connector lifecycle coverage also starts concurrent helpers from one assistant and an independent parent with the same client label, checks shared consent and least scopes, rejects spoofed parent metadata, revokes all helpers together, and force-kills helpers before checking that active status and pending requests are cleared. Native process identities include their kernel start time, so PID reuse cannot revive a saved connection. Legacy approvals require an authenticated live helper before being displayed as connected.
+
+## Native session storage benchmark
+
+Run on macOS from the candidate checkout.
+
+```sh
+python3 -B scripts/benchmark-session-storage.py --base v0.3.25 --runs 3 \
+  --output /tmp/orka-session-storage-results.json
+```
+
+The driver builds the same debug native harness against the pinned baseline and
+candidate. It runs the desktop catalog, reader, exporter and selected-sharing
+commands directly. Each repetition creates a fresh 96-session fixture, appends
+12 turns to each of two long transcripts, and checks a Codex fork's ancestry.
+A loopback service captures the selected request and blob bytes across a failed
+attempt and process restart. A second loopback run checks how automatic sync
+settles the latest edit after several offline scans. The upgrade fixture
+benchmarks cleanup and verifies that the older binary can read its restored
+pre-upgrade backup.
+
+The JSON reports per-operation elapsed time, process disk-write counters, new
+blob counts and bytes, and allocated bytes under the isolated profile. Peak RSS
+is the process high-water mark, including work completed before each sample.
+Cleanup time and peak RSS include the standalone command's startup. Filesystem
+caches can stay warm across alternating runs of fresh profiles.
+`--baseline-worktree` accepts
+an owned, detached baseline checkout to reuse a warm Cargo build.

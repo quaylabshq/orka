@@ -130,6 +130,23 @@ fn metadata(records: &[Value]) -> Result<&Value> {
         .ok_or("Missing initial Codex session metadata".into())
 }
 
+pub(crate) fn eligible_codex_session(
+    db: &rusqlite::Connection,
+    id: &str,
+    records: &[Value],
+) -> Result<bool> {
+    if records
+        .iter()
+        .find(|r| r["type"] == "session_meta")
+        .is_some_and(|r| r["payload"]["source"].is_object())
+    {
+        return Ok(false);
+    }
+    Ok(!crate::codex_import::is_pending_or_dependency(
+        db, id, records,
+    )?)
+}
+
 pub fn is_session(path: &Path) -> bool {
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     name.ends_with(".jsonl") || name.ends_with(".jsonl.zst")
@@ -854,8 +871,12 @@ impl History {
     }
 
     pub fn files(&self) -> Result<Vec<Value>> {
+        self.content()?.persist()
+    }
+
+    fn content(&self) -> Result<SessionContent> {
         let last = self.rollouts.len() - 1;
-        let mut files = Vec::new();
+        let mut content = SessionContent::default();
         for i in std::iter::once(last).chain(0..last) {
             let rollout = &self.rollouts[i];
             let bytes = native::encode(&rollout.records);
@@ -873,11 +894,9 @@ impl History {
                         .ok_or("Missing ancestor ordinal")?
                 )
             };
-            files.push(
-                json!({"path":path,"hash":db::blob(&bytes)?,"size":bytes.len(),"executable":false}),
-            );
+            content.push(path, bytes);
         }
-        Ok(files)
+        Ok(content)
     }
 
     pub fn records(&self) -> Vec<Value> {
@@ -962,8 +981,107 @@ impl History {
     }
 }
 
+/// Redacted snapshot bytes held for one operation. A manifest does not imply
+/// those bytes were written to the blob store.
+#[derive(Default)]
+pub(crate) struct SessionContent {
+    files: Vec<(Value, Vec<u8>)>,
+}
+
+impl SessionContent {
+    fn push(&mut self, path: String, bytes: Vec<u8>) {
+        let hash = db::digest(&bytes);
+        let entry = json!({"path":path,"hash":hash,"size":bytes.len(),"executable":false});
+        self.files.push((entry, bytes));
+    }
+
+    pub(crate) fn single(bytes: Vec<u8>) -> Self {
+        let mut content = Self::default();
+        content.push("session.jsonl".into(), bytes);
+        content
+    }
+
+    pub(crate) fn manifest(&self) -> Vec<Value> {
+        self.files.iter().map(|(entry, _)| entry.clone()).collect()
+    }
+
+    pub(crate) fn persist(&self) -> Result<Vec<Value>> {
+        for (_, bytes) in &self.files {
+            db::blob(bytes)?;
+        }
+        Ok(self.manifest())
+    }
+
+    pub(crate) fn read(&self, hash: &str) -> Result<Vec<u8>> {
+        self.files
+            .iter()
+            .find(|(entry, _)| entry["hash"] == hash)
+            .map(|(_, bytes)| bytes.clone())
+            .ok_or("Missing transcript segment".into())
+    }
+}
+
+/// One read or export can use native bytes together with the ordinary frozen
+/// snapshot format. Native bytes leave memory only if explicitly persisted.
+pub(crate) struct SessionRead {
+    pub(crate) resource: Value,
+    content: Option<SessionContent>,
+    records: Option<Vec<Value>>,
+}
+
+impl SessionRead {
+    pub(crate) fn stored(resource: Value) -> Self {
+        Self {
+            resource,
+            content: None,
+            records: None,
+        }
+    }
+
+    pub(crate) fn live(mut resource: Value, content: SessionContent) -> Self {
+        resource["files"] = json!(content.manifest());
+        resource["hash"] = json!(crate::indexer::manifest_hash(&resource["files"]));
+        Self {
+            resource,
+            content: Some(content),
+            records: None,
+        }
+    }
+
+    pub(crate) fn from_snapshot(resource: Value, snapshot: SessionSnapshot) -> Self {
+        let mut read = Self::live(resource, snapshot.content);
+        read.records = Some(snapshot.redacted_records);
+        read
+    }
+
+    pub(crate) fn read_blob(&self, hash: &str) -> Result<Vec<u8>> {
+        match &self.content {
+            Some(content) => content.read(hash),
+            None => db::blob_read(hash),
+        }
+    }
+
+    pub(crate) fn records(&self) -> Result<std::borrow::Cow<'_, [Value]>> {
+        match &self.records {
+            Some(records) => Ok(std::borrow::Cow::Borrowed(records)),
+            None => resource_records_with(&self.resource, &|hash| self.read_blob(hash))
+                .map(std::borrow::Cow::Owned),
+        }
+    }
+
+    pub(crate) fn persist(mut self) -> Result<Value> {
+        if let Some(content) = self.content {
+            content.persist()?;
+        }
+        if let Some(resource) = self.resource.as_object_mut() {
+            resource.remove("nativeSession");
+        }
+        Ok(self.resource)
+    }
+}
+
 pub(crate) struct SessionSnapshot {
-    pub(crate) files: Vec<Value>,
+    pub(crate) content: SessionContent,
     pub(crate) redacted_records: Vec<Value>,
     pub(crate) deps: Vec<(PathBuf, crate::scan_cache::FileStamp)>,
     pub(crate) ancestor_candidates: Vec<(String, Vec<PathBuf>)>,
@@ -1044,7 +1162,7 @@ pub(crate) fn session_snapshot(
                 .for_each(crate::session_redaction::SessionRedactor::redact);
         }
         history.rebase_offsets();
-        let files = history.files()?;
+        let content = history.content()?;
         let redacted_records = history.records();
         if missing_stamp {
             deps.clear();
@@ -1052,7 +1170,7 @@ pub(crate) fn session_snapshot(
             deps.extend(ancestor_deps);
         }
         return Ok(SessionSnapshot {
-            files,
+            content,
             redacted_records,
             deps,
             ancestor_candidates,
@@ -1072,12 +1190,8 @@ pub(crate) fn session_snapshot(
     leaf_records
         .iter_mut()
         .for_each(crate::session_redaction::SessionRedactor::redact);
-    let bytes = native::encode(&leaf_records);
-    let files = vec![
-        json!({"path":"session.jsonl","hash":db::blob(&bytes)?,"size":bytes.len(),"executable":false}),
-    ];
     Ok(SessionSnapshot {
-        files,
+        content: SessionContent::single(native::encode(&leaf_records)),
         redacted_records: leaf_records,
         deps,
         ancestor_candidates: Vec::new(),
@@ -1085,7 +1199,16 @@ pub(crate) fn session_snapshot(
     })
 }
 
+#[cfg(test)]
 pub fn session_files(tool: &str, path: &Path, scope: Option<&Path>) -> Result<Vec<Value>> {
+    session_content(tool, path, scope)?.persist()
+}
+
+pub(crate) fn session_content(
+    tool: &str,
+    path: &Path,
+    scope: Option<&Path>,
+) -> Result<SessionContent> {
     if tool == "codex" {
         let mut history = History::local(path, scope)?;
         let id = &history.rollouts.last().ok_or("Empty history")?.id;
@@ -1100,7 +1223,7 @@ pub fn session_files(tool: &str, path: &Path, scope: Option<&Path>) -> Result<Ve
                 .for_each(crate::session_redaction::SessionRedactor::redact);
         }
         history.rebase_offsets();
-        return history.files();
+        return history.content();
     }
     let mut records = native::complete_records(&read(path, None)?)?;
     if tool == "pi" {
@@ -1116,10 +1239,7 @@ pub fn session_files(tool: &str, path: &Path, scope: Option<&Path>) -> Result<Ve
     records
         .iter_mut()
         .for_each(crate::session_redaction::SessionRedactor::redact);
-    let bytes = native::encode(&records);
-    Ok(vec![
-        json!({"path":"session.jsonl","hash":db::blob(&bytes)?,"size":bytes.len(),"executable":false}),
-    ])
+    Ok(SessionContent::single(native::encode(&records)))
 }
 
 /// Rebuild a stored session snapshot through the same record redaction used

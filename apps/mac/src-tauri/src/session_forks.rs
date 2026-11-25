@@ -181,7 +181,7 @@ pub fn record(
     if resource["resourceId"] == source["resourceId"] {
         return Err("A fork must have its own resource identity".into());
     }
-    for key in ["access", "fork"] {
+    for key in ["access", "fork", "nativeSession"] {
         resource.as_object_mut().ok_or("Invalid fork")?.remove(key);
     }
     resource["logicalPath"] = json!(format!(
@@ -336,20 +336,48 @@ pub fn binding(db: &Connection, resource: &Value) -> Result<Value> {
 }
 
 pub fn current_resource(db: &Connection, resource: &Value) -> Result<Value> {
-    if info(
-        db,
-        resource["resourceId"].as_str().ok_or("Missing session")?,
-    )?
-    .is_null()
+    reading_resource(db, resource)?.persist()
+}
+
+pub(crate) fn reading_resource(
+    db: &Connection,
+    resource: &Value,
+) -> Result<crate::history::SessionRead> {
+    use crate::history::{SessionContent, SessionRead};
+    if resource["nativeSession"] == true {
+        return match crate::local_resources::reading_session(db, resource) {
+            Ok(snapshot) => Ok(SessionRead::from_snapshot(resource.clone(), snapshot)),
+            Err(error)
+                if crate::local_resources::missing_or_unreadable_transcript(&error)
+                    && resource["files"].as_array().is_some_and(|files| {
+                        !files.is_empty()
+                            && db::BlobStore::current().is_ok_and(|blobs| blobs.all_present(files))
+                    }) =>
+            {
+                Ok(SessionRead::stored(resource.clone()))
+            }
+            Err(error) => Err(error),
+        };
+    }
+    if resource["kind"] != "session"
+        || info(
+            db,
+            resource["resourceId"].as_str().ok_or("Missing session")?,
+        )?
+        .is_null()
     {
-        return Ok(resource.clone());
+        return Ok(SessionRead::stored(resource.clone()));
     }
     let mut binding = indexer::binding(
         db,
         resource["resourceId"].as_str().ok_or("Missing session")?,
     )?;
     if crate::pi_sessions::is_private_copy(&binding) {
-        return crate::pi_sessions::live_copy(&binding, resource);
+        let bytes = crate::pi_sessions::copy_snapshot_bytes(&binding, resource, &db::blob_read)?;
+        return Ok(SessionRead::live(
+            resource.clone(),
+            SessionContent::single(bytes),
+        ));
     }
     if resource["source"] == "codex" && !has_native_file(&binding) {
         if let Ok(resolved) = self::binding(db, resource) {
@@ -362,7 +390,7 @@ pub fn current_resource(db: &Connection, resource: &Value) -> Result<Value> {
         .and_then(Value::as_str);
     let Some(path) = path.filter(|path| std::path::Path::new(path).is_file()) else {
         // Explicit recovery forks can still use cached history.
-        return Ok(resource.clone());
+        return Ok(SessionRead::stored(resource.clone()));
     };
     let project =
         crate::governance::project(db, resource["projectId"].as_str().ok_or("Missing project")?)?;
@@ -371,13 +399,12 @@ pub fn current_resource(db: &Connection, resource: &Value) -> Result<Value> {
         .as_ref()
         .and_then(|s| s["path"].as_str())
         .map(std::path::Path::new);
-    let mut current = resource.clone();
-    current["files"] = json!(crate::history::session_files(
+    let content = crate::history::session_content(
         resource["source"].as_str().ok_or("Missing tool")?,
         std::path::Path::new(path),
-        root
-    )?);
-    Ok(current)
+        root,
+    )?;
+    Ok(SessionRead::live(resource.clone(), content))
 }
 
 pub fn handoff(

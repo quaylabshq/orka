@@ -28,6 +28,78 @@ fn prepare(f: &mut Fixture) {
 }
 
 #[tokio::test]
+async fn private_session_refresh_read_and_export_leave_transcripts_in_the_native_store() {
+    let mut f = Fixture::new();
+    prepare(&mut f);
+    let catalog = local_resources::catalog(&f.db, &f.project, "session").unwrap();
+    let resource = &catalog["resources"][0];
+    let id = resource["resourceId"].as_str().unwrap();
+    let stored = local_resources::resource(&f.db, id).unwrap();
+    let original = PathBuf::from(stored["paths"][0].as_str().unwrap());
+    let first = commands::session_messages(id.into(), None, Some(0), Some(1))
+        .await
+        .unwrap();
+    assert_eq!(first["messages"][0]["text"], "Private conversation");
+    let archive = native::codex_home().unwrap().join("archived_sessions");
+    fs::create_dir_all(&archive).unwrap();
+    let archived = archive.join(original.file_name().unwrap());
+    let mut data = fs::read(&original).unwrap();
+    data.extend(native::encode(&[json!({"type":"event_msg","payload":{"type":"user_message","message":"A later private turn"}})]));
+    fs::write(&original, &data).unwrap();
+    let refreshed = local_resources::catalog(&f.db, &f.project, "session").unwrap();
+    fs::rename(&original, &archived).unwrap();
+    let updated = commands::session_messages(id.into(), None, Some(0), Some(200))
+        .await
+        .unwrap();
+    assert!(updated["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|turn| turn["text"] == "A later private turn"));
+    let zip = f._home.path().join("private.zip");
+    bundles::export(&f.db, id, &zip).unwrap();
+    let mut zip = zip::ZipArchive::new(fs::File::open(zip).unwrap()).unwrap();
+    let mut transcript = String::new();
+    zip.by_name("transcript.md")
+        .unwrap()
+        .read_to_string(&mut transcript)
+        .unwrap();
+    assert!(transcript.contains("A later private turn"));
+    assert_ne!(resource["files"], refreshed["resources"][0]["files"]);
+    for row in [resource, &refreshed["resources"][0]] {
+        for file in row["files"].as_array().unwrap() {
+            assert!(!db::blob_path(file["hash"].as_str().unwrap())
+                .unwrap()
+                .exists());
+        }
+    }
+    assert!(f.outbox().is_empty());
+    assert!(f.resources().is_empty());
+    assert_eq!(fs::read(&archived).unwrap(), data);
+}
+
+#[tokio::test]
+async fn private_reader_uses_an_exact_frozen_share_if_the_original_is_missing() {
+    let mut f = Fixture::new();
+    prepare(&mut f);
+    let entry = indexer::discover(&f.db, &f.project, "session")
+        .unwrap()
+        .remove(0);
+    let id = entry["resource"]["resourceId"].as_str().unwrap();
+    let path = entry["paths"][0].as_str().unwrap();
+    let input = json!({"kind":"session","resourceId":id,"accountId":db::get(&f.db,"user").unwrap(),"serviceOrigin":"https://fixture.invalid"});
+    let preview =
+        crate::selective_sharing::preview_from_local(&f.db, &f.project, &input, &entry).unwrap();
+    assert_eq!(preview["files"], entry["resource"]["files"]);
+    fs::remove_file(path).unwrap();
+    let page = commands::session_messages(id.into(), None, Some(0), Some(1))
+        .await
+        .unwrap();
+    assert_eq!(page["messages"][0]["text"], "Private conversation");
+    assert!(f.outbox().is_empty());
+}
+
+#[tokio::test]
 async fn local_library_restores_every_persistent_collection_while_sync_is_busy() {
     let mut f = Fixture::new();
     prepare(&mut f);
