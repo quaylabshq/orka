@@ -262,7 +262,13 @@ export async function syncAttentionFixture(
       ];
       const sessions = titles.map((title, i) => ({
         ...resource("recovery-" + i, title, "session"),
-        access: { mode: "publish" as const, reason: "project" as const },
+        access: {
+          mode: "publish" as const,
+          create: "publish" as const,
+          governed: true,
+          canShare: true,
+          policyRevision: 1,
+        },
         updatedAt: "2026-11-13T10:00:00Z",
         revision: i + 5,
       }));
@@ -308,7 +314,10 @@ export async function syncAttentionFixture(
         transformCallback: () => 1,
         unregisterCallback: () => {},
         invoke: async (name: string, args?: Record<string, unknown>) => {
-          if (name === "snapshot") return fixture.state;
+          if (name === "snapshot")
+            return options.sessionRecovery
+              ? structuredClone(fixture.state)
+              : fixture.state;
           if (name === "sync_progress") return { user: "user", progress: null };
           fixture.calls.push({ name, args });
           if (name === "resolve_session_recovery") {

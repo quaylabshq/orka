@@ -1118,7 +1118,12 @@ pub fn resolve_session_recovery(
         _ => return Err("Invalid recovery choice".into()),
     };
     if user.as_str().is_none_or(str::is_empty)
-        || (action == "copy" && (incoming["owner"] != user || conflict["author"] != user))
+        || (action == "copy"
+            && (incoming["owner"] != user
+                || conflict["author"] != user
+                || (current["access"].is_object()
+                    && (current["access"]["mode"] == "hidden"
+                        || current["access"]["create"] != "publish"))))
         || (action != "copy"
             && (current["owner"] != user
                 || (current["access"].is_object() && current["access"]["mode"] != "publish")))

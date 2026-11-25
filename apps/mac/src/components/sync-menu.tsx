@@ -265,7 +265,13 @@ export function SyncMenu({
       : activeName && progress?.detail?.startsWith(`${activeName} · `)
         ? progress.detail.slice(activeName.length + 3)
         : progress?.detail;
+  const currentRecoveryResult =
+    recoveryResult?.projectId === projectId &&
+    recoveryResult?.user === state.user
+      ? recoveryResult
+      : null;
   const hasFeed = Boolean(
+    currentRecoveryResult ||
     waiting.length ||
     count ||
     setup ||
@@ -726,36 +732,35 @@ export function SyncMenu({
                   <p>{attention.accountError}</p>
                 </section>
               )}
-              {recoveryResult &&
-                recoveryResult.projectId === projectId &&
-                recoveryResult.user === state.user && (
-                  <section className="sync-menu-notification" role="status">
-                    <h4>
-                      {recoveryResult.queued}{" "}
-                      {recoveryResult.queued === 1 ? "choice" : "choices"}{" "}
-                      queued for sync
-                    </h4>
-                    {recoveryResult.failures.length > 0 && (
-                      <>
-                        <p>
-                          {recoveryResult.failures.length} still need review.
-                        </p>
-                        <ul>
-                          {recoveryResult.failures.map((message, i) => (
-                            <li key={i}>{message}</li>
-                          ))}
-                        </ul>
-                      </>
-                    )}
-                    <Button
-                      variant="tertiary"
-                      size="sm"
-                      onClick={() => setRecoveryResult(null)}
-                    >
-                      Dismiss
-                    </Button>
-                  </section>
-                )}
+              {currentRecoveryResult && (
+                <section className="sync-menu-notification" role="status">
+                  <h4>
+                    {currentRecoveryResult.queued}{" "}
+                    {currentRecoveryResult.queued === 1 ? "choice" : "choices"}{" "}
+                    queued for sync
+                  </h4>
+                  {currentRecoveryResult.failures.length > 0 && (
+                    <>
+                      <p>
+                        {currentRecoveryResult.failures.length} still need
+                        review.
+                      </p>
+                      <ul>
+                        {currentRecoveryResult.failures.map((message, i) => (
+                          <li key={i}>{message}</li>
+                        ))}
+                      </ul>
+                    </>
+                  )}
+                  <Button
+                    variant="tertiary"
+                    size="sm"
+                    onClick={() => setRecoveryResult(null)}
+                  >
+                    Dismiss
+                  </Button>
+                </section>
+              )}
               {attentionItems.map((item) =>
                 bySession.has(item.resourceId ?? "")
                   ? null

@@ -240,6 +240,13 @@ export function SessionDetail({
                 conflicts.filter((c) => c.resourceId === resource.resourceId)
                   .length > 1
               }
+              canCopy={
+                !resource.deleted ||
+                !resource.access ||
+                (resource.access.mode !== "hidden" &&
+                  resource.access.create === "publish" &&
+                  conflict.candidate.owner === user)
+              }
               canPublish={
                 !resource.access || resource.access.mode === "publish"
               }

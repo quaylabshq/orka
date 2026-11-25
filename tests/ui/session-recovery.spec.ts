@@ -91,3 +91,18 @@ test("owner can inspect the incoming copy of a deleted session without applying 
       },
     ]);
 });
+
+test("all queued choices leave the outcome visible after the attention list refreshes", async ({
+  page,
+}) => {
+  await page
+    .getByRole("button", { name: "Keep deleted (3)", exact: true })
+    .click();
+  await expect(page.getByText("3 choices queued for sync")).toBeVisible();
+  await expect(
+    page.locator(".workspace-header .sync-status"),
+  ).not.toHaveAttribute("aria-label", /notification/, { timeout: 8000 });
+  await expect(page.getByText("3 choices queued for sync")).toBeVisible();
+  await page.getByRole("button", { name: "Dismiss", exact: true }).click();
+  await expect(page.getByText("3 choices queued for sync")).toHaveCount(0);
+});

@@ -18,6 +18,7 @@ export function ConflictPanel({
   recovery,
   multipleCandidates,
   canPublish,
+  canCopy,
   preview,
   onPreview,
   onResolve,
@@ -31,6 +32,7 @@ export function ConflictPanel({
   recovery?: boolean;
   multipleCandidates?: boolean;
   canPublish?: boolean;
+  canCopy?: boolean;
   /** The conflict being read, or empty for the shared version. */
   preview: string;
   onPreview: (conflictId: string) => void;
@@ -105,7 +107,7 @@ export function ConflictPanel({
           {recovery ? "Restore session" : "Override"}
         </Button>
         <Button
-          disabled={busy || conflict.author !== user}
+          disabled={busy || conflict.author !== user || canCopy === false}
           onClick={() =>
             onResolve("copy", conflict.id, recovery ? "candidate" : local)
           }
