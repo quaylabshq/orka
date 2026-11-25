@@ -848,7 +848,7 @@ test("session: transcript loading", async ({ page }) => {
   const view = await open(page, wide, { kind: "session", inspect: "hold" });
   await view.getByRole("button", { name: "Transcript", exact: true }).click();
   await expect(
-    view.getByRole("status").filter({ hasText: "Loading content…" }),
+    view.getByRole("status").filter({ hasText: "Loading transcript…" }),
   ).toHaveCount(1);
   await page.mouse.move(0, 0);
   await settle(page);

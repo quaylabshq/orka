@@ -1035,3 +1035,50 @@
 .detail-reader > .conflict {
   margin-block: 0;
 }
+
+/* The transcript keeps its actions close as the shared reading column scrolls. */
+.transcript-reader {
+  min-width: 0;
+  overflow-anchor: none;
+}
+.transcript-reader:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 3px;
+}
+.transcript-actions {
+  position: sticky;
+  z-index: 1;
+  top: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  background: var(--surface-primary);
+  padding: 8px 0;
+}
+.transcript-blocks {
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+  overflow: clip;
+}
+.transcript-block {
+  position: absolute;
+  inset: 0 0 auto;
+}
+.transcript-block-placeholder {
+  min-height: var(--body-md-line-height);
+}
+.transcript-range-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+}
+
+.transcript-jump-status {
+  color: var(--text-secondary);
+  font-size: var(--body-xs-font-size);
+  line-height: var(--body-xs-line-height);
+}

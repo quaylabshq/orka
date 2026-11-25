@@ -101,8 +101,10 @@ export interface SessionViewProps {
   mode: SessionViewMode;
   /** Show turns as literal text instead of rendered Markdown. */
   raw: boolean;
-  /** The unchanged original transcript; loaded only in transcript mode. */
-  transcript: React.ReactNode;
+  /** The Transcript uses the shared reading column as its scroll element. */
+  transcript: (
+    readerRef: React.RefObject<HTMLDivElement | null>,
+  ) => React.ReactNode;
   offline: boolean;
 }
 
@@ -132,6 +134,20 @@ export function SessionView({
     session;
   const initialLoading = session.pending && !error;
   const conversation = mode === "conversation";
+  const conversationPosition = useRef(0);
+  useLayoutEffect(() => {
+    conversationPosition.current = 0;
+  }, [id, conflictId]);
+  useLayoutEffect(() => {
+    const scroller = scrollRef.current;
+    if (!conversation || !scroller) return;
+    scroller.scrollTop = conversationPosition.current;
+    const save = () => {
+      conversationPosition.current = scroller.scrollTop;
+    };
+    scroller.addEventListener("scroll", save, { passive: true });
+    return () => scroller.removeEventListener("scroll", save);
+  }, [conversation, id, conflictId]);
   // The title card scrolls with the turns, so the virtualizer needs the list's
   // offset inside the reading column, refreshed whenever anything above resizes.
   useLayoutEffect(() => {
@@ -160,6 +176,7 @@ export function SessionView({
   }, [conversation, initialLoading]);
   const virtualizer = useVirtualizer({
     count: messages.length,
+    enabled: conversation,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => 160,
     overscan: 6,
@@ -170,9 +187,23 @@ export function SessionView({
   const items = virtualizer.getVirtualItems();
   const lastVisible = items.at(-1)?.index ?? -1;
   useEffect(() => {
-    if (hasMore && !loading && !error && lastVisible >= messages.length - 5)
+    if (
+      conversation &&
+      hasMore &&
+      !loading &&
+      !error &&
+      lastVisible >= messages.length - 5
+    )
       loadMore();
-  }, [hasMore, loading, error, lastVisible, messages.length, loadMore]);
+  }, [
+    conversation,
+    hasMore,
+    loading,
+    error,
+    lastVisible,
+    messages.length,
+    loadMore,
+  ]);
   const retryButton = (
     <Button size="sm" variant="tertiary" onClick={retry}>
       Retry
@@ -181,7 +212,7 @@ export function SessionView({
   return (
     <DetailLayout {...shell} readerRef={scrollRef} bodyClassName="session-body">
       {!conversation ? (
-        transcript
+        transcript(scrollRef)
       ) : (
         <div
           className="session-conversation"

@@ -135,7 +135,7 @@ fn full_content(content: &Value) -> String {
     }
 }
 
-fn message(record: &Value) -> Option<(Message, usize)> {
+pub(crate) fn message(record: &Value) -> Option<(Message, usize)> {
     let kind = record["type"].as_str()?;
     let mut tier = 0;
     let value = if kind == "response_item" {
@@ -204,6 +204,15 @@ pub fn user_text(record: &Value) -> Option<String> {
     (message.role == "user" && !message.hidden).then_some(message.text)
 }
 
+pub(crate) fn starts_turn(record: &Value) -> bool {
+    record["type"] == "session_meta"
+        || (record["type"] == "event_msg"
+            && matches!(
+                record["payload"]["type"].as_str(),
+                Some("task_started" | "user_message")
+            ))
+}
+
 pub fn messages(records: &[Value]) -> Vec<Message> {
     if records
         .first()
@@ -220,13 +229,7 @@ pub fn messages(records: &[Value]) -> Vec<Message> {
     let candidates = records
         .iter()
         .filter_map(|record| {
-            if record["type"] == "session_meta"
-                || (record["type"] == "event_msg"
-                    && matches!(
-                        record["payload"]["type"].as_str(),
-                        Some("task_started" | "user_message")
-                    ))
-            {
+            if starts_turn(record) {
                 turn += 1;
             }
             message(record).map(|(message, tier)| (message, tier, turn))

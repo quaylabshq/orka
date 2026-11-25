@@ -191,8 +191,21 @@ export interface LocalDraft {
   archivedAt?: string;
 }
 export interface SessionSnapshotDownload {
-  conflictId?: string;
+  conflictId?: string | null;
   snapshotHash: string;
+}
+
+export interface SessionTranscriptOpen {
+  readerId: string;
+  sessionSnapshot: SessionSnapshotDownload | null;
+  removed?: boolean;
+}
+
+export interface SessionTranscriptRange {
+  offset: number;
+  text: string;
+  nextOffset: number;
+  eof: boolean;
 }
 
 export type Inspection = {

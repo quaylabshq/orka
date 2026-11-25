@@ -1,5 +1,6 @@
 import { useProductView } from "./desktop-usage.js";
 import {
+  useCallback,
   useEffect,
   useRef,
   useState,
@@ -11,13 +12,6 @@ import { invoke } from "@tauri-apps/api/core";
 import type { SessionConflict } from "@portable/protocol";
 import type { WorkspaceResource as Resource } from "../types.js";
 import type { Inspection } from "../types.js";
-
-/**
- * The largest transcript the reader renders. WebKit lays out a single text
- * block on the main thread: about 0.8 s at 4 MB, 3 s at 17 MB and 8 s at 44 MB
- * of transcript text. Larger transcripts offer a download instead.
- */
-export const TRANSCRIPT_RENDER_LIMIT = 4 * 1024 * 1024;
 
 export interface ResourceView {
   /** The inspected file: SKILL.md for skills, session.jsonl for sessions, otherwise the first file. */
@@ -37,6 +31,7 @@ export interface ResourceView {
   rawMarkdown: boolean;
   setRawMarkdown: Dispatch<SetStateAction<boolean>>;
   canRenderMarkdown: boolean;
+  onTranscriptReady: () => void;
 }
 
 /**
@@ -93,7 +88,7 @@ export function useResourceView(
     id &&
     file &&
     (!preview || conflict) &&
-    (kind !== "session" || fullTranscript),
+    kind !== "session",
   );
   const inspection = useQuery({
     queryKey: [
@@ -110,15 +105,12 @@ export function useResourceView(
       conflict?.candidate.files,
     ],
     enabled,
-    // Live fork history can change without changing the catalog's file hash.
-    // Re-entering Transcript should refresh the version offered for download.
-    ...(kind === "session" && { staleTime: 0 }),
     queryFn: async ({ signal }) => {
       const result = await invoke<Inspection>("inspect_resource", {
         id,
         file,
         conflictId: preview || null,
-        maxBytes: kind === "session" ? TRANSCRIPT_RENDER_LIMIT : null,
+        maxBytes: null,
       });
       // Native IPC itself cannot be aborted. Consuming the signal lets Query
       // discard a response after selection or scope changes.
@@ -126,6 +118,16 @@ export function useResourceView(
       return result;
     },
   });
+  const transcriptKey = JSON.stringify([
+    selectionKey,
+    resource?.revision,
+    preview,
+  ]);
+  const [readyTranscript, setReadyTranscript] = useState<string | null>(null);
+  const onTranscriptReady = useCallback(
+    () => setReadyTranscript(transcriptKey),
+    [transcriptKey],
+  );
   const reading = useRef<{ id?: string; revision?: number }>({});
   const [updatedRevision, setUpdatedRevision] = useState<string>();
   useEffect(() => {
@@ -142,8 +144,10 @@ export function useResourceView(
     reading.current = { id, revision };
   }, [id, resource?.revision, scope]);
   useProductView(
-    enabled &&
-      inspection.data &&
+    ((enabled && inspection.data) ||
+      (kind === "session" &&
+        fullTranscript &&
+        readyTranscript === transcriptKey)) &&
       updatedRevision === JSON.stringify([scope, id, resource?.revision])
       ? "resource_revision_viewed"
       : undefined,
@@ -184,6 +188,7 @@ export function useResourceView(
     setChanges,
     rawMarkdown,
     setRawMarkdown,
+    onTranscriptReady,
     canRenderMarkdown:
       resource?.kind !== "session" && /\.(md|markdown|mdown)$/i.test(file),
   };

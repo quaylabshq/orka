@@ -392,6 +392,22 @@ async function detailFixture(page: Page, options: Options = {}) {
               total: 2,
               offset: 0,
             };
+          if (name === "open_transcript")
+            return {
+              readerId:
+                "fixture-transcript-" + String(args?.conflictId ?? "current"),
+              sessionSnapshot: {
+                ...(args?.conflictId ? { conflictId: args.conflictId } : {}),
+                snapshotHash: args?.conflictId
+                  ? "incoming-snapshot"
+                  : "shared-snapshot",
+              },
+            };
+          if (name === "read_transcript") {
+            const text = "# Preview\nSome content";
+            return { offset: 0, text, nextOffset: text.length, eof: true };
+          }
+          if (name === "close_transcript") return null;
           if (name === "open_web_link" && options.sessionLinkError)
             throw new Error("Cannot open your browser");
           if (
@@ -2549,11 +2565,7 @@ test("session conversations render Mermaid while transcripts stay literal and la
   await expect(
     page.locator(".session-turn .mermaid-diagram svg"),
   ).toBeVisible();
-  expect(
-    (await calls(page, "inspect_resource")).filter(
-      (args: any) => args.id === "session-c",
-    ),
-  ).toEqual([]);
+  expect(await calls(page, "open_transcript")).toEqual([]);
   await page.getByRole("button", { name: "Transcript", exact: true }).click();
   await expect(page.locator(".session-view pre.content")).toHaveText([
     /Some content/,
@@ -2561,7 +2573,7 @@ test("session conversations render Mermaid while transcripts stay literal and la
   await expect(page.locator(".mermaid-diagram")).toHaveCount(0);
 });
 
-test("an oversized transcript offers a download instead of rendering", async ({
+test("a large transcript streams ranges and downloads the selected snapshot", async ({
   page,
 }) => {
   await detailFixture(page, {
@@ -2573,21 +2585,27 @@ test("an oversized transcript offers a download instead of rendering", async ({
     const original = w.__TAURI_INTERNALS__.invoke;
     w.__TAURI_INTERNALS__.invoke = async (name: string, args: any) => {
       const value = await original(name, args);
-      if (
-        name === "inspect_resource" &&
-        args.id === "session-c" &&
-        args.file === "session.jsonl"
-      )
-        return {
-          content: null,
-          previous: null,
-          paths: null,
-          tooLarge: true,
-          size: 44_500_000,
-          sessionSnapshot: args.conflictId
-            ? { conflictId: args.conflictId, snapshotHash: "incoming-snapshot" }
-            : { snapshotHash: "shared-snapshot" },
-        };
+      if (name === "read_transcript") {
+        const total = 44_500_000;
+        const end = args.offset ?? total;
+        const offset =
+          args.offset === null || args.before
+            ? Math.max(0, end - args.maxBytes)
+            : args.offset;
+        const nextOffset =
+          args.offset === null || args.before
+            ? end
+            : Math.min(total, offset + args.maxBytes);
+        const prefix = offset === 0 ? "Start of large transcript\n" : "";
+        const suffix = nextOffset === total ? "\nEnd of large transcript" : "";
+        const body = "Trace line from the large synthetic transcript.\n";
+        const size = nextOffset - offset - prefix.length - suffix.length;
+        const text =
+          prefix +
+          body.repeat(Math.ceil(size / body.length)).slice(0, size) +
+          suffix;
+        return { offset, text, nextOffset, eof: nextOffset === total };
+      }
       return value;
     };
   });
@@ -2596,19 +2614,24 @@ test("an oversized transcript offers a download instead of rendering", async ({
     .getByRole("button", { name: "Polish navigation", exact: true })
     .click();
   await page.getByRole("button", { name: "Transcript", exact: true }).click();
-  const state = page.locator(".session-view .reader-state");
-  await expect(state).toContainText("Transcript too large to show here");
-  await expect(state).toContainText("44.5 MB");
-  await expect(page.locator(".session-view pre.content")).toHaveCount(0);
-  const read = (await calls(page, "inspect_resource")).find(
-    (args: any) => args.id === "session-c",
-  );
-  expect(read).toMatchObject({
-    file: "session.jsonl",
-    maxBytes: 4 * 1024 * 1024,
-  });
-  await state
+  const view = page.locator(".session-view");
+  await expect(view).toContainText("Start of large transcript");
+  expect(
+    (await calls(page, "inspect_resource")).filter(
+      (entry: any) => entry.id === "session-c",
+    ),
+  ).toEqual([]);
+  expect(await calls(page, "open_transcript")).toEqual([
+    { id: "session-c", conflictId: null },
+  ]);
+  const reads = await calls(page, "read_transcript");
+  expect(reads[0]).toMatchObject({ offset: 0 });
+  expect(reads.every((read: any) => read.maxBytes <= 32 * 1024)).toBe(true);
+  await view.getByRole("button", { name: "Jump to end", exact: true }).click();
+  await expect(view).toContainText("End of large transcript");
+  await view
     .getByRole("button", { name: "Download session", exact: true })
+    .first()
     .click();
   const download = { id: "session-c", path: "/test/export/session.zip" };
   const sharedDownload = {
@@ -2619,7 +2642,7 @@ test("an oversized transcript offers a download instead of rendering", async ({
     .poll(() => calls(page, "export_bundle"))
     .toEqual([sharedDownload]);
   await page.getByRole("button", { name: "View incoming version" }).click();
-  await state
+  await view
     .getByRole("button", { name: "Download incoming version", exact: true })
     .click();
   await expect
@@ -2640,6 +2663,113 @@ test("an oversized transcript offers a download instead of rendering", async ({
   expect(axe.violations).toEqual([]);
 });
 
+test("scrolling forward reaches the exact last line without jumping", async ({
+  page,
+}) => {
+  await detailFixture(page);
+  await page.evaluate(() => {
+    const w = window as any;
+    const original = w.__TAURI_INTERNALS__.invoke;
+    const transcript =
+      "First visible record\n" +
+      Array.from(
+        { length: 3500 },
+        (_, i) => `Record ${i} has synthetic text.\n`,
+      ).join("") +
+      "Exact final record";
+    w.__TAURI_INTERNALS__.invoke = async (name: string, args: any) => {
+      const value = await original(name, args);
+      if (name !== "read_transcript") return value;
+      const nextOffset = Math.min(
+        transcript.length,
+        args.offset + args.maxBytes,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 35));
+      return {
+        offset: args.offset,
+        nextOffset,
+        text: transcript.slice(args.offset, nextOffset),
+        eof: nextOffset === transcript.length,
+      };
+    };
+  });
+  await openSession(page);
+  await page.getByRole("button", { name: "Transcript", exact: true }).click();
+  const region = page.getByRole("region", { name: "Transcript text" });
+  const reader = page.locator(".detail-reader");
+  await expect(region).toContainText("First visible record");
+  await expect
+    .poll(async () => {
+      await reader.evaluate((element) => {
+        element.scrollTop = element.scrollHeight;
+      });
+      return (await region.textContent())?.includes("Exact final record");
+    })
+    .toBe(true);
+  const reads = await calls(page, "read_transcript");
+  expect(reads.length).toBeGreaterThan(4);
+  expect(
+    reads.every((read: any) => Number.isInteger(read.offset) && !read.before),
+  ).toBe(true);
+  await expect(region).not.toContainText("First visible record");
+  expect(
+    await region.locator(".transcript-block[data-offset]").count(),
+  ).toBeLessThan(12);
+});
+
+test("leaving Transcript closes its reader and ignores a late page", async ({
+  page,
+}) => {
+  await detailFixture(page);
+  await page.evaluate(() => {
+    const w = window as any;
+    const original = w.__TAURI_INTERNALS__.invoke;
+    let opened = 0;
+    w.__TAURI_INTERNALS__.invoke = async (name: string, args: any) => {
+      const value = await original(name, args);
+      if (name === "open_transcript")
+        return { ...value, readerId: `reader-${++opened}` };
+      if (name === "read_transcript") {
+        const old = args.readerId === "reader-1";
+        if (old)
+          await new Promise<void>((resolve) => {
+            w.finishOldTranscript = resolve;
+          });
+        const text = old ? "Stale transcript page" : "New transcript page";
+        return { offset: 0, text, nextOffset: text.length, eof: true };
+      }
+      return value;
+    };
+  });
+  await openSession(page);
+  const transcript = page.getByRole("button", {
+    name: "Transcript",
+    exact: true,
+  });
+  await transcript.click();
+  await expect
+    .poll(() => page.evaluate(() => typeof (window as any).finishOldTranscript))
+    .toBe("function");
+  await page.getByRole("button", { name: "Conversation", exact: true }).click();
+  await expect(
+    page.getByText("Session conversation", { exact: true }),
+  ).toBeVisible();
+  await expect
+    .poll(() => calls(page, "close_transcript"))
+    .toEqual([{ readerId: "reader-1" }]);
+  await transcript.click();
+  await expect(
+    page.getByText("New transcript page", { exact: true }),
+  ).toBeVisible();
+  await page.evaluate(() => (window as any).finishOldTranscript());
+  await expect(
+    page.getByText("New transcript page", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Stale transcript page", { exact: true }),
+  ).toHaveCount(0);
+});
+
 test("reopening the transcript refreshes a stale download version", async ({
   page,
 }) => {
@@ -2650,15 +2780,18 @@ test("reopening the transcript refreshes a stale download version", async ({
     let snapshotHash = "first-snapshot";
     w.__TAURI_INTERNALS__.invoke = async (name: string, args: any) => {
       const value = await original(name, args);
-      if (name === "inspect_resource" && args.id === "session-c")
+      if (name === "open_transcript" && args.id === "session-c")
         return {
-          content: null,
-          previous: null,
-          paths: null,
-          tooLarge: true,
-          size: snapshotHash === "first-snapshot" ? 44_500_000 : 45_500_000,
+          readerId: snapshotHash,
           sessionSnapshot: { snapshotHash },
         };
+      if (name === "read_transcript") {
+        const text =
+          args.readerId === "first-snapshot"
+            ? "Original snapshot text"
+            : "Refreshed snapshot text";
+        return { offset: 0, text, nextOffset: text.length, eof: true };
+      }
       if (
         name === "export_bundle" &&
         args.sessionSnapshot?.snapshotHash === "first-snapshot"
@@ -2675,12 +2808,14 @@ test("reopening the transcript refreshes a stale download version", async ({
     exact: true,
   });
   await transcript.click();
-  const state = page.locator(".session-view .reader-state");
-  const download = state.getByRole("button", {
-    name: "Download session",
-    exact: true,
-  });
-  await expect(state).toContainText("44.5 MB");
+  const state = page.locator(".session-view");
+  const download = state
+    .getByRole("button", {
+      name: "Download session",
+      exact: true,
+    })
+    .first();
+  await expect(state).toContainText("Original snapshot text");
   await download.click();
   const error = page.locator("[data-orka-toast]");
   await expect(error.getByRole("alert")).toHaveText(
@@ -2691,7 +2826,7 @@ test("reopening the transcript refreshes a stale download version", async ({
 
   await page.getByRole("button", { name: "Conversation", exact: true }).click();
   await transcript.click();
-  await expect(state).toContainText("45.5 MB");
+  await expect(state).toContainText("Refreshed snapshot text");
   await download.click();
   await expect(
     page.getByRole("status").filter({ hasText: "Download saved" }),

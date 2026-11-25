@@ -648,6 +648,231 @@ fn parent_prefix(home: &Path, id: &str, end: u64, offset: u64) -> Result<Vec<u8>
     parent_prefix_in(segments(home, id)?, end, offset).map(|(bytes, _, _)| bytes)
 }
 
+fn codex_record_shape(record: &Value) -> bool {
+    record["type"].is_string()
+        && record["payload"].is_object()
+        && (record["payload"]["type"] != "thread_settings_applied"
+            || record["payload"]["thread_settings"].is_object())
+}
+
+struct StoredManifest<'a> {
+    files: &'a [Value],
+    names: BTreeSet<&'a str>,
+}
+
+impl<'a> StoredManifest<'a> {
+    fn new(resource: &'a Value) -> Result<Self> {
+        let files = resource["files"]
+            .as_array()
+            .ok_or("Missing history files")?;
+        if files.len() > 200 {
+            return Err("Too many history files".into());
+        }
+        let mut names = BTreeSet::new();
+        for file in files {
+            if !names.insert(file["path"].as_str().ok_or("Missing history path")?) {
+                return Err("Duplicate history file".into());
+            }
+        }
+        Ok(Self { files, names })
+    }
+
+    fn file(&self, path: &str) -> Result<&'a Value> {
+        self.files.iter().find(|file| file["path"] == path)
+            .ok_or_else(|| "Inherited Codex history is missing. Sync this session again from the original device.".into())
+    }
+
+    fn parent(&self, id: &str, end: u64) -> Result<&'a Value> {
+        let path = format!("lineage/{id}/{end}.jsonl");
+        if self.names.contains(path.as_str()) {
+            self.file(&path)
+        } else {
+            self.file(&format!("lineage/{id}.jsonl"))
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct Inheritance {
+    id: String,
+    end_ordinal: u64,
+    end_byte: u64,
+}
+
+fn inheritance(meta: &Value, paginated: bool) -> Result<Option<Inheritance>> {
+    let base = &meta["history_base"];
+    if base.is_null() {
+        return Ok(None);
+    }
+    if !paginated {
+        return Err("Legacy history cannot reference paginated ancestors".into());
+    }
+    let id = base["thread_id"]
+        .as_str()
+        .ok_or("Missing history ancestor")?;
+    Uuid::parse_str(id).map_err(|_| "Invalid history ancestor")?;
+    let end_ordinal = base["end_ordinal_exclusive"]
+        .as_u64()
+        .ok_or("Missing history ordinal boundary")?;
+    let end_byte = base["end_byte_offset"]
+        .as_u64()
+        .filter(|end| *end > 0 && *end <= MAX_FILE)
+        .ok_or("Invalid history byte boundary")?;
+    Ok(Some(Inheritance {
+        id: id.into(),
+        end_ordinal,
+        end_byte,
+    }))
+}
+
+fn visit_stored_jsonl(
+    scope: &db::CacheScope,
+    manifest: &Value,
+    cancelled: &impl Fn() -> Result<()>,
+    mut visit: impl FnMut(&Value) -> Result<()>,
+) -> Result<(u64, bool)> {
+    use sha2::{Digest, Sha256};
+    use std::io::{BufRead, BufReader};
+
+    let hash = manifest["hash"].as_str().ok_or("Missing history hash")?;
+    let size = manifest["size"].as_u64().ok_or("Missing history size")?;
+    if size > MAX_FILE {
+        return Err(SESSION_SIZE_ERROR.into());
+    }
+    let blob = scope.open_blob(hash)?;
+    let length = blob.metadata().map_err(|error| error.to_string())?.len();
+    if length != size {
+        return Err("History size does not match the manifest".into());
+    }
+    // Keep parser and formatter memory bounded for a single exceptional
+    // record as well as for a history with many ordinary records.
+    const MAX_RECORD_BYTES: u64 = 16 * 1024 * 1024;
+    let mut reader = BufReader::with_capacity(64 * 1024, blob.take(size + 1));
+    let mut digest = Sha256::new();
+    let mut line = Vec::new();
+    let mut bytes = 0_u64;
+    let mut complete = true;
+    loop {
+        cancelled()?;
+        line.clear();
+        let count = (&mut reader)
+            .take(MAX_RECORD_BYTES + 1)
+            .read_until(b'\n', &mut line)
+            .map_err(|error| error.to_string())?;
+        if count as u64 > MAX_RECORD_BYTES {
+            return Err("A transcript record exceeds the 16 MiB reader limit. Download the session to read it.".into());
+        }
+        if count == 0 {
+            break;
+        }
+        bytes += count as u64;
+        if bytes > size {
+            return Err("History size does not match the manifest".into());
+        }
+        digest.update(&line);
+        complete = line.ends_with(b"\n");
+        if complete && count > 1 {
+            let record = serde_json::from_slice(&line[..count - 1])
+                .map_err(|_| "Unknown or corrupt native transcript; source preserved")?;
+            visit(&record)?;
+        }
+    }
+    if bytes != size || db::hex(&digest.finalize()) != hash {
+        return Err("Blob hash mismatch".into());
+    }
+    Ok((bytes, complete))
+}
+
+/// Visit immutable snapshot records in manifest lineage order (leaf first).
+/// The reader stores each segment separately, then presents oldest ancestors
+/// first. It publishes pages only after all blob checks have succeeded.
+pub(crate) fn visit_stored_transcript(
+    scope: &db::CacheScope,
+    resource: &Value,
+    cancelled: impl Fn() -> Result<()>,
+    mut visit: impl FnMut(Option<&Value>) -> Result<()>,
+) -> Result<()> {
+    let manifest = StoredManifest::new(resource)?;
+    let mut file = manifest.file("session.jsonl")?;
+    if resource["source"] != "codex" {
+        visit_stored_jsonl(scope, file, &cancelled, |record| visit(Some(record)))?;
+        return visit(None);
+    }
+
+    let mut expected: Option<Inheritance> = None;
+    let mut seen = BTreeSet::new();
+    let mut total = 0_u64;
+    loop {
+        if seen.len() >= 200 {
+            return Err("Complete session history exceeds the sync limit".into());
+        }
+        let mut header = None;
+        let mut next_ordinal: Option<u64> = None;
+        let mut paginated = false;
+        let (length, complete) = visit_stored_jsonl(scope, file, &cancelled, |record| {
+            if !codex_record_shape(record) {
+                return Err("Unsupported Codex record shape; original preserved".into());
+            }
+            if header.is_none() {
+                let records = std::slice::from_ref(record);
+                let meta = metadata(records)?;
+                let (id, _, _) = native::session_info("codex", records)?;
+                paginated = meta["history_mode"] == "paginated";
+                next_ordinal = record["ordinal"].as_u64();
+                if paginated
+                    && next_ordinal
+                        != Some(
+                            meta["history_base"]["end_ordinal_exclusive"]
+                                .as_u64()
+                                .unwrap_or(0),
+                        )
+                {
+                    return Err("History starts outside its inherited ordinal boundary".into());
+                }
+                if !seen.insert((id.clone(), next_ordinal.unwrap_or(0))) {
+                    return Err("Cyclic Codex history reference".into());
+                }
+                header = Some((id, inheritance(meta, paginated)?));
+            }
+            if paginated {
+                if next_ordinal.is_none() || record["ordinal"].as_u64() != next_ordinal {
+                    return Err("Non-contiguous Codex history ordinals".into());
+                }
+                next_ordinal = next_ordinal.and_then(|ordinal| ordinal.checked_add(1));
+            }
+            visit(Some(record))
+        })?;
+        let (id, base) = header.ok_or("Missing initial Codex session metadata")?;
+        total += length;
+        if total > MAX_TOTAL as u64 {
+            return Err("Complete session history exceeds the sync limit".into());
+        }
+        if let Some(parent) = expected.take() {
+            if id != parent.id
+                || !paginated
+                || !complete
+                || length != parent.end_byte
+                || next_ordinal != Some(parent.end_ordinal)
+            {
+                return Err("Inherited history identity or boundary does not match".into());
+            }
+        }
+        visit(None)?;
+        let Some(parent) = base else {
+            break;
+        };
+        if seen.len() == manifest.files.len() {
+            return Err("Inherited Codex history is missing or cyclic".into());
+        }
+        file = manifest.parent(&parent.id, parent.end_ordinal)?;
+        expected = Some(parent);
+    }
+    if seen.len() != manifest.files.len() {
+        return Err("Session contains unreferenced history files".into());
+    }
+    Ok(())
+}
+
 impl History {
     fn load(
         bytes: Vec<u8>,
@@ -675,11 +900,7 @@ impl History {
             if bytes_len as u64 > MAX_FILE || total > MAX_TOTAL || rollouts.len() >= 200 {
                 return Err("Complete session history exceeds the sync limit".into());
             }
-            if records.iter().any(|r| {
-                !r["payload"].is_object()
-                    || (r["payload"]["type"] == "thread_settings_applied"
-                        && !r["payload"]["thread_settings"].is_object())
-            }) {
+            if records.iter().any(|record| !codex_record_shape(record)) {
                 return Err("Unsupported Codex record shape; original preserved".into());
             }
             let (id, cwd, _) = native::session_info("codex", &records)?;
@@ -726,25 +947,14 @@ impl History {
                     return Err("Inherited history identity or boundary does not match".into());
                 }
             }
-            let base = meta["history_base"].clone();
+            let base = inheritance(meta, paginated)?;
             rollouts.push(Rollout { id, records });
-            if base.is_null() {
+            let Some(base) = base else {
                 break;
-            }
-            if !paginated {
-                return Err("Legacy history cannot reference paginated ancestors".into());
-            }
-            let parent_id = base["thread_id"]
-                .as_str()
-                .ok_or("Missing history ancestor")?;
-            Uuid::parse_str(parent_id).map_err(|_| "Invalid history ancestor")?;
-            let end = base["end_ordinal_exclusive"]
-                .as_u64()
-                .ok_or("Missing history ordinal boundary")?;
-            let offset = base["end_byte_offset"]
-                .as_u64()
-                .filter(|n| *n > 0 && *n <= MAX_FILE)
-                .ok_or("Invalid history byte boundary")?;
+            };
+            let parent_id = base.id.as_str();
+            let end = base.end_ordinal;
+            let offset = base.end_byte;
             let next_bytes = parent(parent_id, end, offset)?;
             if next_bytes.len() as u64 != offset || next_bytes.last() != Some(&b'\n') {
                 return Err("History byte boundary must end at a complete record".into());
@@ -777,21 +987,8 @@ impl History {
         resource: &Value,
         read_blob: &impl Fn(&str) -> Result<Vec<u8>>,
     ) -> Result<Self> {
-        let files = resource["files"]
-            .as_array()
-            .ok_or("Missing history files")?;
-        if files.len() > 200 {
-            return Err("Too many history files".into());
-        }
-        let mut names = BTreeSet::new();
-        for file in files {
-            if !names.insert(file["path"].as_str().ok_or("Missing history path")?) {
-                return Err("Duplicate history file".into());
-            }
-        }
-        let load = |path: &str| -> Result<Vec<u8>> {
-            let file = files.iter().find(|f| f["path"] == path)
-                .ok_or("Inherited Codex history is missing. Sync this session again from the original device.")?;
+        let manifest = StoredManifest::new(resource)?;
+        let load = |file: &Value| -> Result<Vec<u8>> {
             let bytes = read_blob(file["hash"].as_str().ok_or("Missing history hash")?)?;
             if bytes.len() as u64 != file["size"].as_u64().ok_or("Missing history size")? {
                 return Err("History size does not match the manifest".into());
@@ -799,14 +996,9 @@ impl History {
             Ok(bytes)
         };
         let history = Self::load(
-            load("session.jsonl")?,
+            load(manifest.file("session.jsonl")?)?,
             |id, end, offset| {
-                let path = format!("lineage/{id}/{end}.jsonl");
-                let bytes = if names.contains(path.as_str()) {
-                    load(&path)?
-                } else {
-                    load(&format!("lineage/{id}.jsonl"))?
-                };
+                let bytes = load(manifest.parent(id, end)?)?;
                 if bytes.len() as u64 != offset {
                     return Err("Ancestor contains history beyond its inherited boundary".into());
                 }
@@ -814,7 +1006,7 @@ impl History {
             },
             None,
         )?;
-        if history.rollouts.len() != files.len() {
+        if history.rollouts.len() != manifest.files.len() {
             return Err("Session contains unreferenced history files".into());
         }
         Ok(history)

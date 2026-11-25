@@ -44,6 +44,7 @@ mod session_launcher;
 mod session_presentation;
 mod session_redaction;
 mod session_translation;
+mod transcript;
 mod settings;
 mod settings_lifecycle;
 mod skill_reconciliation;
@@ -369,6 +370,9 @@ fn main() {
                 sources::scan_project_folders,
                 commands::disconnect_project,
                 commands::inspect_resource,
+                transcript::open_transcript,
+                transcript::read_transcript,
+                transcript::close_transcript,
                 commands::session_messages,
                 commands::session_display_title,
                 commands::open_editor,

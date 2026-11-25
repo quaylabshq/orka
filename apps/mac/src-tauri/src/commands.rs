@@ -762,7 +762,7 @@ pub async fn session_display_title(id: String) -> Result<Option<String>> {
 const CONFLICT_PREVIEW_MISSING: &str = "Conflict changed; refresh before inspecting";
 
 /// The stored resource, or a conflict's incoming candidate when previewing one.
-fn inspected_resource(
+pub(crate) fn inspection_candidate(
     db: &rusqlite::Connection,
     id: &str,
     conflict_id: Option<&str>,
@@ -775,7 +775,7 @@ fn inspected_resource(
         Err(error) => crate::global_skills::local_skill(db, id)?.ok_or(error)?,
     };
     let Some(conflict_id) = conflict_id else {
-        return crate::session_forks::current_resource(db, &resource);
+        return Ok(resource);
     };
     let project_id = resource["projectId"].as_str().ok_or("Missing project")?;
     let conflict = db::rows(
@@ -794,6 +794,19 @@ fn inspected_resource(
         return Err("Conflict belongs to another resource".into());
     }
     Ok(candidate.clone())
+}
+
+fn inspected_resource(
+    db: &rusqlite::Connection,
+    id: &str,
+    conflict_id: Option<&str>,
+) -> Result<Value> {
+    let resource = inspection_candidate(db, id, conflict_id)?;
+    if conflict_id.is_some() {
+        Ok(resource)
+    } else {
+        crate::session_forks::current_resource(db, &resource)
+    }
 }
 
 /// Parsed conversations for the few sessions a reader pages through at once.
@@ -1068,8 +1081,8 @@ pub async fn resume_session(
 #[serde(rename_all = "camelCase")]
 pub struct SessionSnapshotDownload {
     #[serde(skip_serializing_if = "Option::is_none")]
-    conflict_id: Option<String>,
-    snapshot_hash: String,
+    pub(crate) conflict_id: Option<String>,
+    pub(crate) snapshot_hash: String,
 }
 
 const SESSION_SNAPSHOT_CHANGED: &str = "session_snapshot_changed";
@@ -1077,7 +1090,7 @@ const SESSION_SNAPSHOT_CHANGED: &str = "session_snapshot_changed";
 /// A fork can materialize new history without changing its catalog revision.
 /// Compare the actual session files and provider; title or timestamp edits do
 /// not change the transcript or its ancestry.
-fn session_snapshot_hash(session: &Value) -> String {
+pub(crate) fn session_snapshot_hash(session: &Value) -> String {
     let mut files = session["files"]
         .as_array()
         .into_iter()
