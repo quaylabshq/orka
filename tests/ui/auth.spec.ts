@@ -267,6 +267,12 @@ test("Cloud entry matches the design geometry and uses local assets", async ({
     animations: "disabled",
     path: info.outputPath("figma-filled-1440.png"),
   });
+  await expect(
+    page.getByRole("link", { name: "Terms Of Use", exact: true }),
+  ).toHaveAttribute("href", "https://tryorka.ai/docs/terms");
+  await expect(
+    page.getByRole("link", { name: "Privacy Policy", exact: true }),
+  ).toHaveAttribute("href", "https://tryorka.ai/docs/privacy");
   await page.getByRole("link", { name: "Terms Of Use", exact: true }).click();
   await expect
     .poll(
