@@ -153,6 +153,9 @@ func (a *API) handle(w http.ResponseWriter, r *http.Request) (any, bool, error) 
 	if strings.HasPrefix(path, "/auth/") && a.AuthURL != "" {
 		return nil, true, a.proxyAuth(w, r, r.URL, method)
 	}
+	if isLiveSessionRoute(path) && !a.liveSessionRouteAvailable(path, method, r) {
+		return nil, false, &HTTPError{Status: http.StatusNotFound, Message: "Not found"}
+	}
 	authorization := r.Header.Get("Authorization")
 	if !strings.HasPrefix(authorization, "Bearer ") || len(authorization) == 7 {
 		return nil, false, &HTTPError{Status: 401, Message: "Sign in required"}
@@ -163,6 +166,10 @@ func (a *API) handle(w http.ResponseWriter, r *http.Request) (any, bool, error) 
 	}
 	if !validUUID(user) {
 		return nil, false, bad("Invalid request")
+	}
+	if isLiveSessionRoute(path) {
+		result, err := a.liveSessionRequest(w, r, user)
+		return result, false, err
 	}
 	var parsed any
 	parsedBody := false
@@ -277,7 +284,11 @@ func (a *API) handle(w http.ResponseWriter, r *http.Request) (any, bool, error) 
 		return tx(func(q *Queries) any { return s.putProfile(q, user, input) })
 	case path == "/v2/projects/capabilities" && method == http.MethodGet:
 		return read(func(q *Queries) any {
-			return Object{"lifecycle": 1, "softDelete": 1, "projectTombstones": 1, "projectRestoreWindowDays": projectRestoreWindowDays(q), "governance": 1, "sources": 1, "sourcesRemoval": 1, "rename": 1, "rolePolicies": 1, "policyOperations": 1, "deviceHardware": 1, "selectedSharing": 1, "resourceDeletion": 1, "sessionLatestOnly": 1, "sessionUploadReconcile": 1}
+			capabilities := Object{"lifecycle": 1, "softDelete": 1, "projectTombstones": 1, "projectRestoreWindowDays": projectRestoreWindowDays(q), "governance": 1, "sources": 1, "sourcesRemoval": 1, "rename": 1, "rolePolicies": 1, "policyOperations": 1, "deviceHardware": 1, "selectedSharing": 1, "resourceDeletion": 1, "sessionLatestOnly": 1, "sessionUploadReconcile": 1}
+			if a.Settings.liveSessionRelaySecret != "" {
+				capabilities["experimentalLiveSessions"] = 1
+			}
+			return capabilities
 		})
 	case path == "/v2/projects/sources/remove" && method == http.MethodPost:
 		input, err := contract("removeProjectSource")

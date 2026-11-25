@@ -211,13 +211,23 @@ pub(super) fn hook_context(
                 rt.block_on(async {
                     tokio::time::timeout(Duration::from_millis(1100), pending(&request)).await
                 })
-                .ok()?
                 .ok()
             });
         let _ = tx.send(result);
     });
-    let (s, cursor, hash, state, bytes, content) =
-        rx.recv_timeout(Duration::from_millis(1300)).ok()??;
+    let result = rx.recv_timeout(Duration::from_millis(1300)).ok()??;
+    let (s, cursor, hash, state, bytes, content) = match result {
+        Ok(update) => update,
+        Err(e) => {
+            if super::denied(&e) {
+                let _ = db.execute(
+                    "DELETE FROM meta WHERE key=? AND value=?",
+                    rusqlite::params![k, sub.to_string()],
+                );
+            }
+            return None;
+        }
+    };
     let mut db = s.checked_db().ok()?;
     db.busy_timeout(Duration::from_millis(100)).ok()?;
     let t = db

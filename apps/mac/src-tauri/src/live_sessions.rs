@@ -20,6 +20,11 @@ static MUTATIONS: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 type Cache = HashMap<String, Arc<reader::View>>;
 static VIEWS: LazyLock<Mutex<Cache>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
+fn denied(error: &str) -> bool {
+    ["401:", "403:", "404:", "410:"]
+        .iter()
+        .any(|p| error.starts_with(p))
+}
 fn field<'a>(v: &'a Value, key: &str) -> Result<&'a str> {
     v[key]
         .as_str()
@@ -212,7 +217,16 @@ impl Session {
         };
         let eligible = available && self.eligible();
         let remote = if available && self.published() {
-            self.control("status", json!({})).await?
+            match self.control("status", json!({})).await {
+                Ok(state) => state,
+                Err(e) => {
+                    VIEWS.lock().await.remove(&self.view_key());
+                    if denied(&e) {
+                        self.checked_db()?.execute("DELETE FROM meta WHERE key LIKE 'live-agent:%' AND json_extract(value,'$.id')=?", [&self.id]).map_err(|err|err.to_string())?;
+                    }
+                    return Err(e);
+                }
+            }
         } else {
             Value::Null
         };
@@ -229,6 +243,7 @@ impl Session {
             }
             matches
         };
+        db.execute("DELETE FROM meta WHERE key LIKE 'live-agent:%' AND json_extract(value,'$.id')=? AND json_extract(value,'$.episodeId') IS NOT ?",rusqlite::params![self.id,episode]).map_err(|e|e.to_string())?;
         let ag = episode.is_some_and(|ep| agent::has_target(&db, self, ep).unwrap_or(false));
         let reason = if !available {
             Some("Live sessions are unavailable on this service or provider.")

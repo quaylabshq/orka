@@ -66,6 +66,7 @@ assert.deepEqual(
     "packages/server-core/migrations/007_session_retention.sql",
     "packages/server-core/migrations/008_project_soft_delete.sql",
     "packages/server-core/migrations/009_project_tombstones.sql",
+    "packages/server-core/migrations/017_live_sessions.sql",
   ],
 );
 assert.equal(

@@ -90,6 +90,10 @@ func (s *Store) saveChange(q *Queries, user string, input Object, revision int64
 	project := text(input["projectId"])
 	q.Exec("insert into orka.resources values($1,$2,$3,$4) on conflict(project_id,id) do update set revision=excluded.revision,payload=excluded.payload", project, resource["resourceId"], resource["revision"], resource)
 	s.saveSnapshot(q, project, resource)
+	if resource["kind"] == "session" && (flag(resource["deleted"]) || len(conflicts) > 0) {
+		// A later restore or conflict decision must not revive an earlier live overlay.
+		q.Exec("update orka.live_sessions set stopped_at=now() where project_id=$1 and resource_id=$2 and stopped_at is null", project, resource["resourceId"])
+	}
 	event := Object{"revision": revision, "resource": resource, "conflicts": conflicts, "activity": activity}
 	if len(resolutions) > 0 {
 		event["memoryResolutions"] = resolutions

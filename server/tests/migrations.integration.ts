@@ -10,6 +10,19 @@ import {
   migrate,
 } from "./bridge/migrations.js";
 
+const expectedMigrations = [
+  initialMigration,
+  "002_github_repositories.sql",
+  "003_email_invitations.sql",
+  "004_mcp_operations.sql",
+  "005_source_removal.sql",
+  "006_github_authorization_completion.sql",
+  "007_session_retention.sql",
+  "008_project_soft_delete.sql",
+  "009_project_tombstones.sql",
+  "017_live_sessions.sql",
+];
+
 async function database(run: (pool: Pool) => Promise<void>) {
   const admin = new Pool({ connectionString: process.env.DATABASE_URL });
   const name = `orka_migration_${randomUUID().replaceAll("-", "")}`;
@@ -43,38 +56,18 @@ await test("a fresh server installs the baseline and GitHub migration atomically
         new URL("../packages/server-core/migrations/", import.meta.url),
       )
     ).filter((name) => name.endsWith(".sql")),
-    [
-      "001_initial.sql",
-      "002_github_repositories.sql",
-      "003_email_invitations.sql",
-      "004_mcp_operations.sql",
-      "005_source_removal.sql",
-      "006_github_authorization_completion.sql",
-      "007_session_retention.sql",
-      "008_project_soft_delete.sql",
-      "009_project_tombstones.sql",
-    ],
+    expectedMigrations,
   );
   await database(async (pool) => {
     await Promise.all([migrate(pool), migrate(pool)]);
-    assert.deepEqual(await ledger(pool), [
-      initialMigration,
-      "002_github_repositories.sql",
-      "003_email_invitations.sql",
-      "004_mcp_operations.sql",
-      "005_source_removal.sql",
-      "006_github_authorization_completion.sql",
-      "007_session_retention.sql",
-      "008_project_soft_delete.sql",
-      "009_project_tombstones.sql",
-    ]);
+    assert.deepEqual(await ledger(pool), expectedMigrations);
     assert.equal(
       (
         await pool.query(
           "select count(*) from pg_tables where schemaname='orka'",
         )
       ).rows[0].count,
-      "48",
+      "49",
     );
     const project = randomUUID(),
       owner = randomUUID();
@@ -91,17 +84,57 @@ await test("a fresh server installs the baseline and GitHub migration atomically
       ).rows[0].name,
       "Keep this project",
     );
-    assert.deepEqual(await ledger(pool), [
-      initialMigration,
-      "002_github_repositories.sql",
-      "003_email_invitations.sql",
-      "004_mcp_operations.sql",
-      "005_source_removal.sql",
-      "006_github_authorization_completion.sql",
-      "007_session_retention.sql",
-      "008_project_soft_delete.sql",
-      "009_project_tombstones.sql",
+    assert.deepEqual(await ledger(pool), expectedMigrations);
+  });
+});
+
+await test("an existing public 009 database applies 017 once and retains its session", async () => {
+  await database(async (pool) => {
+    await pool.query(
+      "create schema orka; create table orka.schema_migrations(name text primary key)",
+    );
+    const original = expectedMigrations.slice(0, -1);
+    for (const name of original) {
+      await pool.query(
+        await readFile(
+          new URL(
+            "../packages/server-core/migrations/" + name,
+            import.meta.url,
+          ),
+          "utf8",
+        ),
+      );
+      await pool.query("insert into orka.schema_migrations values($1)", [name]);
+    }
+    const project = randomUUID(),
+      resource = randomUUID(),
+      owner = randomUUID();
+    await pool.query(
+      "insert into orka.projects(id,name,created_by) values($1,'Public upgrade',$2)",
+      [project, owner],
+    );
+    await pool.query("insert into orka.resources values($1,$2,1,$3)", [
+      project,
+      resource,
+      { kind: "session", owner },
     ]);
+    assert.deepEqual(await ledger(pool), original);
+    await Promise.all([migrate(pool), migrate(pool)]);
+    assert.deepEqual(await ledger(pool), expectedMigrations);
+    assert.deepEqual(
+      (
+        await pool.query(
+          "select revision::int,payload from orka.resources where project_id=$1 and id=$2",
+          [project, resource],
+        )
+      ).rows[0],
+      { revision: 1, payload: { kind: "session", owner } },
+    );
+    assert.equal(
+      (await pool.query("select count(*) from orka.live_sessions")).rows[0]
+        .count,
+      "0",
+    );
   });
 });
 
@@ -174,17 +207,7 @@ await test("an existing baseline upgrades GitHub tables without replacing projec
       },
     ]);
     await Promise.all([migrate(pool), migrate(pool)]);
-    assert.deepEqual(await ledger(pool), [
-      initialMigration,
-      "002_github_repositories.sql",
-      "003_email_invitations.sql",
-      "004_mcp_operations.sql",
-      "005_source_removal.sql",
-      "006_github_authorization_completion.sql",
-      "007_session_retention.sql",
-      "008_project_soft_delete.sql",
-      "009_project_tombstones.sql",
-    ]);
+    assert.deepEqual(await ledger(pool), expectedMigrations);
     assert.equal(
       (
         await pool.query(
@@ -271,17 +294,7 @@ await test("baseline failure rolls back its DDL and ledger without touching pre-
     );
     await pool.query("drop view orka.members");
     await migrate(pool);
-    assert.deepEqual(await ledger(pool), [
-      initialMigration,
-      "002_github_repositories.sql",
-      "003_email_invitations.sql",
-      "004_mcp_operations.sql",
-      "005_source_removal.sql",
-      "006_github_authorization_completion.sql",
-      "007_session_retention.sql",
-      "008_project_soft_delete.sql",
-      "009_project_tombstones.sql",
-    ]);
+    assert.deepEqual(await ledger(pool), expectedMigrations);
   });
 });
 
@@ -302,17 +315,7 @@ await test("resetting a completed historical ledger is explicit and preserves ap
     assert.deepEqual(await ledger(pool), [...legacyMigrationNames]);
     await migrate(pool, { resetLedger: true });
     await migrate(pool, { resetLedger: true });
-    assert.deepEqual(await ledger(pool), [
-      initialMigration,
-      "002_github_repositories.sql",
-      "003_email_invitations.sql",
-      "004_mcp_operations.sql",
-      "005_source_removal.sql",
-      "006_github_authorization_completion.sql",
-      "007_session_retention.sql",
-      "008_project_soft_delete.sql",
-      "009_project_tombstones.sql",
-    ]);
+    assert.deepEqual(await ledger(pool), expectedMigrations);
     assert.equal(
       (
         await pool.query("select name from orka.projects where id=$1", [

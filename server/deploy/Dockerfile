@@ -1,15 +1,22 @@
-FROM --platform=$BUILDPLATFORM golang:1.27.4-bookworm AS build
+FROM --platform=$BUILDPLATFORM golang:1.27.4-bookworm AS build-base
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd cmd
 COPY internal internal
 COPY packages/server-core/migrations packages/server-core/migrations
+
+FROM build-base AS build
 ARG VERSION=development
 ARG TARGETOS
 ARG TARGETARCH
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w -X github.com/whysosaket/orka-api/internal/server.Version=${VERSION} -X github.com/whysosaket/orka-api/internal/server.Edition=oss" -o /out/oss ./cmd/orka-server \
  && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w -X github.com/whysosaket/orka-api/internal/server.Version=${VERSION} -X github.com/whysosaket/orka-api/internal/server.Edition=managed" -o /out/managed ./cmd/orka-server
+
+FROM build-base AS build-live-relay
+ARG TARGETOS
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w" -o /out/live-relay ./cmd/orka-live-relay
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
@@ -25,6 +32,13 @@ CMD ["orka-server", "serve"]
 
 FROM runtime AS managed
 COPY --from=build /out/managed /usr/local/bin/orka-server
+
+FROM runtime AS live-relay
+USER root
+RUN install -d -m 700 -o orka -g orka /var/lib/orka-live
+USER orka
+COPY --from=build-live-relay /out/live-relay /usr/local/bin/orka-live-relay
+CMD ["orka-live-relay"]
 
 FROM runtime AS oss
 COPY --from=build /out/oss /usr/local/bin/orka-server
