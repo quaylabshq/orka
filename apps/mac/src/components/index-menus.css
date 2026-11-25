@@ -126,13 +126,6 @@
   background: var(--surface-secondary);
 }
 
-/* First in the page, it also covers the page's top padding as rows pass. */
-.index-head:first-child {
-  top: -20px;
-  margin-top: -20px;
-  padding-top: 20px;
-}
-
 /* A page-wide limit beside the toolbar: the status pill at control height. */
 .index-access-pill {
   height: 28px;
