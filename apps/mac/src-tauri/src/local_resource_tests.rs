@@ -92,6 +92,15 @@ async fn private_reader_uses_an_exact_frozen_share_if_the_original_is_missing() 
         crate::selective_sharing::preview_from_local(&f.db, &f.project, &input, &entry).unwrap();
     assert_eq!(preview["files"], entry["resource"]["files"]);
     use std::os::unix::fs::PermissionsExt;
+    let native_directory = Path::new(path).parent().unwrap();
+    let permissions = fs::metadata(native_directory).unwrap().permissions();
+    fs::set_permissions(native_directory, fs::Permissions::from_mode(0o000)).unwrap();
+    let unreadable_directory = commands::session_messages(id.into(), None, Some(0), Some(1)).await;
+    fs::set_permissions(native_directory, permissions).unwrap();
+    assert_eq!(
+        unreadable_directory.unwrap()["messages"][0]["text"],
+        "Private conversation"
+    );
     fs::set_permissions(path, fs::Permissions::from_mode(0o000)).unwrap();
     let unreadable = commands::session_messages(id.into(), None, Some(0), Some(1))
         .await

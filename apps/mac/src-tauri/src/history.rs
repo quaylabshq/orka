@@ -160,7 +160,10 @@ pub fn is_session(path: &Path) -> bool {
 pub(crate) fn native_read_error(error: io::Error) -> String {
     if matches!(
         error.kind(),
-        io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
+        io::ErrorKind::NotFound
+            | io::ErrorKind::PermissionDenied
+            | io::ErrorKind::InvalidData
+            | io::ErrorKind::UnexpectedEof
     ) {
         return NATIVE_READ_UNAVAILABLE.into();
     }
@@ -181,7 +184,7 @@ pub(crate) fn reader(path: &Path) -> Result<Box<dyn Read>> {
         return Err("History must be a regular file".into());
     }
     if path.to_string_lossy().ends_with(".jsonl.zst") {
-        let mut decoder = zstd::stream::read::Decoder::new(file).map_err(|e| e.to_string())?;
+        let mut decoder = zstd::stream::read::Decoder::new(file).map_err(native_read_error)?;
         decoder.window_log_max(27).map_err(|e| e.to_string())?;
         Ok(Box::new(decoder))
     } else {
@@ -358,7 +361,7 @@ impl CodexSegmentIndex {
                 }
                 Ok(_) => {}
                 Err(err) => {
-                    error = Some(err.to_string());
+                    error = Some(native_read_error(err));
                     break;
                 }
             }
@@ -366,7 +369,8 @@ impl CodexSegmentIndex {
                 let entry = match entry {
                     Ok(entry) => entry,
                     Err(err) => {
-                        error = Some(err.to_string());
+                        let detail = err.to_string();
+                        error = Some(err.into_io_error().map_or(detail, native_read_error));
                         break;
                     }
                 };
