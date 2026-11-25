@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/whysosaket/orka/releases"><strong>Download for macOS</strong></a> ·
+  <a href="https://tryorka.ai/download"><strong>Download for macOS</strong></a> ·
   <a href="https://tryorka.ai/">Website</a> ·
   <a href="https://tryorka.ai/docs">Documentation</a>
 </p>
@@ -38,7 +38,7 @@ Orka is an open-source macOS app that keeps project memories, skills, plans, and
 
 ## Get started
 
-1. Download the universal DMG from [Releases](https://github.com/whysosaket/orka/releases), open it, and drag Orka into **Applications**. Supports Apple Silicon and Intel Macs.
+1. [Download the universal DMG](https://tryorka.ai/download), open it, and drag Orka into **Applications**. Supports Apple Silicon and Intel Macs.
 2. Open Orka and choose **Orka Cloud** or **Connect to your server**.
 3. Create or join a project, connect a local folder, and choose what to share.
 
