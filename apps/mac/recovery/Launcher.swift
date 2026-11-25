@@ -67,7 +67,7 @@ struct Launcher {
         return [
             "--orka-agent", "--orka-plugin", "--orka-sync", "--orka-doctor",
             "--orka-hook", "--orka-claude-worktree-hook", "--orka-claude-worktree-plugin",
-            "--orka-context", "--orka-env-test", "--orka-test",
+            "--orka-context", "--orka-env-test", "--orka-test", "--orka-clean-session-blobs",
         ].contains(command ?? "")
     }
 

@@ -304,6 +304,7 @@ pub(crate) struct SessionScope<'a> {
     root: &'a Path,
     resolver: Resolver<'a>,
     history: Vec<Observed>,
+    remember_observations: bool,
     cache: RefCell<BTreeMap<PathBuf, Option<SessionCheckout>>>,
 }
 
@@ -340,8 +341,14 @@ impl<'a> SessionScope<'a> {
             root,
             resolver: Resolver::new(sources, home),
             history,
+            remember_observations: true,
             cache: RefCell::default(),
         })
+    }
+
+    pub(crate) fn read_only(mut self) -> Self {
+        self.remember_observations = false;
+        self
     }
 
     pub(crate) fn cache_scope(&self) -> Result<String> {
@@ -380,7 +387,11 @@ impl<'a> SessionScope<'a> {
                 let route = self
                     .resolver
                     .resolve_location(&location, registration.as_ref())?;
-                if let Some(observed) = &route.observed {
+                if let Some(observed) = route
+                    .observed
+                    .as_ref()
+                    .filter(|_| self.remember_observations)
+                {
                     if let Err(error) = observed.remember(self.db) {
                         eprintln!(
                             "Cannot remember worktree {}: {error}",

@@ -188,6 +188,91 @@ fn transcript_ranges_use_the_authorized_conflict_manifest_for_reading_and_downlo
 }
 
 #[test]
+fn private_transcript_range_and_download_use_the_same_native_snapshot_without_blobs() {
+    use crate::local_resources;
+
+    let mut fixture = Fixture::new();
+    local_resource_tests::prepare(&mut fixture);
+    let catalog = local_resources::catalog(&fixture.db, &fixture.project, "session").unwrap();
+    let id = catalog["resources"][0]["resourceId"].as_str().unwrap();
+    let resource = local_resources::resource(&fixture.db, id).unwrap();
+    assert_eq!(resource["nativeSession"], true);
+    let path = PathBuf::from(resource["paths"][0].as_str().unwrap());
+    // The native source can grow since the last catalog scan. Opening and
+    // download must use the fresh redacted manifest in both cases.
+    let mut bytes = fs::read(&path).unwrap();
+    bytes.extend(native::encode(&[json!({"type":"event_msg","payload":{"type":"user_message","message":"A private turn after the catalog scan 🧪"}})]));
+    fs::write(&path, bytes).unwrap();
+    let live = crate::session_forks::reading_resource(&fixture.db, &resource).unwrap();
+    assert!(live.is_live());
+    assert_ne!(live.resource["files"], resource["files"]);
+    let expected = native::transcript(&live.records().unwrap());
+    assert!(expected.contains("A private turn after the catalog scan 🧪"));
+
+    let opened = open(&resource, None);
+    let reader = opened["readerId"].as_str().unwrap();
+    assert_eq!(page(reader, Some(0), 16 * 1024, false)["text"], expected);
+    assert_eq!(page(reader, None, 16 * 1024, false)["text"], expected);
+    assert_eq!(
+        opened["sessionSnapshot"]["snapshotHash"],
+        crate::commands::session_snapshot_hash(&live.resource)
+    );
+    let download = fixture.root.join("private-transcript-range-test.zip");
+    crate::commands::export_bundle(
+        id.into(),
+        download.to_string_lossy().into(),
+        Some(serde_json::from_value(opened["sessionSnapshot"].clone()).unwrap()),
+    )
+    .unwrap();
+    let mut zip = zip::ZipArchive::new(fs::File::open(download).unwrap()).unwrap();
+    let mut archived = String::new();
+    zip.by_name("transcript.md")
+        .unwrap()
+        .read_to_string(&mut archived)
+        .unwrap();
+    assert_eq!(archived, expected);
+    for file in live.resource["files"].as_array().unwrap() {
+        assert!(!db::blob_path(file["hash"].as_str().unwrap())
+            .unwrap()
+            .exists());
+    }
+    close_transcript(reader.into()).unwrap();
+}
+
+#[test]
+fn private_transcript_ranges_use_the_exact_cached_manifest_if_the_native_file_is_missing() {
+    use crate::local_resources;
+
+    let mut fixture = Fixture::new();
+    local_resource_tests::prepare(&mut fixture);
+    let entry = crate::indexer::discover(&fixture.db, &fixture.project, "session")
+        .unwrap()
+        .remove(0);
+    let id = entry["resource"]["resourceId"].as_str().unwrap();
+    let input = json!({"kind":"session","resourceId":id,"accountId":db::get(&fixture.db,"user").unwrap(),"serviceOrigin":"https://fixture.invalid"});
+    let frozen =
+        crate::selective_sharing::preview_from_local(&fixture.db, &fixture.project, &input, &entry)
+            .unwrap();
+    fs::remove_file(entry["paths"][0].as_str().unwrap()).unwrap();
+    let resource = local_resources::resource(&fixture.db, id).unwrap();
+    assert_eq!(resource["nativeSession"], true);
+    assert_eq!(resource["files"], frozen["files"]);
+    assert!(
+        !crate::session_forks::reading_resource(&fixture.db, &resource)
+            .unwrap()
+            .is_live()
+    );
+    let opened = open(&resource, None);
+    let reader = opened["readerId"].as_str().unwrap();
+    assert_eq!(
+        opened["sessionSnapshot"]["snapshotHash"],
+        crate::commands::session_snapshot_hash(&resource)
+    );
+    verify_parity(&resource, reader, 13);
+    close_transcript(reader.into()).unwrap();
+}
+
+#[test]
 fn transcript_ranges_report_oversize_record_without_removing_the_snapshot_download() {
     let fixture = Fixture::new();
     let resource = publish_fixture(

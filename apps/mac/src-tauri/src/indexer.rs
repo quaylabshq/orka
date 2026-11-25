@@ -596,14 +596,19 @@ fn queue_scanned(
     project: &Value,
     value: &Value,
     paths: &[PathBuf],
+    replaces: Option<&str>,
 ) -> Result<bool> {
     let project_id = project["id"].as_str().ok_or("Missing project ID")?;
     let path = "/v2/sync/push";
+    let resource = &value["resource"];
     if project["captureOnly"] != true {
-        queue(db, project_id, path, value)?;
+        if resource["kind"] == "session" && resource["deleted"] != true {
+            crate::sync::queue_automatic_session(db, project_id, value, replaces)?;
+        } else {
+            queue(db, project_id, path, value)?;
+        }
         return Ok(true);
     }
-    let resource = &value["resource"];
     crate::projects::require_capture(db, project_id, crate::projects::queued_kind(path, value))?;
     let id = value["id"].as_str().ok_or("Missing request ID")?;
     let resource_id = resource["resourceId"].as_str().ok_or("Missing resource")?;
@@ -792,6 +797,16 @@ fn collect(
     scanned: Scanned<'_>,
     seen: &mut BTreeSet<String>,
 ) -> Result<()> {
+    collect_with_session(db, project, scanned, seen, None)
+}
+
+fn collect_with_session(
+    db: &rusqlite::Connection,
+    project: &Value,
+    scanned: Scanned<'_>,
+    seen: &mut BTreeSet<String>,
+    content: Option<&history::SessionContent>,
+) -> Result<()> {
     let Scanned {
         kind,
         source,
@@ -841,6 +856,9 @@ fn collect(
     if project["catalogOnly"] == true {
         let mut resource = json!({"resourceId":id,"kind":kind,"source":source,"logicalPath":logical,"title":title,"files":files,"deleted":false});
         crate::sources::scope(project, &mut resource);
+        if kind == "session" {
+            resource["nativeSession"] = json!(true);
+        }
         resource["contextSources"] = if source == "pi" {
             json!([])
         } else {
@@ -936,6 +954,9 @@ fn collect(
             if !files.is_empty()
                 && manifest_hash(&json!(files)) != manifest_hash(&existing["files"])
             {
+                if let Some(content) = content {
+                    content.persist()?;
+                }
                 let draft = crate::governance::capture(db, project, &local, &json!(paths))?;
                 crate::context_sharing::queue_automatic(db, project, &draft)?;
                 if !b.is_null() && b.is_object() {
@@ -1007,7 +1028,13 @@ fn collect(
             b["nativeId"] = json!(n);
         }
     }
-    if changed && (!pending || project["captureOnly"] == true) {
+    let replaces =
+        if changed && pending && kind == "session" && !deleted && project["captureOnly"] != true {
+            crate::sync::replaceable_automatic_session(db, project_id, &id, base_revision)?
+        } else {
+            None
+        };
+    if changed && (!pending || project["captureOnly"] == true || replaces.is_some()) {
         let title = if kind == "plan" {
             title
         } else {
@@ -1030,7 +1057,10 @@ fn collect(
             }
         }
         let change = json!({"version":2,"id":Uuid::new_v4().to_string(),"projectId":project_id,"deviceId":db::device(db)?,"baseRevision":base_revision,"resource":input});
-        if !queue_scanned(db, project, &change, &paths)? {
+        if let Some(content) = content {
+            content.persist()?;
+        }
+        if !queue_scanned(db, project, &change, &paths, replaces.as_deref())? {
             return db::upsert(db, "bindings", &id, project_id, &b);
         }
         let mut guards = crate::sync::live_hash(
@@ -2274,7 +2304,13 @@ fn scan_source(
                 {
                     let mut input = json!({"version":2,"id":Uuid::new_v4().to_string(),"projectId":project_id,"deviceId":db::device(db)?,"baseRevision":base["revision"].as_u64().unwrap_or(0),"resource":{"resourceId":id,"kind":"skill","source":"shared","logicalPath":name,"title":name,"files":changed[1].1,"deleted":false}});
                     crate::sources::scope(project, &mut input["resource"]);
-                    if !queue_scanned(db, project, &input, std::slice::from_ref(changed[1].0))? {
+                    if !queue_scanned(
+                        db,
+                        project,
+                        &input,
+                        std::slice::from_ref(changed[1].0),
+                        None,
+                    )? {
                         return Ok(());
                     }
                     let mut b = binding(db, &id)?;
@@ -2358,6 +2394,8 @@ fn scan_source(
         let governed_sync = project["governed"] == true && project["catalogOnly"] != true;
         let (handoff_scope, _) = session_handoff_scope(db, project_id, governed_sync)?;
         let share_plans = crate::projects::sharing_allowed(project, "plan");
+        let needs_session_blobs =
+            project["catalogOnly"] != true && crate::projects::sharing_allowed(project, "session");
         let codex_index = history::CodexSegmentIndex::new(&codex);
         let mut plan_dirs: HashMap<(PathBuf, &'static str), Result<PathBuf>> = HashMap::new();
         let mut last_history_progress = None;
@@ -2434,30 +2472,8 @@ fn scan_source(
                                     }
                                     Some(Err(_)) => {}
                                     _ => {
-                                        let ancestors_valid = if tool == "codex" {
-                                            let candidates_ok = cached
-                                                .ancestor_candidates
-                                                .iter()
-                                                .all(|(ancestor_id, expected_paths)| {
-                                                    codex_index
-                                                        .candidate_paths(ancestor_id)
-                                                        .is_ok_and(|paths| paths == *expected_paths)
-                                                });
-                                            let cwds_ok = checkout.historical
-                                                || cached.ancestor_cwds.is_empty()
-                                                || checkout.scope.canonicalize().is_ok_and(
-                                                    |canonical_scope| {
-                                                        cached.ancestor_cwds.iter().all(|cwd| {
-                                                            cwd.canonicalize().is_ok_and(|c| {
-                                                                c.starts_with(&canonical_scope)
-                                                            })
-                                                        })
-                                                    },
-                                                );
-                                            candidates_ok && cwds_ok
-                                        } else {
-                                            true
-                                        };
+                                        let ancestors_valid = tool != "codex"
+                                            || cached.ancestors_match(&codex_index, &checkout);
                                         let need_plans =
                                             tool != "pi" && !checkout.historical && share_plans;
                                         let current_plans_dir = if need_plans {
@@ -2472,7 +2488,11 @@ fn scan_source(
                                                 && cached.plans_dir == current_plans_dir);
                                         if ancestors_valid
                                             && plans_ready
-                                            && cached.blobs_present(&blobs, need_plans)
+                                            && cached.blobs_present(
+                                                &blobs,
+                                                needs_session_blobs,
+                                                need_plans,
+                                            )
                                         {
                                             if unattributed_paths.contains(&unattributed) {
                                                 db.execute(
@@ -2697,17 +2717,7 @@ fn scan_source(
                 {
                     continue;
                 }
-                if tool == "codex"
-                    && records
-                        .iter()
-                        .find(|r| r["type"] == "session_meta")
-                        .is_some_and(|r| r["payload"]["source"].is_object())
-                {
-                    continue;
-                }
-                if tool == "codex"
-                    && crate::codex_import::is_pending_or_dependency(db, &id, &records)?
-                {
+                if tool == "codex" && !history::eligible_codex_session(db, &id, &records)? {
                     continue;
                 }
                 session_scope.pin(&checkout, tool, &id)?;
@@ -2737,7 +2747,11 @@ fn scan_source(
                 ) {
                     Ok(snapshot) => snapshot,
                     Err(err) => {
-                        error(db, &format!("{scan_id}:scan:{}", e.path().display()), &err)?;
+                        error(
+                            db,
+                            &format!("{scan_id}:scan:{}", e.path().display()),
+                            &String::from(err),
+                        )?;
                         sessions_complete = false;
                         continue;
                     }
@@ -2850,7 +2864,8 @@ fn scan_source(
                         cached_had_plan_file = has_plan_file;
                     }
                 }
-                let result = collect(
+                let files = snapshot.content.manifest();
+                let result = collect_with_session(
                     db,
                     project,
                     Scanned {
@@ -2858,7 +2873,7 @@ fn scan_source(
                         source: tool,
                         logical: &logical,
                         title: &title,
-                        files: snapshot.files.clone(),
+                        files: files.clone(),
                         paths: vec![e.path().into()],
                         native_id: Some(&id),
                         native_parent: if project["catalogOnly"] == true {
@@ -2868,6 +2883,7 @@ fn scan_source(
                         },
                     },
                     &mut seen,
+                    Some(&snapshot.content),
                 );
                 if result.is_ok() && can_cache {
                     scan_cache::save_session(
@@ -2882,7 +2898,7 @@ fn scan_source(
                             id,
                             cwd,
                             title,
-                            files: snapshot.files,
+                            files,
                             logical,
                             native_parent,
                             plans_checked,

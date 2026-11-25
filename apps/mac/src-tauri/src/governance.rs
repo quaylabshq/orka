@@ -675,13 +675,37 @@ pub(crate) fn preview_files(files: &Value) -> Result<(Value, Value)> {
     let mut manifest = Vec::new();
     for f in files.as_array().ok_or("Missing files")? {
         let bytes = db::blob_read(f["hash"].as_str().ok_or("Missing hash")?)?;
-        let content = String::from_utf8(bytes);
-        let mut entry = f.clone();
-        entry["binary"] = json!(content.is_err());
-        result.insert(
-            f["path"].as_str().ok_or("Missing file path")?.into(),
-            content.map(Value::String).unwrap_or(json!("Binary asset")),
-        );
+        let (path, content, entry) = preview_file(f, String::from_utf8(bytes).ok())?;
+        result.insert(path, content);
+        manifest.push(entry);
+    }
+    Ok((Value::Object(result), json!(manifest)))
+}
+
+fn preview_file(file: &Value, content: Option<String>) -> Result<(String, Value, Value)> {
+    let path = file["path"].as_str().ok_or("Missing file path")?;
+    let mut entry = file.clone();
+    entry["binary"] = json!(content.is_none());
+    let content = content.map(Value::String).unwrap_or(json!("Binary asset"));
+    Ok((path.to_owned(), content, entry))
+}
+
+async fn remote_preview_files(
+    owner: &str,
+    origin: &str,
+    project: &str,
+    files: &Value,
+    cached: &impl Fn(&str) -> Result<Vec<u8>>,
+) -> Result<(Value, Value)> {
+    let mut result = serde_json::Map::new();
+    let mut manifest = Vec::new();
+    for file in files.as_array().ok_or("Missing files")? {
+        let (path, content, entry) =
+            sync::read_preview_blob(owner, origin, project, file, cached, |bytes| {
+                preview_file(file, std::str::from_utf8(bytes).ok().map(str::to_owned))
+            })
+            .await?;
+        result.insert(path, content);
         manifest.push(entry);
     }
     Ok((Value::Object(result), json!(manifest)))
@@ -1026,24 +1050,28 @@ pub async fn governance_command(action: String, input: Value) -> Result<Value> {
     if action == "request" {
         let r = &result["content"]["resource"];
         if r["files"].is_array() {
-            if result["base"]["files"].is_array() {
-                sync::download(
-                    db::get(&db, "user")?.as_str().ok_or("Sign in required")?,
-                    &result["base"],
-                )
-                .await?;
-            }
-            sync::download(
-                db::get(&db, "user")?.as_str().ok_or("Sign in required")?,
-                &json!({"projectId":project_id,"files":r["files"]}),
-            )
-            .await?;
-            let (files, manifest) = preview_files(&r["files"])?;
+            let owner = account.as_str().ok_or("Sign in required")?;
+            let origin = service.as_str().ok_or("Choose a service")?;
+            let cache = db::CacheScope::current()?;
+            let cached = cache.blob_reader();
+            let (files, manifest) =
+                remote_preview_files(owner, origin, project_id, &r["files"], &cached).await?;
             let (before, before_manifest) = if result["base"]["files"].is_array() {
-                preview_files(&result["base"]["files"])?
+                let base = &result["base"];
+                let project = base["projectId"].as_str().ok_or("Missing project")?;
+                if base["kind"] == "skill" {
+                    packages::reject_env_files(base["files"].as_array().ok_or("Missing files")?)?;
+                }
+                remote_preview_files(owner, origin, project, &base["files"], &cached).await?
             } else {
                 (json!({}), json!([]))
             };
+            let current = db::open()?;
+            if db::get(&current, "user")? != account
+                || db::get(&current, "config")?["apiUrl"] != service
+            {
+                return Err("Account or service changed. Reopen Settings.".into());
+            }
             return Ok(
                 json!({"request":result["request"],"content":result["content"],"audience":result["audience"],"files":files,"manifest":manifest,"before":before,"beforeManifest":before_manifest}),
             );

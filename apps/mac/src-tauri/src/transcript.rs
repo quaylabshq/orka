@@ -119,22 +119,21 @@ fn open_in_scope(
         });
     }
     let candidate_hash = session_snapshot_hash(&candidate);
-    // Live local forks use the existing redacted snapshot materialization and
-    // scope checks. Shared, frozen, and conflict snapshots already have blobs.
-    let resource = if conflict_id.is_none() && !crate::session_forks::info(&db, &id)?.is_null() {
-        // The legacy fork path materializes verified blobs in the current
-        // service. Keep that operation under the workspace switch lock.
-        let _workspace = crate::projects::lock()?;
-        if scope != CacheScope::current()? {
-            return Err("The Orka account or service changed. Reopen the transcript.".into());
-        }
-        let current = inspection_candidate(&db, &id, None)?;
-        if current["deleted"] == true || session_snapshot_hash(&current) != candidate_hash {
-            return Err("The session changed. Reopen the transcript.".into());
-        }
-        crate::session_forks::current_resource(&db, &current)?
-    } else {
-        candidate
+    let (resource, tape) = {
+        let snapshot = if conflict_id.is_some() {
+            crate::history::SessionRead::stored(candidate)
+        } else {
+            crate::session_forks::reading_resource(&db, &candidate)?
+        };
+        // A live snapshot already owns the exact redacted data authorized by
+        // the native reader. Format it on this worker without persisting it,
+        // then release the native bytes before registering the open handle.
+        let tape = if snapshot.is_live() {
+            Some(prepare_live(&snapshot)?)
+        } else {
+            None
+        };
+        (snapshot.resource, tape)
     };
     let snapshot_hash = session_snapshot_hash(&resource);
     let reader = Arc::new(Reader {
@@ -144,7 +143,7 @@ fn open_in_scope(
         candidate_hash,
         resource,
         cancelled: AtomicBool::new(false),
-        tape: Mutex::new(None),
+        tape: Mutex::new(tape),
     });
     reader.validate().map_err(|error| {
         if error == SNAPSHOT_INVALIDATED {
@@ -503,6 +502,30 @@ fn visit_pi(reader: &Reader, builder: &mut TapeBuilder) -> Result<()> {
         }
     }
     builder.record(None)
+}
+
+fn prepare_live(snapshot: &crate::history::SessionRead) -> Result<Tape> {
+    let records = snapshot.records()?;
+    let mut builder = TapeBuilder::new(None)?;
+    if records
+        .first()
+        .is_some_and(|record| record["type"] == "session")
+    {
+        for record in crate::pi_sessions::branch(&records)? {
+            if record["type"] == "message" {
+                if let Some((message, _)) = session_translation::message(record) {
+                    let range = builder.append(&message)?;
+                    push_range(&mut builder.segment, range);
+                }
+            }
+        }
+    } else {
+        for record in records.iter() {
+            builder.record(Some(record))?;
+        }
+    }
+    builder.record(None)?;
+    builder.finish()
 }
 
 fn prepare(reader: &Reader, first: bool) -> Result<Tape> {

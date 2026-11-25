@@ -231,26 +231,55 @@ pub(crate) async fn download(owner: &str, resource: &Value) -> Result<()> {
         if db::blob_read(hash).is_ok() {
             continue;
         }
-        let response = request(owner, "GET", &format!("/v2/blobs/{project}/{hash}"))
-            .await?
-            .send()
-            .await
-            .map_err(|_| "Blob download failed")?;
-        if !response.status().is_success() {
-            return Err(format!(
-                "{}: Blob download rejected",
-                response.status().as_u16()
-            ));
-        }
-        let bytes = response.bytes().await.map_err(|e| e.to_string())?;
-        if bytes.len() as u64 != f["size"].as_u64().ok_or("Missing size")?
-            || db::digest(&bytes) != hash
-        {
-            return Err("Downloaded blob failed verification".into());
-        }
-        db::blob(&bytes).map_err(|e| format!("Local download: {e}"))?;
+        let request = request(owner, "GET", &format!("/v2/blobs/{project}/{hash}")).await?;
+        fetched_blob(
+            request,
+            hash,
+            f["size"].as_u64().ok_or("Missing size")?,
+            |bytes| db::blob(bytes).map_err(|error| format!("Local download: {error}")),
+        )
+        .await?;
     }
     Ok(())
+}
+
+async fn fetched_blob<T>(
+    request: reqwest::RequestBuilder,
+    hash: &str,
+    size: u64,
+    consume: impl FnOnce(&[u8]) -> Result<T>,
+) -> Result<T> {
+    let response = request.send().await.map_err(|_| "Blob download failed")?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "{}: Blob download rejected",
+            response.status().as_u16()
+        ));
+    }
+    let bytes = response.bytes().await.map_err(|error| error.to_string())?;
+    if bytes.len() as u64 != size || db::digest(&bytes) != hash {
+        return Err("Downloaded blob failed verification".into());
+    }
+    consume(&bytes)
+}
+
+/// Remote review previews are online reads. Reuse an existing verified blob or
+/// consume verified response bytes without extending the disk lifetime of the candidate.
+pub(crate) async fn read_preview_blob<T>(
+    owner: &str,
+    origin: &str,
+    project: &str,
+    file: &Value,
+    cached: &impl Fn(&str) -> Result<Vec<u8>>,
+    consume: impl FnOnce(&[u8]) -> Result<T>,
+) -> Result<T> {
+    let hash = file["hash"].as_str().ok_or("Missing hash")?;
+    let size = file["size"].as_u64().ok_or("Missing size")?;
+    if let Some(bytes) = cached(hash).ok().filter(|bytes| bytes.len() as u64 == size) {
+        return consume(&bytes);
+    }
+    let request = request_at(owner, origin, "GET", &format!("/v2/blobs/{project}/{hash}")).await?;
+    fetched_blob(request, hash, size, consume).await
 }
 pub fn apply_event(db: &rusqlite::Connection, event: &Value) -> Result<()> {
     let r = &event["resource"];
@@ -307,6 +336,127 @@ fn copy_state_key(id: &str) -> String {
 
 fn outbox_redaction_key(id: &str) -> String {
     format!("sessionOutboxRedaction:{id}")
+}
+
+fn unsent_session_key(id: &str) -> String {
+    format!("sessionAutomaticUnsent:{id}")
+}
+
+fn session_outbox_rows(
+    db: &rusqlite::Connection,
+    project: &str,
+    resource: &str,
+) -> Result<Vec<Value>> {
+    db::rows(
+        db,
+        "SELECT json_object('id',id,'path',path,'value',value,'error',error,'conflicted',EXISTS(
+           SELECT 1 FROM conflicts WHERE project=?1 AND json_extract(value,'$.resourceId')=?2
+         )) FROM outbox
+         WHERE project=?1 AND (json_extract(value,'$.resource.resourceId')=?2
+           OR json_extract(value,'$.resourceId')=?2) LIMIT 2",
+        &[&project, &resource],
+    )
+}
+
+fn replaceable_session_row(
+    db: &rusqlite::Connection,
+    rows: &[Value],
+    base_revision: u64,
+) -> Result<Option<(String, Value)>> {
+    let [row] = rows else { return Ok(None) };
+    if row["path"] != "/v2/sync/push" || !row["error"].is_null() || row["conflicted"] != 0 {
+        return Ok(None);
+    }
+    let id = row["id"].as_str().ok_or("Missing request ID")?;
+    let original = row["value"].as_str().ok_or("Missing queued change")?;
+    let change: Value = serde_json::from_str(original).map_err(|error| error.to_string())?;
+    if change["baseRevision"].as_u64() != Some(base_revision)
+        || change["resource"]["kind"] != "session"
+        || change["resource"]["deleted"] != false
+        || db::get(db, &unsent_session_key(id))? != db::digest(original.as_bytes())
+        || !db::get(db, &outbox_redaction_key(id))?.is_null()
+        || !db::get(db, &indexer::held_capture_key(id))?.is_null()
+    {
+        return Ok(None);
+    }
+    Ok(Some((id.to_owned(), change)))
+}
+
+pub(crate) fn replaceable_automatic_session(
+    db: &rusqlite::Connection,
+    project: &str,
+    resource: &str,
+    base_revision: u64,
+) -> Result<Option<String>> {
+    let rows = session_outbox_rows(db, project, resource)?;
+    Ok(replaceable_session_row(db, &rows, base_revision)?.map(|(id, _)| id))
+}
+
+/// Replace a never-uploaded automatic snapshot in place with a fresh request ID.
+/// Its queue position and base revision still describe the same local change.
+pub(crate) fn queue_automatic_session(
+    db: &rusqlite::Connection,
+    project: &str,
+    change: &Value,
+    replaces: Option<&str>,
+) -> Result<()> {
+    let current = &change["resource"];
+    let resource = current["resourceId"]
+        .as_str()
+        .ok_or("Missing resource ID")?;
+    let id = change["id"].as_str().ok_or("Missing request ID")?;
+    let base_revision = change["baseRevision"]
+        .as_u64()
+        .ok_or("Missing base revision")?;
+    if change["projectId"] != project || current["kind"] != "session" || current["deleted"] != false
+    {
+        return Err("Invalid automatic session upload".into());
+    }
+    let path = "/v2/sync/push";
+    let tx = Transaction::new_unchecked(db, TransactionBehavior::Immediate)
+        .map_err(|error| error.to_string())?;
+    let rows = session_outbox_rows(&tx, project, resource)?;
+    let encoded = change.to_string();
+    if let Some(expected) = replaces {
+        let (old, staged) = replaceable_session_row(&tx, &rows, base_revision)?
+            .filter(|(old, staged)| {
+                old == expected && old != id && staged["deviceId"] == change["deviceId"]
+            })
+            .ok_or("A queued session may already have been sent; local work was preserved")?;
+        if staged["resource"]["sourceId"] != current["sourceId"]
+            || staged["resource"]["source"] != current["source"]
+            || staged["resource"]["logicalPath"] != current["logicalPath"]
+            || staged["projectId"] != project
+        {
+            return Err(
+                "The source of the queued session changed; local work was preserved".into(),
+            );
+        }
+        crate::projects::require_sharing(&tx, project, "session")?;
+        tx.execute(
+            "UPDATE outbox SET id=?,value=? WHERE project=? AND path=? AND id=?",
+            params![id, encoded, project, path, old],
+        )
+        .map_err(|error| error.to_string())?;
+        release_automatic_session(&tx, &old)?;
+    } else {
+        if !rows.is_empty() {
+            return Err("A session is already queued; local work was preserved".into());
+        }
+        indexer::queue(&tx, project, path, change)?;
+    }
+    db::set(
+        &tx,
+        &unsent_session_key(id),
+        &json!(db::digest(encoded.as_bytes())),
+    )?;
+    tx.commit().map_err(|error| error.to_string())
+}
+
+fn release_automatic_session(db: &rusqlite::Connection, id: &str) -> Result<()> {
+    db.execute("DELETE FROM meta WHERE key=?", [unsent_session_key(id)])
+        .map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 fn copy_source_snapshot(base: &Value) -> Result<Value> {
@@ -526,8 +676,12 @@ pub(crate) fn queued_session_snapshot(
 
 pub(crate) fn clear_session_copy(db: &rusqlite::Connection, id: &str) -> Result<()> {
     db.execute(
-        "DELETE FROM meta WHERE key IN (?,?)",
-        params![copy_state_key(id), outbox_redaction_key(id)],
+        "DELETE FROM meta WHERE key IN (?,?,?)",
+        params![
+            copy_state_key(id),
+            outbox_redaction_key(id),
+            unsent_session_key(id)
+        ],
     )
     .map_err(|error| error.to_string())?;
     Ok(())
@@ -846,13 +1000,14 @@ pub fn live_hash(binding: &Value, kind: &str, root: &Path) -> Result<Vec<String>
         let files = if kind == "skill" {
             json!(packages::directory(path)?)
         } else if kind == "session" {
-            json!(crate::history::session_files(
+            json!(crate::history::session_content(
                 binding["base"]["source"]
                     .as_str()
                     .ok_or("Missing session source")?,
                 path,
                 Some(root)
-            )?)
+            )?
+            .manifest())
         } else if kind == "plan" {
             let source = binding["base"]["source"]
                 .as_str()
@@ -1328,11 +1483,12 @@ fn materialize_install(
         )?;
         b["lastSeenHash"] = if resource["source"] == "codex" && crate::repair::archived(&b)? {
             json!(indexer::manifest_hash(&json!(
-                crate::history::session_files(
+                crate::history::session_content(
                     "codex",
                     Path::new(b["paths"][0].as_str().ok_or("Missing import path")?),
                     Some(&root)
                 )?
+                .manifest()
             )))
         } else {
             json!(live.first())
@@ -2451,6 +2607,11 @@ impl<'a> SyncPass<'a> {
             let result = async {
                 let id = q["id"].as_str().ok_or("Missing request ID")?;
                 indexer::release_held_capture(db, id)?;
+                if q["path"] == "/v2/sync/push" && input["resource"]["kind"] == "session" {
+                    // Fence the body before the first possible request, including a
+                    // crash before any response or retry error has been recorded.
+                    release_automatic_session(db, id)?;
+                }
                 if db::get(db, &outbox_redaction_key(id))?.is_object() {
                     let capabilities =
                         api_as(owner, "GET", "/v2/projects/capabilities", None).await?;
@@ -4367,6 +4528,196 @@ mod queue_tests {
             .unwrap();
         }
         (root, db)
+    }
+
+    fn automatic_change(id: &str, hash: &str) -> Value {
+        json!({
+            "id":id,"projectId":"a","deviceId":"device","baseRevision":1,
+            "resource":{"resourceId":"session","sourceId":"source","kind":"session",
+                "source":"codex","logicalPath":"codex/sessions/local","deleted":false,
+                "files":[{"hash":hash}]
+            }
+        })
+    }
+
+    #[test]
+    fn automatic_sessions_coalesce_only_before_the_first_attempt() {
+        let (root, db) = outbox_db(&["a"]);
+        let first = automatic_change("first", "snapshot-1");
+        queue_automatic_session(&db, "a", &first, None).unwrap();
+        let sequence =
+            ProjectOutbox::open(&db, "a").unwrap().queued(&db).unwrap()[0]["sequence"].clone();
+        drop(db);
+
+        // The persisted marker is available after a restart, before any upload.
+        let db = db::open_at(root.path()).unwrap();
+        let latest = automatic_change("latest", "snapshot-2");
+        assert_eq!(
+            replaceable_automatic_session(&db, "a", "session", 1).unwrap(),
+            Some("first".into())
+        );
+        queue_automatic_session(&db, "a", &latest, Some("first")).unwrap();
+        assert!(db::get(&db, &unsent_session_key("first"))
+            .unwrap()
+            .is_null());
+        let rows = ProjectOutbox::open(&db, "a").unwrap().queued(&db).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["sequence"], sequence);
+        assert_eq!(rows[0]["value"], latest);
+
+        release_automatic_session(&db, "latest").unwrap();
+        drop(db);
+        let db = db::open_at(root.path()).unwrap();
+        assert!(replaceable_automatic_session(&db, "a", "session", 1)
+            .unwrap()
+            .is_none());
+        assert!(queue_automatic_session(
+            &db,
+            "a",
+            &automatic_change("after-send", "snapshot-3"),
+            Some("latest")
+        )
+        .is_err());
+        let rows = ProjectOutbox::open(&db, "a").unwrap().queued(&db).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["value"], latest);
+        assert!(rows[0]["error"].is_null());
+    }
+
+    #[test]
+    fn older_or_uncertain_session_requests_always_block_coalescing() {
+        let (_root, db) = outbox_db(&["a"]);
+        let first = automatic_change("first", "snapshot-1");
+        let path = "/v2/sync/push";
+        indexer::queue(&db, "a", path, &first).unwrap();
+        assert!(replaceable_automatic_session(&db, "a", "session", 1)
+            .unwrap()
+            .is_none());
+        db.execute("DELETE FROM outbox WHERE id='first'", [])
+            .unwrap();
+
+        queue_automatic_session(&db, "a", &first, None).unwrap();
+        assert!(replaceable_automatic_session(&db, "a", "session", 2)
+            .unwrap()
+            .is_none());
+        let mut another_source = automatic_change("other-source", "snapshot-2");
+        another_source["resource"]["sourceId"] = json!("other");
+        assert!(queue_automatic_session(&db, "a", &another_source, Some("first")).is_err());
+
+        let mut selected = automatic_change("selected", "approved");
+        selected["resource"]["kind"] = json!("plan");
+        indexer::queue(&db, "a", path, &selected).unwrap();
+        assert!(replaceable_automatic_session(&db, "a", "session", 1)
+            .unwrap()
+            .is_none());
+        db.execute("DELETE FROM outbox WHERE id='selected'", [])
+            .unwrap();
+
+        db::upsert(&db, "conflicts", "c", "a", &json!({"resourceId":"session"})).unwrap();
+        assert!(replaceable_automatic_session(&db, "a", "session", 1)
+            .unwrap()
+            .is_none());
+        db.execute("DELETE FROM conflicts WHERE id='c'", [])
+            .unwrap();
+
+        db.execute("UPDATE outbox SET value=json_set(value,'$.resource.title','different') WHERE id='first'", []).unwrap();
+        assert!(replaceable_automatic_session(&db, "a", "session", 1)
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            ProjectOutbox::open(&db, "a")
+                .unwrap()
+                .queued(&db)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn remote_preview_reads_verified_bytes_without_creating_a_blob() {
+        let _guard = crate::tests::SERIAL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(verify_remote_preview_storage());
+    }
+
+    async fn verify_remote_preview_storage() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("ORKA_TEST_HOME", home.path());
+        crate::env::test_support::install_memory_keychain();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let owner = uuid::Uuid::new_v4().to_string();
+        db::set(&db::open().unwrap(), "config", &json!({"apiUrl":origin})).unwrap();
+        auth::test_session(
+            &json!({"user":{"id":owner},"access_token":"fixture","refresh_token":"fixture"}),
+        )
+        .unwrap();
+        let bytes = b"fixture snapshot";
+        let hash = db::digest(bytes);
+        let manifest = json!({"hash":hash,"size":bytes.len()});
+        let expected_path = format!("GET /v2/blobs/fixture-project/{hash} HTTP/1.1\r\n");
+        let server = tokio::spawn(async move {
+            for body in [bytes.as_slice(), b"corrupt snapshot".as_slice()] {
+                let (socket, _) = listener.accept().await.unwrap();
+                let mut socket = BufReader::new(socket);
+                let mut line = String::new();
+                socket.read_line(&mut line).await.unwrap();
+                assert_eq!(line, expected_path);
+                loop {
+                    line.clear();
+                    assert_ne!(socket.read_line(&mut line).await.unwrap(), 0);
+                    if line == "\r\n" {
+                        break;
+                    }
+                }
+                socket
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        )
+                        .as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+                socket.write_all(body).await.unwrap();
+            }
+        });
+        let cache = db::CacheScope::current().unwrap();
+        let reader = cache.blob_reader();
+        let result = read_preview_blob(
+            &owner,
+            &origin,
+            "fixture-project",
+            &manifest,
+            &reader,
+            |bytes| Ok(bytes.to_vec()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result, bytes);
+        assert!(reader(&hash).is_err());
+        let error = read_preview_blob::<()>(
+            &owner,
+            &origin,
+            "fixture-project",
+            &manifest,
+            &reader,
+            |_| panic!("invalid bytes reached the preview"),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error, "Downloaded blob failed verification");
+        assert!(reader(&hash).is_err());
+        server.await.unwrap();
     }
 
     fn enqueue(db: &rusqlite::Connection, project: &str, resource: &str) -> i64 {

@@ -370,7 +370,7 @@ pub fn atomic(path: &Path, bytes: &[u8]) -> Result<()> {
         .map_err(|e| e.to_string())?;
     Ok(())
 }
-fn checked_blob_path(dir: &Path, hash: &str) -> Result<PathBuf> {
+pub(crate) fn checked_blob_path(dir: &Path, hash: &str) -> Result<PathBuf> {
     if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err("Invalid hash".into());
     }
@@ -382,12 +382,15 @@ fn blob_dir(root: &Path, origin: &str) -> PathBuf {
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or(Value::Null);
-    if origin.is_empty() || legacy.as_str() == Some(origin) {
-        root.join("blobs")
-    } else {
-        root.join("services")
-            .join(digest(origin.as_bytes()))
-            .join("blobs")
+    let digest =
+        (!origin.is_empty() && legacy.as_str() != Some(origin)).then(|| digest(origin.as_bytes()));
+    blob_dir_in_scope(root, digest.as_deref())
+}
+
+pub(crate) fn blob_dir_in_scope(root: &Path, service_digest: Option<&str>) -> PathBuf {
+    match service_digest {
+        Some(digest) => root.join("services").join(digest).join("blobs"),
+        None => root.join("blobs"),
     }
 }
 

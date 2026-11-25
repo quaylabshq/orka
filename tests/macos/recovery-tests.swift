@@ -40,6 +40,15 @@ struct RecoveryTests {
                           withdrawn: [], minimumVersion: "0.0.0")
         let original = try signed(first, key)
         try require(feed.candidate(feed.accept(original), current: build) == release, "verified update is offered")
+        let oldData = InstalledBuild(version: "0.3.0", dataEpoch: 4)
+        let currentData = InstalledBuild(version: "0.3.0", dataEpoch: 5)
+        let storageUpdate = Release(version: "0.3.1", notes: "Session storage", url: url, sha256: release.sha256,
+                                    size: 42, architectures: [hostArchitecture()], minimumMacOS: "12.0.0", dataEpoch: 5)
+        let olderUpdate = Release(version: "0.3.1", notes: "Older data format", url: url, sha256: release.sha256,
+                                  size: 42, architectures: [hostArchitecture()], minimumMacOS: "12.0.0", dataEpoch: 4)
+        try require(feed.candidate(storageUpdate, policy: first, current: oldData) == storageUpdate, "the session storage data epoch can upgrade epoch 4")
+        try require(feed.candidate(olderUpdate, policy: first, current: currentData) == nil, "epoch 5 rejects a lower-epoch build")
+
         try require(feed.accept(original).sequence == 1, "unchanged signed feed can be refreshed")
         try Data().write(to: scratch.appendingPathComponent("skipped-0.3.1"))
         try require(feed.candidate(first, current: build) == nil, "restored-away version is suppressed locally")

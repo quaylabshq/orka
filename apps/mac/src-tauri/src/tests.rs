@@ -19,6 +19,9 @@ mod codex_rollout_tests;
 mod codex_trust_live_tests;
 #[path = "context_sharing_tests.rs"]
 mod context_sharing_tests;
+#[cfg(target_os = "macos")]
+#[path = "session_storage_bench.rs"]
+mod session_storage_bench;
 #[path = "sync_request_tests.rs"]
 mod sync_request_tests;
 #[path = "transcript_tests.rs"]

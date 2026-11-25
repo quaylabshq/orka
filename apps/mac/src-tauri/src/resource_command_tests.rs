@@ -813,8 +813,13 @@ async fn snapshot_progress_is_scoped_and_freezes_the_single_discovery() {
     input["resourceId"] = local["resource"]["resourceId"].clone();
     let source = PathBuf::from(local["paths"][0].as_str().unwrap());
     let original = fs::read(&source).unwrap();
-    let original_snapshot =
-        db::blob_read(local["resource"]["files"][0]["hash"].as_str().unwrap()).unwrap();
+    let hash = local["resource"]["files"][0]["hash"].as_str().unwrap();
+    assert!(!db::blob_path(hash).unwrap().exists());
+    let original_snapshot = crate::local_resources::live_session(&f.db, &f.project, &local)
+        .unwrap()
+        .content
+        .read(hash)
+        .unwrap();
     let mut later = original.clone();
     later.extend_from_slice(b"{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"text\":\"Future private turn\"}]}}\n");
     let existing_sync = json!({"label":"Background sync","completed":2,"total":5});
