@@ -28,6 +28,7 @@ export async function resourceLibraryFixture(
     defer?: boolean;
     /** The project lists you among its members, as a project you share does. */
     team?: boolean;
+    online?: boolean;
     restricted?: boolean;
     withoutRepositories?: boolean;
     teammateAvatar?: string;
@@ -280,7 +281,7 @@ export async function resourceLibraryFixture(
               activity: [],
               outbox: [],
               errors: [],
-              sync: { online: false },
+              sync: { online: options.online ?? false },
               daemon: { running: true },
               devices: [],
               deviceId: "mac",

@@ -471,6 +471,7 @@ pub async fn token_for_service(owner: &str, base: &str) -> Result<String> {
         .ok_or("Session is invalid".into())
 }
 pub fn sign_out() -> Result<()> {
+    crate::live_sessions::close_owned(true);
     crate::env::clear();
     cancel()?;
     remove("supabase-session")?;

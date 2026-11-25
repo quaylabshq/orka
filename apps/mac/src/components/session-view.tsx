@@ -37,20 +37,22 @@ const sampleMessages: SessionMessage[] = [
   },
 ];
 
-export type SessionViewMode = "conversation" | "transcript";
+export type SessionViewMode = "conversation" | "transcript" | "live";
 
 /** One turn with its speaker column. Memoized so paging never re-parses earlier turns. */
-const SessionTurn = memo(function SessionTurn({
+export const SessionTurn = memo(function SessionTurn({
   message,
+  userLabel = "You",
   raw,
   source,
 }: {
   message: SessionMessage;
+  userLabel?: string;
   raw: boolean;
   source: ResourceSource;
 }) {
   const user = message.role === "user";
-  const speaker = user ? "You" : sourceName(source);
+  const speaker = user ? userLabel : sourceName(source);
   return (
     <article
       className={
@@ -64,7 +66,7 @@ const SessionTurn = memo(function SessionTurn({
         {user ? (
           <>
             <Icon icon={UserIcon} size="sm" variant="primary" />
-            <span>You</span>
+            <span>{userLabel}</span>
           </>
         ) : (
           <SourceLabel source={source} />
@@ -103,6 +105,7 @@ export interface SessionViewProps {
   raw: boolean;
   /** The unchanged original transcript; loaded only in transcript mode. */
   transcript: React.ReactNode;
+  live?: React.ReactNode;
   offline: boolean;
 }
 
@@ -117,6 +120,7 @@ export function SessionView({
   mode,
   raw,
   transcript,
+  live,
   offline,
 }: SessionViewProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -180,7 +184,9 @@ export function SessionView({
   );
   return (
     <DetailLayout {...shell} readerRef={scrollRef} bodyClassName="session-body">
-      {!conversation ? (
+      {mode === "live" ? (
+        live
+      ) : !conversation ? (
         transcript
       ) : (
         <div

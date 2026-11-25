@@ -21,3 +21,14 @@ Selected sharing uses the existing v2 change wire schema and encrypted ENV forma
 Codex accepts the desktop archive and loads both MCP servers; Claude Code validates it and inventories the workflow skills and two servers. These host checks do not claim a production publication. Packaging accepts an explicit executable path for a development build and defaults to the installed app path.
 
 Roll out the shared backend and retire the Dashboard plugin consent routes, then distribute the updated desktop and plugin. The API must advertise `desktopConnector: 1` and implement desktop-authenticated `/v2/connector/tools`. Old remote MCP/OAuth routes return HTTP410; remove the old HTTP connector and reconnect the desktop-only package. Ordinary Dashboard login is unchanged. Selected publication also requires its existing selected-sharing capability. Signed installers, plugin publication and production deployment are separate release steps.
+
+
+## Experimental live sessions
+
+On a service with live sessions enabled, open a published Codex or Claude session you own on the Mac that holds its original conversation. Choose **Share live…**, review who can read future turns and choose **Start live sharing**. For a private session, use **Share with team…** first and wait for the snapshot to be published, including any required approval. Starting a live session also shares the current redacted conversation as its opening checkpoint.
+
+A signed-in teammate with access opens the session and chooses **Watch live**. **Live turns** shows the author and agent as they exchange messages. **Conversation** and **Transcript** open the ordinary saved snapshot. **Stop watching** ends the local reader subscription.
+
+To bring new turns into a local Codex or Claude conversation, choose **Follow in an agent…**, select a conversation in the connected folder and choose **Follow**. The next user prompt can include up to eight recent turns as attributed historical context. Unfollow from the same selector. The agent keeps its own conversation history.
+
+Choose **Stop sharing live** to end the episode. Access changes apply to subsequent deliveries. Live episodes expire after 24 hours. Existing automatic sharing and the usual snapshot controls continue to govern which versions are saved in the project.

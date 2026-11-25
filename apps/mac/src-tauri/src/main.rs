@@ -18,6 +18,7 @@ mod global_skills;
 mod governance;
 mod history;
 mod indexer;
+mod live_sessions;
 mod local_resources;
 mod main_window;
 mod memory_context;
@@ -193,6 +194,37 @@ fn main() {
         return;
     }
     #[cfg(debug_assertions)]
+    if args.get(1).is_some_and(|a| a == "--orka-live-fixture") {
+        use std::io::{BufRead, Write};
+        if std::env::var_os("ORKA_TEST_HOME").is_none() {
+            eprintln!("Isolated test home required");
+            std::process::exit(1);
+        }
+        for line in std::io::stdin()
+            .lock()
+            .lines()
+            .map_while(std::result::Result::ok)
+        {
+            let result: db::Result<Value> = serde_json::from_str::<Value>(&line)
+                .map_err(|e| e.to_string())
+                .and_then(|v| {
+                    tauri::async_runtime::block_on(live_sessions::live_session(
+                        v["action"].as_str().unwrap_or_default().to_string(),
+                        v["input"].clone(),
+                    ))
+                });
+            println!(
+                "{}",
+                match result {
+                    Ok(v) => json!({"ok":true,"value":v}),
+                    Err(e) => json!({"ok":false,"error":e}),
+                }
+            );
+            let _ = std::io::stdout().flush();
+        }
+        return;
+    }
+    #[cfg(debug_assertions)]
     if args.get(1).is_some_and(|a| a == "--orka-test") {
         if std::env::var_os("ORKA_TEST_HOME").is_none() {
             eprintln!("Isolated test home required");
@@ -204,6 +236,7 @@ fn main() {
             .expect("Test input");
         let input: Value = serde_json::from_str(&raw).expect("Test JSON");
         let result:db::Result<Value>=match input["action"].as_str().unwrap_or("") {
+            "live-session"=>tauri::async_runtime::block_on(live_sessions::live_session(input["operation"].as_str().unwrap_or_default().to_string(),input["input"].clone())),
             "rpc"=>native::Rpc::connect().and_then(|mut rpc|rpc.call(input["method"].as_str().unwrap_or(""),input["params"].clone())),
             "configure"=>commands::configure(input["config"].clone()).map(|_|json!({"ok":true})),
             "record-desktop-usage"=>desktop_usage::test_record(input),
@@ -303,6 +336,7 @@ fn main() {
                 )
                 .map_err(std::io::Error::other)?;
             }
+            live_sessions::close_owned(false);
             _app.manage(plugin_broker::start().map_err(std::io::Error::other)?);
             onboarding::resume_sync();
             sync::start_foreground();
@@ -375,6 +409,7 @@ fn main() {
                 commands::session_action,
                 commands::resume_session,
                 commands::session_launch_options,
+                live_sessions::live_session,
                 commands::session_handoff_prompt,
                 commands::export_bundle,
                 commands::export_project,
@@ -437,6 +472,7 @@ fn main() {
                 }
             }
             if matches!(event, tauri::RunEvent::Exit) {
+                live_sessions::close_owned(false);
                 updates::clean_exit();
                 env::clear();
             }
