@@ -233,13 +233,15 @@ pub fn switch_service(config: Value) -> Result<()> {
 }
 #[tauri::command]
 pub fn open_legal_link(document: String) -> Result<()> {
-    if !matches!(document.as_str(), "terms" | "privacy") {
-        return Err("Unknown legal document".into());
-    }
-    // Keep the approved placeholder destination fixed; callers cannot launch
-    // arbitrary URLs or local files through this sign-in action.
+    // Keep the destinations fixed; callers cannot launch arbitrary URLs or
+    // local files through this sign-in action.
+    let url = match document.as_str() {
+        "terms" => "https://tryorka.ai/docs/terms",
+        "privacy" => "https://tryorka.ai/docs/privacy",
+        _ => return Err("Unknown legal document".into()),
+    };
     let status = Command::new("/usr/bin/open")
-        .arg("https://x.com")
+        .arg(url)
         .status()
         .map_err(|e| e.to_string())?;
     if !status.success() {
