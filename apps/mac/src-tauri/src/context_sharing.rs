@@ -14,25 +14,8 @@ pub(crate) fn check_upload_eligibility(db: &Connection, queued: &Value) -> Resul
     if queued["path"] == crate::global_skills::IMPORT_PATH
         && queued["value"]["automaticSkillMerge"] == true
     {
-        let project_id = queued["project"].as_str().ok_or("Missing project")?;
-        let project = governance::project(db, project_id)?;
-        let skill = &queued["value"]["resource"];
-        let current =
-            governance::resource(db, skill["resourceId"].as_str().ok_or("Missing skill")?)?;
-        if project["governed"] != true
-            || project["sharing"]["skill"] != true
-            || current["projectId"] != project_id
-            || current["sourceId"] != skill["sourceId"]
-            || current["kind"] != "skill"
-            || current["deleted"] == true
-            || current["access"]["mode"] != "publish"
-        {
-            return Err("403: Automatic skill publication needs sharing and publish access. The queued edit is preserved.".into());
-        }
-        let source = crate::sources::for_resource(&project, skill)
-            .filter(|source| source["firstSyncWaiting"] != true)
-            .ok_or("409: Reconnect the skill's source folder to resume automatic publication.")?;
-        return crate::sources::validate(&source).map_err(|error| format!("409: {error}"));
+        return check_automatic_skill_upload(db, queued)
+            .map_err(|error| format!("Local upload: {error}"));
     }
     if queued["path"] != QUEUE_PATH {
         return Ok(());
@@ -55,6 +38,29 @@ pub(crate) fn check_upload_eligibility(db: &Connection, queued: &Value) -> Resul
         return Err("409: Queued instruction is now ignored or excluded; review its source in Orka before retrying. Original queued bytes and request ID preserved".into());
     }
     Ok(())
+}
+
+// Local eligibility can recover after a role or repository change. Keep these
+// failures retryable and distinct from a definitive HTTP refusal.
+fn check_automatic_skill_upload(db: &Connection, queued: &Value) -> Result<()> {
+    let project_id = queued["project"].as_str().ok_or("Missing project")?;
+    let project = governance::project(db, project_id)?;
+    let skill = &queued["value"]["resource"];
+    let current = governance::resource(db, skill["resourceId"].as_str().ok_or("Missing skill")?)?;
+    if project["governed"] != true
+        || project["sharing"]["skill"] != true
+        || current["projectId"] != project_id
+        || current["sourceId"] != skill["sourceId"]
+        || current["kind"] != "skill"
+        || current["deleted"] == true
+        || current["access"]["mode"] != "publish"
+    {
+        return Err("Automatic skill publication needs sharing and publish access. The queued edit is preserved.".into());
+    }
+    let source = crate::sources::for_resource(&project, skill)
+        .filter(|source| source["firstSyncWaiting"] != true)
+        .ok_or("Reconnect the skill's source folder to resume automatic publication.")?;
+    crate::sources::validate(&source)
 }
 
 pub(crate) async fn upload(db: &Connection, owner: &str, queued: &Value) -> Result<()> {

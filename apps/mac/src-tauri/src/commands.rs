@@ -1123,7 +1123,9 @@ pub fn resolve_session_recovery(
                 || conflict["author"] != user
                 || (current["access"].is_object()
                     && (current["access"]["mode"] == "hidden"
-                        || current["access"]["create"] != "publish"))))
+                        || current["access"]["create"]
+                            .as_str()
+                            .is_some_and(|mode| mode != "publish")))))
         || (action != "copy"
             && (current["owner"] != user
                 || (current["access"].is_object() && current["access"]["mode"] != "publish")))

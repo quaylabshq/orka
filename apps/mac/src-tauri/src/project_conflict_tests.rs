@@ -314,8 +314,9 @@ fn recovery_choices_need_the_displayed_tombstone_owner_and_sole_candidate() {
     current["access"] = json!({"mode":"read"});
     save(&f, &current);
     assert!(queue(5, "restore", true).is_err());
-    current["access"] = json!({"mode":"publish"});
+    current["access"] = json!({"mode":"publish","create":"read"});
     save(&f, &current);
+    assert!(queue(5, "copy", false).is_err());
     assert!(f.outbox().is_empty());
     db::upsert(&f.db, "bindings", &id, project, &json!({"needsCopy":true})).unwrap();
     assert!(queue(5, "restore", true).is_err());

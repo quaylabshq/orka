@@ -242,10 +242,11 @@ export function SessionDetail({
               }
               canCopy={
                 !resource.deleted ||
-                !resource.access ||
-                (resource.access.mode !== "hidden" &&
-                  resource.access.create === "publish" &&
-                  conflict.candidate.owner === user)
+                (conflict.candidate.owner === user &&
+                  (!resource.access ||
+                    (resource.access.mode !== "hidden" &&
+                      (!resource.access.create ||
+                        resource.access.create === "publish"))))
               }
               canPublish={
                 !resource.access || resource.access.mode === "publish"

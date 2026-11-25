@@ -4571,6 +4571,47 @@ mod queue_tests {
         (root, db)
     }
 
+    #[test]
+    fn skill_decision_resumes_the_same_request_after_access_or_source_recovery() {
+        let (dir, db) = outbox_db(&["a"]);
+        let mut project =
+            json!({"id":"a","governed":true,"sharing":{"skill":true},"path":dir.path()});
+        db::upsert(&db, "projects", "a", "", &project).unwrap();
+        let mut skill = json!({"resourceId":"s","projectId":"a","kind":"skill","access":{"mode":"publish"},"revision":2,"deleted":false});
+        db::upsert(&db, "resources", "s", "a", &skill).unwrap();
+        let frozen = json!({"id":"req","resource":{"resourceId":"s","kind":"skill"},"baseRevision":2,"automaticSkillMerge":true,"skillImport":"d"});
+        indexer::queue(&db, "a", crate::global_skills::IMPORT_PATH, &frozen).unwrap();
+        let outbox = ProjectOutbox::open(&db, "a").unwrap();
+        for paused in ["role", "folder"] {
+            if paused == "role" {
+                skill["access"]["mode"] = json!("suggest");
+                db::upsert(&db, "resources", "s", "a", &skill).unwrap();
+            } else {
+                project["path"] = Value::Null;
+                db::upsert(&db, "projects", "a", "", &project).unwrap();
+            }
+            let queued = outbox.queued(&db).unwrap().remove(0);
+            let error = crate::context_sharing::check_upload_eligibility(&db, &queued).unwrap_err();
+            assert!(defer_upload(&queued, &error));
+            assert!(!outbox.fail(&db, &queued, &error).unwrap());
+            skill["access"]["mode"] = json!("publish");
+            // The formerly lost response can still be fetched by retrying its
+            // frozen ID even after the shared feed has already advanced.
+            skill["revision"] = json!(3);
+            db::upsert(&db, "resources", "s", "a", &skill).unwrap();
+            project["path"] = json!(dir.path());
+            db::upsert(&db, "projects", "a", "", &project).unwrap();
+            let retry = outbox.eligible(&db, &project).unwrap().remove(0);
+            assert_eq!(retry["value"], frozen);
+            crate::context_sharing::check_upload_eligibility(&db, &retry).unwrap();
+        }
+        let retry = outbox.eligible(&db, &project).unwrap().remove(0);
+        outbox
+            .fail(&db, &retry, "403: Receipt access denied")
+            .unwrap();
+        assert!(outbox.eligible(&db, &project).unwrap().is_empty());
+    }
+
     fn automatic_change(id: &str, hash: &str) -> Value {
         json!({
             "id":id,"projectId":"a","deviceId":"device","baseRevision":1,

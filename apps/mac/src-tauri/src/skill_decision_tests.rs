@@ -219,6 +219,12 @@ fn skill_decision_recovers_definitive_stale_rejection_without_replacing_transpor
     )
     .unwrap()
     .remove(0);
+    let refresh = command(
+        &f,
+        "refresh-draft",
+        json!({"id":row["value"]["skillImport"]}),
+    );
+    assert!(refresh.unwrap_err().contains("queued"));
     for uncertain in [
         "request timed out",
         "409: Retry ID reused with different content",

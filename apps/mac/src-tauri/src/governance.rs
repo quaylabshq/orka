@@ -916,10 +916,15 @@ pub async fn governance_command(action: String, input: Value) -> Result<Value> {
         }
         "refresh-draft"=>{
             let id=input["id"].as_str().ok_or("Choose a draft")?;
-            let mut draft=db::rows(&db,"SELECT value FROM drafts WHERE id=? AND project=?",&[&id,&project_id])?.into_iter().next().ok_or("Draft unavailable")?;
+            let tx = rusqlite::Transaction::new_unchecked(&db, rusqlite::TransactionBehavior::Immediate).map_err(|e| e.to_string())?;
+            let mut draft=db::rows(&tx,"SELECT value FROM drafts WHERE id=? AND project=?",&[&id,&project_id])?.into_iter().next().ok_or("Draft unavailable")?;
             if draft["status"]=="proposed" {return Err("This suggestion is still pending; review its decision before retrying".into());}
+            let frozen: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM outbox WHERE project=? AND json_extract(value,'$.skillImport')=? AND json_extract(value,'$.automaticSkillMerge')=1)", params![project_id, id], |row| row.get(0)).map_err(|e|e.to_string())?;
+            if frozen {return Err("This skill update is queued. Wait for sync before refreshing the draft.".into());}
             draft["requestId"]=Value::Null;draft["submission"]=Value::Null;draft["request"]=Value::Null;draft["status"]=json!("local");
-            db::upsert(&db,"drafts",id,project_id,&draft)?;return Ok(draft);
+            db::upsert(&tx,"drafts",id,project_id,&draft)?;
+            tx.commit().map_err(|e|e.to_string())?;
+            return Ok(draft);
         }
         "draft"|"submit-draft"=>{
             let id=input["id"].as_str().ok_or("Choose a draft")?;
