@@ -11,6 +11,29 @@ use uuid::Uuid;
 pub const QUEUE_PATH: &str = "/local/context-share";
 
 pub(crate) fn check_upload_eligibility(db: &Connection, queued: &Value) -> Result<()> {
+    if queued["path"] == crate::global_skills::IMPORT_PATH
+        && queued["value"]["automaticSkillMerge"] == true
+    {
+        let project_id = queued["project"].as_str().ok_or("Missing project")?;
+        let project = governance::project(db, project_id)?;
+        let skill = &queued["value"]["resource"];
+        let current =
+            governance::resource(db, skill["resourceId"].as_str().ok_or("Missing skill")?)?;
+        if project["governed"] != true
+            || project["sharing"]["skill"] != true
+            || current["projectId"] != project_id
+            || current["sourceId"] != skill["sourceId"]
+            || current["kind"] != "skill"
+            || current["deleted"] == true
+            || current["access"]["mode"] != "publish"
+        {
+            return Err("403: Automatic skill publication needs sharing and publish access. The queued edit is preserved.".into());
+        }
+        let source = crate::sources::for_resource(&project, skill)
+            .filter(|source| source["firstSyncWaiting"] != true)
+            .ok_or("409: Reconnect the skill's source folder to resume automatic publication.")?;
+        return crate::sources::validate(&source).map_err(|error| format!("409: {error}"));
+    }
     if queued["path"] != QUEUE_PATH {
         return Ok(());
     }
@@ -291,6 +314,19 @@ pub(crate) fn pending_publications(
 }
 
 pub fn queue(db: &Connection, project: &Value, draft_id: &str) -> Result<Value> {
+    let tx = rusqlite::Transaction::new_unchecked(db, rusqlite::TransactionBehavior::Immediate)
+        .map_err(|error| error.to_string())?;
+    let result = queue_in(&tx, project, draft_id, false)?;
+    tx.commit().map_err(|error| error.to_string())?;
+    Ok(result)
+}
+
+pub(crate) fn queue_in(
+    db: &rusqlite::Transaction<'_>,
+    project: &Value,
+    draft_id: &str,
+    automatic_merge: bool,
+) -> Result<Value> {
     let project_id = project["id"].as_str().ok_or("Missing project")?;
     let mut draft = db::rows(
         db,
@@ -385,11 +421,11 @@ pub fn queue(db: &Connection, project: &Value, draft_id: &str) -> Result<Value> 
     draft["automaticSharing"] = json!(true);
     let mut change = draft["submission"].clone();
     change[marker] = json!(draft_id);
-    let tx = db
-        .unchecked_transaction()
-        .map_err(|error| error.to_string())?;
-    db::upsert(&tx, "drafts", draft_id, project_id, &draft)?;
-    let pending: bool = tx
+    if automatic_merge {
+        change["automaticSkillMerge"] = json!(true);
+    }
+    db::upsert(db, "drafts", draft_id, project_id, &draft)?;
+    let pending: bool = db
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM outbox WHERE id=?)",
             [change["id"].as_str()],
@@ -397,23 +433,27 @@ pub fn queue(db: &Connection, project: &Value, draft_id: &str) -> Result<Value> 
         )
         .map_err(|error| error.to_string())?;
     if !pending {
-        indexer::queue(&tx, project_id, path, &change)?;
-        SyncQueue::request(&tx, project_id, Priority::Local, "share")?;
+        indexer::queue(db, project_id, path, &change)?;
+        SyncQueue::request(db, project_id, Priority::Local, "share")?;
     }
-    tx.commit().map_err(|error| error.to_string())?;
     Ok(json!({"status":"queued"}))
 }
 
 pub async fn share(db: &Connection, owner: &str, queued: &Value) -> Result<Value> {
+    if queued["value"]["automaticSkillMerge"] == true {
+        // Sharing or source access can change while the blobs upload.
+        check_upload_eligibility(db, queued)?;
+    }
     let mut change = queued["value"].clone();
     let fields = change.as_object_mut().ok_or("Missing import change")?;
     fields.remove("skillImport");
     fields.remove("contextDraft");
     fields.remove("reviewRequired");
+    let automatic_merge = fields.remove("automaticSkillMerge") == Some(json!(true));
     if queued["value"]["reviewRequired"] != true {
         match crate::sync::api_as(owner, "POST", "/v2/sync/push", Some(&change)).await {
             Ok(receipt) => return Ok(receipt),
-            Err(error) if error.starts_with("403:") => {
+            Err(error) if error.starts_with("403:") && !automatic_merge => {
                 // Persist the route before submitting, so a lost response retries
                 // the same approval request even if permissions later change.
                 let mut value = queued["value"].clone();
@@ -451,6 +491,31 @@ pub fn complete(db: &Connection, queued: &Value, receipt: &Value) -> Result<()> 
     .into_iter()
     .next()
     .ok_or("Context draft unavailable")?;
+    if queued["value"]["automaticSkillMerge"] == true {
+        let submitted = &queued["value"]["resource"];
+        let accepted = &receipt["event"]["resource"];
+        if receipt["proposal"].is_object()
+            || receipt["conflict"] == true
+            || receipt["event"]["conflicts"]
+                .as_array()
+                .is_none_or(|conflicts| !conflicts.is_empty())
+            || accepted["updatedBy"] != db::get(db, "user")?
+            || accepted["revision"]
+                .as_u64()
+                .zip(queued["value"]["baseRevision"].as_u64())
+                .is_none_or(|(revision, base)| revision <= base)
+            || submitted.as_object().is_none_or(|fields| {
+                fields
+                    .iter()
+                    .any(|(field, value)| accepted.get(field) != Some(value))
+            })
+        {
+            return Err(
+                "Published skill differs from the queued merge. The original edit is preserved."
+                    .into(),
+            );
+        }
+    }
     if receipt["proposal"].is_object() {
         if receipt["proposal"]["projectId"] != project_id
             || receipt["proposal"]["resourceId"] != queued["value"]["resource"]["resourceId"]

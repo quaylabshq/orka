@@ -184,7 +184,7 @@ export function SessionDetail({
             )}
           </>
         ),
-        infoActions: (
+        infoActions: !resource.deleted && (
           <div className="detail-info-actions">
             <ResourceMenuButton
               resource={resource}
@@ -216,7 +216,7 @@ export function SessionDetail({
             </SkillActionTooltip>
           </div>
         ),
-        primaryActions: (
+        primaryActions: !resource.deleted && (
           <SessionLauncher
             resource={resource}
             project={project}
@@ -235,11 +235,24 @@ export function SessionDetail({
               deviceId={deviceId}
               user={user}
               owner={resource.owner}
+              recovery={resource.deleted && !conflict.candidate.deleted}
+              multipleCandidates={
+                conflicts.filter((c) => c.resourceId === resource.resourceId)
+                  .length > 1
+              }
+              canPublish={
+                !resource.access || resource.access.mode === "publish"
+              }
               busy={busy}
               preview={view.preview}
               onPreview={view.setPreview}
               onResolve={(action, conflictId, selected) =>
-                void actions.sessionAction(action, conflictId, selected)
+                void actions.sessionAction(
+                  action,
+                  conflictId,
+                  selected,
+                  resource.deleted && !conflict.candidate.deleted,
+                )
               }
             />
           )),

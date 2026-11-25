@@ -644,9 +644,20 @@ function WorkspaceApp({
     () => new Set(state.conflicts.map((c) => c.resourceId)),
     [state.conflicts],
   );
-  const selected = catalogResources.find(
-    (r) => r.resourceId === resource && r.projectId === project && !r.deleted,
-  );
+  const recoveryResource = conflicted.has(resource)
+    ? state.resources.find(
+        (r) =>
+          r.resourceId === resource &&
+          r.projectId === project &&
+          r.kind === "session" &&
+          r.deleted,
+      )
+    : undefined;
+  const selected =
+    recoveryResource ??
+    catalogResources.find(
+      (r) => r.resourceId === resource && r.projectId === project && !r.deleted,
+    );
   const view = useResourceView(
     resource,
     state.user ? selected : undefined,

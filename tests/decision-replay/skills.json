@@ -1,0 +1,401 @@
+[
+  {
+    "id": "T02",
+    "kind": "skill",
+    "base": "Log to stderr.\n",
+    "current": "Log to stderr.\n",
+    "incoming": "Log to a file.\n",
+    "context": {
+      "publish": true,
+      "auto_share": true,
+      "trusted_base": true,
+      "current_rev": 11,
+      "observed_rev": 11,
+      "base_executable": false,
+      "current_executable": false,
+      "incoming_executable": false,
+      "encoding": "utf-8",
+      "resource_deleted": false
+    }
+  },
+  {
+    "id": "T04",
+    "kind": "skill",
+    "base": "## Inputs\n- path\n",
+    "current": "## Inputs\n- path\n- profile\n",
+    "incoming": "## Inputs\n- path\n- profile\n",
+    "context": {
+      "publish": true,
+      "auto_share": true,
+      "trusted_base": true,
+      "current_rev": 11,
+      "observed_rev": 11,
+      "base_executable": false,
+      "current_executable": false,
+      "incoming_executable": false,
+      "encoding": "utf-8",
+      "resource_deleted": false
+    }
+  },
+  {
+    "id": "T06",
+    "kind": "skill",
+    "base": "Mode: slow",
+    "current": "Mode: quick",
+    "incoming": "Mode: quick",
+    "context": {
+      "publish": true,
+      "auto_share": true,
+      "trusted_base": true,
+      "current_rev": 11,
+      "observed_rev": 11,
+      "base_executable": false,
+      "current_executable": false,
+      "incoming_executable": false,
+      "encoding": "utf-8",
+      "resource_deleted": false
+    }
+  },
+  {
+    "id": "T08",
+    "kind": "skill",
+    "base": "# Parser\nRead a file.\n\n## Output\nWrite the report.\n",
+    "current": "# Parser\nRead one UTF-8 file.\n\n## Output\nWrite the report.\n",
+    "incoming": "# Parser\nRead a file.\n\n## Output\nWrite the JSON report.\n",
+    "context": {
+      "publish": true,
+      "auto_share": true,
+      "trusted_base": true,
+      "current_rev": 11,
+      "observed_rev": 11,
+      "base_executable": false,
+      "current_executable": false,
+      "incoming_executable": false,
+      "encoding": "utf-8",
+      "resource_deleted": false
+    }
+  },
+  {
+    "id": "T10",
+    "kind": "skill",
+    "base": "Input format: CSV\nOutput format: JSON\n",
+    "current": "Input format: TSV\nOutput format: JSON\n",
+    "incoming": "Input format: CSV\nOutput format: YAML\n",
+    "context": {
+      "publish": true,
+      "auto_share": true,
+      "trusted_base": true,
+      "current_rev": 11,
+      "observed_rev": 11,
+      "base_executable": false,
+      "current_executable": false,
+      "incoming_executable": false,
+      "encoding": "utf-8",
+      "resource_deleted": false
+    }
+  },
+  {
+    "id": "T12",
+    "kind": "skill",
+    "base": "Préface.\r\n\r\nReporting.\r\n",
+    "current": "Préface révisée.\r\n\r\nReporting.\r\n",
+    "incoming": "Préface.\r\n\r\nRapport établi.\r\n",
+    "context": {
+      "publish": true,
+      "auto_share": true,
+      "trusted_base": true,
+      "current_rev": 11,
+      "observed_rev": 11,
+      "base_executable": false,
+      "current_executable": false,
+      "incoming_executable": false,
+      "encoding": "utf-8",
+      "resource_deleted": false
+    }
+  },
+  {
+    "id": "T14",
+    "kind": "skill",
+    "base": "title = \"Scan\"\n\n# Output\nReturn JSON.",
+    "current": "title = \"Inspect\"\n\n# Output\nReturn JSON.",
+    "incoming": "title = \"Scan\"\n\n# Output\nReturn JSONL.",
+    "context": {
+      "publish": true,
+      "auto_share": true,
+      "trusted_base": true,
+      "current_rev": 11,
+      "observed_rev": 11,
+      "base_executable": false,
+      "current_executable": false,
+      "incoming_executable": false,
+      "encoding": "utf-8",
+      "resource_deleted": false
+    }
+  },
+  {
+    "id": "T16",
+    "kind": "skill",
+    "base": "## Prepare\nRead docs.\n\n## Verify\nRun tests.\n",
+    "current": "## Prepare\nRead the runbook.\n\n## Verify\nRun the suite.\n",
+    "incoming": "## Prepare\nRead the runbook.\n\n## Verify\nRun tests.\n",
+    "context": {
+      "publish": true,
+      "auto_share": true,
+      "trusted_base": true,
+      "current_rev": 11,
+      "observed_rev": 11,
+      "base_executable": false,
+      "current_executable": false,
+      "incoming_executable": false,
+      "encoding": "utf-8",
+      "resource_deleted": false
+    }
+  },
+  {
+    "id": "T18",
+    "kind": "skill",
+    "base": "Use UTF-8.\n",
+    "current": "Use UTF-16.\n",
+    "incoming": "Use Latin-1.\n",
+    "context": {
+      "publish": true,
+      "auto_share": true,
+      "trusted_base": true,
+      "current_rev": 11,
+      "observed_rev": 11,
+      "base_executable": false,
+      "current_executable": false,
+      "incoming_executable": false,
+      "encoding": "utf-8",
+      "resource_deleted": false
+    }
+  },
+  {
+    "id": "T20",
+    "kind": "skill",
+    "base": "Use the cache.\nLog statistics.\n",
+    "current": "Log statistics.\n",
+    "incoming": "Use the persistent cache.\nLog statistics.\n",
+    "context": {
+      "publish": true,
+      "auto_share": true,
+      "trusted_base": true,
+      "current_rev": 11,
+      "observed_rev": 11,
+      "base_executable": false,
+      "current_executable": false,
+      "incoming_executable": false,
+      "encoding": "utf-8",
+      "resource_deleted": false
+    }
+  },
+  {
+    "id": "T22",
+    "kind": "skill",
+    "base": "See docs.\n",
+    "current": "See [public docs](public.md).\n",
+    "incoming": "See [private docs](internal.md).\n",
+    "context": {
+      "publish": true,
+      "auto_share": true,
+      "trusted_base": true,
+      "current_rev": 11,
+      "observed_rev": 11,
+      "base_executable": false,
+      "current_executable": false,
+      "incoming_executable": false,
+      "encoding": "utf-8",
+      "resource_deleted": false
+    }
+  },
+  {
+    "id": "T24",
+    "kind": "skill",
+    "base": "## Read\nUse local inputs.\n\n## Retention\nDiscard the temporary copy.\n",
+    "current": "## Read\nReceive confidential documents under a no-retention agreement.\n\n## Retention\nDiscard the temporary copy.\n",
+    "incoming": "## Read\nUse local inputs.\n\n## Retention\nArchive the inputs for 90 days.\n",
+    "context": {
+      "publish": true,
+      "auto_share": true,
+      "trusted_base": true,
+      "current_rev": 11,
+      "observed_rev": 11,
+      "base_executable": false,
+      "current_executable": false,
+      "incoming_executable": false,
+      "encoding": "utf-8",
+      "resource_deleted": false
+    }
+  },
+  {
+    "id": "T26",
+    "kind": "skill",
+    "base": "## Output\nWrite the default format.\n\n## Verify\nRead the result.\n",
+    "current": "## Output\nWrite TOML.\n\n## Verify\nRead the result.\n",
+    "incoming": "## Output\nWrite the default format.\n\n## Verify\nReject outputs that are not valid JSON.\n",
+    "context": {
+      "publish": true,
+      "auto_share": true,
+      "trusted_base": true,
+      "current_rev": 11,
+      "observed_rev": 11,
+      "base_executable": false,
+      "current_executable": false,
+      "incoming_executable": false,
+      "encoding": "utf-8",
+      "resource_deleted": false
+    }
+  },
+  {
+    "id": "T28",
+    "kind": "skill",
+    "base": "## Name\nCreate the report.\n\n## Send\nAttach the report.\n",
+    "current": "## Name\nCreate results.md.\n\n## Send\nAttach the report.\n",
+    "incoming": "## Name\nCreate the report.\n\n## Send\nAttach legacy-report.md only.\n",
+    "context": {
+      "publish": true,
+      "auto_share": true,
+      "trusted_base": true,
+      "current_rev": 11,
+      "observed_rev": 11,
+      "base_executable": false,
+      "current_executable": false,
+      "incoming_executable": false,
+      "encoding": "utf-8",
+      "resource_deleted": false
+    }
+  },
+  {
+    "id": "T30",
+    "kind": "skill",
+    "base": "## References\n[guide]: https://docs.example.test/guide\n[tests]: https://docs.example.test/tests\n",
+    "current": "## References\n[guide]: https://docs.example.test/guide\n[tests]: https://docs.example.test/tests\n[formats]: https://docs.example.test/formats\n",
+    "incoming": "## References\n[guide]: https://docs.example.test/guide\n[tests]: https://docs.example.test/tests\n[mac]: https://docs.example.test/mac\n",
+    "context": {
+      "publish": true,
+      "auto_share": true,
+      "trusted_base": true,
+      "current_rev": 11,
+      "observed_rev": 11,
+      "base_executable": false,
+      "current_executable": false,
+      "incoming_executable": false,
+      "encoding": "utf-8",
+      "resource_deleted": false
+    }
+  },
+  {
+    "id": "T32",
+    "kind": "skill",
+    "base": "## References\n[guide]: https://docs.example.test/guide\n",
+    "current": "## References\n[guide]: https://docs.example.test/guide\n[tests]: https://docs.example.test/tests\n",
+    "incoming": "## References\n[guide]: https://docs.example.test/guide\n[TESTS]: https://docs.example.test/tests-v2\n",
+    "context": {
+      "publish": true,
+      "auto_share": true,
+      "trusted_base": true,
+      "current_rev": 11,
+      "observed_rev": 11,
+      "base_executable": false,
+      "current_executable": false,
+      "incoming_executable": false,
+      "encoding": "utf-8",
+      "resource_deleted": false
+    }
+  },
+  {
+    "id": "T33",
+    "kind": "skill",
+    "base": "## References\n[guide]: https://docs.example.test/guide\n[tests]: https://docs.example.test/tests\n",
+    "current": "## References\n[guide]: https://docs.example.test/guide\n[tests]: https://docs.example.test/tests\n[formats]: https://docs.example.test/formats\n",
+    "incoming": "## References\n[guide]: https://docs.example.test/guide\n[api]: https://docs.example.test/api\n",
+    "context": {
+      "publish": true,
+      "auto_share": true,
+      "trusted_base": true,
+      "current_rev": 11,
+      "observed_rev": 11,
+      "base_executable": false,
+      "current_executable": false,
+      "incoming_executable": false,
+      "encoding": "utf-8",
+      "resource_deleted": false
+    }
+  },
+  {
+    "id": "T36",
+    "kind": "skill",
+    "base": "# Old tool\n",
+    "current": "# New tool\n",
+    "incoming": "",
+    "context": {
+      "publish": true,
+      "auto_share": true,
+      "trusted_base": true,
+      "current_rev": 11,
+      "observed_rev": 11,
+      "base_executable": false,
+      "current_executable": false,
+      "incoming_executable": false,
+      "encoding": "utf-8",
+      "resource_deleted": true
+    }
+  },
+  {
+    "id": "T37",
+    "kind": "skill",
+    "base": "Run checks.\n",
+    "current": "Run quick checks.\n",
+    "incoming": "Run offline checks.\n",
+    "context": {
+      "publish": true,
+      "auto_share": true,
+      "trusted_base": true,
+      "current_rev": 11,
+      "observed_rev": 11,
+      "base_executable": false,
+      "current_executable": false,
+      "incoming_executable": true,
+      "encoding": "utf-8",
+      "resource_deleted": false
+    }
+  },
+  {
+    "id": "T39",
+    "kind": "skill",
+    "base": "A\u0000B",
+    "current": "A\u0000C",
+    "incoming": "D\u0000B",
+    "context": {
+      "publish": true,
+      "auto_share": true,
+      "trusted_base": true,
+      "current_rev": 11,
+      "observed_rev": 11,
+      "base_executable": false,
+      "current_executable": false,
+      "incoming_executable": false,
+      "encoding": "binary",
+      "resource_deleted": false
+    }
+  },
+  {
+    "id": "T40",
+    "kind": "skill",
+    "base": "One.\n",
+    "current": "Two.\n",
+    "incoming": "Two.\n",
+    "context": {
+      "publish": false,
+      "auto_share": true,
+      "trusted_base": true,
+      "current_rev": 11,
+      "observed_rev": 11,
+      "base_executable": false,
+      "current_executable": false,
+      "incoming_executable": false,
+      "encoding": "utf-8",
+      "resource_deleted": false
+    }
+  }
+]

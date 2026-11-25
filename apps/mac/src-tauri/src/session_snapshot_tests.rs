@@ -526,6 +526,74 @@ fn session_copy_conflict_resolution_still_adopts_the_selected_copy() {
     );
 }
 
+#[test]
+fn session_recovery_copy_preserves_local_binding_and_never_materializes_a_remote_candidate() {
+    for bound in [true, false] {
+        let f = Fixture::new();
+        let (mut current, binding, path) = cached_session(&f, "codex");
+        let project = f.project["id"].as_str().unwrap();
+        let original = current["resourceId"].as_str().unwrap().to_string();
+        let user = db::get(&f.db, "user").unwrap();
+        let local_bytes = fs::read(&path).unwrap();
+        if !bound {
+            f.db.execute("DELETE FROM bindings WHERE id=?", [&original])
+                .unwrap();
+        }
+        current["owner"] = user.clone();
+        current["deleted"] = json!(true);
+        current["files"] = json!([]);
+        db::upsert(&f.db, "resources", &original, project, &current).unwrap();
+
+        let cid = uuid::Uuid::new_v4().to_string();
+        let (remote, _) = paginated_chain(&f);
+        let mut candidate = current.clone();
+        candidate["deleted"] = json!(false);
+        candidate["files"] = remote["files"].clone();
+        let conflict = json!({"id":cid,"resourceId":original,"author":user,"deviceId":"other-device","revision":7,"candidate":candidate});
+        db::upsert(&f.db, "conflicts", &cid, project, &conflict).unwrap();
+        crate::commands::resolve_session_recovery(
+            project.into(),
+            original.clone(),
+            7,
+            cid,
+            "copy".into(),
+            false,
+        )
+        .unwrap();
+        let request = &f.outbox()[0];
+        let copy = request["id"].as_str().unwrap();
+        let key = format!("sessionCopy:{copy}");
+        let reopened = db::open().unwrap();
+        let frozen = db::get(&reopened, &key).unwrap();
+        assert_eq!(frozen["preserveOriginalBinding"], true);
+        assert_eq!(frozen["source"]["files"], candidate["files"]);
+        let history = History::resource(&frozen["source"]).unwrap();
+        let transcript = native::transcript(&history.records());
+        assert!(transcript.contains("Ancestor α 🌊"));
+        assert!(transcript.contains("Leaf γ"));
+        assert!(request.get("preserveOriginalBinding").is_none());
+
+        candidate["resourceId"] = json!(copy);
+        candidate["revision"] = json!(8);
+        let receipt = json!({"event":{"resource":candidate,"conflicts":[]},"conflict":false});
+        sync::acknowledge_session(
+            &reopened,
+            project,
+            "/v2/sessions/resolve",
+            request,
+            &receipt,
+        )
+        .unwrap();
+        assert_eq!(
+            indexer::binding(&reopened, &original).unwrap(),
+            if bound { binding } else { json!({}) }
+        );
+        assert_eq!(indexer::binding(&reopened, copy).unwrap(), json!({}));
+        assert_eq!(fs::read(path).unwrap(), local_bytes);
+        assert!(db::get(&reopened, &key).unwrap().is_null());
+    }
+}
+
 const LEAKED: &str = "sk-abcdefghijklmnopqrstuvwx";
 
 /// A session queued before redaction existed: secret in both title and transcript.

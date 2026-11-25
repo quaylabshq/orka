@@ -15,6 +15,9 @@ export function ConflictPanel({
   user,
   owner,
   busy,
+  recovery,
+  multipleCandidates,
+  canPublish,
   preview,
   onPreview,
   onResolve,
@@ -25,6 +28,9 @@ export function ConflictPanel({
   /** The session owner; only they can keep or override. */
   owner: string;
   busy: boolean;
+  recovery?: boolean;
+  multipleCandidates?: boolean;
+  canPublish?: boolean;
   /** The conflict being read, or empty for the shared version. */
   preview: string;
   onPreview: (conflictId: string) => void;
@@ -38,30 +44,38 @@ export function ConflictPanel({
   const local: SessionVersion =
     conflict.deviceId === deviceId ? "candidate" : "current";
   const remote: SessionVersion = local === "current" ? "candidate" : "current";
-  const ownerOnly = busy || owner !== user;
+  const ownerOnly = busy || owner !== user || canPublish === false;
   const session = conflict.candidate.kind === "session";
   return (
     <div className="conflict rounded-xl border border-line bg-panel">
       <strong>
         <TriangleAlertIcon size={16} aria-hidden="true" />
-        {session
-          ? "Two session versions need a choice."
-          : "Two versions need a choice."}
+        {recovery
+          ? "This shared session was deleted."
+          : session
+            ? "Two session versions need a choice."
+            : "Two versions need a choice."}
       </strong>
       <p>
-        {session
-          ? "Open sessions stay untouched. Override applies after the session closes."
-          : "Review the shared and incoming versions before choosing which to keep."}
+        {recovery
+          ? multipleCandidates
+            ? "Keeping it deleted or restoring this version closes every incoming version for this session. Create a copy to preserve one separately."
+            : "Review the incoming copy before deciding whether to restore the session."
+          : session
+            ? "Open sessions stay untouched. Override applies after the session closes."
+            : "Review the shared and incoming versions before choosing which to keep."}
       </p>
       <div className="actions">
-        <Button
-          aria-pressed={!preview}
-          onClick={() => onPreview("")}
-          variant="secondary"
-          size="sm"
-        >
-          View shared version
-        </Button>
+        {!recovery && (
+          <Button
+            aria-pressed={!preview}
+            onClick={() => onPreview("")}
+            variant="secondary"
+            size="sm"
+          >
+            View shared version
+          </Button>
+        )}
         <Button
           aria-pressed={preview === conflict.id}
           onClick={() => onPreview(conflict.id)}
@@ -72,23 +86,29 @@ export function ConflictPanel({
         </Button>
         <Button
           disabled={ownerOnly}
-          onClick={() => onResolve("keep", conflict.id, local)}
+          onClick={() =>
+            onResolve("keep", conflict.id, recovery ? "current" : local)
+          }
           variant="secondary"
           size="sm"
         >
-          Keep local
+          {recovery ? "Keep deleted" : "Keep local"}
         </Button>
         <Button
           disabled={ownerOnly}
-          onClick={() => onResolve("override", conflict.id, remote)}
+          onClick={() =>
+            onResolve("override", conflict.id, recovery ? "candidate" : remote)
+          }
           variant="secondary"
           size="sm"
         >
-          Override
+          {recovery ? "Restore session" : "Override"}
         </Button>
         <Button
           disabled={busy || conflict.author !== user}
-          onClick={() => onResolve("copy", conflict.id, local)}
+          onClick={() =>
+            onResolve("copy", conflict.id, recovery ? "candidate" : local)
+          }
           variant="tertiary"
           size="sm"
         >

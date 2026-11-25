@@ -572,20 +572,37 @@ pub(crate) fn queue_session_resolution(db: &rusqlite::Connection, input: &Value)
     let tx = db
         .unchecked_transaction()
         .map_err(|error| error.to_string())?;
-    let source = selected_resolution_snapshot(&tx, input)?
+    store_session_resolution(&tx, input, false)?;
+    tx.commit().map_err(|error| error.to_string())
+}
+
+pub(crate) fn store_recovery_resolution(db: &rusqlite::Connection, input: &Value) -> Result<()> {
+    store_session_resolution(db, input, input["action"] == "copy")
+}
+
+fn store_session_resolution(
+    db: &rusqlite::Connection,
+    input: &Value,
+    preserve_original_binding: bool,
+) -> Result<()> {
+    let source = selected_resolution_snapshot(db, input)?
         .ok_or("The selected session version is unavailable; refresh before resolving")?;
     indexer::queue(
-        &tx,
+        db,
         input["projectId"].as_str().ok_or("Missing project")?,
         "/v2/sessions/resolve",
         input,
     )?;
+    let mut state = json!({"source":source,"resolution":input});
+    if preserve_original_binding {
+        // A recovered cloud copy has no claim on this Mac's original transcript.
+        state["preserveOriginalBinding"] = json!(true);
+    }
     db::set(
-        &tx,
+        db,
         &copy_state_key(input["id"].as_str().ok_or("Missing request ID")?),
-        &json!({"source":source,"resolution":input}),
-    )?;
-    tx.commit().map_err(|error| error.to_string())
+        &state,
+    )
 }
 
 /// Freeze the wire body before its first attempt. A service upgrade must not
@@ -943,8 +960,14 @@ pub(crate) fn acknowledge_session(
             db::upsert(db, "bindings", id, project, &binding)?;
         }
     }
-    if path == "/v2/sessions/copy" || (path == "/v2/sessions/resolve" && input["action"] == "copy")
-    {
+    let resolution_copy = path == "/v2/sessions/resolve" && input["action"] == "copy";
+    if path == "/v2/sessions/copy" || resolution_copy {
+        if resolution_copy {
+            let id = input["id"].as_str().ok_or("Missing request ID")?;
+            if db::get(db, &copy_state_key(id))?["preserveOriginalBinding"] == true {
+                return clear_session_copy(db, id);
+            }
+        }
         let old = input["resourceId"]
             .as_str()
             .ok_or("Missing copied resource")?;
@@ -1140,9 +1163,13 @@ fn automatic_skill_binding(
     if guards
         .iter()
         .any(|hash| hash != &empty && hash != &base && hash != &incoming)
-        && !crate::skill_reconciliation::reconcile(db, project, resource, &mut binding, &copies)?
     {
-        return Err(crate::skill_reconciliation::LOCAL_EDITS.into());
+        use crate::skill_reconciliation::{reconcile, Outcome};
+        match reconcile(db, project, resource, &mut binding, &copies)? {
+            Outcome::Install => {}
+            Outcome::Queued => return Ok(None),
+            Outcome::Review => return Err(crate::skill_reconciliation::LOCAL_EDITS.into()),
+        }
     }
     binding["reviewedRevision"] = resource["revision"].clone();
     binding["guards"] = json!(guards);
@@ -2676,7 +2703,9 @@ impl<'a> SyncPass<'a> {
                         .await
                         .map(Some);
                 }
-                if q["path"] == crate::context_sharing::QUEUE_PATH {
+                if q["path"] == crate::context_sharing::QUEUE_PATH
+                    || q["path"] == crate::global_skills::IMPORT_PATH
+                {
                     crate::context_sharing::upload(db, owner, &q).await?;
                 } else if input["resource"]["files"].is_array() {
                     crate::repair::upload(
@@ -2736,6 +2765,11 @@ impl<'a> SyncPass<'a> {
                             == 1
                         && replace_unavailable_session_copy(db, &input, &device)?
                     {
+                        deferred.remove(&q["id"]);
+                        outbox.advance(db, &q["sequence"])?;
+                        continue;
+                    }
+                    if crate::skill_reconciliation::release_stale(db, &q, &error)? {
                         deferred.remove(&q["id"]);
                         outbox.advance(db, &q["sequence"])?;
                         continue;
@@ -2933,6 +2967,13 @@ impl<'a> SyncPass<'a> {
         }
         if crate::projects::foreground_waiting()? || boundary(db, project)?.is_break() {
             return Ok(Break(()));
+        }
+        if !retry_only {
+            record_result(
+                db,
+                &format!("{project}:skill-sharing"),
+                crate::skill_reconciliation::queue_verified(db, p),
+            )?;
         }
         record_result(
             db,

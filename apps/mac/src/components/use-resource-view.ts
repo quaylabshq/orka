@@ -66,7 +66,14 @@ export function useResourceView(
   ]);
   const [file, setFile] = useState(defaultFile);
   const [selection, setSelection] = useState(selectionKey);
-  const [preview, setPreview] = useState("");
+  const [chosenPreview, setPreview] = useState("");
+  const preview =
+    chosenPreview ||
+    (resource?.kind === "session" && resource.deleted
+      ? (conflicts.find(
+          (c) => c.resourceId === resource.resourceId && !c.candidate.deleted,
+        )?.id ?? "")
+      : "");
   const [fullTranscript, setFullTranscript] = useState(false);
   const [changes, setChanges] = useState(false);
   const [rawMarkdown, setRawMarkdown] = useState(false);

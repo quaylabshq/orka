@@ -1318,3 +1318,6 @@ fn governed_read_operations_remain_available_during_workspace_sync() {
     .unwrap_err();
     assert!(error.contains("operation is in progress"));
 }
+
+#[path = "skill_decision_tests.rs"]
+mod skill_decision_tests;

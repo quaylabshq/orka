@@ -269,3 +269,128 @@ fn project_source_removal_keeps_the_explicit_conflict_selection() {
     .unwrap()
     .is_null());
 }
+
+#[test]
+fn recovery_choices_need_the_displayed_tombstone_owner_and_sole_candidate() {
+    let f = Fixture::new();
+    let user = db::get(&f.db, "user").unwrap();
+    let mut current = session(&f, "Review fixture", 5);
+    current["deleted"] = json!(true);
+    current["files"] = json!([]);
+    save(&f, &current);
+    let project = f.project["id"].as_str().unwrap();
+    let id = current["resourceId"].as_str().unwrap().to_owned();
+    let mut incoming = conflict(&f, &current, "Incoming session", user.as_str().unwrap());
+    incoming["revision"] = json!(5);
+    incoming["deviceId"] = json!("laptop");
+    incoming["candidate"]["updatedAt"] = json!("2026-11-13T10:03:00Z");
+    incoming["candidate"]["updatedBy"] = user.clone();
+    incoming["candidate"]["logicalPath"] = current["logicalPath"].clone();
+    let cid = incoming["id"].as_str().unwrap();
+    db::upsert(&f.db, "conflicts", cid, project, &incoming).unwrap();
+    let queue = |revision, choice: &str, single| {
+        crate::commands::resolve_session_recovery(
+            project.into(),
+            id.clone(),
+            revision,
+            cid.into(),
+            choice.into(),
+            single,
+        )
+    };
+    assert!(queue(4, "restore", true).is_err());
+    let other = conflict(
+        &f,
+        &current,
+        "Second incoming version",
+        user.as_str().unwrap(),
+    );
+    assert!(queue(5, "restore", true).is_err());
+    f.db.execute("DELETE FROM conflicts WHERE id=?", [other["id"].as_str()])
+        .unwrap();
+    db::set(&f.db, "user", &json!("other-owner")).unwrap();
+    assert!(queue(5, "keep", true).is_err());
+    db::set(&f.db, "user", &user).unwrap();
+    current["access"] = json!({"mode":"read"});
+    save(&f, &current);
+    assert!(queue(5, "restore", true).is_err());
+    current["access"] = json!({"mode":"publish"});
+    save(&f, &current);
+    assert!(f.outbox().is_empty());
+    db::upsert(&f.db, "bindings", &id, project, &json!({"needsCopy":true})).unwrap();
+    assert!(queue(5, "restore", true).is_err());
+    f.db.execute("DELETE FROM bindings WHERE id=?", [&id])
+        .unwrap();
+    f.db.execute(
+        "INSERT INTO errors VALUES(?,?)",
+        rusqlite::params![
+            id,
+            "Session conflict: choose Keep, Override, or Create copy"
+        ],
+    )
+    .unwrap();
+    queue(5, "restore", true).unwrap();
+    assert!(queue(5, "keep", true).is_err());
+    let out = f.outbox();
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0]["expectedRevision"], 5);
+    assert_eq!(out[0]["selected"], "candidate");
+    assert_eq!(out[0]["action"], "override");
+    assert_eq!(out[0]["conflictId"], cid);
+    assert_eq!(
+        crate::commands::snapshot().unwrap()["outbox"][0]["sessionResolution"],
+        json!({"revision":5, "conflictId":cid})
+    );
+    assert_eq!(f.resources()[0]["deleted"], true);
+    let frozen = db::get(
+        &f.db,
+        &format!("sessionCopy:{}", out[0]["id"].as_str().unwrap()),
+    )
+    .unwrap();
+    assert_eq!(frozen["source"]["files"], incoming["candidate"]["files"]);
+}
+
+#[test]
+fn recovery_rereview_retires_only_a_definitively_rejected_older_choice() {
+    let f = Fixture::new();
+    let user = db::get(&f.db, "user").unwrap();
+    let mut current = session(&f, "Deleted", 5);
+    current["deleted"] = json!(true);
+    current["files"] = json!([]);
+    save(&f, &current);
+    let project = f.project["id"].as_str().unwrap();
+    let id = current["resourceId"].as_str().unwrap();
+    let candidate = conflict(&f, &current, "Incoming", user.as_str().unwrap());
+    let cid = candidate["id"].as_str().unwrap();
+    let request = json!({"id":"rejected","projectId":project,"resourceId":id,"expectedRevision":4,"conflictId":cid});
+    indexer::queue(&f.db, project, "/v2/sessions/resolve", &request).unwrap();
+    db::set(
+        &f.db,
+        "sessionCopy:rejected",
+        &json!({"source":"preserve until certain"}),
+    )
+    .unwrap();
+    let choose = || {
+        crate::commands::resolve_session_recovery(
+            project.into(),
+            id.into(),
+            5,
+            cid.into(),
+            "keep".into(),
+            false,
+        )
+    };
+    for error in [None, Some("503: unavailable"), Some("409: unknown failure")] {
+        f.db.execute("UPDATE outbox SET error=? WHERE id='rejected'", [error])
+            .unwrap();
+        assert!(choose().is_err());
+        assert_eq!(f.outbox(), vec![request.clone()]);
+        assert!(!db::get(&f.db, "sessionCopy:rejected").unwrap().is_null());
+    }
+    f.db.execute("UPDATE outbox SET error='409: Conflict changed; refresh before resolving' WHERE id='rejected'", []).unwrap();
+    choose().unwrap();
+    assert_eq!(f.outbox().len(), 1);
+    assert_eq!(f.outbox()[0]["expectedRevision"], 5);
+    assert_eq!(f.outbox()[0]["selected"], "current");
+    assert!(db::get(&f.db, "sessionCopy:rejected").unwrap().is_null());
+}

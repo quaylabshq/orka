@@ -134,7 +134,7 @@ pub fn snapshot() -> Result<Value> {
         }
     }
     crate::session_forks::annotate(&db, &mut resources)?;
-    let outbox: Vec<Value> = db::rows(&db,&format!("SELECT json_object('id',o.id,'project',o.project,'error',o.error,'resourceId',coalesce(json_extract(o.value,'$.resource.resourceId'),json_extract(o.value,'$.resourceId')),'title',coalesce(json_extract(o.value,'$.resource.title'),json_extract(r.value,'$.title')),'kind',coalesce(json_extract(o.value,'$.resource.kind'),json_extract(r.value,'$.kind')),'reviewPath',o.path,'reviewResource',json_extract(o.value,'$.resource')) FROM outbox o LEFT JOIN resources r ON r.project=o.project AND r.id=coalesce(json_extract(o.value,'$.resource.resourceId'),json_extract(o.value,'$.resourceId')) WHERE o.project IN ({visible})"),&[])?.into_iter().map(|mut row| {
+    let outbox: Vec<Value> = db::rows(&db,&format!("SELECT json_object('id',o.id,'project',o.project,'error',o.error,'resourceId',coalesce(json_extract(o.value,'$.resource.resourceId'),json_extract(o.value,'$.resourceId')),'title',coalesce(json_extract(o.value,'$.resource.title'),json_extract(r.value,'$.title')),'kind',coalesce(json_extract(o.value,'$.resource.kind'),json_extract(r.value,'$.kind')),'reviewPath',o.path,'reviewResource',json_extract(o.value,'$.resource'),'sessionResolution',CASE WHEN o.path='/v2/sessions/resolve' AND o.error IS NULL THEN json_object('conflictId',json_extract(o.value,'$.conflictId'),'revision',json_extract(o.value,'$.expectedRevision')) END) FROM outbox o LEFT JOIN resources r ON r.project=o.project AND r.id=coalesce(json_extract(o.value,'$.resource.resourceId'),json_extract(o.value,'$.resourceId')) WHERE o.project IN ({visible})"),&[])?.into_iter().map(|mut row| {
         row["reviewable"] = json!(crate::upload_review::reviewable(row["reviewPath"].as_str().unwrap_or(""), row["error"].as_str(), &row["reviewResource"]));
         if let Some(fields) = row.as_object_mut() {
             fields.remove("reviewPath");
@@ -1061,6 +1061,134 @@ pub fn session_action(
         indexer::queue(&db, project, "/v2/sync/push", &input)?;
     }
     SyncQueue::request(&db, project, Priority::User, "session")
+}
+/// Pin the owner's explicit choice to the deleted revision and incoming version
+/// that were actually reviewed. The server checks the same revision on delivery.
+#[tauri::command]
+pub fn resolve_session_recovery(
+    project_id: String,
+    id: String,
+    expected_revision: i64,
+    conflict_id: String,
+    choice: String,
+    single_candidate: bool,
+) -> Result<()> {
+    let mut db = db::open()?;
+    let tx = db
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    projects::active(&tx, &project_id)?;
+    let changed = "The session changed. Review it again before choosing.";
+    let current = db::rows(
+        &tx,
+        "SELECT value FROM resources WHERE project=? AND id=?",
+        &[&project_id, &id],
+    )?
+    .into_iter()
+    .next()
+    .ok_or(changed)?;
+    let conflicts = db::rows(
+        &tx,
+        "SELECT value FROM conflicts WHERE project=? AND json_extract(value,'$.resourceId')=?",
+        &[&project_id, &id],
+    )?;
+    let conflict = conflicts
+        .iter()
+        .find(|c| c["id"] == conflict_id)
+        .ok_or(changed)?;
+    let incoming = &conflict["candidate"];
+    if expected_revision <= 0
+        || current["revision"] != expected_revision
+        || current["kind"] != "session"
+        || current["deleted"] != true
+        || incoming["deleted"] != false
+        || incoming["kind"] != "session"
+        || incoming["resourceId"] != id
+        || incoming["projectId"] != project_id
+        || incoming["files"].as_array().is_none_or(Vec::is_empty)
+        || (single_candidate && conflicts.len() != 1)
+    {
+        return Err(changed.into());
+    }
+    let user = db::get(&tx, "user")?;
+    let (action, selected) = match choice.as_str() {
+        "keep" => ("keep", "current"),
+        "restore" => ("override", "candidate"),
+        "copy" if !single_candidate => ("copy", "candidate"),
+        _ => return Err("Invalid recovery choice".into()),
+    };
+    if user.as_str().is_none_or(str::is_empty)
+        || (action == "copy" && (incoming["owner"] != user || conflict["author"] != user))
+        || (action != "copy"
+            && (current["owner"] != user
+                || (current["access"].is_object() && current["access"]["mode"] != "publish")))
+    {
+        return Err("You do not have permission to queue this choice.".into());
+    }
+    if single_candidate
+        && (conflict["author"] != user
+            || incoming["owner"] != user
+            || incoming["updatedBy"] != user
+            || incoming["source"] != current["source"]
+            || incoming["sourceId"] != current["sourceId"]
+            || incoming["logicalPath"] != current["logicalPath"]
+            || conflict["revision"] != expected_revision
+            || incoming["revision"] != expected_revision
+            || conflict["deviceId"].as_str().is_none_or(str::is_empty)
+            || incoming["updatedAt"]
+                .as_str()
+                .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+                .is_none())
+    {
+        return Err(changed.into());
+    }
+    if single_candidate {
+        let binding = indexer::binding(&tx, &id)?;
+        let has_other_error: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM errors WHERE source=? AND error<>?)",
+                rusqlite::params![
+                    id,
+                    "Session conflict: choose Keep, Override, or Create copy"
+                ],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if binding["needsCopy"] == true
+            || matches!(
+                binding["installationState"].as_str(),
+                Some("update_available" | "review_pending" | "locally_modified")
+            )
+            || has_other_error
+        {
+            return Err("Local changes need individual review.".into());
+        }
+    } else {
+        // This exact server response proves the older choice was rejected.
+        // A transport error or a pending request can still receive a receipt.
+        let rejected = db::rows(&tx,
+            "SELECT json_object('id',id) FROM outbox WHERE project=? AND path='/v2/sessions/resolve' AND error='409: Conflict changed; refresh before resolving' AND json_extract(value,'$.resourceId')=? AND json_extract(value,'$.expectedRevision')<?",
+            &[&project_id, &id, &expected_revision])?;
+        for row in rejected {
+            let prior_id = row["id"].as_str().ok_or("Missing rejected request ID")?;
+            tx.execute("DELETE FROM outbox WHERE id=?", [prior_id])
+                .map_err(|e| e.to_string())?;
+            sync::clear_session_copy(&tx, prior_id)?;
+        }
+    }
+    let pending: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM outbox WHERE project=? AND coalesce(json_extract(value,'$.resourceId'),json_extract(value,'$.resource.resourceId'))=?)",
+        rusqlite::params![project_id, id], |row| row.get(0)
+    ).map_err(|e| e.to_string())?;
+    if pending {
+        return Err(
+            "A change for this session is already queued. Check Sync before choosing again.".into(),
+        );
+    }
+    let input = json!({"version":2,"id":Uuid::new_v4().to_string(),"projectId":project_id,"deviceId":db::device(&tx)?,"resourceId":id,"expectedRevision":expected_revision,"conflictId":conflict_id,"action":action,"selected":selected});
+    sync::store_recovery_resolution(&tx, &input)?;
+    SyncQueue::request(&tx, &project_id, Priority::User, "session")?;
+    tx.commit().map_err(|e| e.to_string())
 }
 #[tauri::command]
 pub async fn session_launch_options(

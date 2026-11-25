@@ -9,6 +9,7 @@ declare global {
       failUploadPreview?: boolean;
       uploadReviewFailure?: string;
       uploadPreviewCount: number;
+      failRecoveryId?: string;
     };
   }
 }
@@ -18,6 +19,7 @@ export async function syncAttentionFixture(
   page: Page,
   options: {
     planUploadReview?: boolean;
+    sessionRecovery?: boolean;
     planUnavailable?: "deleted" | "missing";
   } = {},
 ) {
@@ -252,6 +254,46 @@ export async function syncAttentionFixture(
         background: true,
       },
     };
+    if (options.sessionRecovery) {
+      const titles = [
+        "Release checklist",
+        "Design walkthrough",
+        "Desktop sync notes",
+      ];
+      const sessions = titles.map((title, i) => ({
+        ...resource("recovery-" + i, title, "session"),
+        access: { mode: "publish" as const, reason: "project" as const },
+        updatedAt: "2026-11-13T10:00:00Z",
+        revision: i + 5,
+      }));
+      Object.assign(fixture.state, {
+        resources: sessions.map((s) => ({ ...s, deleted: true, files: [] })),
+        conflicts: sessions.map((s, i) => ({
+          id: "candidate-" + i,
+          resourceId: s.resourceId,
+          revision: s.revision,
+          author: s.owner,
+          deviceId: "laptop",
+          candidate: { ...s, updatedAt: "2026-11-13T11:0" + i + ":00Z" },
+        })),
+        devices: [
+          {
+            id: "laptop",
+            name: "Work MacBook",
+            seen_at: "2026-11-13T11:05:00Z",
+          },
+        ],
+        drafts: [],
+        errors: sessions.map((s) => ({
+          source: s.resourceId,
+          error: "Session conflict: choose Keep, Override, or Create copy",
+        })),
+        bindings: [],
+        outbox: [],
+        activity: [],
+        reviewRequests: [],
+      });
+    }
     if (options.planUploadReview) fixture.state.outbox[0].reviewable = true;
     if (options.planUnavailable === "deleted") plan.deleted = true;
     if (options.planUnavailable === "missing")
@@ -269,6 +311,32 @@ export async function syncAttentionFixture(
           if (name === "snapshot") return fixture.state;
           if (name === "sync_progress") return { user: "user", progress: null };
           fixture.calls.push({ name, args });
+          if (name === "resolve_session_recovery") {
+            const current = fixture.state.resources.find(
+              (r) => r.resourceId === args?.id,
+            );
+            if (
+              !current ||
+              current.revision !== args?.expectedRevision ||
+              fixture.failRecoveryId === args?.id
+            )
+              throw new Error(
+                "The session changed. Review it again before choosing.",
+              );
+            fixture.state.outbox.push({
+              id: "queued-" + current.resourceId,
+              sessionResolution: {
+                conflictId: String(args?.conflictId),
+                revision: current.revision,
+              },
+              project: current.projectId,
+              resourceId: current.resourceId,
+              error: null,
+            });
+            return;
+          }
+          if (name === "session_messages" && options.sessionRecovery)
+            return { messages: [], total: 0, offset: 0 };
           if (name.startsWith("plugin:")) return null;
           if (name === "resource_command") {
             if (args?.action === "preview-upload") {

@@ -6,7 +6,7 @@ use rusqlite::{params, Connection, Transaction, TransactionBehavior};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
-fn blocked(db: &Connection, project: &str, id: &str, binding: &Value) -> Result<bool> {
+pub(crate) fn blocked(db: &Connection, project: &str, id: &str, binding: &Value) -> Result<bool> {
     let queued: bool = db.query_row(
         "SELECT EXISTS(SELECT 1 FROM outbox WHERE project=?1 AND (json_extract(value,'$.resource.resourceId')=?2 OR json_extract(value,'$.resourceId')=?2)) OR EXISTS(SELECT 1 FROM conflicts WHERE project=?1 AND json_extract(value,'$.resourceId')=?2) OR EXISTS(SELECT 1 FROM drafts WHERE project=?1 AND json_extract(value,'$.status')='proposed' AND (json_extract(value,'$.resource.resourceId')=?2 OR json_extract(value,'$.submission.resource.resourceId')=?2))",
         params![project, id],
