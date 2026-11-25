@@ -483,14 +483,11 @@ fn resolve_session<'a>(
     {
         return Err("Symlinked item locations are unavailable".into());
     }
-    let codex = (tool == "codex").then(|| history::CodexSegmentIndex::new(&home));
-    let require_catalog_match = allow_catalog_snapshot
-        && codex
-            .as_ref()
-            .is_some_and(history::CodexSegmentIndex::traversal_unavailable);
-    let path = match &codex {
-        Some(index) if !require_catalog_match => index.current_path(&path, id)?,
-        _ => path,
+    let mut codex = (tool == "codex").then(|| history::CodexSegmentIndex::new(&home));
+    let (path, require_catalog_match) = match &mut codex {
+        Some(index) if allow_catalog_snapshot => index.catalog_read_path(&path, id)?,
+        Some(index) => (index.current_path(&path, id)?, false),
+        None => (path, false),
     };
     if !history::is_session(&path)
         || tool == "claude" && path.file_stem().and_then(|stem| stem.to_str()) != Some(id)
@@ -572,6 +569,10 @@ pub(crate) fn missing_or_unreadable_transcript(error: &str) -> bool {
         "Item is not available on this Mac"
             | history::NATIVE_READ_UNAVAILABLE
             | history::INVALID_SEGMENT_METADATA
+            | "Missing initial Codex session metadata"
+            | "Missing session cwd"
+            | "Missing native ID"
+            | "Invalid native session ID"
             | history::ANCESTOR_MISSING
             | history::ANCESTOR_BOUNDARY_UNAVAILABLE
             | "Unknown or corrupt native transcript; source preserved"

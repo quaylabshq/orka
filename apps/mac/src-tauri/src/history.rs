@@ -350,7 +350,7 @@ impl CodexSegmentIndex {
     pub(crate) fn new(home: &Path) -> Self {
         let mut by_id: HashMap<String, Vec<PathBuf>> = HashMap::new();
         let mut error = None;
-        for directory in [home.join("sessions"), home.join("archived_sessions")] {
+        'trees: for directory in [home.join("sessions"), home.join("archived_sessions")] {
             match fs::symlink_metadata(&directory) {
                 Ok(meta) if meta.file_type().is_symlink() => {
                     error = Some("Native history directory is a symlink".into());
@@ -359,7 +359,12 @@ impl CodexSegmentIndex {
                 Ok(_) => {}
                 Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
                 Err(err) => {
-                    error = Some(native_read_error(err));
+                    let message = native_read_error(err);
+                    let unavailable = message == NATIVE_READ_UNAVAILABLE;
+                    error = Some(message);
+                    if unavailable {
+                        continue;
+                    }
                     break;
                 }
             }
@@ -368,8 +373,13 @@ impl CodexSegmentIndex {
                     Ok(entry) => entry,
                     Err(err) => {
                         let detail = err.to_string();
-                        error = Some(err.into_io_error().map_or(detail, native_read_error));
-                        break;
+                        let message = err.into_io_error().map_or(detail, native_read_error);
+                        let unavailable = message == NATIVE_READ_UNAVAILABLE;
+                        error = Some(message);
+                        if unavailable {
+                            continue;
+                        }
+                        break 'trees;
                     }
                 };
                 if !entry.file_type().is_file() || !is_session(entry.path()) {
@@ -382,9 +392,6 @@ impl CodexSegmentIndex {
                         .or_default()
                         .push(entry.path().to_path_buf());
                 }
-            }
-            if error.is_some() {
-                break;
             }
         }
         Self {
@@ -450,8 +457,15 @@ impl CodexSegmentIndex {
         resolve_current_path(&self.home, path, id, &candidates)
     }
 
-    pub(crate) fn traversal_unavailable(&self) -> bool {
-        self.error.as_deref() == Some(NATIVE_READ_UNAVAILABLE)
+    /// Use collected ancestry candidates when an interrupted traversal cannot
+    /// prove the current generation. The caller must verify the entire catalog
+    /// manifest before using the reconstructed snapshot.
+    pub(crate) fn catalog_read_path(&mut self, path: &Path, id: &str) -> Result<(PathBuf, bool)> {
+        if self.error.as_deref() == Some(NATIVE_READ_UNAVAILABLE) {
+            self.error = None;
+            return Ok((path.to_path_buf(), true));
+        }
+        Ok((self.current_path(path, id)?, false))
     }
 
     pub(crate) fn candidate_paths(&self, id: &str) -> Result<Vec<PathBuf>> {

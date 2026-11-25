@@ -101,11 +101,21 @@ async fn private_reader_and_exports_use_an_exact_frozen_share_when_unavailable()
         unreadable_directory.unwrap()["messages"][0]["text"],
         "Private conversation"
     );
-    fs::write(path, b"{malformed Codex header\n").unwrap();
-    let corrupt = commands::session_messages(id.into(), None, Some(0), Some(1))
-        .await
-        .unwrap();
-    assert_eq!(corrupt["messages"][0]["text"], "Private conversation");
+    let mut wrong_thread = native::complete_records(&fs::read(path).unwrap()).unwrap();
+    wrong_thread[0]["payload"]["id"] = json!(uuid::Uuid::new_v4());
+    fs::write(path, native::encode(&wrong_thread)).unwrap();
+    let wrong_thread = commands::session_messages(id.into(), None, Some(0), Some(1)).await;
+    assert_eq!(
+        wrong_thread.unwrap_err(),
+        "The session's native identity changed. Open the collection again."
+    );
+    for corrupt_header in ["{malformed Codex header\n", "{}\n"] {
+        fs::write(path, corrupt_header).unwrap();
+        let corrupt = commands::session_messages(id.into(), None, Some(0), Some(1))
+            .await
+            .unwrap();
+        assert_eq!(corrupt["messages"][0]["text"], "Private conversation");
+    }
     let project_zip = f._home.path().join("project.zip");
     bundles::export_project(
         &db::CacheScope::current().unwrap(),
@@ -181,6 +191,11 @@ async fn private_codex_reader_can_reconstruct_only_the_exact_cataloged_snapshot(
         .unwrap()
         .iter()
         .any(|turn| turn["text"] == "An uncataloged turn"));
+    fs::copy(path, archive.join(Path::new(path).file_name().unwrap())).unwrap();
+    assert_eq!(
+        read().await.unwrap_err(),
+        "Ambiguous native history segments; source preserved"
+    );
     let hash = entry["resource"]["files"][0]["hash"].as_str().unwrap();
     assert!(db::blob_read(hash).is_err());
 }
@@ -196,7 +211,6 @@ fn private_codex_reader_requires_complete_ancestry_when_a_history_tree_is_unavai
     let (frozen, paths) = paginated_chain(&f);
     let archive = native::codex_home().unwrap().join("archived_sessions");
     fs::create_dir(&archive).unwrap();
-    fs::rename(&paths[0], archive.join(paths[0].file_name().unwrap())).unwrap();
     let entry = indexer::discover(&f.db, &f.project, "session")
         .unwrap()
         .into_iter()
@@ -210,6 +224,10 @@ fn private_codex_reader_requires_complete_ancestry_when_a_history_tree_is_unavai
     fs::remove_file(db::blob_path(hash).unwrap()).unwrap();
     let permissions = fs::metadata(&archive).unwrap().permissions();
     fs::set_permissions(&archive, fs::Permissions::from_mode(0o000)).unwrap();
+    let reconstructed = inspect();
+    fs::set_permissions(&archive, permissions.clone()).unwrap();
+    fs::rename(&paths[0], archive.join(paths[0].file_name().unwrap())).unwrap();
+    fs::set_permissions(&archive, fs::Permissions::from_mode(0o000)).unwrap();
     let incomplete = inspect();
     assert_eq!(db::blob(&bytes).unwrap(), hash);
     let cached = inspect();
@@ -217,11 +235,12 @@ fn private_codex_reader_requires_complete_ancestry_when_a_history_tree_is_unavai
 
     assert_eq!(
         incomplete.unwrap_err(),
-        crate::history::NATIVE_READ_UNAVAILABLE
+        crate::history::ANCESTOR_BOUNDARY_UNAVAILABLE
     );
-    let cached = cached.unwrap();
-    let content = cached["content"].as_str().unwrap();
-    assert!(content.contains("Ancestor α 🌊") && content.contains("Leaf γ"));
+    for snapshot in [reconstructed.unwrap(), cached.unwrap()] {
+        let content = snapshot["content"].as_str().unwrap();
+        assert!(content.contains("Ancestor α 🌊") && content.contains("Leaf γ"));
+    }
 }
 
 #[tokio::test]
