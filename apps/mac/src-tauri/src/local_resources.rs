@@ -456,6 +456,12 @@ fn resolve_session<'a>(
             .ok_or("Native session unavailable")?,
     );
     let home = session_home(tool)?;
+    if !std::fs::symlink_metadata(&home)
+        .map_err(history::native_read_error)?
+        .is_dir()
+    {
+        return Err("Symlinked item locations are unavailable".into());
+    }
     let codex = (tool == "codex").then(|| history::CodexSegmentIndex::new(&home));
     let path = match &codex {
         Some(index) => index.current_path(path, id)?,
@@ -530,6 +536,9 @@ pub(crate) fn missing_or_unreadable_transcript(error: &str) -> bool {
     matches!(
         error,
         "Item is not available on this Mac"
+            | history::NATIVE_READ_UNAVAILABLE
+            | history::ANCESTOR_MISSING
+            | history::ANCESTOR_BOUNDARY_UNAVAILABLE
             | "Unknown or corrupt native transcript; source preserved"
             | history::SESSION_SIZE_ERROR
     )
@@ -560,7 +569,11 @@ pub(crate) fn export_session(
     }
     match live_session(db, project, &entry) {
         Ok(snapshot) => Ok(Some(snapshot)),
-        Err(error) if missing_or_unreadable_transcript(&error) => Ok(None),
+        Err(error)
+            if missing_or_unreadable_transcript(&error) || error == sources::SOURCE_UNAVAILABLE =>
+        {
+            Ok(None)
+        }
         Err(error) => Err(error),
     }
 }

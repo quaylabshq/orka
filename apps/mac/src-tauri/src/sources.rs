@@ -201,6 +201,9 @@ fn check_pin(source: &Value, remotes: &Result<Vec<String>>) -> Result<()> {
     }
 }
 
+pub(crate) const SOURCE_UNAVAILABLE: &str =
+    "Connected source folder changed or is unavailable; local writes and deletions paused. Reconnect it in Settings → Source folders.";
+
 fn checked_root(project: &Value) -> Result<&Path> {
     if !project["removedAt"].is_null() {
         return Err("This source folder was removed from the project".into());
@@ -214,10 +217,7 @@ fn checked_root(project: &Value) -> Result<&Path> {
             !indexer::folder_identity_matches(root, identity).unwrap_or(false)
         })
     {
-        return Err(
-            "Connected source folder changed or is unavailable; local writes and deletions paused. Reconnect it in Settings → Source folders."
-                .into(),
-        );
+        return Err(SOURCE_UNAVAILABLE.into());
     }
     Ok(root)
 }

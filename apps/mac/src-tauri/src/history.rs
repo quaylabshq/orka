@@ -7,13 +7,18 @@ use std::{
     cell::RefCell,
     collections::{BTreeSet, HashMap},
     fs,
-    io::{BufRead, BufReader, Read},
+    io::{self, BufRead, BufReader, Read},
+    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
 };
 use uuid::Uuid;
 use walkdir::WalkDir;
 
 pub(crate) const MAX_FILE: u64 = 128 * 1024 * 1024;
+pub(crate) const NATIVE_READ_UNAVAILABLE: &str = "The native session file is unavailable.";
+pub(crate) const ANCESTOR_MISSING: &str =
+    "Inherited Codex history is missing. Sync this session again from the original device.";
+pub(crate) const ANCESTOR_BOUNDARY_UNAVAILABLE: &str = "Inherited Codex history is missing or has an invalid boundary. Sync this session again from the original device.";
 pub(crate) const SESSION_SIZE_ERROR: &str = "Session exceeds 128 MB; source preserved";
 pub(crate) const UNATTRIBUTED_SESSION_PREFIX: &str = "history:unattributed:";
 pub(crate) const UNATTRIBUTED_SESSION_ERROR: &str =
@@ -152,12 +157,29 @@ pub fn is_session(path: &Path) -> bool {
     name.ends_with(".jsonl") || name.ends_with(".jsonl.zst")
 }
 
+pub(crate) fn native_read_error(error: io::Error) -> String {
+    if matches!(
+        error.kind(),
+        io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
+    ) {
+        return NATIVE_READ_UNAVAILABLE.into();
+    }
+    error.to_string()
+}
+
 pub(crate) fn reader(path: &Path) -> Result<Box<dyn Read>> {
-    let info = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+    let info = fs::symlink_metadata(path).map_err(native_read_error)?;
     if !info.is_file() || info.file_type().is_symlink() {
         return Err("History must be a regular file".into());
     }
-    let file = fs::File::open(path).map_err(|e| e.to_string())?;
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+        .map_err(native_read_error)?;
+    if !file.metadata().map_err(native_read_error)?.is_file() {
+        return Err("History must be a regular file".into());
+    }
     if path.to_string_lossy().ends_with(".jsonl.zst") {
         let mut decoder = zstd::stream::read::Decoder::new(file).map_err(|e| e.to_string())?;
         decoder.window_log_max(27).map_err(|e| e.to_string())?;
@@ -176,7 +198,7 @@ fn read(path: &Path, prefix: Option<u64>) -> Result<Vec<u8>> {
     reader(path)?
         .take(prefix.unwrap_or(MAX_FILE + 1))
         .read_to_end(&mut bytes)
-        .map_err(|e| e.to_string())?;
+        .map_err(native_read_error)?;
     if bytes.len() as u64 > MAX_FILE {
         return Err(SESSION_SIZE_ERROR.into());
     }
@@ -218,7 +240,7 @@ pub fn first_line(path: &Path) -> Result<String> {
     let mut line = String::new();
     BufReader::new(reader(path)?.take(MAX_FILE + 1))
         .read_line(&mut line)
-        .map_err(|e| e.to_string())?;
+        .map_err(native_read_error)?;
     if line.len() as u64 > MAX_FILE {
         return Err(SESSION_SIZE_ERROR.into());
     }
@@ -256,10 +278,7 @@ pub fn find_rollout(home: &Path, id: &str) -> Result<PathBuf> {
             }
         }
     }
-    found.ok_or(
-        "Inherited Codex history is missing. Sync this session again from the original device."
-            .into(),
-    )
+    found.ok_or(ANCESTOR_MISSING.into())
 }
 
 #[derive(Clone)]
@@ -658,7 +677,7 @@ fn parent_prefix_in(
             found = Some((bytes, segment.path, stamp_before));
         }
     }
-    found.ok_or("Inherited Codex history is missing or has an invalid boundary. Sync this session again from the original device.".into())
+    found.ok_or(ANCESTOR_BOUNDARY_UNAVAILABLE.into())
 }
 
 fn parent_prefix(home: &Path, id: &str, end: u64, offset: u64) -> Result<Vec<u8>> {
@@ -807,8 +826,10 @@ impl History {
             }
         }
         let load = |path: &str| -> Result<Vec<u8>> {
-            let file = files.iter().find(|f| f["path"] == path)
-                .ok_or("Inherited Codex history is missing. Sync this session again from the original device.")?;
+            let file = files
+                .iter()
+                .find(|f| f["path"] == path)
+                .ok_or(ANCESTOR_MISSING)?;
             let bytes = read_blob(file["hash"].as_str().ok_or("Missing history hash")?)?;
             if bytes.len() as u64 != file["size"].as_u64().ok_or("Missing history size")? {
                 return Err("History size does not match the manifest".into());
