@@ -3,6 +3,7 @@ use crate::{
     db::{self, Result},
     governance, history, indexer, native, projects, sources, worktrees,
 };
+use history::SessionReadError;
 use rusqlite::Connection;
 use serde_json::{json, Value};
 use std::{
@@ -443,16 +444,22 @@ fn resolve_session<'a>(
     project: &Value,
     entry: &'a Value,
     allow_catalog_snapshot: bool,
-) -> Result<LocalSession<'a>> {
+) -> std::result::Result<LocalSession<'a>, SessionReadError> {
     let resource = &entry["resource"];
     let source =
         sources::for_resource(project, resource).ok_or("Connect this session's repository")?;
-    sources::validate(&source)?;
     if entry["path"] != source["path"] || entry["folderIdentity"] != source["folderIdentity"] {
         return Err(
             "The session's repository connection changed. Open the collection again.".into(),
         );
     }
+    sources::validate(&source).map_err(|error| {
+        if error == sources::SOURCE_UNAVAILABLE {
+            SessionReadError::Unavailable(error)
+        } else {
+            SessionReadError::Rejected(error)
+        }
+    })?;
     let root = Path::new(
         source["path"]
             .as_str()
@@ -501,11 +508,12 @@ fn resolve_session<'a>(
     crate::resource_commands::canonical_path(&home, &path)?;
     let stamp = crate::scan_cache::FileStamp::of(&path);
     let bytes = history::read_session(&path)?;
-    let records = native::complete_records(&bytes)?;
-    let (actual, cwd, _) = native::session_info(tool, &records)?;
+    let records = native::complete_records(&bytes).map_err(SessionReadError::Unavailable)?;
+    let actual = history::session_identity(tool, &records)?;
     if actual != id || tool == "codex" && !history::eligible_codex_session(db, id, &records)? {
         return Err("The session's native identity changed. Open the collection again.".into());
     }
+    let cwd = native::session_cwd(tool, &records).map_err(SessionReadError::Unavailable)?;
     let worktrees_home = worktrees::home()?;
     let sources = worktrees::session_sources(db, &source)?;
     let resolved =
@@ -513,6 +521,9 @@ fn resolve_session<'a>(
     let checkout = resolved
         .for_session(tool, id, &cwd)?
         .ok_or("The session is no longer in this repository.")?;
+    // A readable identity and cwd must pass attribution before a malformed
+    // format can fall back to a stored snapshot.
+    crate::session_translation::format(tool, &records).map_err(SessionReadError::Unavailable)?;
     Ok(LocalSession {
         tool,
         id,
@@ -530,7 +541,7 @@ pub(crate) fn live_session(
     db: &Connection,
     project: &Value,
     entry: &Value,
-) -> Result<history::SessionSnapshot> {
+) -> std::result::Result<history::SessionSnapshot, SessionReadError> {
     let session = resolve_session(db, project, entry, true)?;
     let snapshot = history::session_snapshot(
         session.tool,
@@ -554,31 +565,13 @@ pub(crate) fn live_session(
 pub(crate) fn reading_session(
     db: &Connection,
     resource: &Value,
-) -> Result<history::SessionSnapshot> {
+) -> std::result::Result<history::SessionSnapshot, SessionReadError> {
     let id = resource["resourceId"].as_str().ok_or("Missing session")?;
     let (project, entry) = local_entry(db, id)?.ok_or("Native session unavailable")?;
     if entry["resource"]["nativeSession"] != true || resource["owner"] != db::get(db, "user")? {
         return Err("Native session unavailable".into());
     }
     live_session(db, &project, &entry)
-}
-
-pub(crate) fn missing_or_unreadable_transcript(error: &str) -> bool {
-    matches!(
-        error,
-        "Item is not available on this Mac"
-            | history::NATIVE_READ_UNAVAILABLE
-            | history::INVALID_SEGMENT_METADATA
-            | "Missing initial Codex session metadata"
-            | "Missing session cwd"
-            | "Missing native ID"
-            | "Invalid native session ID"
-            | history::ANCESTOR_MISSING
-            | history::ANCESTOR_BOUNDARY_UNAVAILABLE
-            | "Unknown or corrupt native transcript; source preserved"
-            | history::SESSION_SIZE_ERROR
-            | sources::SOURCE_UNAVAILABLE
-    )
 }
 
 /// Project export also accepts archived and recoverable deleted projects.
@@ -606,8 +599,8 @@ pub(crate) fn export_session(
     }
     match live_session(db, project, &entry) {
         Ok(snapshot) => Ok(Some(snapshot)),
-        Err(error) if missing_or_unreadable_transcript(&error) => Ok(None),
-        Err(error) => Err(error),
+        Err(SessionReadError::Unavailable(_)) => Ok(None),
+        Err(error) => Err(error.into()),
     }
 }
 

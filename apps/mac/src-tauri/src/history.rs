@@ -27,6 +27,65 @@ pub(crate) const UNATTRIBUTED_SESSION_ERROR: &str =
 const MAX_ATTRIBUTION_PREFIX: u64 = 1024 * 1024;
 const MAX_TOTAL: usize = 256 * 1024 * 1024;
 
+#[derive(Debug)]
+pub(crate) enum SessionReadError {
+    Unavailable(String),
+    Rejected(String),
+}
+
+impl From<String> for SessionReadError {
+    fn from(error: String) -> Self {
+        if matches!(
+            error.as_str(),
+            "Item is not available on this Mac"
+                | NATIVE_READ_UNAVAILABLE
+                | INVALID_SEGMENT_METADATA
+                | ANCESTOR_MISSING
+                | ANCESTOR_BOUNDARY_UNAVAILABLE
+                | "Unknown or corrupt native transcript; source preserved"
+                | SESSION_SIZE_ERROR
+        ) {
+            Self::Unavailable(error)
+        } else {
+            Self::Rejected(error)
+        }
+    }
+}
+
+impl From<&str> for SessionReadError {
+    fn from(error: &str) -> Self {
+        error.to_owned().into()
+    }
+}
+
+impl From<SessionReadError> for String {
+    fn from(error: SessionReadError) -> Self {
+        match error {
+            SessionReadError::Unavailable(message) | SessionReadError::Rejected(message) => message,
+        }
+    }
+}
+
+impl SessionReadError {
+    fn unavailable(message: &str) -> Self {
+        Self::Unavailable(message.to_owned())
+    }
+}
+
+pub(crate) fn session_identity<'a>(
+    tool: &str,
+    records: &'a [Value],
+) -> std::result::Result<&'a str, SessionReadError> {
+    let metadata =
+        session_translation::metadata(tool, records).map_err(SessionReadError::Unavailable)?;
+    let key = if tool == "claude" { "sessionId" } else { "id" };
+    let id = metadata[key]
+        .as_str()
+        .ok_or_else(|| SessionReadError::unavailable("Missing native ID"))?;
+    Uuid::parse_str(id).map_err(|_| SessionReadError::unavailable("Invalid native session ID"))?;
+    Ok(id)
+}
+
 #[cfg(test)]
 thread_local! {
     static READ_COUNTS: std::cell::RefCell<std::collections::BTreeMap<PathBuf, (usize, usize)>> = Default::default();
@@ -308,23 +367,30 @@ fn parse_segment(path: &Path, id: &str) -> Result<Option<Segment>> {
     }
 }
 
+const INDEXED_UUID_LENGTHS: [usize; 2] = [36, 32];
+
 fn candidate_uuids(name: &str) -> Vec<&str> {
     let name = name.strip_suffix(".zst").unwrap_or(name);
     let Some(stem) = name.strip_suffix(".jsonl") else {
         return Vec::new();
     };
     let mut ids = Vec::new();
-    if stem.len() >= 36 && stem.is_char_boundary(stem.len() - 36) {
-        let tail = &stem[stem.len() - 36..];
-        if Uuid::parse_str(tail).is_ok() {
-            ids.push(tail);
+    for width in INDEXED_UUID_LENGTHS {
+        if stem.len() >= width && stem.is_char_boundary(stem.len() - width) {
+            let tail = &stem[stem.len() - width..];
+            if Uuid::parse_str(tail).is_ok() {
+                ids.push(tail);
+            }
         }
-    }
-    for (idx, _) in stem.match_indices('_') {
-        if idx >= 37 && stem.as_bytes()[idx - 37] == b'-' && stem.is_char_boundary(idx - 36) {
-            let cand = &stem[idx - 36..idx];
-            if Uuid::parse_str(cand).is_ok() && !ids.contains(&cand) {
-                ids.push(cand);
+        for (idx, _) in stem.match_indices('_') {
+            if idx > width
+                && stem.as_bytes()[idx - width - 1] == b'-'
+                && stem.is_char_boundary(idx - width)
+            {
+                let cand = &stem[idx - width..idx];
+                if Uuid::parse_str(cand).is_ok() && !ids.contains(&cand) {
+                    ids.push(cand);
+                }
             }
         }
     }
@@ -406,7 +472,7 @@ impl CodexSegmentIndex {
         use crate::scan_cache::FileStamp;
 
         Uuid::parse_str(id).map_err(|_| "Invalid history identity")?;
-        if id.len() != 36 {
+        if !INDEXED_UUID_LENGTHS.contains(&id.len()) {
             return segments(&self.home, id);
         }
         if let Some(err) = &self.error {
@@ -712,7 +778,7 @@ impl History {
     ) -> Result<Self> {
         let len = bytes.len();
         let records = native::complete_records(&bytes)?;
-        Self::load_from_records(len, records, parent, scope)
+        Self::load_from_records(len, records, parent, scope).map_err(String::from)
     }
 
     fn load_from_records(
@@ -720,7 +786,7 @@ impl History {
         mut records: Vec<Value>,
         mut parent: impl FnMut(&str, u64, u64) -> Result<Vec<u8>>,
         scope: Option<&Path>,
-    ) -> Result<Self> {
+    ) -> std::result::Result<Self, SessionReadError> {
         let mut rollouts = Vec::new();
         let mut seen = BTreeSet::new();
         let mut expected: Option<(String, u64)> = None;
@@ -729,16 +795,19 @@ impl History {
         loop {
             total += bytes_len;
             if bytes_len as u64 > MAX_FILE || total > MAX_TOTAL || rollouts.len() >= 200 {
-                return Err("Complete session history exceeds the sync limit".into());
+                return Err(SessionReadError::unavailable(
+                    "Complete session history exceeds the sync limit",
+                ));
             }
-            if records.iter().any(|r| {
-                !r["payload"].is_object()
-                    || (r["payload"]["type"] == "thread_settings_applied"
-                        && !r["payload"]["thread_settings"].is_object())
-            }) {
-                return Err("Unsupported Codex record shape; original preserved".into());
+            let id = session_identity("codex", &records)?.to_owned();
+            if expected
+                .as_ref()
+                .is_some_and(|(expected_id, _)| &id != expected_id)
+            {
+                return Err("Inherited history identity or boundary does not match".into());
             }
-            let (id, cwd, _) = native::session_info("codex", &records)?;
+            let cwd =
+                native::session_cwd("codex", &records).map_err(SessionReadError::Unavailable)?;
             if !seen.insert((id.clone(), records[0]["ordinal"].as_u64().unwrap_or(0))) {
                 return Err("Cyclic Codex history reference".into());
             }
@@ -753,25 +822,39 @@ impl History {
                     "Inherited history belongs to another folder; session sharing paused".into(),
                 );
             }
-            let meta = metadata(&records)?;
+            if records.iter().any(|r| {
+                !r["payload"].is_object()
+                    || (r["payload"]["type"] == "thread_settings_applied"
+                        && !r["payload"]["thread_settings"].is_object())
+            }) {
+                return Err(SessionReadError::unavailable(
+                    "Unsupported Codex record shape; original preserved",
+                ));
+            }
+            session_translation::format("codex", &records)
+                .map_err(SessionReadError::Unavailable)?;
+            let meta = metadata(&records).map_err(SessionReadError::Unavailable)?;
             let paginated = meta["history_mode"] == "paginated";
             if paginated {
                 let first = records[0]["ordinal"]
                     .as_u64()
-                    .ok_or("Missing history ordinal")?;
+                    .ok_or_else(|| SessionReadError::unavailable("Missing history ordinal"))?;
                 for (index, record) in records.iter().enumerate() {
                     if record["ordinal"].as_u64() != first.checked_add(index as u64) {
-                        return Err("Non-contiguous Codex history ordinals".into());
+                        return Err(SessionReadError::unavailable(
+                            "Non-contiguous Codex history ordinals",
+                        ));
                     }
                 }
                 let base = &meta["history_base"];
                 if first != base["end_ordinal_exclusive"].as_u64().unwrap_or(0) {
-                    return Err("History starts outside its inherited ordinal boundary".into());
+                    return Err(SessionReadError::unavailable(
+                        "History starts outside its inherited ordinal boundary",
+                    ));
                 }
             }
-            if let Some((expected_id, end)) = expected.take() {
-                if id != expected_id
-                    || !paginated
+            if let Some((_, end)) = expected.take() {
+                if !paginated
                     || !trailing_newline
                     || records
                         .last()
@@ -779,7 +862,9 @@ impl History {
                         .and_then(|n| n.checked_add(1))
                         != Some(end)
                 {
-                    return Err("Inherited history identity or boundary does not match".into());
+                    return Err(SessionReadError::unavailable(
+                        "Inherited history identity or boundary does not match",
+                    ));
                 }
             }
             let base = meta["history_base"].clone();
@@ -788,26 +873,32 @@ impl History {
                 break;
             }
             if !paginated {
-                return Err("Legacy history cannot reference paginated ancestors".into());
+                return Err(SessionReadError::unavailable(
+                    "Legacy history cannot reference paginated ancestors",
+                ));
             }
             let parent_id = base["thread_id"]
                 .as_str()
-                .ok_or("Missing history ancestor")?;
-            Uuid::parse_str(parent_id).map_err(|_| "Invalid history ancestor")?;
+                .ok_or_else(|| SessionReadError::unavailable("Missing history ancestor"))?;
+            Uuid::parse_str(parent_id)
+                .map_err(|_| SessionReadError::unavailable("Invalid history ancestor"))?;
             let end = base["end_ordinal_exclusive"]
                 .as_u64()
-                .ok_or("Missing history ordinal boundary")?;
+                .ok_or_else(|| SessionReadError::unavailable("Missing history ordinal boundary"))?;
             let offset = base["end_byte_offset"]
                 .as_u64()
                 .filter(|n| *n > 0 && *n <= MAX_FILE)
-                .ok_or("Invalid history byte boundary")?;
+                .ok_or_else(|| SessionReadError::unavailable("Invalid history byte boundary"))?;
             let next_bytes = parent(parent_id, end, offset)?;
             if next_bytes.len() as u64 != offset || next_bytes.last() != Some(&b'\n') {
-                return Err("History byte boundary must end at a complete record".into());
+                return Err(SessionReadError::unavailable(
+                    "History byte boundary must end at a complete record",
+                ));
             }
             bytes_len = next_bytes.len();
             trailing_newline = next_bytes.last() == Some(&b'\n');
-            records = native::complete_records(&next_bytes)?;
+            records =
+                native::complete_records(&next_bytes).map_err(SessionReadError::Unavailable)?;
             expected = Some((parent_id.to_owned(), end));
         }
         rollouts.reverse();
@@ -1140,7 +1231,7 @@ pub(crate) fn session_snapshot(
     leaf_stamp: Option<crate::scan_cache::FileStamp>,
     scope: Option<&Path>,
     codex_index: Option<&CodexSegmentIndex>,
-) -> Result<SessionSnapshot> {
+) -> std::result::Result<SessionSnapshot, SessionReadError> {
     let abs = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
     let mut deps = Vec::new();
     if let Some(stamp) = leaf_stamp {
@@ -1155,7 +1246,7 @@ pub(crate) fn session_snapshot(
             leaf_records,
             |id, end, offset| {
                 let (bytes, parent_path, stamp_before) = match codex_index {
-                    Some(index) if id.len() == 36 => {
+                    Some(index) if INDEXED_UUID_LENGTHS.contains(&id.len()) => {
                         let cands = index.candidate_paths(id)?;
                         for candidate in &cands {
                             if let Some(stamp) = crate::scan_cache::FileStamp::of(candidate) {

@@ -2747,7 +2747,11 @@ fn scan_source(
                 ) {
                     Ok(snapshot) => snapshot,
                     Err(err) => {
-                        error(db, &format!("{scan_id}:scan:{}", e.path().display()), &err)?;
+                        error(
+                            db,
+                            &format!("{scan_id}:scan:{}", e.path().display()),
+                            &String::from(err),
+                        )?;
                         sessions_complete = false;
                         continue;
                     }

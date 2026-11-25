@@ -347,16 +347,15 @@ pub(crate) fn reading_resource(
     if resource["nativeSession"] == true {
         return match crate::local_resources::reading_session(db, resource) {
             Ok(snapshot) => Ok(SessionRead::from_snapshot(resource.clone(), snapshot)),
-            Err(error)
-                if crate::local_resources::missing_or_unreadable_transcript(&error)
-                    && resource["files"].as_array().is_some_and(|files| {
-                        !files.is_empty()
-                            && db::BlobStore::current().is_ok_and(|blobs| blobs.all_present(files))
-                    }) =>
+            Err(crate::history::SessionReadError::Unavailable(_))
+                if resource["files"].as_array().is_some_and(|files| {
+                    !files.is_empty()
+                        && db::BlobStore::current().is_ok_and(|blobs| blobs.all_present(files))
+                }) =>
             {
                 Ok(SessionRead::stored(resource.clone()))
             }
-            Err(error) => Err(error),
+            Err(error) => Err(error.into()),
         };
     }
     if resource["kind"] != "session"

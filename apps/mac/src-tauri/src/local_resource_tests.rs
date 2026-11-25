@@ -101,7 +101,10 @@ async fn private_reader_and_exports_use_an_exact_frozen_share_when_unavailable()
         unreadable_directory.unwrap()["messages"][0]["text"],
         "Private conversation"
     );
-    let mut wrong_thread = native::complete_records(&fs::read(path).unwrap()).unwrap();
+    let original = native::complete_records(&fs::read(path).unwrap()).unwrap();
+    let mut malformed = original.clone();
+    malformed[0]["payload"]["history_mode"] = json!([]);
+    let mut wrong_thread = malformed.clone();
     wrong_thread[0]["payload"]["id"] = json!(uuid::Uuid::new_v4());
     fs::write(path, native::encode(&wrong_thread)).unwrap();
     let wrong_thread = commands::session_messages(id.into(), None, Some(0), Some(1)).await;
@@ -109,12 +112,35 @@ async fn private_reader_and_exports_use_an_exact_frozen_share_when_unavailable()
         wrong_thread.unwrap_err(),
         "The session's native identity changed. Open the collection again."
     );
+    let mut wrong_checkout = malformed.clone();
+    wrong_checkout[0]["payload"]["cwd"] = json!(f._home.path());
+    fs::write(path, native::encode(&wrong_checkout)).unwrap();
+    let wrong_checkout = commands::session_messages(id.into(), None, Some(0), Some(1)).await;
+    assert_eq!(
+        wrong_checkout.unwrap_err(),
+        "The session is no longer in this repository."
+    );
     for corrupt_header in ["{malformed Codex header\n", "{}\n"] {
         fs::write(path, corrupt_header).unwrap();
         let corrupt = commands::session_messages(id.into(), None, Some(0), Some(1))
             .await
             .unwrap();
         assert_eq!(corrupt["messages"][0]["text"], "Private conversation");
+    }
+    let mut missing_ordinal = original.clone();
+    missing_ordinal[0]["payload"]["history_mode"] = json!("paginated");
+    missing_ordinal[0]
+        .as_object_mut()
+        .unwrap()
+        .remove("ordinal");
+    let mut malformed_record = original;
+    malformed_record[1]["payload"] = Value::Null;
+    for records in [malformed, missing_ordinal, malformed_record] {
+        fs::write(path, native::encode(&records)).unwrap();
+        let recovered = commands::session_messages(id.into(), None, Some(0), Some(1))
+            .await
+            .unwrap();
+        assert_eq!(recovered["messages"][0]["text"], "Private conversation");
     }
     let project_zip = f._home.path().join("project.zip");
     bundles::export_project(
