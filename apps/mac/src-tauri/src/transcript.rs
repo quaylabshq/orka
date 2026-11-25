@@ -18,6 +18,7 @@ use tokio::sync::Semaphore;
 const PAGE_LIMIT: usize = 32 * 1024;
 const TAPE_LIMIT: u64 = 512 * 1024 * 1024;
 const MAX_READERS: usize = 4;
+pub(crate) const SNAPSHOT_INVALIDATED: &str = "transcript_snapshot_invalidated";
 
 struct Reader {
     scope: CacheScope,
@@ -54,23 +55,24 @@ pub struct TranscriptPage {
 impl Reader {
     fn check_cancelled(&self) -> Result<()> {
         if self.cancelled.load(Ordering::Relaxed) {
-            return Err("Transcript reader closed. Reopen the session to read it.".into());
+            return Err(SNAPSHOT_INVALIDATED.into());
         }
         Ok(())
     }
 
     fn validate(&self) -> Result<()> {
         self.check_cancelled()?;
-        if self.scope != CacheScope::current()? {
-            return Err("The Orka account or service changed. Reopen the transcript.".into());
+        if self.scope != CacheScope::current().map_err(|_| SNAPSHOT_INVALIDATED)? {
+            return Err(SNAPSHOT_INVALIDATED.into());
         }
         let db = self.scope.open()?;
-        let candidate = inspection_candidate(&db, &self.id, self.conflict_id.as_deref())?;
+        let candidate = inspection_candidate(&db, &self.id, self.conflict_id.as_deref())
+            .map_err(|_| SNAPSHOT_INVALIDATED)?;
         if candidate["kind"] != "session"
             || candidate["deleted"] == true
             || session_snapshot_hash(&candidate) != self.candidate_hash
         {
-            return Err("The session changed. Reopen the transcript.".into());
+            return Err(SNAPSHOT_INVALIDATED.into());
         }
         Ok(())
     }
@@ -144,7 +146,13 @@ fn open_in_scope(
         cancelled: AtomicBool::new(false),
         tape: Mutex::new(None),
     });
-    reader.validate()?;
+    reader.validate().map_err(|error| {
+        if error == SNAPSHOT_INVALIDATED {
+            "The session or its access changed. Reopen the transcript.".into()
+        } else {
+            error
+        }
+    })?;
     let reader_id = uuid::Uuid::new_v4().to_string();
     let mut readers = registry()?;
     if reader.scope != CacheScope::current()? {
@@ -199,7 +207,7 @@ pub async fn read_transcript(
         .iter()
         .find(|(key, _)| key == &reader_id)
         .map(|(_, reader)| reader.clone())
-        .ok_or("Transcript reader closed. Reopen the session to read it.")?;
+        .ok_or(SNAPSHOT_INVALIDATED)?;
     let permit = PREPARE.acquire().await.map_err(|error| error.to_string())?;
     tauri::async_runtime::spawn_blocking(move || {
         let _permit = permit;
@@ -257,6 +265,7 @@ struct TapeBuilder {
     prefix: Option<usize>,
     segment_bytes: u64,
     turn: Vec<Candidate>,
+    occurrences: HashMap<DuplicateKey, ([usize; 3], [usize; 3])>,
     segment: Vec<Range<u64>>,
     segments: Vec<Vec<Range<u64>>>,
 }
@@ -270,6 +279,7 @@ impl TapeBuilder {
             prefix,
             segment_bytes: 0,
             turn: Vec::new(),
+            occurrences: HashMap::new(),
             segment: Vec::new(),
             segments: Vec::new(),
         })
@@ -320,21 +330,26 @@ impl TapeBuilder {
             let range = self.append(&message)?;
             let key = (!message.text.is_empty())
                 .then(|| (message.role, Sha256::digest(message.text.as_bytes()).into()));
-            self.turn.push(Candidate { range, key, tier });
+            if let Some(key) = key {
+                self.occurrences.entry(key).or_default().0[tier] += 1;
+            }
+            // Base records and entries with no deduplication key cannot
+            // be suppressed by a later record. Keep the stable prefix
+            // immediately as long as no earlier candidate is undecided.
+            if (tier == 0 || key.is_none()) && self.turn.is_empty() {
+                self.segment_bytes += range.end - range.start;
+                push_range(&mut self.segment, range);
+            } else {
+                self.turn.push(Candidate { range, key, tier });
+            }
         }
         Ok(())
     }
 
     fn flush_turn(&mut self) {
-        let mut occurrences: HashMap<DuplicateKey, ([usize; 3], [usize; 3])> = HashMap::new();
-        for candidate in &self.turn {
-            if let Some(key) = candidate.key {
-                occurrences.entry(key).or_default().0[candidate.tier] += 1;
-            }
-        }
         for candidate in self.turn.drain(..) {
             if let Some(key) = candidate.key {
-                let (count, seen) = occurrences.get_mut(&key).unwrap();
+                let (count, seen) = self.occurrences.get_mut(&key).unwrap();
                 let tier = candidate.tier;
                 seen[tier] += 1;
                 if tier > 0 && count[..tier].iter().any(|n| *n >= seen[tier]) {
@@ -344,6 +359,7 @@ impl TapeBuilder {
             self.segment_bytes += candidate.range.end - candidate.range.start;
             push_range(&mut self.segment, candidate.range);
         }
+        self.occurrences.clear();
     }
 
     fn finish(self) -> Result<Tape> {
@@ -505,4 +521,50 @@ fn prepare(reader: &Reader, first: bool) -> Result<Tape> {
         )?;
     }
     builder.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn stable_claude_head_is_harvested_without_formatting_later_records() {
+        let head = json!({"type":"user","message":{"role":"user","content":"🔎".repeat(9_000)}});
+        let later = json!({"type":"assistant","message":{"role":"assistant","content":"large tool result".repeat(150_000)}});
+        let mut builder = TapeBuilder::new(Some(PAGE_LIMIT + 4)).unwrap();
+        builder.record(Some(&head)).unwrap();
+        let head_bytes = builder.bytes;
+        builder.record(Some(&later)).unwrap();
+        assert_eq!(
+            builder.bytes, head_bytes,
+            "The later record should not be formatted"
+        );
+        builder.record(None).unwrap();
+        let mut tape = builder.finish().unwrap();
+        let page = tape.page(Some(0), PAGE_LIMIT, false).unwrap();
+        let expected = crate::native::transcript(&[head, later]);
+        assert_eq!(page.text, &expected[..page.next_offset as usize]);
+        assert!(!page.eof);
+    }
+
+    #[test]
+    fn early_base_outputs_still_count_when_deduplicating_later_records() {
+        let visible = json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":"repeat"}]});
+        let records = [
+            json!({"type":"response_item","payload":visible}),
+            json!({"type":"event_msg","payload":{"type":"item_completed","item":visible}}),
+            json!({"type":"event_msg","payload":{"type":"item_completed","item":visible}}),
+            json!({"type":"response_item","payload":{"type":"function_call_output","output":"last"}}),
+        ];
+        let mut builder = TapeBuilder::new(None).unwrap();
+        for record in &records {
+            builder.record(Some(record)).unwrap();
+        }
+        builder.record(None).unwrap();
+        let mut tape = builder.finish().unwrap();
+        let page = tape.page(Some(0), PAGE_LIMIT, false).unwrap();
+        assert_eq!(page.text, crate::native::transcript(&records));
+        assert!(page.eof);
+    }
 }

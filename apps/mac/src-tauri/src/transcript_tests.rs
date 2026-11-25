@@ -147,7 +147,7 @@ fn transcript_ranges_bound_large_claude_tool_records_and_reject_changed_snapshot
     let error =
         tauri::async_runtime::block_on(read_transcript(reader.into(), Some(0), 32 * 1024, None))
             .unwrap_err();
-    assert!(error.contains("session changed"), "{error}");
+    assert_eq!(error, crate::transcript::SNAPSHOT_INVALIDATED);
 }
 
 #[test]
@@ -232,7 +232,7 @@ fn transcript_ranges_cancel_open_handles_on_service_switch() {
     let error =
         tauri::async_runtime::block_on(read_transcript(reader.into(), Some(0), 32 * 1024, None))
             .unwrap_err();
-    assert!(error.contains("reader closed"), "{error}");
+    assert_eq!(error, crate::transcript::SNAPSHOT_INVALIDATED);
 }
 
 #[test]

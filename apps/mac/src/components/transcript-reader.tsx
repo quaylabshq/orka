@@ -18,6 +18,7 @@ import {
 
 const CACHE_BYTES = 512 * 1024;
 const LOOKAHEAD_PX = 4800;
+const MAX_SELECTION_BLOCKS = 16;
 const NO_BLOCKS: TranscriptBlock[] = [];
 
 interface TranscriptReaderProps {
@@ -349,19 +350,18 @@ function TranscriptText({
         apply(request, range);
       })
       .catch((reason: unknown) => {
-        if (ticket !== generation.current || queuedJump.current) return;
-        const invalidated =
-          /account or service changed|the session changed|not a member|not found|permission|revoked/i.test(
-            String(reason),
-          );
+        if (ticket !== generation.current) return;
+        const invalidated = reason === "transcript_snapshot_invalidated";
+        if (queuedJump.current && !invalidated) return;
         if (invalidated) {
+          queuedJump.current = null;
           cache.current.clear();
           cachedBytes.current = 0;
           setIndex(null);
+          setSelected([]);
         }
         setFailed(invalidated ? "invalidated" : "retry");
-        if (request.kind === "end" || request.kind === "start")
-          setAnnouncement("");
+        setAnnouncement("");
       })
       .finally(() => {
         if (ticket !== generation.current) return;
@@ -483,7 +483,7 @@ function TranscriptText({
             Number(el.dataset.index) <= Math.max(a, b),
         )
         .map((el) => Number(el.dataset.offset))
-        .slice(0, 16);
+        .slice(0, MAX_SELECTION_BLOCKS);
       setSelected((old) =>
         old.length === next.length &&
         old.every((offset, i) => offset === next[i])
@@ -491,9 +491,53 @@ function TranscriptText({
           : next,
       );
     };
+    const onCopy = (event: ClipboardEvent) => {
+      const selection = window.getSelection();
+      const content = list.current;
+      if (!content || !selection?.rangeCount || selection.isCollapsed) return;
+      const range = selection.getRangeAt(0);
+      if (!range.intersectsNode(content)) return;
+
+      const endpointIndex = (node: Node) => {
+        const block =
+          elementAt(node)?.closest<HTMLElement>(".transcript-block");
+        return block && content.contains(block)
+          ? Number(block.dataset.index)
+          : NaN;
+      };
+      const from = endpointIndex(range.startContainer);
+      const to = endpointIndex(range.endContainer);
+      const rendered = Array.from(
+        content.querySelectorAll(".transcript-block > pre"),
+      );
+      if (!rendered.some((pre) => range.intersectsNode(pre))) return;
+      const resident = new Set(
+        rendered.map((pre) => Number(pre.parentElement?.dataset.index)),
+      );
+      event.preventDefault();
+      if (
+        !Number.isInteger(from) ||
+        !Number.isInteger(to) ||
+        to < from ||
+        to - from >= MAX_SELECTION_BLOCKS ||
+        Array.from({ length: to - from + 1 }, (_, i) => from + i).some(
+          (i) => !resident.has(i),
+        )
+      ) {
+        setAnnouncement("Select a shorter range or download the session.");
+        return;
+      }
+
+      // DOM Range concatenates text nodes without adding block separators.
+      event.clipboardData?.setData("text/plain", range.toString());
+      setAnnouncement("");
+    };
     document.addEventListener("selectionchange", onSelectionChange);
-    return () =>
+    document.addEventListener("copy", onCopy);
+    return () => {
       document.removeEventListener("selectionchange", onSelectionChange);
+      document.removeEventListener("copy", onCopy);
+    };
   }, []);
 
   useEffect(() => {
@@ -568,7 +612,13 @@ function TranscriptText({
   });
 
   const jump = (kind: "end" | "start") => {
-    if (pending?.kind === kind || queuedJump.current?.kind === kind) return;
+    if (
+      failed !== null ||
+      (index && !blocks.length) ||
+      pending?.kind === kind ||
+      queuedJump.current?.kind === kind
+    )
+      return;
     if (
       kind === "end" &&
       index?.eof &&
@@ -632,7 +682,9 @@ function TranscriptText({
           size="sm"
           variant="tertiary"
           onClick={() => jump("start")}
-          disabled={pending?.kind === "start"}
+          disabled={
+            !!failed || pending?.kind === "start" || (!!index && !blocks.length)
+          }
         >
           Jump to start
         </Button>
@@ -640,13 +692,16 @@ function TranscriptText({
           size="sm"
           variant="tertiary"
           onClick={() => jump("end")}
-          disabled={pending?.kind === "end"}
+          disabled={
+            !!failed || pending?.kind === "end" || (!!index && !blocks.length)
+          }
         >
           Jump to end
         </Button>
         <span
           className={
-            announcement.startsWith("Preparing")
+            announcement.startsWith("Preparing") ||
+            announcement.startsWith("Select")
               ? "transcript-jump-status"
               : "sr-only"
           }

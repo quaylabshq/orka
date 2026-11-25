@@ -44,7 +44,6 @@ mod session_launcher;
 mod session_presentation;
 mod session_redaction;
 mod session_translation;
-mod transcript;
 mod settings;
 mod settings_lifecycle;
 mod skill_reconciliation;
@@ -55,6 +54,7 @@ mod sync_queue;
 mod sync_schedule;
 #[cfg(test)]
 mod tests;
+mod transcript;
 mod updates;
 mod upload_review;
 mod worktree_integration;
