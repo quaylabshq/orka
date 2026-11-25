@@ -15,6 +15,12 @@
 - [ ] Make the complete corresponding source for every distributed GPLv3 binary, including alpha builds, available using the exact release revision and its build scripts.
 - [ ] Collect and distribute upstream license notices and applicable corresponding-source information for the dependencies actually shipped.
 
+## Desktop session storage update
+
+- [ ] Upgrade a disposable profile populated by the released desktop. Confirm preserved catalog reads, pending work, and approved snapshot bytes after upgrade.
+- [ ] Run the [session snapshot cleanup](desktop-updates.md#reclaiming-old-session-snapshots) on the upgraded fixture. Verify the dry-run counts, the applied removals, readable pinned bytes, and a repeat apply with zero removals.
+- [ ] Confirm the packaged candidate advertises data epoch 5 and the updater declines an epoch 4 local restore. Use another epoch 5 build for signed local restore acceptance.
+
 ## Stable binary release
 
 - [ ] Verify Apple signing/notarization and signing-environment access. Keep signing secrets unavailable to pull-request code.

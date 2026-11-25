@@ -58,7 +58,7 @@ fn source(project: &Value, resource: &Value) -> Result<Value> {
     Ok(source)
 }
 
-fn canonical_path(base: &Path, path: &Path) -> Result<PathBuf> {
+pub(crate) fn canonical_path(base: &Path, path: &Path) -> Result<PathBuf> {
     let relative = path
         .strip_prefix(base)
         .map_err(|_| "Item path is outside its source")?;
@@ -591,9 +591,15 @@ async fn run(action: &str, input: &Value, progress: Option<&Channel<Value>>) -> 
             let mut selected = input.clone();
             selected["kind"] = json!(kind);
             selected["resourceId"] = local["resource"]["resourceId"].clone();
-            report_progress(progress, json!({"label":"Preparing snapshot for review"}));
-            let preview =
-                crate::selective_sharing::preview_from_local(&db, &project, &selected, &local)?;
+            let preview = crate::selective_sharing::preview_from_local_with_progress(
+                &db,
+                &project,
+                &selected,
+                &local,
+                || {
+                    report_progress(progress, json!({"label":"Preparing snapshot for review"}));
+                },
+            )?;
             let key = format!(
                 "share-preview:{}",
                 preview["previewToken"]

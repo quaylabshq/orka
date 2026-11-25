@@ -132,7 +132,8 @@ fn recover(db: &rusqlite::Connection, project: &Value, resource: &Value) -> Resu
     if attempt["guard"] != hash {
         return Err("Archived import contains local edits; original history preserved".into());
     }
-    let files = history::session_files("codex", &path, project["path"].as_str().map(Path::new))?;
+    let files = history::session_content("codex", &path, project["path"].as_str().map(Path::new))?
+        .manifest();
     b = json!({"nativeId":native_id,"paths":[path],"base":resource,"managed":true,"lastSeenHash":indexer::manifest_hash(&json!(files)),"guards":[indexer::manifest_hash(&json!([]))],"writeGuard":indexer::manifest_hash(&json!(files))});
     attempt["child"]["path"] = json!(path);
     let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;

@@ -1,11 +1,15 @@
 use crate::{
     context_sharing,
     db::{self, Result},
-    governance, indexer, projects, sources,
+    governance, history, indexer, native, projects, sources, worktrees,
 };
+use history::SessionReadError;
 use rusqlite::Connection;
 use serde_json::{json, Value};
-use std::{collections::BTreeMap, path::Path};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 use uuid::Uuid;
 
 fn shared(db: &Connection, id: &str) -> Result<Option<Value>> {
@@ -149,6 +153,9 @@ fn normalize(db: &Connection, project: &Value, entry: &Value) -> Result<Option<V
         resource
     };
     resource["files"] = input["files"].clone();
+    if input["nativeSession"] == true {
+        resource["nativeSession"] = json!(true);
+    }
     resource["hash"] = json!(indexer::manifest_hash(&input["files"]));
     resource["updatedBy"] = user;
     resource["updatedAt"] = entry["updatedAt"]
@@ -356,6 +363,14 @@ fn local_entry(db: &Connection, id: &str) -> Result<Option<(Value, Value)>> {
         None => db::rows(db,"SELECT json_object('projectId',project) FROM local_resources WHERE id=? UNION ALL SELECT json_object('projectId',project) FROM drafts WHERE json_extract(value,'$.resource.resourceId')=? LIMIT 1",&[&id,&id])?.first().and_then(|entry| entry["projectId"].as_str()).ok_or("Resource unavailable")?.to_owned(),
     };
     let project = governance::project(db, &project_id)?;
+    if let Some(entry) = direct.filter(|entry| {
+        matches!(
+            entry["resource"]["kind"].as_str(),
+            Some("memory" | "session" | "plan")
+        )
+    }) {
+        return Ok(Some((project, entry)));
+    }
     let user = db::get(db, "user")?;
     let owns_publication = published
         .as_ref()
@@ -392,6 +407,274 @@ pub fn resource(db: &Connection, id: &str) -> Result<Value> {
     Ok(resource)
 }
 
+fn session_home(tool: &str) -> Result<PathBuf> {
+    match tool {
+        "codex" => native::codex_home(),
+        "claude" => Ok(native::claude_home()?.join("projects")),
+        "pi" => crate::pi_sessions::directory(),
+        _ => Err("Unsupported session provider".into()),
+    }
+}
+
+fn codex_home_location(home: &Path, path: &Path) -> Result<(PathBuf, PathBuf)> {
+    let relative = path
+        .strip_prefix(home)
+        .map_err(|_| "Item path is outside its source")?;
+    let home = home.canonicalize().map_err(history::native_read_error)?;
+    let path = home.join(relative);
+    Ok((home, path))
+}
+
+struct LocalSession<'a> {
+    tool: &'a str,
+    id: &'a str,
+    path: PathBuf,
+    size: usize,
+    records: Vec<Value>,
+    stamp: Option<crate::scan_cache::FileStamp>,
+    scope: Option<PathBuf>,
+    codex: Option<history::CodexSegmentIndex>,
+    require_catalog_match: bool,
+}
+
+/// Resolve catalog history using the same native identity and source routing
+/// as discovery. Codex may have moved the transcript to its archive.
+fn resolve_session<'a>(
+    db: &Connection,
+    project: &Value,
+    entry: &'a Value,
+    allow_catalog_snapshot: bool,
+) -> std::result::Result<LocalSession<'a>, SessionReadError> {
+    let resource = &entry["resource"];
+    let source =
+        sources::for_resource(project, resource).ok_or("Connect this session's repository")?;
+    if entry["path"] != source["path"] || entry["folderIdentity"] != source["folderIdentity"] {
+        return Err(
+            "The session's repository connection changed. Open the collection again.".into(),
+        );
+    }
+    sources::validate(&source).map_err(|error| {
+        if error == sources::SOURCE_UNAVAILABLE {
+            SessionReadError::Unavailable(error)
+        } else {
+            SessionReadError::Rejected(error)
+        }
+    })?;
+    let root = Path::new(
+        source["path"]
+            .as_str()
+            .ok_or("Connect this session's repository")?,
+    );
+    let tool = resource["source"]
+        .as_str()
+        .ok_or("Missing session provider")?;
+    let id = entry["nativeId"]
+        .as_str()
+        .ok_or("Missing native session identity")?;
+    let path = Path::new(
+        entry["paths"][0]
+            .as_str()
+            .ok_or("Native session unavailable")?,
+    );
+    let home = session_home(tool)?;
+    // Trust the configured Codex home, including its alias. Validate the
+    // transcript's path beneath the resolved home without following child links.
+    let (home, path) = if tool == "codex" {
+        codex_home_location(&home, path)?
+    } else {
+        (home, path.to_path_buf())
+    };
+    if !std::fs::symlink_metadata(&home)
+        .map_err(history::native_read_error)?
+        .is_dir()
+    {
+        return Err("Symlinked item locations are unavailable".into());
+    }
+    let mut codex = (tool == "codex").then(|| history::CodexSegmentIndex::new(&home));
+    let (path, require_catalog_match) = match &mut codex {
+        Some(index) if allow_catalog_snapshot => index.catalog_read_path(&path, id)?,
+        Some(index) => (index.current_path(&path, id)?, false),
+        None => (path, false),
+    };
+    if !history::is_session(&path)
+        || tool == "claude" && path.file_stem().and_then(|stem| stem.to_str()) != Some(id)
+        || tool == "codex"
+            && !["sessions", "archived_sessions"]
+                .iter()
+                .any(|dir| path.starts_with(home.join(dir)))
+    {
+        return Err("The session's native identity changed. Open the collection again.".into());
+    }
+    crate::resource_commands::canonical_path(&home, &path)?;
+    let stamp = crate::scan_cache::FileStamp::of(&path);
+    let bytes = history::read_session(&path)?;
+    let records = native::complete_records(&bytes).map_err(SessionReadError::Unavailable)?;
+    let actual = history::session_identity(tool, &records)?;
+    if actual != id || tool == "codex" && !history::eligible_codex_session(db, id, &records)? {
+        return Err("The session's native identity changed. Open the collection again.".into());
+    }
+    let cwd = native::session_cwd(tool, &records).map_err(SessionReadError::Unavailable)?;
+    let worktrees_home = worktrees::home()?;
+    let sources = worktrees::session_sources(db, &source)?;
+    let resolved =
+        worktrees::SessionScope::new(db, &source, root, &sources, &worktrees_home)?.read_only();
+    let checkout = resolved
+        .for_session(tool, id, &cwd)?
+        .ok_or("The session is no longer in this repository.")?;
+    // A readable identity and cwd must pass attribution before a malformed
+    // format can fall back to a stored snapshot.
+    crate::session_translation::format(tool, &records).map_err(SessionReadError::Unavailable)?;
+    Ok(LocalSession {
+        tool,
+        id,
+        path,
+        size: bytes.len(),
+        records,
+        stamp,
+        scope: (!checkout.historical).then_some(checkout.scope),
+        codex,
+        require_catalog_match,
+    })
+}
+
+pub(crate) fn live_session(
+    db: &Connection,
+    project: &Value,
+    entry: &Value,
+) -> std::result::Result<history::SessionSnapshot, SessionReadError> {
+    let session = resolve_session(db, project, entry, true)?;
+    let snapshot = history::session_snapshot(
+        session.tool,
+        &session.path,
+        session.size,
+        session.records,
+        session.stamp,
+        session.scope.as_deref(),
+        session.codex.as_ref(),
+    )?;
+    // An unreadable tree could contain a newer generation. An exact
+    // reconstruction is safe to show as the last cataloged snapshot.
+    if session.require_catalog_match
+        && entry["resource"]["files"] != json!(snapshot.content.manifest())
+    {
+        return Err(history::NATIVE_READ_UNAVAILABLE.into());
+    }
+    Ok(snapshot)
+}
+
+pub(crate) fn reading_session(
+    db: &Connection,
+    resource: &Value,
+) -> std::result::Result<history::SessionSnapshot, SessionReadError> {
+    let id = resource["resourceId"].as_str().ok_or("Missing session")?;
+    let (project, entry) = local_entry(db, id)?.ok_or("Native session unavailable")?;
+    if entry["resource"]["nativeSession"] != true || resource["owner"] != db::get(db, "user")? {
+        return Err("Native session unavailable".into());
+    }
+    live_session(db, &project, &entry)
+}
+
+/// Project export also accepts archived and recoverable deleted projects.
+/// Reuse its authorized project snapshot instead of opening an active project.
+pub(crate) fn export_session(
+    db: &Connection,
+    project: &Value,
+    resource: &Value,
+) -> Result<Option<history::SessionSnapshot>> {
+    if resource["owner"] != db::get(db, "user")? {
+        return Ok(None);
+    }
+    let id = resource["resourceId"].as_str().ok_or("Missing session")?;
+    let project_id = project["id"].as_str().ok_or("Missing project")?;
+    let entry = db::rows(
+        db,
+        "SELECT value FROM local_resources WHERE id=? AND project=?",
+        &[&id, &project_id],
+    )?
+    .into_iter()
+    .next()
+    .ok_or("The session catalog changed. Try exporting again.")?;
+    if entry["resource"]["nativeSession"] != true {
+        return Err("The session catalog changed. Try exporting again.".into());
+    }
+    match live_session(db, project, &entry) {
+        Ok(snapshot) => Ok(Some(snapshot)),
+        Err(SessionReadError::Unavailable(_)) => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// A previously discovered file manifest can key the in-memory conversation
+/// cache only while the original and its ancestry are still the same.
+pub(crate) fn unchanged_session_manifest(db: &Connection, resource: &Value) -> Result<bool> {
+    use crate::scan_cache::{self, FileStamp};
+    let id = resource["resourceId"].as_str().ok_or("Missing session")?;
+    let Some((project, entry)) = local_entry(db, id)? else {
+        return Ok(false);
+    };
+    if entry["resource"]["nativeSession"] != true || resource["owner"] != db::get(db, "user")? {
+        return Ok(false);
+    }
+    let Some(source) = sources::for_resource(&project, &entry["resource"]) else {
+        return Ok(false);
+    };
+    sources::validate(&source)?;
+    if entry["path"] != source["path"] || entry["folderIdentity"] != source["folderIdentity"] {
+        return Ok(false);
+    }
+    let Some(root) = source["path"].as_str().map(Path::new) else {
+        return Ok(false);
+    };
+    let root = root.canonicalize().map_err(|error| error.to_string())?;
+    let tool = resource["source"]
+        .as_str()
+        .ok_or("Missing session provider")?;
+    let Some(path) = entry["paths"][0].as_str().map(Path::new) else {
+        return Ok(false);
+    };
+    let home = session_home(tool)?;
+    // Scan-cache keys and dependency paths use the original, configured spelling.
+    if tool == "codex" {
+        let (canonical_home, canonical_path) = codex_home_location(&home, path)?;
+        crate::resource_commands::canonical_path(&canonical_home, &canonical_path)?;
+    } else {
+        crate::resource_commands::canonical_path(&home, path)?;
+    }
+    let Some(stamp) = FileStamp::of(path) else {
+        return Ok(false);
+    };
+    let key = scan_cache::session_key(&source, &root, tool, path);
+    let Some(known) = scan_cache::load_session(db, &key)? else {
+        return Ok(false);
+    };
+    if entry["nativeId"] != known.id
+        || resource["files"] != json!(known.files)
+        || !known.stamps_match(path, &stamp)
+    {
+        return Ok(false);
+    }
+    let worktrees_home = worktrees::home()?;
+    let sources = worktrees::session_sources(db, &source)?;
+    let resolved =
+        worktrees::SessionScope::new(db, &source, &root, &sources, &worktrees_home)?.read_only();
+    let Some(checkout) = resolved.for_session(tool, &known.id, &known.cwd)? else {
+        return Ok(false);
+    };
+    if resolved.cache_scope()? != known.topology {
+        return Ok(false);
+    }
+    if tool == "codex" {
+        // Import recovery can change eligibility while the file is unchanged.
+        if !crate::codex_import::attempts(db)?.is_empty() {
+            return Ok(false);
+        }
+        let index = history::CodexSegmentIndex::new(&home);
+        return Ok(index.current_path(path, &known.id)? == path
+            && known.ancestors_match(&index, &checkout));
+    }
+    Ok(true)
+}
+
 pub fn native_binding(db: &Connection, resource: &Value) -> Result<Option<Value>> {
     if resource["kind"] != "session" || resource["owner"] != db::get(db, "user")? {
         return Ok(None);
@@ -400,6 +683,12 @@ pub fn native_binding(db: &Connection, resource: &Value) -> Result<Option<Value>
     let Some((project, entry)) = local_entry(db, id)? else {
         return Ok(None);
     };
+    if entry["resource"]["nativeSession"] == true {
+        let session = resolve_session(db, &project, &entry, false)?;
+        return Ok(Some(
+            json!({"base":resource,"nativeId":session.id,"paths":[session.path]}),
+        ));
+    }
     let source =
         sources::for_resource(&project, resource).ok_or("Connect this session's repository")?;
     sources::validate(&source)?;

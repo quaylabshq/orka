@@ -121,7 +121,46 @@ pub fn export_project(cache: &db::CacheScope, project: &str, path: &Path) -> Res
                 "local-resources/{}/",
                 r["resourceId"].as_str().ok_or("Missing resource")?
             );
-            write_project_resource(&mut zip, options, r, &folder, &read_blob)?;
+            if r["nativeSession"] == true {
+                match crate::local_resources::export_session(&db, &saved, r)? {
+                    Some(snapshot) => {
+                        let current =
+                            crate::history::SessionRead::from_snapshot(r.clone(), snapshot);
+                        write_project_resource(
+                            &mut zip,
+                            options,
+                            &current.resource,
+                            &folder,
+                            &|hash| current.read_blob(hash),
+                        )?;
+                    }
+                    None => {
+                        let cached = r["files"].as_array().is_some_and(|files| {
+                            !files.is_empty()
+                                && files.iter().all(|file| {
+                                    file["hash"]
+                                        .as_str()
+                                        .is_some_and(|hash| read_blob(hash).is_ok())
+                                })
+                        });
+                        if cached {
+                            write_project_resource(&mut zip, options, r, &folder, &read_blob)?;
+                        } else {
+                            let mut unavailable = r.clone();
+                            unavailable["files"] = json!([]);
+                            unavailable["contentUnavailable"] = json!(true);
+                            write_json(
+                                &mut zip,
+                                &format!("{folder}resource.json"),
+                                &unavailable,
+                                options,
+                            )?;
+                        }
+                    }
+                }
+            } else {
+                write_project_resource(&mut zip, options, r, &folder, &read_blob)?;
+            }
         }
         for draft in &drafts {
             let folder = format!("drafts/{}/", draft["id"].as_str().ok_or("Missing draft")?);
@@ -281,11 +320,16 @@ fn write_transcript<W: Write + Seek>(
 
 pub fn export(db: &rusqlite::Connection, id: &str, path: &Path) -> Result<()> {
     let r = crate::local_resources::resource(db, id)?;
-    let r = crate::session_forks::current_resource(db, &r)?;
+    let r = crate::session_forks::reading_resource(db, &r)?;
     export_snapshot(db, &r, path)
 }
 
-pub(crate) fn export_snapshot(db: &rusqlite::Connection, r: &Value, path: &Path) -> Result<()> {
+pub(crate) fn export_snapshot(
+    db: &rusqlite::Connection,
+    snapshot: &crate::history::SessionRead,
+    path: &Path,
+) -> Result<()> {
+    let r = &snapshot.resource;
     if r["deleted"] == true {
         return Err("Deleted resources cannot be exported".into());
     }
@@ -304,8 +348,9 @@ pub(crate) fn export_snapshot(db: &rusqlite::Connection, r: &Value, path: &Path)
             manifest["resource"]["sourceId"] = r["sourceId"].clone();
         }
         write_json(&mut zip, "manifest.json", &manifest, options)?;
-        write_blobs(&mut zip, options, r, "", &db::blob_read)?;
-        write_transcript(&mut zip, options, r, "", &db::blob_read)?;
+        let read = |hash: &str| snapshot.read_blob(hash);
+        write_blobs(&mut zip, options, r, "", &read)?;
+        write_transcript(&mut zip, options, r, "", &read)?;
         zip.finish().map_err(|e| e.to_string())?;
     }
     staged.as_file().sync_all().map_err(|e| e.to_string())?;
