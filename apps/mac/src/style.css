@@ -888,7 +888,20 @@
     @apply relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden;
   }
   .resource-index-body {
-    @apply min-h-0 flex-1 overflow-y-auto px-7 pb-7 pt-5;
+    --index-top-inset: 20px;
+    @apply min-h-0 flex-1 overflow-y-auto px-7 pb-7;
+    padding-top: var(--index-top-inset);
+  }
+  /* Cover the scroll area's top padding even when a notice precedes the toolbar. */
+  .resource-index-body--sticky-toolbar::before {
+    content: "";
+    position: sticky;
+    top: calc(-1 * var(--index-top-inset));
+    z-index: 10;
+    display: block;
+    height: var(--index-top-inset);
+    margin-top: calc(-1 * var(--index-top-inset));
+    background: var(--surface-secondary);
   }
   .resource-index--floating-action .resource-index-body {
     @apply pb-20;
