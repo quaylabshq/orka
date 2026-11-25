@@ -504,28 +504,29 @@ fn own_pi_session_resumes_in_place_and_forks_every_raw_turn() {
     assert_ne!(recovered["nativeId"], fork["nativeId"]);
     assert_eq!(fs::read_to_string(&copy).unwrap(), "invalid JSON\n");
 
-    // An oversized own file cannot resume, but Fork still recovers from the snapshot.
+    // Catalog-only discovery never saved a fallback for the original. An
+    // oversized or corrupt original cannot resume or fork. The copies made
+    // explicitly above retain their frozen snapshots independently.
     fs::File::create(&original)
         .unwrap()
         .set_len(crate::history::MAX_FILE + 1)
         .unwrap();
     let options = json!(session_launcher::options_with(id, &host).unwrap());
     assert_eq!(options[0]["available"], false);
-    assert_eq!(options[0]["forkAvailable"], true);
+    assert_eq!(options[0]["forkAvailable"], false);
     assert!(session_launcher::resume_with(id, Tool::Pi, Destination::Terminal, &host).is_err());
-    let rescued_oversized =
-        session_launcher::launch_with(id, Tool::Pi, Destination::Terminal, true, &host).unwrap();
-    assert_eq!(rescued_oversized["forked"], true);
+    assert!(
+        session_launcher::launch_with(id, Tool::Pi, Destination::Terminal, true, &host).is_err()
+    );
 
-    // A corrupt own file cannot resume, but Fork still recovers from the snapshot.
     fs::write(&original, "invalid JSON\n").unwrap();
     let options = json!(session_launcher::options_with(id, &host).unwrap());
     assert_eq!(options[0]["available"], false);
-    assert_eq!(options[0]["forkAvailable"], true);
+    assert_eq!(options[0]["forkAvailable"], false);
     assert!(session_launcher::resume_with(id, Tool::Pi, Destination::Terminal, &host).is_err());
-    let rescued =
-        session_launcher::launch_with(id, Tool::Pi, Destination::Terminal, true, &host).unwrap();
-    assert_eq!(rescued["forked"], true);
+    assert!(
+        session_launcher::launch_with(id, Tool::Pi, Destination::Terminal, true, &host).is_err()
+    );
     assert_eq!(fs::read_to_string(&original).unwrap(), "invalid JSON\n");
 
     // MacHost's overlap check and the launch script share one Orka-owned lock.

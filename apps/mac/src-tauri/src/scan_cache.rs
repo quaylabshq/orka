@@ -15,6 +15,19 @@ use walkdir::WalkDir;
 
 const CACHE_VERSION: &str = concat!("v3-", env!("CARGO_PKG_VERSION"));
 
+/// These entries are optimization hints. A scan can validate or rebuild them
+/// from the original files if a cached blob has been reclaimed.
+pub(crate) fn is_rebuildable_key(key: &str) -> bool {
+    let mut parts = key.splitn(4, ':');
+    parts.next() == Some("scanCache")
+        && parts.next().is_some_and(|version| !version.is_empty())
+        && matches!(
+            parts.next(),
+            Some("file" | "plan" | "skill" | "codexSummary" | "session" | "memoryIndex")
+        )
+        && parts.next().is_some_and(|key| !key.is_empty())
+}
+
 thread_local! {
     static RECONCILING: Cell<bool> = const { Cell::new(false) };
 }
@@ -406,8 +419,32 @@ impl CachedSession {
             .all(|(dep_path, dep_stamp)| FileStamp::of(dep_path).as_ref() == Some(dep_stamp))
     }
 
-    pub(crate) fn blobs_present(&self, blobs: &BlobStore, check_plans: bool) -> bool {
-        blobs.all_present(&self.files)
+    pub(crate) fn ancestors_match(
+        &self,
+        index: &crate::history::CodexSegmentIndex,
+        checkout: &crate::worktrees::SessionCheckout,
+    ) -> bool {
+        self.ancestor_candidates.iter().all(|(id, expected)| {
+            index
+                .candidate_paths(id)
+                .is_ok_and(|paths| paths == *expected)
+        }) && (checkout.historical
+            || self.ancestor_cwds.is_empty()
+            || checkout.scope.canonicalize().is_ok_and(|scope| {
+                self.ancestor_cwds.iter().all(|cwd| {
+                    cwd.canonicalize()
+                        .is_ok_and(|path| path.starts_with(&scope))
+                })
+            }))
+    }
+
+    pub(crate) fn blobs_present(
+        &self,
+        blobs: &BlobStore,
+        check_session: bool,
+        check_plans: bool,
+    ) -> bool {
+        (!check_session || blobs.all_present(&self.files))
             && (!check_plans
                 || self
                     .embedded_plans

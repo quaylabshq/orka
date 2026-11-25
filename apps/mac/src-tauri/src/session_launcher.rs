@@ -590,7 +590,8 @@ pub(crate) fn options_with(id: &str, host: &impl Host) -> Result<Vec<LaunchOptio
     let session = session(&db, id)?;
     let existing = session_forks::resumable(&db, &session.resource)?;
     let folder = root(&session);
-    let records = crate::history::resource_records(&session.resource);
+    let records = session_forks::reading_resource(&db, &session.resource)
+        .and_then(|snapshot| snapshot.records().map(|records| records.into_owned()));
     let fork = session_forks::info(&db, id)?;
     let desktop = fork["destination"]
         .as_str()
@@ -727,8 +728,8 @@ pub fn handoff_prompt(id: &str) -> Result<Value> {
     } else {
         Tool::parse(resource["source"].as_str().unwrap_or(""))?.name()
     };
-    let current = session_forks::current_resource(&db, &resource)?;
-    let records = crate::history::resource_records(&current)?;
+    let snapshot = session_forks::reading_resource(&db, &resource)?;
+    let records = snapshot.records()?;
     Ok(json!({"text":continuation_prompt(source, &records)?,"revision":resource["revision"]}))
 }
 
@@ -1143,8 +1144,8 @@ pub(crate) fn launch_with(
     if tool != session.tool {
         let directory = root.join(".orka/handoffs");
         packages::safe_directory(&root, &directory)?;
-        let current_resource = session_forks::current_resource(&db, &session.resource)?;
-        let records = crate::history::resource_records(&current_resource)?;
+        let snapshot = session_forks::reading_resource(&db, &session.resource)?;
+        let records = snapshot.records()?;
         let context = continuation_prompt(session.tool.name(), &records)?;
         let path = directory.join(format!(
             "{id}-{}-{}-{}-{}.md",

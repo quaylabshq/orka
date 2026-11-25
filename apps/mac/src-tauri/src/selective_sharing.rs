@@ -73,6 +73,16 @@ pub(crate) fn preview_from_local(
     input: &Value,
     local: &Value,
 ) -> Result<Value> {
+    preview_from_local_with_progress(db, project, input, local, || {})
+}
+
+pub(crate) fn preview_from_local_with_progress(
+    db: &Connection,
+    project: &Value,
+    input: &Value,
+    local: &Value,
+    prepared: impl FnOnce(),
+) -> Result<Value> {
     if local["resource"]["projectId"]
         .as_str()
         .is_some_and(|id| project["id"].as_str() != Some(id))
@@ -85,6 +95,20 @@ pub(crate) fn preview_from_local(
     let scoped = sources::for_resource(project, &resource)
         .ok_or("Connect this resource's repository on this Mac")?;
     sources::validate(&scoped)?;
+    if resource["nativeSession"] == true {
+        let content = crate::local_resources::live_session(db, project, local)?.content;
+        if resource["files"] != json!(content.manifest()) {
+            return Err(
+                "This session changed while preparing the preview. Open the preview again.".into(),
+            );
+        }
+        resource["files"] = json!(content.persist()?);
+        resource
+            .as_object_mut()
+            .ok_or("Invalid resource")?
+            .remove("nativeSession");
+    }
+    prepared();
     resource = crate::context_sharing::publication_resource(
         db,
         project["id"].as_str().ok_or("Missing project")?,
@@ -179,6 +203,14 @@ pub fn queue(db: &Connection, project: &Value, input: &Value) -> Result<Value> {
     )?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(receipt)
+}
+
+/// A published receipt replays the API result as metadata. Its event's
+/// blobs are covered by the authoritative resource and binding while needed.
+pub(crate) fn published_receipt_key(key: &str, receipt: &Value) -> bool {
+    key.starts_with("selected-share:")
+        && receipt["status"] == "published"
+        && receipt["result"]["status"] == "published"
 }
 
 pub fn authorized_origin(db: &Connection, queued: &Value) -> Result<Option<String>> {

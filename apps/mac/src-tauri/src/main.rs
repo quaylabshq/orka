@@ -40,6 +40,7 @@ mod repositories;
 mod resource_commands;
 mod scan_cache;
 mod selective_sharing;
+mod session_cleanup;
 mod session_forks;
 mod session_launcher;
 mod session_presentation;
@@ -70,6 +71,19 @@ fn main() {
         eprintln!("{error}");
         std::process::exit(1);
     }
+    if args
+        .get(1)
+        .is_some_and(|a| a == "--orka-clean-session-blobs")
+    {
+        std::process::exit(session_cleanup::run(&args[2..]));
+    }
+    let _storage = match session_cleanup::lock_runtime() {
+        Ok(lock) => lock,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    };
     let _launch = match updates::initialize(&mut args) {
         Ok(Some(guard)) => guard,
         Ok(None) => return,

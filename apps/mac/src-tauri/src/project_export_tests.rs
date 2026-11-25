@@ -165,6 +165,54 @@ fn project_export_reads_private_cache_without_discovery_or_writes() {
 }
 
 #[test]
+fn project_export_reads_native_sessions_from_paused_project_sources() {
+    for deleted in [false, true] {
+        let mut f = Fixture::new();
+        let project_id = f.project["id"].as_str().unwrap().to_owned();
+        f.project["sharing"]["session"] = json!(false);
+        db::upsert(&f.db, "projects", &project_id, &project_id, &f.project).unwrap();
+        sharing_tests::seed(&f);
+        let catalog = crate::local_resources::catalog(&f.db, &f.project, "session").unwrap();
+        let session = &catalog["resources"][0];
+        let session_id = session["resourceId"].as_str().unwrap();
+        let hash = session["files"][0]["hash"].as_str().unwrap();
+        let stored = db::blob_path(hash).unwrap();
+        assert!(!stored.exists());
+        f.project["archivedAt"] = json!("2026-11-19T00:00:00Z");
+        if deleted {
+            f.project["deletedAt"] = json!("2026-11-19T00:00:00Z");
+            f.project["purgeAfter"] = json!("2026-12-19T00:00:00Z");
+        }
+        db::upsert(&f.db, "projects", &project_id, &project_id, &f.project).unwrap();
+        let archive = f._home.path().join("project.zip");
+        let cache = db::CacheScope::current().unwrap();
+        bundles::export_project(&cache, &project_id, &archive).unwrap();
+        let mut zip = zip::ZipArchive::new(fs::File::open(&archive).unwrap()).unwrap();
+        let bytes = blob(
+            &mut zip,
+            &format!("local-resources/{session_id}/blobs/{hash}"),
+        );
+        assert_eq!(db::digest(&bytes), hash);
+        assert!(String::from_utf8_lossy(&bytes).contains("Private conversation"));
+        assert!(!stored.exists());
+        // A backed-up frozen share can still be exported when its source
+        // checkout is offline. The unavailable checkout is never reread.
+        assert_eq!(db::blob(&bytes).unwrap(), hash);
+        fs::rename(&f.root, f._home.path().join("unplugged")).unwrap();
+        bundles::export_project(&cache, &project_id, &archive).unwrap();
+        let mut restored = zip::ZipArchive::new(fs::File::open(archive).unwrap()).unwrap();
+        assert_eq!(
+            blob(
+                &mut restored,
+                &format!("local-resources/{session_id}/blobs/{hash}")
+            ),
+            bytes
+        );
+        assert!(f.outbox().is_empty());
+    }
+}
+
+#[test]
 fn project_export_does_not_resurrect_revoked_teammate_cache() {
     let f = Fixture::new();
     let id = f.project["id"].as_str().unwrap();

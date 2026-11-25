@@ -51,6 +51,22 @@ Orka 0.3.14 uses data epoch 3. It freezes the selected session version for a que
 
 Orka 0.3.19 uses data epoch 4. For a connected subfolder or worktree, Orka can bind Claude memory to the repository's native memory directory. Older versions expect a different directory and can interpret an absent memory file as a deletion. Forward updates keep existing bindings. The recovery helper requires another epoch 4 build for a local restore.
 
+The session storage update uses data epoch 5. The desktop reads private session metadata from the existing catalog and uses the native transcript as the source for new catalog rows. Epoch 4 builds expect stored transcript bytes for those rows. Forward upgrades preserve existing catalog snapshots and pending work. The updater requires an epoch 5 build when offering a local restore. To use an older app again, restore a complete epoch 4 app-data backup taken before upgrading.
+
+### Reclaiming old session snapshots
+
+After upgrading, refresh the session catalog for projects you still use so their private sessions can use the originals. The cleanup command reports estimates for one profile at a time. It defaults to a read-only inspection. Use `--profile NAME` to select another profile.
+
+```sh
+"/Applications/Orka.app/Contents/MacOS/orka-desktop" --orka-clean-session-blobs
+"/Applications/Orka.app/Contents/MacOS/orka-desktop" --orka-clean-session-blobs --apply
+```
+
+For apply, quit Orka and stop background sync and CLI jobs using that profile. Close any older copies of the app before maintenance. Current app processes hold a profile storage lock for their lifetime, including plugin and export operations. If a process holds the lock, apply reports the profile as in use. Rerun the dry run after quitting if a database journal prevented a consistent read.
+
+The report shows eligible and removed file counts and allocated bytes by store, along with counts by skip reason. It protects referenced resource, pending, draft, conflict, preview, and older catalog snapshots across the profile's account databases. A missing, unreadable, or unsupported database blocks cleanup for that profile. Legacy accounts can omit the drafts table and retain an empty usage outbox. Cleanup is limited to verified unreferenced Codex and Claude transcript files in Orka's stores. Native originals and exported archives are outside those stores. Rerun after an interrupted apply to finish the scan.
+
+
 LaunchServices starts the native desktop executable directly, preserving its process identity for the macOS menu bar. Before opening the workspace, the desktop holds the installation locks and asks the bundled recovery launcher to check cached withdrawal and crash state and start the health watcher. The legacy launcher entry point remains available for installed hooks and background commands; GUI launches through it return to LaunchServices rather than replacing a running process. The background updater records startup and exit health locally. For a regular update, it verifies the calling desktop process and rechecks the approved version and archive digest. The installer stages a signed full bundle on the installation volume, waits for foreground and background processes to release their shared runtime lock, and swaps the bundles atomically. An interruption leaves either the previous or the new complete bundle at the same path. The updater and application data live outside that swap.
 
 - Run `scripts/test-macos-recovery.sh` for signed policy, replay, withdrawal, startup preflight, crash suppression, and lock checks. Run `npm run test:ui -- tests/ui/desktop-updates.spec.ts` for manual checks, menu navigation and draft protection, collapsed release notes, check failures, automatic timing, shared installation progress, conditional sidebar visibility, alignment, and the approval action. On a packaged build, verify the running desktop matches `CFBundleExecutable`, the menu bar icon opens its panel, close/reopen and Quit work, and native runtime locks are released for installation. `scripts/test-macos-recovery.sh --plugin-app /path/to/Orka.app` checks the packaged plugin's maintenance shutdown.

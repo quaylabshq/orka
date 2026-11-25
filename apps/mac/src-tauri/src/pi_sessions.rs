@@ -127,12 +127,6 @@ pub(crate) fn copy_snapshot_bytes(
     Ok(native::encode(&records))
 }
 
-/// A private copy as its file now reads, for the reading view and handoffs.
-pub(crate) fn live_copy(binding: &Value, resource: &Value) -> Result<Value> {
-    let bytes = copy_snapshot_bytes(binding, resource, &db::blob_read)?;
-    Ok(with_session_file(resource, &bytes, &db::blob(&bytes)?))
-}
-
 pub(crate) fn copy_path(binding: &Value, root: &Path) -> Result<PathBuf> {
     let path = copy_location(binding)?;
     let records = native::complete_records(&history::read_session(&path)?)?;
@@ -288,6 +282,7 @@ pub(crate) fn fork(db: &rusqlite::Connection, project: &Value, resource: &Value)
     for key in [
         "paths",
         "nativeId",
+        "nativeSession",
         "local",
         "localChanges",
         "sharedRevision",
