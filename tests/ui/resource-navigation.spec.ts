@@ -131,6 +131,22 @@ async function resourceFixture(
             );
             return { messages, total, offset };
           }
+          if (name === "open_transcript")
+            return {
+              readerId:
+                "fixture-transcript-" + String(args?.conflictId ?? "current"),
+              sessionSnapshot: {
+                ...(args?.conflictId ? { conflictId: args.conflictId } : {}),
+                snapshotHash: args?.conflictId
+                  ? "incoming-snapshot"
+                  : "shared-snapshot",
+              },
+            };
+          if (name === "read_transcript") {
+            const text = "# Preview\nSome content";
+            return { offset: 0, text, nextOffset: text.length, eof: true };
+          }
+          if (name === "close_transcript") return null;
           if (name === "inspect_resource")
             return {
               content:
