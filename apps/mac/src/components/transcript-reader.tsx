@@ -259,6 +259,7 @@ function TranscriptText({
   const cache = useRef(new Map<number, { text: string; bytes: number }>());
   const cachedBytes = useRef(0);
   const active = useRef<Read | null>(null);
+  const readerClosed = useRef(false);
   const fetchedAtHeader = useRef(false);
   const queuedJump = useRef<Read | null>(null);
   const latestJump = useRef<"end" | "start" | null>(null);
@@ -394,6 +395,7 @@ function TranscriptText({
 
   const read = (request: Read) => {
     if (
+      readerClosed.current ||
       (request.kind === "before" && loaded.current?.start !== request.offset) ||
       (request.kind === "after" && loaded.current?.end !== request.offset)
     )
@@ -447,15 +449,16 @@ function TranscriptText({
       })
       .catch((reason: unknown) => {
         if (ticket !== generation.current) return;
+        // A native read error closes this handle. A queued jump or an effect
+        // from an earlier render must not reuse it before Retry reopens it.
+        readerClosed.current = true;
+        queuedJump.current = null;
         if (reason === PREVIEW_TOO_LARGE) {
-          queuedJump.current = null;
           onPreviewLimit();
           return;
         }
         const invalidated = reason === "transcript_snapshot_invalidated";
-        if (queuedJump.current && !invalidated) return;
         if (invalidated) {
-          queuedJump.current = null;
           cache.current.clear();
           cachedBytes.current = 0;
           loaded.current = null;
@@ -720,7 +723,7 @@ function TranscriptText({
 
   const jump = (kind: "end" | "start") => {
     if (
-      failed !== null ||
+      readerClosed.current ||
       (index && !blocks.length) ||
       pending?.kind === kind ||
       queuedJump.current?.kind === kind

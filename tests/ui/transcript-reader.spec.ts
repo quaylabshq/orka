@@ -432,12 +432,17 @@ async function openAtForwardEdge(page: Page) {
     const w = window as any;
     const invoke = w.__TAURI_INTERNALS__.invoke;
     let opened = 0;
+    let failedReader = false;
     w.__TAURI_INTERNALS__.invoke = async (name: string, args: any) => {
       if (name === "open_transcript") opened++;
       if (name !== "read_transcript") return invoke(name, args);
       if (opened > 1) {
         const text = "Transcript reopened";
         return { offset: 0, nextOffset: text.length, text, eof: true };
+      }
+      if (failedReader) {
+        w.readClosedTranscript = true;
+        throw "transcript_snapshot_invalidated";
       }
       if (args.offset === 0) {
         const tail = "\nFinal loaded record";
@@ -448,8 +453,13 @@ async function openAtForwardEdge(page: Page) {
         return { offset: 0, nextOffset: text.length, text, eof: false };
       }
       await new Promise<void>((resolve, reject) => {
-        w.finishEdge = (succeed: boolean) =>
-          succeed ? resolve() : reject("Read failed.");
+        w.finishEdge = (succeed: boolean) => {
+          if (succeed) resolve();
+          else {
+            failedReader = true;
+            reject("Read failed.");
+          }
+        };
       });
       const text = "\nNewly arrived record";
       return {
@@ -532,6 +542,26 @@ for (const [width, height] of [
     await expect(retry).toHaveCount(0);
   });
 }
+
+test("a failed range cancels a jump waiting on its closed reader", async ({
+  page,
+}) => {
+  const { region, previous } = await openAtForwardEdge(page);
+  await region.evaluate((element) => element.focus({ preventScroll: true }));
+  await page.keyboard.press("End");
+  await expect(region.getByRole("status")).toHaveText(
+    "Preparing the end of the transcript…",
+  );
+  await page.evaluate(() => (window as any).finishEdge(false));
+  await expect(region.getByRole("alert")).toContainText(
+    "Couldn’t load more of the transcript.",
+  );
+  await expect(previous).toBeInViewport();
+  await expect(region.getByRole("button", { name: "Retry" })).toBeInViewport();
+  expect(
+    await page.evaluate(() => (window as any).readClosedTranscript),
+  ).toBeUndefined();
+});
 
 test("shows transcript lines while the initial read is pending", async ({
   page,
