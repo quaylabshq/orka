@@ -589,85 +589,98 @@ export function SettingsMembers({
       )}
       {revoking && (
         <Modal
-          legacyFrame
           title="Revoke invite?"
           className="settings-confirm"
           onClose={() => {
             if (!busy) setRevoking("");
           }}
+          size="compact"
+          closeButton={false}
+          heading={`Revoke the invite to ${revoking}?`}
+          footer={
+            <>
+              <Button
+                size="sm"
+                disabled={Boolean(busy)}
+                onClick={() => setRevoking("")}
+              >
+                Stay
+              </Button>
+              <Button
+                size="sm"
+                variant="primary"
+                disabled={Boolean(busy)}
+                onClick={() => revoke(revoking)}
+              >
+                {busy && <ActivityIndicator />}
+                Revoke invite
+              </Button>
+            </>
+          }
         >
-          <h2>Revoke the invite to {revoking}?</h2>
           <p>Links sent to this address will stop working.</p>
           {error && <p role="alert">{error}</p>}
-          <div className="settings-confirm-actions">
-            <Button disabled={Boolean(busy)} onClick={() => setRevoking("")}>
-              Stay
-            </Button>
-            <Button
-              variant="primary"
-              disabled={Boolean(busy)}
-              onClick={() => revoke(revoking)}
-            >
-              {busy && <ActivityIndicator />}
-              Revoke invite
-            </Button>
-          </div>
         </Modal>
       )}
       {confirmation && (
         <Modal
-          legacyFrame
           title={
             confirmation.action === "remove-member"
               ? "Remove member?"
               : "Transfer ownership?"
           }
+          heading={
+            confirmation.action === "remove-member"
+              ? `Remove ${confirmation.member.name ?? "this member"}?`
+              : `Transfer ownership to ${confirmation.member.name ?? "this member"}?`
+          }
           className="settings-confirm"
           onClose={() => {
             if (!busy) setConfirmation(null);
           }}
+          size="compact"
+          closeButton={false}
+          footer={
+            <>
+              <Button
+                size="sm"
+                disabled={Boolean(busy)}
+                onClick={() => setConfirmation(null)}
+              >
+                Stay
+              </Button>
+              <Button
+                size="sm"
+                variant="primary"
+                disabled={Boolean(busy)}
+                onClick={() =>
+                  void mutate(
+                    confirmation.member.id,
+                    () =>
+                      call(confirmation.action, {
+                        userId: confirmation.member.id,
+                        expectedPolicyRevision: query.data?.policyRevision,
+                      }),
+                    confirmation.action === "remove-member"
+                      ? "Member removed."
+                      : "Ownership transferred.",
+                  )
+                }
+              >
+                {busy && <ActivityIndicator />}
+                {confirmation.action === "remove-member"
+                  ? "Remove member"
+                  : "Transfer ownership"}
+              </Button>
+            </>
+          }
         >
-          <h2>
-            {confirmation.action === "remove-member"
-              ? `Remove ${confirmation.member.name ?? "this member"}?`
-              : `Transfer ownership to ${confirmation.member.name ?? "this member"}?`}
-          </h2>
           <p>
             {confirmation.action === "remove-member"
               ? "Their access to shared content will end. Private local work stays on their Mac, and queued writes are checked again when they reconnect."
               : "They will become the Owner. You will become a Member with the project’s Member permissions."}
           </p>
           {error && <p role="alert">{error}</p>}
-          <div className="settings-confirm-actions">
-            <Button
-              disabled={Boolean(busy)}
-              onClick={() => setConfirmation(null)}
-            >
-              Stay
-            </Button>
-            <Button
-              variant="primary"
-              disabled={Boolean(busy)}
-              onClick={() =>
-                void mutate(
-                  confirmation.member.id,
-                  () =>
-                    call(confirmation.action, {
-                      userId: confirmation.member.id,
-                      expectedPolicyRevision: query.data?.policyRevision,
-                    }),
-                  confirmation.action === "remove-member"
-                    ? "Member removed."
-                    : "Ownership transferred.",
-                )
-              }
-            >
-              {busy && <ActivityIndicator />}
-              {confirmation.action === "remove-member"
-                ? "Remove member"
-                : "Transfer ownership"}
-            </Button>
-          </div>
         </Modal>
       )}
     </>
