@@ -601,3 +601,19 @@ fn discovers_pi_session_when_its_cwd_is_a_symlink_to_the_project() {
     assert_eq!(pi.len(), 1);
     assert_eq!(pi[0]["nativeId"], id);
 }
+
+#[test]
+fn queued_shares_name_a_service_update_only_when_one_is_needed() {
+    for error in [
+        "Update the Orka service to support one-off sharing. The selected snapshot is queued on this Mac.",
+        selective_sharing::PI_SERVICE_UPGRADE,
+    ] {
+        let receipt = selective_sharing::queued_receipt("request", error);
+        assert_eq!(receipt["status"], "queued");
+        assert_eq!(receipt["reason"], "unsupported");
+    }
+    let offline =
+        selective_sharing::queued_receipt("request", "Cloud unavailable; local work stays queued");
+    assert_eq!(offline["status"], "queued");
+    assert!(offline.get("reason").is_none());
+}

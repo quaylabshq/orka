@@ -8,6 +8,8 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 pub const QUEUE_PATH: &str = "/local/selected-share";
+const SELECTED_SHARING_UPGRADE: &str =
+    "Update the Orka service to support one-off sharing. The selected snapshot is queued on this Mac.";
 pub(crate) const PI_SERVICE_UPGRADE: &str =
     "Update the Orka service to share Pi sessions. The selected snapshot is queued on this Mac.";
 
@@ -241,7 +243,7 @@ pub async fn send(db: &Connection, owner: &str, queued: &Value) -> Result<Value>
     let capabilities =
         sync::api_at(owner, &origin, "GET", "/v2/projects/capabilities", None).await?;
     if capabilities["selectedSharing"] != 1 {
-        return Err("Update the Orka service to support one-off sharing. The selected snapshot is queued on this Mac.".into());
+        return Err(SELECTED_SHARING_UPGRADE.into());
     }
     if queued["value"]["resource"]["source"] == "pi" && capabilities["piSessions"] != 1 {
         return Err(PI_SERVICE_UPGRADE.into());
@@ -404,14 +406,24 @@ async fn command_bound(
                 Err(error) => {
                     db.execute("UPDATE outbox SET error=? WHERE id=?", params![error, id])
                         .map_err(|e| e.to_string())?;
-                    Ok(
-                        json!({"requestId":id,"status":"queued","error":error,"automaticSharingChanged":false}),
-                    )
+                    Ok(queued_receipt(id, &error))
                 }
             }
         }
         _ => Err("Unknown local sharing operation".into()),
     }
+}
+
+/// A share that stays queued after one send attempt. `reason` is set only
+/// when the service must be updated first, because retrying alone will not
+/// send it.
+pub(crate) fn queued_receipt(id: &str, error: &str) -> Value {
+    let mut receipt =
+        json!({"requestId":id,"status":"queued","error":error,"automaticSharingChanged":false});
+    if error == SELECTED_SHARING_UPGRADE || error == PI_SERVICE_UPGRADE {
+        receipt["reason"] = json!("unsupported");
+    }
+    receipt
 }
 
 fn public_receipt(receipt: &Value) -> Value {
