@@ -439,3 +439,62 @@ fn corrupt_stored_source_cannot_return_even_a_prepared_prefix() {
     let result = tauri::async_runtime::block_on(read_transcript(reader.into(), Some(0), 32, None));
     assert!(result.unwrap_err().contains("corrupt native transcript"));
 }
+
+#[test]
+fn live_format_limit_keeps_the_exact_snapshot_download_and_rejects_a_later_edit() {
+    use crate::local_resources;
+    let mut f = Fixture::new();
+    local_resource_tests::prepare(&mut f);
+    let catalog = local_resources::catalog(&f.db, &f.project, "session").unwrap();
+    let id = catalog["resources"][0]["resourceId"].as_str().unwrap();
+    let resource = local_resources::resource(&f.db, id).unwrap();
+    let live = crate::session_forks::reading_resource(&f.db, &resource).unwrap();
+    let expected = native::transcript(&live.records().unwrap());
+    let opened =
+        serde_json::to_value(crate::transcript::open_oversized_live_fixture(id.into()).unwrap())
+            .unwrap();
+    assert_eq!(
+        opened["sessionSnapshot"]["snapshotHash"],
+        crate::commands::session_snapshot_hash(&live.resource)
+    );
+    let reader = opened["readerId"].as_str().unwrap();
+    let result = tauri::async_runtime::block_on(read_transcript(reader.into(), Some(0), 32, None));
+    assert_eq!(result.unwrap_err(), crate::transcript::PREVIEW_TOO_LARGE);
+
+    let path = f.root.join("large-live.zip");
+    let download = || {
+        crate::commands::export_bundle(
+            id.into(),
+            path.to_string_lossy().into(),
+            Some(serde_json::from_value(opened["sessionSnapshot"].clone()).unwrap()),
+        )
+    };
+    download().unwrap();
+    let mut zip = zip::ZipArchive::new(fs::File::open(&path).unwrap()).unwrap();
+    let mut text = String::new();
+    zip.by_name("transcript.md")
+        .unwrap()
+        .read_to_string(&mut text)
+        .unwrap();
+    assert_eq!(text, expected);
+
+    let native_path = Path::new(resource["paths"][0].as_str().unwrap());
+    let mut bytes = fs::read(native_path).unwrap();
+    bytes.extend(native::encode(&[
+        json!({"type":"event_msg","payload":{"type":"user_message","message":"Later native edit"}}),
+    ]));
+    fs::write(native_path, bytes).unwrap();
+    assert_eq!(download().unwrap_err(), "session_snapshot_changed");
+
+    let unopened_page =
+        serde_json::to_value(crate::transcript::open_oversized_live_fixture(id.into()).unwrap())
+            .unwrap();
+    let reader = unopened_page["readerId"].as_str().unwrap();
+    f.db.execute(
+        "DELETE FROM projects WHERE id=?",
+        [f.project["id"].as_str().unwrap()],
+    )
+    .unwrap();
+    let result = tauri::async_runtime::block_on(read_transcript(reader.into(), Some(0), 32, None));
+    assert_eq!(result.unwrap_err(), crate::transcript::SNAPSHOT_INVALIDATED);
+}

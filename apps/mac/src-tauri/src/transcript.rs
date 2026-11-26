@@ -29,7 +29,7 @@ struct Reader {
     snapshot_hash: String,
     resource: Value,
     cancelled: AtomicBool,
-    tape: Mutex<Option<Tape>>,
+    tape: Mutex<Result<Option<Tape>>>,
 }
 
 type Readers = Vec<(String, Arc<Reader>)>;
@@ -86,6 +86,23 @@ impl Reader {
         }
         Ok(())
     }
+
+    fn page(&self, offset: Option<u64>, max_bytes: usize, before: bool) -> Result<TranscriptPage> {
+        let mut state = self
+            .tape
+            .lock()
+            .map_err(|_| "Transcript data is unavailable")?;
+        let tape = state.as_mut().map_err(|error| error.clone())?;
+        let first = offset == Some(0) && !before;
+        let within_prefix = !before
+            && offset
+                .is_some_and(|offset| offset.saturating_add(max_bytes as u64) <= PAGE_LIMIT as u64);
+        if tape.is_none() || (!within_prefix && tape.as_ref().is_some_and(|tape| tape.partial)) {
+            *tape = None;
+            *tape = Some(prepare(self, first)?);
+        }
+        tape.as_mut().unwrap().page(offset, max_bytes, before)
+    }
 }
 
 fn registry() -> Result<std::sync::MutexGuard<'static, Readers>> {
@@ -115,6 +132,7 @@ fn open_in_scope(
     scope: CacheScope,
     id: String,
     conflict_id: Option<String>,
+    format_live: impl FnOnce(&crate::history::SessionRead) -> Result<Tape>,
 ) -> Result<TranscriptOpen> {
     let db = scope.open()?;
     let candidate = inspection_candidate(&db, &id, conflict_id.as_deref())?;
@@ -139,9 +157,15 @@ fn open_in_scope(
         // the native reader. Format it on this worker without persisting it,
         // then release the native bytes before registering the open handle.
         let tape = if snapshot.is_live() {
-            Some(prepare_live(&snapshot)?)
+            // Preserve the authorized manifest and download action when the
+            // redacted snapshot exceeds the text preview budget.
+            match format_live(&snapshot) {
+                Ok(tape) => Ok(Some(tape)),
+                Err(error) if error == PREVIEW_TOO_LARGE => Err(error),
+                Err(error) => return Err(error),
+            }
         } else {
-            None
+            Ok(None)
         };
         (snapshot.resource, tape)
     };
@@ -197,10 +221,18 @@ pub async fn open_transcript(id: String, conflict_id: Option<String>) -> Result<
     let permit = PREPARE.acquire().await.map_err(|error| error.to_string())?;
     tauri::async_runtime::spawn_blocking(move || {
         let _permit = permit;
-        open_in_scope(scope, id, conflict_id)
+        open_in_scope(scope, id, conflict_id, prepare_live)
     })
     .await
     .map_err(|error| error.to_string())?
+}
+
+#[cfg(test)]
+pub(crate) fn open_oversized_live_fixture(id: String) -> Result<TranscriptOpen> {
+    open_in_scope(CacheScope::current()?, id, None, |snapshot| {
+        assert!(snapshot.is_live());
+        Err(PREVIEW_TOO_LARGE.into())
+    })
 }
 
 #[tauri::command]
@@ -223,24 +255,9 @@ pub async fn read_transcript(
         let _permit = permit;
         let run = || -> Result<TranscriptPage> {
             reader.validate()?;
-            let mut tape = reader
-                .tape
-                .lock()
-                .map_err(|_| "Transcript data is unavailable")?;
-            let before = before.unwrap_or(false);
-            let first = offset == Some(0) && !before;
-            let within_prefix = !before
-                && offset.is_some_and(|offset| {
-                    offset.saturating_add(max_bytes as u64) <= PAGE_LIMIT as u64
-                });
-            if tape.is_none() || (!within_prefix && tape.as_ref().is_some_and(|tape| tape.partial))
-            {
-                *tape = None;
-                *tape = Some(prepare(&reader, first)?);
-            }
-            let page = tape.as_mut().unwrap().page(offset, max_bytes, before)?;
+            let page = reader.page(offset, max_bytes, before.unwrap_or(false));
             reader.validate()?;
-            Ok(page)
+            page
         };
         // Invalid snapshots and cancelled readers must release their file
         // immediately. An invalid page offset can be retried by reopening.
