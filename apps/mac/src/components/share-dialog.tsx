@@ -330,9 +330,9 @@ export function ShareDialog({
             <dd>
               <span
                 className={`share-dialog-pill share-dialog-pill--${status.tone}`}
-                role={status.tone === "danger" ? "alert" : "status"}
+                role="status"
                 aria-live="polite"
-                title={error ?? status.pill}
+                title={status.pill}
                 data-shimmer={phase.step === "sending" || undefined}
               >
                 {status.icon === "loader" ? (
@@ -341,13 +341,17 @@ export function ShareDialog({
                   <Icon icon={statusIcons[status.icon]} size="sm" />
                 )}
                 <span>{status.pill}</span>
-                {error && <span className="sr-only">{error}</span>}
               </span>
             </dd>
           </div>
         </dl>
       </div>
       <div className="share-dialog-footer">
+        {error && (
+          <p className="share-dialog-error" role="alert" title={error}>
+            {error}
+          </p>
+        )}
         <Button
           variant="primary"
           size="sm"

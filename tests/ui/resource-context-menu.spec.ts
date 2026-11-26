@@ -899,14 +899,14 @@ for (const viewport of [
         (window as unknown as MenuWindow).resourceMenu.failPreview?.(),
       );
       await expect(statusPill(dialog)).toContainText("Preview failed");
-      await expect(statusPill(dialog)).toHaveAttribute(
-        "title",
-        /Local folder temporarily unavailable/,
+      await expect(dialog.getByRole("alert")).toContainText(
+        "Local folder temporarily unavailable",
       );
       await stationary();
       await capture("preview-failed");
       await action.click();
       await expect(statusPill(dialog)).toHaveText("Preparing preview");
+      await expect(dialog.getByRole("alert")).toHaveCount(0);
       await page.evaluate(() =>
         (window as unknown as MenuWindow).resourceMenu.finishPreview?.(),
       );
@@ -938,9 +938,8 @@ for (const viewport of [
       await expect(
         page.getByRole("dialog", { name: "Couldn’t share", exact: true }),
       ).toBeVisible();
-      await expect(statusPill(dialog)).toHaveAttribute(
-        "title",
-        /Connection interrupted while sharing/,
+      await expect(dialog.getByRole("alert")).toContainText(
+        "Connection interrupted while sharing",
       );
       await stationary();
       await capture("share-failed");

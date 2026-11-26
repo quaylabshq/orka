@@ -219,7 +219,24 @@
 .share-dialog-footer {
   display: flex;
   flex-shrink: 0;
+  align-items: center;
   justify-content: flex-end;
+  gap: 12px;
   margin-top: auto;
   padding: 16px 20px 20px;
+}
+
+/* The reason a step failed, beside the button that retries it. */
+.modal.share-dialog .share-dialog-error {
+  display: -webkit-box;
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  margin: 0;
+  max-height: 32px;
+  color: var(--red-text);
+  font-size: var(--body-xs-font-size);
+  line-height: 16px;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
