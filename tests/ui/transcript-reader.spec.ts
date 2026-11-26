@@ -1,5 +1,11 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import { detailGalleryFixture } from "./fixtures/detail-gallery.js";
+
+async function expectSkeletonLines(area: Locator) {
+  const lines = area.locator(".transcript-skeleton-line");
+  await expect(lines.first()).toBeInViewport();
+  await expect(lines.nth(1)).toBeVisible();
+}
 
 async function checkPrependAnchor(
   page: Page,
@@ -68,6 +74,19 @@ async function checkPrependAnchor(
     .poll(() => page.evaluate(() => typeof (window as any).finishPrepend))
     .toBe("function");
 
+  const pendingEdge = text.locator(
+    '[data-transcript-edge="before"][aria-busy="true"]',
+  );
+  if (atHeader) {
+    await scroller.evaluate((reader) => {
+      reader.scrollTop = 0;
+    });
+    await expectSkeletonLines(pendingEdge);
+    await expect(
+      text.locator(".transcript-block pre").first(),
+    ).toBeInViewport();
+  }
+
   const before = await scroller.evaluate((reader, atHeader) => {
     const viewport = reader.getBoundingClientRect();
     const blocks = Array.from(
@@ -113,6 +132,7 @@ async function checkPrependAnchor(
     )
     .toBeLessThanOrEqual(atHeader ? 1 : 24);
   if (atHeader) {
+    await expect(pendingEdge).toHaveCount(0);
     await expect(scroller.locator(".detail-title-card")).toBeInViewport();
     const start = await page.evaluate(() => (window as any).previousPageStart);
     await expect(
@@ -402,43 +422,208 @@ for (const cached of ["start", "end"] as const)
     );
   });
 
+async function openAtForwardEdge(page: Page) {
+  const view = await detailGalleryFixture(page, { kind: "session" });
+  await page.evaluate(() => {
+    const w = window as any;
+    const invoke = w.__TAURI_INTERNALS__.invoke;
+    let opened = 0;
+    w.__TAURI_INTERNALS__.invoke = async (name: string, args: any) => {
+      if (name === "open_transcript") opened++;
+      if (name !== "read_transcript") return invoke(name, args);
+      if (opened > 1) {
+        const text = "Transcript reopened";
+        return { offset: 0, nextOffset: text.length, text, eof: true };
+      }
+      if (args.offset === 0) {
+        const tail = "\nFinal loaded record";
+        const text =
+          "Already loaded record.\n"
+            .repeat(1000)
+            .slice(0, args.maxBytes - tail.length) + tail;
+        return { offset: 0, nextOffset: text.length, text, eof: false };
+      }
+      await new Promise<void>((resolve, reject) => {
+        w.finishEdge = (succeed: boolean) =>
+          succeed ? resolve() : reject("Read failed.");
+      });
+      const text = "\nNewly arrived record";
+      return {
+        offset: args.offset,
+        nextOffset: args.offset + text.length,
+        text,
+        eof: true,
+      };
+    };
+  });
+  await view.getByRole("button", { name: "Transcript", exact: true }).click();
+  const region = view.getByRole("region", { name: "Transcript text" });
+  await expect(region).toContainText("Already loaded record.");
+  const scroller = view.locator(".detail-reader");
+  await scroller.evaluate((el) => {
+    el.scrollTop = el.scrollHeight;
+  });
+  await expect
+    .poll(() => page.evaluate(() => typeof (window as any).finishEdge))
+    .toBe("function");
+  // The boundary can be prefetched before it is visible. Move to the unread edge.
+  await scroller.evaluate((el) => {
+    el.scrollTop = el.scrollHeight;
+  });
+  const pending = region.locator(
+    '[data-transcript-edge="after"][aria-busy="true"]',
+  );
+  await expectSkeletonLines(pending);
+  const previous = region
+    .locator(".transcript-block")
+    .filter({ hasText: "Final loaded record" });
+  await expect(previous).toBeInViewport();
+  for (const label of ["Download session", "Jump to start", "Jump to end"]) {
+    const action = region.getByRole("button", { name: label, exact: true });
+    await expect(action).toBeAttached();
+    await expect(action).not.toBeInViewport();
+  }
+  return { region, previous, pending };
+}
+
 for (const [width, height] of [
   [1160, 800],
   [900, 640],
-])
-  test(`offers a visible retry at a failed forward edge at ${width}px`, async ({
+]) {
+  test(`appends the next page after a visible forward skeleton at ${width}px`, async ({
     page,
   }) => {
     await page.setViewportSize({ width, height });
-    const view = await detailGalleryFixture(page, { kind: "session" });
-    await page.evaluate(() => {
-      const w = window as any,
-        invoke = w.__TAURI_INTERNALS__.invoke;
-      let opened = 0;
-      w.__TAURI_INTERNALS__.invoke = async (name: string, args: any) => {
-        if (name === "open_transcript") opened++;
-        if (name !== "read_transcript") return invoke(name, args);
-        if (args.offset) throw "Read failed.";
-        const recovered = opened > 1;
-        const text = recovered
-          ? "Transcript reopened"
-          : "First record\n".repeat(1800).slice(0, args.maxBytes);
-        return { offset: 0, nextOffset: text.length, text, eof: recovered };
-      };
-    });
-    await view.getByRole("button", { name: "Transcript", exact: true }).click();
-    const region = view.getByRole("region", { name: "Transcript text" });
-    await expect(region).toContainText("First record");
-    await view
-      .locator(".detail-reader")
-      .evaluate((el) => (el.scrollTop = el.scrollHeight));
-    const retry = region.getByRole("button", { name: "Retry" });
-    await expect(retry).toHaveCount(1);
+    const { region, pending, previous } = await openAtForwardEdge(page);
+    await page.evaluate(() => (window as any).finishEdge(true));
+    await expect(pending).toHaveCount(0);
+    await expect(previous).toBeInViewport();
+    await expect(
+      region.getByText("Newly arrived record", { exact: true }),
+    ).toBeInViewport();
+  });
+
+  test(`offers an inline retry at the failed forward edge at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height });
+    const { region, previous, pending } = await openAtForwardEdge(page);
+    await page.evaluate(() => (window as any).finishEdge(false));
+    await expect(pending).toHaveCount(0);
+    const alert = region.getByRole("alert");
+    await expect(alert).toContainText("Couldn’t load more of the transcript.");
+    const retry = region
+      .locator('[data-transcript-edge="after"]')
+      .getByRole("button", { name: "Retry", exact: true });
     await expect(retry).toBeInViewport({ ratio: 1 });
-    await expect(region.getByRole("alert")).toContainText(
-      "Couldn’t load more of the transcript.",
-    );
+    await expect(previous).toBeInViewport();
+    const last = await previous.boundingBox();
+    const feedback = await alert.boundingBox();
+    expect(feedback!.y).toBeGreaterThanOrEqual(last!.y + last!.height - 1);
+    await expect(
+      region.getByRole("button", { name: "Download session", exact: true }),
+    ).not.toBeInViewport();
     await retry.click();
     await expect(region).toContainText("Transcript reopened");
     await expect(retry).toHaveCount(0);
   });
+}
+
+test("shows transcript lines while the initial read is pending", async ({
+  page,
+}) => {
+  const view = await detailGalleryFixture(page, { kind: "session" });
+  await page.evaluate(() => {
+    const w = window as any;
+    const invoke = w.__TAURI_INTERNALS__.invoke;
+    w.__TAURI_INTERNALS__.invoke = async (name: string, args: any) => {
+      if (name === "read_transcript") {
+        await new Promise<void>((resolve) => {
+          w.releaseFirstRead = resolve;
+        });
+      }
+      return invoke(name, args);
+    };
+  });
+  await view.getByRole("button", { name: "Transcript", exact: true }).click();
+  await expect
+    .poll(() => page.evaluate(() => typeof (window as any).releaseFirstRead))
+    .toBe("function");
+  const region = view.getByRole("region", { name: "Transcript text" });
+  const status = region.getByRole("status", { name: "Loading transcript…" });
+  await expectSkeletonLines(status);
+  await page.evaluate(() => (window as any).releaseFirstRead());
+  await expect(status).toHaveCount(0);
+  await expect(
+    region.locator(".transcript-block pre").first(),
+  ).toBeInViewport();
+});
+
+test("shows text-line placeholders while restoring an evicted page", async ({
+  page,
+}) => {
+  const view = await detailGalleryFixture(page, { kind: "session" });
+  await page.evaluate(() => {
+    const w = window as any,
+      invoke = w.__TAURI_INTERNALS__.invoke;
+    const line =
+      "Assistant: Verify the session transcript in compact and wide windows, then check the next page.\n";
+    const transcript = "First restored record\n" + line.repeat(7000);
+    let forwardEnd = 0;
+    let released = false;
+    w.__TAURI_INTERNALS__.invoke = async (name: string, args: any) => {
+      if (name !== "read_transcript") return invoke(name, args);
+      if (args.offset < forwardEnd && !released) {
+        await new Promise<void>((resolve) => {
+          w.restorePage = () => {
+            released = true;
+            resolve();
+          };
+        });
+      }
+      const nextOffset = Math.min(
+        transcript.length,
+        args.offset + args.maxBytes,
+      );
+      forwardEnd = Math.max(forwardEnd, nextOffset);
+      w.reachedEnd = forwardEnd === transcript.length;
+      return {
+        offset: args.offset,
+        nextOffset,
+        text: transcript.slice(args.offset, nextOffset),
+        eof: nextOffset === transcript.length,
+      };
+    };
+  });
+  await view.getByRole("button", { name: "Transcript", exact: true }).click();
+  const region = view.getByRole("region", { name: "Transcript text" });
+  await expect(region).toContainText("First restored record");
+  const scroller = view.locator(".detail-reader");
+  await expect
+    .poll(
+      () =>
+        scroller.evaluate((el) => {
+          el.scrollTop = el.scrollHeight;
+          return (window as any).reachedEnd;
+        }),
+      { intervals: [35], timeout: 15000 },
+    )
+    .toBe(true);
+  await scroller.evaluate((el) => {
+    el.scrollTop = 0;
+  });
+  await expect
+    .poll(() => page.evaluate(() => typeof (window as any).restorePage))
+    .toBe("function");
+  const firstBlock = region.locator('.transcript-block[data-offset="0"]');
+  await expectSkeletonLines(
+    firstBlock.locator(".transcript-block-placeholder"),
+  );
+  await page.evaluate(() => (window as any).restorePage());
+  await expect(firstBlock.locator("pre")).toContainText(
+    "First restored record",
+  );
+  await expect(firstBlock.locator(".transcript-block-placeholder")).toHaveCount(
+    0,
+  );
+});
