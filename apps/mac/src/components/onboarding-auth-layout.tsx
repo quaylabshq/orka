@@ -75,6 +75,11 @@ export function OnboardingError({ children }: { children?: React.ReactNode }) {
   );
 }
 
+const legalLinks = {
+  terms: "https://tryorka.ai/docs/terms",
+  privacy: "https://tryorka.ai/docs/privacy",
+} as const;
+
 export function OnboardingLegal({
   onError,
 }: {
@@ -88,13 +93,15 @@ export function OnboardingLegal({
     event.preventDefault();
     onError("");
     void invoke("open_legal_link", { document }).catch(() =>
-      onError("Cannot open your browser. Open https://x.com manually."),
+      onError(
+        `Cannot open your browser. Open ${legalLinks[document]} manually.`,
+      ),
     );
   };
   return (
     <footer className="onboarding-entry__legal">
       <a
-        href="https://x.com"
+        href={legalLinks.terms}
         target="_blank"
         rel="noopener noreferrer"
         onClick={(event) => openLegalLink(event, "terms")}
@@ -110,7 +117,7 @@ export function OnboardingLegal({
         />
       </span>
       <a
-        href="https://x.com"
+        href={legalLinks.privacy}
         target="_blank"
         rel="noopener noreferrer"
         onClick={(event) => openLegalLink(event, "privacy")}
