@@ -26,6 +26,9 @@ export type Scene = {
     | "long"
     | "binary"
     | "longpath";
+  memoryDecision?: { currentText: string; proposedText: string };
+  refreshedMemoryDetail?: Record<string, unknown>;
+  keepMemoryDeleted?: boolean;
   canPublish?: boolean;
   longNames?: boolean;
   /** Extra shared resources, so requests can resolve a kind and repository. */
@@ -322,6 +325,23 @@ export async function open(page: Page, scene: Scene = {}, viewport = wide) {
                   };
                   const kind = scene.detail ?? "skill";
                   if (kind === "access") return { request };
+                  if (
+                    "decisionKind" in request &&
+                    request.decisionKind === "memory_conflict"
+                  ) {
+                    return {
+                      request: { ...request, ...scene.refreshedMemoryDetail },
+                      content: {
+                        resource: {
+                          ...resource,
+                          kind: "memory",
+                          title: request.title,
+                        },
+                        memoryDecision: scene.memoryDecision,
+                        keepResource: { deleted: scene.keepMemoryDeleted },
+                      },
+                    };
+                  }
                   if ((kind as string) === "longpath")
                     return {
                       request,
@@ -508,6 +528,7 @@ export async function open(page: Page, scene: Scene = {}, viewport = wide) {
                   (w.readCalls ??= []).push(args.input?.id);
                   return { ok: true };
                 case "decide": {
+                  (w.reviewDecisionsSent ??= []).push(args.input);
                   if (w.decideFail) throw new Error("Network unavailable");
                   if (w.decisionError) {
                     if (w.removeRequestOnDecision)

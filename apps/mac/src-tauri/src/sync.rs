@@ -2846,12 +2846,20 @@ impl<'a> SyncPass<'a> {
             }
             .await;
             match result {
+                Ok(Some(receipt)) if q["path"] == crate::selective_sharing::QUEUE_PATH => {
+                    let tx = db.transaction().map_err(|e| e.to_string())?;
+                    let waiting = crate::selective_sharing::complete(&tx, &q, &receipt)?;
+                    tx.commit().map_err(|e| e.to_string())?;
+                    if waiting {
+                        deferred.insert(q["id"].clone());
+                    } else {
+                        deferred.remove(&q["id"]);
+                    }
+                }
                 Ok(receipt) => {
                     let tx = db.transaction().map_err(|e| e.to_string())?;
                     if let Some(receipt) = receipt {
-                        if q["path"] == crate::selective_sharing::QUEUE_PATH {
-                            crate::selective_sharing::complete(&tx, &q, &receipt)?;
-                        } else if q["path"] == crate::global_skills::IMPORT_PATH
+                        if q["path"] == crate::global_skills::IMPORT_PATH
                             || q["path"] == crate::context_sharing::QUEUE_PATH
                         {
                             crate::context_sharing::complete(&tx, &q, &receipt)?;
@@ -3540,7 +3548,8 @@ fn consolidation_pending(queued: &Value, error: &str) -> bool {
     };
     matches!(
         reason,
-        "invalid_answers"
+        "owner_decision_pending"
+            | "invalid_answers"
             | "jev_disabled"
             | "jev_missing_key"
             | "jev_context_limit"
@@ -3684,6 +3693,12 @@ impl<'a> SyncError<'a> {
     /// error; every other code keeps the plain `"<status>: <message>"` shape.
     fn message(status: u16, body: &Value, fallback: &str) -> String {
         let message = body["error"].as_str().unwrap_or(fallback);
+        if status == 503
+            && body["code"] == "owner_decision_pending"
+            && message == "Memory consolidation pending: jev_uncertain"
+        {
+            return crate::selective_sharing::OWNER_DECISION_PENDING.into();
+        }
         match body["code"]
             .as_str()
             .filter(|code| Self::ACCESS.contains(code))
@@ -4602,6 +4617,11 @@ mod queue_tests {
 
     #[test]
     fn only_known_memory_consolidation_failures_are_deferred() {
+        let compatible = json!({"error":"Memory consolidation pending: jev_uncertain","code":"owner_decision_pending"});
+        assert_eq!(
+            SyncError::message(503, &compatible, "Service unavailable"),
+            crate::selective_sharing::OWNER_DECISION_PENDING
+        );
         let memory = queued(1, "memory");
         for path in [
             "/v2/sync/push",
@@ -4619,6 +4639,7 @@ mod queue_tests {
             );
         }
         for reason in [
+            "owner_decision_pending",
             "jev_uncertain",
             "jev_http_503",
             "jev_network",

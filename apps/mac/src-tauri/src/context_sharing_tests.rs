@@ -684,6 +684,7 @@ fn owners_submit_memory_directly_and_legacy_pending_requests_finish_without_self
         1
     );
     for variant in [
+        "memory-conflict",
         "other-author",
         "cannot-review",
         "already-decided",
@@ -693,6 +694,7 @@ fn owners_submit_memory_directly_and_legacy_pending_requests_finish_without_self
         let mut catalog = catalog.clone();
         let mut project = f.project.clone();
         match variant {
+            "memory-conflict" => catalog["requests"][0]["decisionKind"] = json!("memory_conflict"),
             "other-author" => catalog["requests"][0]["author"] = json!("teammate"),
             "cannot-review" => catalog["requests"][0]["canReview"] = json!(false),
             "already-decided" => catalog["requests"][0]["status"] = json!("rejected"),
@@ -728,6 +730,36 @@ fn owners_submit_memory_directly_and_legacy_pending_requests_finish_without_self
             .unwrap()["resourceId"],
         change["value"]["resource"]["resourceId"]
     );
+}
+
+#[test]
+fn settled_memory_receipt_records_the_owner_choice_and_checks_its_request() {
+    let f = fixture("owner");
+    let (project, source, _) = source_project(&f);
+    let resource = source_memory(&source);
+    let draft = governance::capture(&f.db, &project, &resource, &json!([])).unwrap();
+    context_sharing::queue(&f.db, &project, &draft).unwrap();
+    let queued = queued(&f);
+    let mut accepted = queued["value"]["resource"].clone();
+    accepted["projectId"] = f.project["id"].clone();
+    accepted["revision"] = json!(2);
+    let mut receipt = json!({"event":{"resource":accepted,"conflicts":[]},"memoryDecision":{"requestId":queued["id"],"status":"rejected"}});
+    for (status, expected) in [("rejected", "rejected"), ("approved", "published")] {
+        receipt["memoryDecision"]["status"] = json!(status);
+        context_sharing::complete(&f.db, &queued, &receipt).unwrap();
+        assert_eq!(
+            db::rows(&f.db, "SELECT value FROM drafts WHERE id=?", &[&draft]).unwrap()[0]["status"],
+            expected
+        );
+    }
+    receipt["event"]["resource"]["deleted"] = json!(true);
+    receipt["event"]["resource"]["files"] = json!([]);
+    assert!(context_sharing::complete(&f.db, &queued, &receipt).is_err());
+    receipt["memoryDecision"]["status"] = json!("rejected");
+    context_sharing::complete(&f.db, &queued, &receipt).unwrap();
+    assert_eq!(f.resources()[0]["deleted"], true);
+    receipt["memoryDecision"]["requestId"] = json!("other");
+    assert!(context_sharing::complete(&f.db, &queued, &receipt).is_err());
 }
 
 #[test]

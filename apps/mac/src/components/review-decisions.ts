@@ -11,7 +11,7 @@ export interface DecisionState {
   /** On its way to the service. */
   sending?: Decision;
   failure?: DecisionFailure;
-  outcome?: Pick<ReviewRequest, "status" | "reviewer">;
+  outcome?: Pick<ReviewRequest, "status" | "reviewer" | "previewHash">;
 }
 
 /**
@@ -32,8 +32,13 @@ function change(id: string, state: DecisionState) {
 }
 
 export const reviewDecisions = {
-  get: (scope: string, requestId: string): DecisionState =>
-    decisions.get(key(scope, requestId)) ?? {},
+  get: (scope: string, request: ReviewRequest): DecisionState => {
+    const state = decisions.get(key(scope, request.id));
+    // A retry can refresh a stale memory choice under its original request ID.
+    if (state?.outcome && state.outcome.previewHash !== request.previewHash)
+      return {};
+    return state ?? {};
+  },
   start: (scope: string, requestId: string, decision: Decision) =>
     change(key(scope, requestId), { sending: decision }),
   fail: (scope: string, requestId: string, failure: DecisionFailure) =>
@@ -41,12 +46,19 @@ export const reviewDecisions = {
   settle: (
     scope: string,
     requestId: string,
-    { status, reviewer }: ReviewRequest,
-  ) => change(key(scope, requestId), { outcome: { status, reviewer } }),
+    { status, reviewer, previewHash }: ReviewRequest,
+  ) =>
+    change(key(scope, requestId), {
+      outcome: { status, reviewer, previewHash },
+    }),
   confirm: (scope: string, requests: ReviewRequest[]) => {
-    for (const { id, status } of requests) {
+    for (const { id, status, previewHash } of requests) {
       const entry = key(scope, id);
-      if (decisions.get(entry)?.outcome?.status === status)
+      const outcome = decisions.get(entry)?.outcome;
+      if (
+        outcome &&
+        (outcome.status === status || outcome.previewHash !== previewHash)
+      )
         decisions.delete(entry);
     }
   },

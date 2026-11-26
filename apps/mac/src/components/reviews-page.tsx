@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { defaultProjectRules, type ReviewRequest } from "@portable/protocol";
+import { isMemoryConflict } from "../lib/features.js";
 import type { Project, Snapshot } from "../types.js";
 import { Button } from "./button.js";
 import { CollectionSkeleton } from "./collection-skeleton.js";
@@ -312,7 +313,7 @@ export function ReviewsPage({
   const root = useRef<HTMLElement>(null);
   const [access, setAccess] = useState<string | null>(null);
   const settled = useReviewDecisions();
-  const decision = (id: string) => reviewDecisions.get(scope, id);
+  const decision = (item: ReviewRequest) => reviewDecisions.get(scope, item);
   const mounted = useRef(true);
   const loadGeneration = useRef(0);
   useEffect(() => {
@@ -347,7 +348,13 @@ export function ReviewsPage({
   const requestState = JSON.stringify(
     (state.reviewRequests ?? [])
       .filter((item) => item.projectId === project.id)
-      .map(({ id, status, canReview }) => [id, status, canReview])
+      .map(({ id, status, canReview, previewHash, policyRevision }) => [
+        id,
+        status,
+        canReview,
+        previewHash,
+        policyRevision,
+      ])
       .sort((left, right) => String(left[0]).localeCompare(String(right[0]))),
   );
   useEffect(() => {
@@ -397,14 +404,24 @@ export function ReviewsPage({
   const members = catalog?.members ?? [];
   // The decision response is authoritative even if reading the catalog fails.
   const requests = (catalog?.requests ?? []).map((item) => {
-    const outcome = decision(item.id).outcome;
+    const outcome = decision(item).outcome;
     return outcome ? { ...item, ...outcome } : item;
   });
   useEffect(() => {
     if (catalog) reviewDecisions.confirm(scope, catalog.requests);
   }, [scope, catalog, settled]);
+  const showReviews =
+    catalog?.governed !== false || requests.some(isMemoryConflict);
   const attention = catalog
-    ? projectAttention({ ...state, reviewRequests: requests }, project.id)
+    ? projectAttention(
+        {
+          ...state,
+          reviewRequests: catalog.governed
+            ? requests
+            : requests.filter(isMemoryConflict),
+        },
+        project.id,
+      )
     : null;
   const resources = new Map(
     state.resources
@@ -420,7 +437,7 @@ export function ReviewsPage({
     requestTitle(item, resources.get(item.resourceId));
   /** Sends one decision. The lists refresh behind it; a failed refresh is not a failed decision. */
   const decide = async (item: ReviewRequest, choice: Decision) => {
-    const prior = decision(item.id);
+    const prior = decision(item);
     if (prior.sending || prior.outcome)
       throw new Error("Decision already submitted");
     const record = productAction();
@@ -430,8 +447,14 @@ export function ReviewsPage({
       result = await call<ReviewRequest>("decide", {
         id: item.id,
         decision: choice,
+        ...(isMemoryConflict(item) && {
+          memoryChoice:
+            choice === "approve" ? "accept_incoming" : "keep_current",
+        }),
         previewHash: item.previewHash,
-        expectedPolicyRevision: catalog!.policyRevision,
+        expectedPolicyRevision: isMemoryConflict(item)
+          ? item.policyRevision
+          : catalog!.policyRevision,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -632,7 +655,11 @@ export function ReviewsPage({
     >
       {review && reviewed && catalog && (
         <RequestReview
-          key={reviewed.id}
+          key={JSON.stringify([
+            reviewed.id,
+            reviewed.previewHash,
+            reviewed.policyRevision,
+          ])}
           request={reviewed}
           state={state}
           catalog={catalog}
@@ -640,8 +667,8 @@ export function ReviewsPage({
           listedSourceId={resources.get(reviewed.resourceId)?.sourceId}
           title={titleOf(reviewed)}
           call={call}
-          sending={decision(reviewed.id).sending}
-          failure={decision(reviewed.id).failure}
+          sending={decision(reviewed).sending}
+          failure={decision(reviewed).failure}
           onDecide={async (item, decision) => {
             const result = await decide(item, decision);
             if (result.status !== "stale" && viewing.current === item.id) {
@@ -656,7 +683,7 @@ export function ReviewsPage({
         />
       )}
       <div className="reviews-scroll" ref={scroll} hidden={Boolean(reviewed)}>
-        {catalog?.governed !== false && (
+        {showReviews && (
           <div className="reviews-toolbar">
             <SegmentedControl
               className="reviews-views"
@@ -740,7 +767,7 @@ export function ReviewsPage({
           >
             <div />
           </LoadingRegion>
-        ) : !catalog.governed ? (
+        ) : !showReviews ? (
           <PermissionSetup
             heading="h2"
             catalog={catalog}
@@ -825,8 +852,8 @@ export function ReviewsPage({
           catalog={catalog}
           title={titleOf(accessRequest)}
           author={personName(accessRequest.author, state.user, members)}
-          sending={decision(accessRequest.id).sending}
-          failure={decision(accessRequest.id).failure}
+          sending={decision(accessRequest).sending}
+          failure={decision(accessRequest).failure}
           onDecide={async (item, decision) => {
             const result = await decide(item, decision);
             if (result.status !== "stale") setAccess(null);

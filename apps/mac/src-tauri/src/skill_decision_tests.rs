@@ -549,6 +549,60 @@ fn skill_decision_holds_cross_file_edits_modes_blank_files_and_ambiguous_referen
     assert!(crate::skill_decision::candidate(&base, &base, [&base, &empty].into_iter()).is_none());
 }
 
+#[test]
+fn skill_decision_format_specs_require_the_entire_package() {
+    let _f = Fixture::new();
+    let manifest = |input: &str, output: &str| {
+        let body = format!("Input format: {input}\nOutput format: {output}\n");
+        json!([
+            {"path":"SKILL.md","hash":db::blob(body.as_bytes()).unwrap(),"size":body.len(),"executable":false},
+            {"path":"verify.md","hash":db::blob(b"Reject XML.").unwrap(),"size":11,"executable":false}
+        ])
+    };
+    let base = manifest("CSV", "JSON");
+    let shared = manifest("CSV", "XML");
+    let local = manifest("TSV", "JSON");
+    assert!(
+        crate::skill_decision::candidate(&base, &shared, [&base, &local].into_iter()).is_none()
+    );
+}
+
+#[test]
+fn skill_decision_reconsiders_old_private_preview_but_preserves_rejection() {
+    for rejected in [false, true] {
+        let (f, current, _, _) = setup(
+            "title = \"Review\"\n\n# Output\nReturn YAML.",
+            "title = \"Parse\"\n\n# Output\nReturn YAML.",
+            "title = \"Review\"\n\n# Output\nReturn CSV.",
+            "publish",
+        );
+        let id = current["resourceId"].as_str().unwrap();
+        assert!(sync::materialize(&f.db, &f.project, &current).is_err());
+        // Existing installations can have this exact private preview from
+        // the previous policy's generic three-way merge.
+        f.db.execute(
+            "UPDATE bindings SET value=json_set(value,'$.skillDecisionVersion',1) WHERE id=?",
+            [id],
+        )
+        .unwrap();
+        f.db.execute(
+            "UPDATE drafts SET value=json_set(value,'$.automaticMergeCandidate',json('false'))",
+            [],
+        )
+        .unwrap();
+        if rejected {
+            f.db.execute(
+                "UPDATE drafts SET value=json_set(value,'$.lastRejectedSubmission',json('{}'))",
+                [],
+            )
+            .unwrap();
+        }
+        assert!(sync::materialize(&f.db, &f.project, &current).is_err());
+        crate::skill_reconciliation::queue_verified(&f.db, &f.project).unwrap();
+        assert_eq!(f.outbox().len(), usize::from(!rejected));
+    }
+}
+
 /// Replays frozen synthetic skill rows against native materialization and the actual publish queue.
 /// Input fixtures are trusted test data. The destination contains the synthetic candidate text.
 #[test]

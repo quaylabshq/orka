@@ -3,6 +3,9 @@ import type { ManagementLog, ReviewRequest } from "@portable/protocol";
 
 export const ENV_ENABLED = features.env;
 
+export const isMemoryConflict = (request: ReviewRequest) =>
+  "decisionKind" in request && request.decisionKind === "memory_conflict";
+
 export const visibleRequest = (
   request: Pick<ReviewRequest, "requestedClass">,
 ) => ENV_ENABLED || request.requestedClass !== "env";

@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import type { ReviewRequest, Resource } from "@portable/protocol";
+import { isMemoryConflict } from "../lib/features.js";
 import type { Project, Snapshot } from "../types.js";
 import { ActivityIndicator } from "./activity-indicator.js";
 import { Button } from "./button.js";
@@ -61,7 +62,11 @@ export interface RequestDetail {
   files?: Record<string, string>;
   before?: Record<string, string>;
   audience?: string[];
-  content?: { resource?: Resource };
+  content?: {
+    resource?: Resource;
+    keepResource?: { deleted?: boolean };
+    memoryDecision?: { currentText: string; proposedText: string };
+  };
   manifest?: FileManifestEntry[];
   beforeManifest?: FileManifestEntry[];
 }
@@ -121,8 +126,16 @@ export function RequestReview({
   }, [load]);
   // The list is reloaded after every decision, so once it shows an outcome
   // that outcome wins over what this page read earlier.
-  const request =
-    listed.status !== "pending" || !listed.canReview
+  // Opening a stale memory decision can freeze a fresh comparison on the server.
+  const refreshedMemory =
+    listed.status === "stale" &&
+    isMemoryConflict(listed) &&
+    detail?.request.status === "pending" &&
+    detail.request.canReview &&
+    detail.request.previewHash !== listed.previewHash;
+  const request = refreshedMemory
+    ? detail.request
+    : listed.status !== "pending" || !listed.canReview
       ? listed
       : (detail?.request ?? listed);
   const resource = detail?.content?.resource;
@@ -130,6 +143,15 @@ export function RequestReview({
     sources ?? [],
     resource?.sourceId ?? listedSourceId ?? undefined,
   );
+  const memoryConflict = isMemoryConflict(request);
+  const keepsDeletion =
+    memoryConflict && detail?.content?.keepResource?.deleted === true;
+  const alternatives = detail?.content?.memoryDecision;
+  const versions =
+    typeof alternatives?.currentText === "string" &&
+    typeof alternatives?.proposedText === "string"
+      ? alternatives
+      : null;
   const removed = Boolean(resource?.deleted);
   const changes = useMemo(
     () =>
@@ -234,7 +256,7 @@ export function RequestReview({
       : []),
   ];
   const decide = (decision: Decision) => {
-    if (deciding || !detail) return;
+    if (deciding || !detail || (memoryConflict && !versions)) return;
     setDeciding(decision);
     void onDecide(detail.request, decision)
       .catch(() => {})
@@ -244,7 +266,7 @@ export function RequestReview({
     <>
       <Button
         variant="primary"
-        disabled={!detail || deciding !== null}
+        disabled={!detail || deciding !== null || (memoryConflict && !versions)}
         aria-busy={deciding === "approve"}
         onClick={() => decide("approve")}
       >
@@ -253,20 +275,28 @@ export function RequestReview({
         ) : (
           <Icon icon={CheckIcon} size="sm" />
         )}
-        Approve
+        {keepsDeletion
+          ? "Restore memory"
+          : memoryConflict
+            ? "Use proposed"
+            : "Approve"}
       </Button>
       <Button
         variant="secondary"
-        disabled={!detail || deciding !== null}
+        disabled={!detail || deciding !== null || (memoryConflict && !versions)}
         aria-busy={deciding === "reject"}
         onClick={() => decide("reject")}
       >
         {deciding === "reject" ? (
           <ActivityIndicator />
         ) : (
-          <Icon icon={XIcon} size="sm" />
+          <Icon icon={memoryConflict ? HistoryIcon : XIcon} size="sm" />
         )}
-        Reject
+        {keepsDeletion
+          ? "Keep deleted"
+          : memoryConflict
+            ? "Keep current"
+            : "Reject"}
       </Button>
     </>
   ) : null;
@@ -338,7 +368,7 @@ export function RequestReview({
       }
       primaryActions={actions}
       toolbar={
-        detail && changes.some(readable) ? (
+        !memoryConflict && detail && changes.some(readable) ? (
           <SegmentedControl
             label="Review view"
             value={mode}
@@ -367,7 +397,7 @@ export function RequestReview({
         ) : undefined
       }
       files={
-        changes.length > 0
+        !memoryConflict && changes.length > 0
           ? {
               count: changes.length,
               rows: changes.map((item) => {
@@ -423,6 +453,48 @@ export function RequestReview({
         >
           <div />
         </LoadingRegion>
+      ) : memoryConflict ? (
+        versions ? (
+          <>
+            <p className="detail-context">
+              The memory has conflicting edits. Each version below includes the
+              undisputed changes.
+            </p>
+            {(
+              [
+                [
+                  keepsDeletion
+                    ? "Current version (deleted)"
+                    : "Current wording",
+                  versions.currentText,
+                ],
+                ["Proposed wording", versions.proposedText],
+              ] as const
+            ).map(([label, content]) => (
+              <section
+                key={label}
+                className="source-card source-card--plain"
+                aria-label={label}
+              >
+                <header className="source-card-header">
+                  <h3 className="diff-card-path">{label}</h3>
+                </header>
+                <pre className="source-plain">{content}</pre>
+              </section>
+            ))}
+          </>
+        ) : (
+          <ReaderState
+            illustration="preview-unavailable"
+            title="Couldn’t load both memory versions"
+            tone="alert"
+            action={
+              <Button size="sm" variant="secondary" onClick={() => void load()}>
+                Retry
+              </Button>
+            }
+          />
+        )
       ) : !change ? (
         <p className="detail-context">No file changes.</p>
       ) : mode === "file" && readable(change) ? (

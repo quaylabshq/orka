@@ -438,7 +438,8 @@ pub(crate) fn pending_publications(
         }) else {
             continue;
         };
-        if request["author"] != owner
+        if request["decisionKind"] == "memory_conflict"
+            || request["author"] != owner
             || request["status"] != "pending"
             || request["canReview"] != true
             || (draft["automaticMergeRequestId"].is_string()
@@ -661,6 +662,28 @@ pub async fn share(db: &Connection, owner: &str, queued: &Value) -> Result<Value
     Ok(json!({"proposal":request}))
 }
 
+/// A terminal owner decision acknowledges the original frozen upload, including
+/// a rejected edit to a memory that has since been deleted.
+pub(crate) fn memory_outcome(queued: &Value, receipt: &Value) -> Result<Option<&'static str>> {
+    let decision = &receipt["memoryDecision"];
+    if decision.is_null() {
+        return Ok(None);
+    }
+    if queued["value"]["resource"]["kind"] != "memory"
+        || decision["requestId"] != queued["id"]
+        || receipt["event"]["resource"]["kind"] != "memory"
+    {
+        return Err("Memory decision differs from the queued update".into());
+    }
+    match decision["status"].as_str() {
+        Some("approved") if receipt["event"]["resource"]["deleted"] != true => {
+            Ok(Some("published"))
+        }
+        Some("rejected") => Ok(Some("rejected")),
+        _ => Err("Invalid terminal memory decision".into()),
+    }
+}
+
 pub fn complete(db: &Connection, queued: &Value, receipt: &Value) -> Result<()> {
     let project_id = queued["project"].as_str().ok_or("Missing project")?;
     let draft_id = queued["value"]["skillImport"]
@@ -729,17 +752,18 @@ pub fn complete(db: &Connection, queued: &Value, receipt: &Value) -> Result<()> 
         draft["request"] = receipt["proposal"].clone();
     } else {
         let resource = &receipt["event"]["resource"];
+        let outcome = memory_outcome(queued, receipt)?;
         if resource["projectId"] != project_id
             || resource["resourceId"] != queued["value"]["resource"]["resourceId"]
             || resource["kind"] != queued["value"]["resource"]["kind"]
-            || resource["deleted"] == true
+            || (resource["deleted"] == true && outcome != Some("rejected"))
             || (resource["kind"] == "skill"
                 && resource["files"] != queued["value"]["resource"]["files"])
         {
             return Err("Published resource differs from the queued context".into());
         }
+        draft["status"] = json!(outcome.unwrap_or("published"));
         crate::sync::apply_event(db, &receipt["event"])?;
-        draft["status"] = json!("published");
     }
     db::upsert(db, "drafts", draft_id, project_id, &draft)?;
     if !receipt["proposal"].is_object()

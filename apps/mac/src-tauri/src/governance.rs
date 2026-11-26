@@ -1075,7 +1075,9 @@ pub async fn governance_command(action: String, input: Value) -> Result<Value> {
     if db::get(&current, "user")? != account || db::get(&current, "config")?["apiUrl"] != service {
         return Err("Account or service changed. Reopen Settings.".into());
     }
-    if action == "request" {
+    // The two owner choices may each contain independent edits. The server
+    // returns their complete text under the same preview hash as the decision.
+    if action == "request" && result["request"]["decisionKind"] != "memory_conflict" {
         let r = &result["content"]["resource"];
         if r["files"].is_array() {
             let owner = account.as_str().ok_or("Sign in required")?;

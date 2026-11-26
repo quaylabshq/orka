@@ -37,7 +37,7 @@ import {
 import type { ItemMenuAction } from "./components/item-menu.js";
 import type { IconGlyph } from "./components/icons.js";
 import { useWebViewMenuPolicy } from "./hooks/use-web-view-menu-policy.js";
-import { ENV_ENABLED } from "./lib/features.js";
+import { ENV_ENABLED, isMemoryConflict } from "./lib/features.js";
 import { isTauri } from "@tauri-apps/api/core";
 import { invoke } from "./components/product-command.js";
 import { listen } from "@tauri-apps/api/event";
@@ -1010,7 +1010,12 @@ function WorkspaceApp({
             resources={catalogResources}
             pendingCounts={localCatalog.pendingCounts}
             reviewCount={
-              selectedProject?.governed && !inactiveProject
+              !inactiveProject &&
+              (selectedProject?.governed ||
+                state.reviewRequests?.some(
+                  (item) =>
+                    item.projectId === project && isMemoryConflict(item),
+                ))
                 ? attention.items.reduce(
                     (count, item) => count + item.requests.length,
                     0,

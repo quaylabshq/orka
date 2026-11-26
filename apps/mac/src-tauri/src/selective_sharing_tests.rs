@@ -513,6 +513,65 @@ fn selected_conflict_receipt_preserves_current_and_candidate_snapshots() {
 }
 
 #[test]
+fn selected_memory_decision_retries_frozen_bytes_and_settles_after_restart() {
+    for (decision, reported, expected) in [
+        ("approved", "published", "published"),
+        ("rejected", "rejected", "rejected"),
+        ("rejected", "published", "rejected"),
+    ] {
+        let mut f = Fixture::new();
+        prepare(&mut f);
+        let local = indexer::discover(&f.db, &f.project, "memory")
+            .unwrap()
+            .remove(0);
+        let mut input = input(&f);
+        input["kind"] = json!("memory");
+        input["resourceId"] = local["resource"]["resourceId"].clone();
+        input["previewToken"] =
+            selective_sharing::preview(&f.db, &f.project, &input).unwrap()["previewToken"].clone();
+        let id = selective_sharing::queue(&f.db, &f.project, &input).unwrap()["requestId"].clone();
+        let queued = db::rows(&f.db,"SELECT json_object('id',id,'project',project,'path',path,'value',json(value)) FROM outbox",&[]).unwrap().remove(0);
+        let pending = json!({"status":"approval_required","request":{"id":id,"status":"pending","decisionKind":"memory_conflict","projectId":f.project["id"],"resourceId":queued["value"]["resource"]["resourceId"]}});
+        assert!(selective_sharing::complete(&f.db, &queued, &pending).unwrap());
+        let location = f.db.path().unwrap().to_string();
+        f.db = rusqlite::Connection::open(location).unwrap();
+        assert_eq!(
+            selective_sharing::queue(&f.db, &f.project, &input).unwrap()["status"],
+            "approval_required"
+        );
+        assert_eq!(
+            selective_sharing::authorized_origin(&f.db, &queued)
+                .unwrap()
+                .as_deref(),
+            Some("https://selected.example")
+        );
+        assert_eq!(f.outbox(), [queued["value"].clone()]);
+        let mut current = queued["value"]["resource"].clone();
+        current["projectId"] = f.project["id"].clone();
+        current["revision"] = json!(3);
+        let result = json!({"status":reported,"receipt":{"memoryDecision":{"requestId":id,"status":decision},"event":{"resource":current,"conflicts":[]}}});
+        let mut invalid = result.clone();
+        invalid["receipt"]["memoryDecision"]["requestId"] = json!("not-the-sent-request");
+        assert!(selective_sharing::complete(&f.db, &queued, &invalid).is_err());
+        assert_eq!(f.outbox(), [queued["value"].clone()]);
+        // Losing the acknowledgement before commit leaves the original request available.
+        {
+            let tx = f.db.transaction().unwrap();
+            assert!(!selective_sharing::complete(&tx, &queued, &result).unwrap());
+            tx.rollback().unwrap();
+        }
+        assert_eq!(f.outbox(), [queued["value"].clone()]);
+        assert!(!selective_sharing::complete(&f.db, &queued, &result).unwrap());
+        assert!(f.outbox().is_empty());
+        assert_eq!(
+            selective_sharing::queue(&f.db, &f.project, &input).unwrap()["status"],
+            expected
+        );
+        assert_eq!(f.resources()[0], current);
+    }
+}
+
+#[test]
 fn selected_publication_continues_from_its_revision_when_automation_is_later_enabled() {
     let mut f = Fixture::new();
     prepare(&mut f);

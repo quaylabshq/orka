@@ -1,4 +1,6 @@
 //! Decisions strong enough to publish a reconciled skill without manual review.
+mod formats;
+
 use crate::db;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -62,7 +64,14 @@ pub(crate) fn candidate<'a>(
     let merged = if differing.all(|other| other == first) {
         first.clone()
     } else {
-        merge_references(&original, &versions)?
+        merge_references(&original, &versions).or_else(|| {
+            // Companion files can impose additional format or validation requirements.
+            if originals.len() == 1 && originals[i]["path"] == "SKILL.md" {
+                formats::merge(&original, &versions)
+            } else {
+                None
+            }
+        })?
     };
     if merged.trim().is_empty()
         || merged.len() > 1_000_000

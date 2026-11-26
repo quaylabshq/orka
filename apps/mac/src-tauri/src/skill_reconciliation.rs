@@ -14,6 +14,8 @@ use std::{
 pub(crate) const LOCAL_EDITS: &str =
     "Local skill edits preserved; resolve them before applying the shared update";
 
+const SKILL_DECISION_VERSION: u64 = 2;
+
 type Copy<'a> = (&'a PathBuf, Value);
 
 fn installed_base<'a>(binding: &'a Value, shared: &Value) -> Option<&'a Value> {
@@ -351,8 +353,25 @@ pub(crate) fn reconcile(
             return Ok(Outcome::Queued);
         }
     }
-    if binding["skillReviewFingerprint"] == fingerprint && binding["skillDecisionVersion"] == 1 {
-        return Ok(Outcome::Review);
+    if binding["skillReviewFingerprint"] == fingerprint {
+        if binding["skillDecisionVersion"] == SKILL_DECISION_VERSION {
+            return Ok(Outcome::Review);
+        }
+        // A new policy may reconsider a private preview, but a definitive
+        // rejection of the same inputs still belongs to the owner.
+        let rejected: bool = db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM drafts WHERE project=?1
+               AND json_extract(value,'$.resource.resourceId')=?2
+               AND json_extract(value,'$.skillReviewFingerprint')=?3
+               AND json_extract(value,'$.lastRejectedSubmission') IS NOT NULL)",
+                params![project_id, id, &fingerprint],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if rejected {
+            return Ok(Outcome::Review);
+        }
     }
     let safe = base
         .filter(|base| {
@@ -431,7 +450,7 @@ pub(crate) fn reconcile(
     binding["installationState"] = json!("locally_modified");
     binding["availableRevision"] = shared["revision"].clone();
     binding["skillReviewFingerprint"] = json!(fingerprint);
-    binding["skillDecisionVersion"] = json!(1);
+    binding["skillDecisionVersion"] = json!(SKILL_DECISION_VERSION);
     binding["keptLocalSkill"] = Value::Null;
     db::upsert(&tx, "bindings", id, project_id, binding)?;
     tx.commit().map_err(|error| error.to_string())?;
