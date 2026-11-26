@@ -43,7 +43,6 @@ import {
 } from "./item-menu.js";
 import { Overlay } from "./overlay.js";
 import { Button } from "./button.js";
-import { useDesktopFeature } from "./desktop-usage.js";
 import { Icon } from "./icon.js";
 import { IconButton } from "./icon-button.js";
 import { MarkdownMarkIcon } from "./icons.js";
@@ -55,16 +54,10 @@ import { useResourceActions, type Run } from "./use-resource-actions.js";
 import { QueuedUploadReview } from "./queued-upload-review.js";
 import { ArtifactLinkDialog } from "./artifact-link-dialog.js";
 import { useWorkspaceScope } from "./workspace-cache.js";
+import { ShareDialog } from "./share-dialog.js";
 
 type ResourceRequest =
   "share" | "delete" | "launch" | "retry-upload" | "public-link";
-
-const shareEvents = {
-  memory: "feature:memory_shared",
-  skill: "feature:skill_shared",
-  plan: "feature:plan_shared",
-  session: "feature:session_shared",
-} as const;
 
 interface ResourceMenuContextValue {
   scope: string;
@@ -74,6 +67,7 @@ interface ResourceMenuContextValue {
   act: Run;
   onOpen: (resource: ProjectResource, compare?: boolean) => void;
   onReview: (resource: ProjectResource, mode: "incoming" | "outgoing") => void;
+  onOpenRequests: (projectId: string) => void;
   onNotice: (message: string) => void;
   onError: (message: string) => void;
   onRefresh: () => Promise<void>;
@@ -325,10 +319,16 @@ export function ResourceMenuProvider({
               restoreResourceFocus(event, request.resource.resourceId)
             }
           />
+        ) : request.kind === "share" ? (
+          <ShareRequest
+            key={`${props.scope}:share:${identity(request.resource)}`}
+            resource={request.resource}
+            context={context}
+            onClose={() => setRequest(null)}
+          />
         ) : (
-          <ResourceCommandDialog
-            key={`${props.scope}:${request.kind}:${identity(request.resource)}`}
-            kind={request.kind}
+          <DeleteDialog
+            key={`${props.scope}:delete:${identity(request.resource)}`}
             resource={request.resource}
             context={context}
             onClose={() => setRequest(null)}
@@ -856,35 +856,11 @@ function SessionLaunchDialog({
   );
 }
 
-interface CommandPreview {
-  previewToken: string;
-  title: string;
-  kind: string;
-  note: string;
-  files?: { path: string; size: number }[];
-  totalBytes?: number;
-  paths?: string[];
-}
-
-export function fileSize(bytes: number) {
-  for (const [size, unit] of [
-    [1e9, "GB"],
-    [1e6, "MB"],
-    [1e3, "KB"],
-    [1, "B"],
-  ] as const) {
-    if (bytes >= size || size === 1)
-      return `${(bytes / size).toLocaleString(undefined, { maximumFractionDigits: size === 1 ? 0 : 1 })} ${unit}`;
-  }
-}
-
-function ResourceCommandDialog({
-  kind,
+function ShareRequest({
   resource,
   context,
   onClose,
 }: {
-  kind: "share" | "delete";
   resource: ProjectResource;
   context: ResourceMenuContextValue;
   onClose: () => void;
@@ -892,8 +868,47 @@ function ResourceCommandDialog({
   const project = context.state.projects.find(
     (item) => item.id === resource.projectId,
   );
-  const startFeature = useDesktopFeature();
-  const [preview, setPreview] = useState<CommandPreview | null>(null);
+  if (!project) return null;
+  return (
+    <ShareDialog
+      resource={resource}
+      project={project}
+      state={context.state}
+      parentBusy={context.busy}
+      stale={!context.isCurrent(resource)}
+      onNotice={context.onNotice}
+      onError={context.onError}
+      onRefresh={context.onRefresh}
+      onReview={context.onReview}
+      onOpenRequests={context.onOpenRequests}
+      onClose={onClose}
+      onCloseAutoFocus={(event) =>
+        restoreResourceFocus(event, resource.resourceId)
+      }
+    />
+  );
+}
+
+interface DeletePreview {
+  previewToken: string;
+  title: string;
+  note: string;
+  paths?: string[];
+}
+
+function DeleteDialog({
+  resource,
+  context,
+  onClose,
+}: {
+  resource: ProjectResource;
+  context: ResourceMenuContextValue;
+  onClose: () => void;
+}) {
+  const project = context.state.projects.find(
+    (item) => item.id === resource.projectId,
+  );
+  const [preview, setPreview] = useState<DeletePreview | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -928,25 +943,17 @@ function ResourceCommandDialog({
     setLoading(true);
     setError("");
     setPreview(null);
-    setProgress({
-      label:
-        kind === "share"
-          ? "Preparing snapshot for review…"
-          : "Preparing deletion for review…",
-    });
+    setProgress({ label: "Preparing deletion for review…" });
     const onProgress = new Channel<SyncProgress>((value) => {
       if (!canceled && active.current && current.current) setProgress(value);
     });
-    void invoke<CommandPreview>("resource_command", {
-      action: `preview-${kind}`,
+    void invoke<DeletePreview>("resource_command", {
+      action: "preview-delete",
       input: { accountId, serviceOrigin, projectId, resourceId },
       onProgress,
     })
       .then((result) => {
-        if (!canceled) {
-          if (kind === "share") productAction()("share_preview_viewed");
-          setPreview(result);
-        }
+        if (!canceled) setPreview(result);
       })
       .catch((failure: unknown) => {
         if (!canceled) setError(String(failure));
@@ -960,64 +967,41 @@ function ResourceCommandDialog({
     return () => {
       canceled = true;
     };
-  }, [kind, attempt, accountId, serviceOrigin, projectId, resourceId]);
+  }, [attempt, accountId, serviceOrigin, projectId, resourceId]);
   const submit = async () => {
     if (busy || !preview || stale) return;
     const record = productAction();
-    if (kind === "share") record("share_submitted");
-    const recordShared =
-      kind === "share" ? startFeature(shareEvents[resource.kind]) : undefined;
     setBusy(true);
     setError("");
-    setProgress({
-      label:
-        kind === "share"
-          ? "Sharing reviewed snapshot…"
-          : "Confirming shared deletion…",
-    });
+    setProgress({ label: "Confirming shared deletion…" });
     let finished = false;
     const onProgress = new Channel<SyncProgress>((value) => {
       if (!finished && active.current && current.current) setProgress(value);
     });
     try {
       const result = await invoke<{ status: string }>("resource_command", {
-        action: kind,
+        action: "delete",
         input: { ...input, previewToken: preview.previewToken },
         onProgress,
       });
-      if (result.status === "published") recordShared?.();
-      if (kind === "delete" && result.status === "deleted")
-        record("resource_deleted");
-      if (kind === "share" && result.status === "queued")
-        record("share_queued");
-      if (kind === "share" && result.status === "conflict")
-        record("share_failed");
+      if (result.status === "deleted") record("resource_deleted");
       if (!active.current) return;
-      if (kind === "delete" && result.status !== "deleted") {
+      if (result.status !== "deleted") {
         setError(
           "The item changed before it could be deleted. Review the latest version and try again.",
         );
         return;
       }
       context.onNotice(
-        kind === "delete"
-          ? resource.source === "pi"
-            ? "Snapshot removed from shared history. The Pi session on its Mac is unchanged."
-            : "Shared item deleted. Local copies follow sync and review rules."
-          : result.status === "published"
-            ? "Snapshot shared"
-            : result.status === "approval_required"
-              ? "Snapshot sent for approval"
-              : result.status === "conflict"
-                ? "Snapshot needs conflict review"
-                : "Snapshot sharing queued",
+        resource.source === "pi"
+          ? "Snapshot removed from shared history. The Pi session on its Mac is unchanged."
+          : "Shared item deleted. Local copies follow sync and review rules.",
       );
       finished = true;
       setProgress({ label: "Refreshing project…" });
       await context.onRefresh();
       if (active.current) onClose();
     } catch (failure) {
-      if (kind === "share") record("share_failed");
       if (active.current) setError(String(failure));
     } finally {
       finished = true;
@@ -1025,11 +1009,9 @@ function ResourceCommandDialog({
     }
   };
   const title =
-    kind === "share"
-      ? "Share snapshot with project"
-      : resource.kind === "session"
-        ? "Remove from history"
-        : `Delete shared ${resource.kind}`;
+    resource.kind === "session"
+      ? "Remove from history"
+      : `Delete shared ${resource.kind}`;
   const total = progress?.total;
   const completed =
     total && total > 0 && progress?.completed !== undefined
@@ -1065,33 +1047,6 @@ function ResourceCommandDialog({
           </p>
         </div>
       </section>
-      {kind === "share" && (
-        <>
-          <dl className="resource-command-destination">
-            <div>
-              <dt>Project</dt>
-              <dd title={project?.name}>{project?.name}</dd>
-            </div>
-            <div>
-              <dt>Service</dt>
-              <dd
-                title={
-                  context.state.config?.mode === "self-hosted"
-                    ? "Your self-hosted service"
-                    : "Orka Cloud"
-                }
-              >
-                {context.state.config?.mode === "self-hosted"
-                  ? "Your self-hosted service"
-                  : "Orka Cloud"}
-              </dd>
-            </div>
-          </dl>
-          <p className="command-copy">
-            The local original and automatic sharing settings stay unchanged.
-          </p>
-        </>
-      )}
       <div
         className="resource-command-workspace"
         ref={workspace}
@@ -1155,65 +1110,19 @@ function ResourceCommandDialog({
             </div>
           </section>
         ) : (
-          <>
-            {preview?.files && (
-              <section
-                className="resource-command-manifest"
-                aria-label="Snapshot contents"
-              >
-                <div className="resource-command-manifest-heading">
-                  <h3>Snapshot files</h3>
-                  <span>
-                    {preview.files.length}{" "}
-                    {preview.files.length === 1 ? "file" : "files"} ·{" "}
-                    {fileSize(
-                      preview.totalBytes ??
-                        preview.files.reduce(
-                          (bytes, file) => bytes + file.size,
-                          0,
-                        ),
-                    )}
-                  </span>
-                </div>
-                <ul
-                  className="resource-command-files"
-                  aria-label="Snapshot files"
-                  tabIndex={0}
-                >
-                  {preview.files.map((file) => (
-                    <li key={file.path}>
-                      <Icon icon={FileIcon} size="xs" variant="secondary" />
-                      <span
-                        className="resource-command-filename"
-                        title={file.path}
-                      >
-                        {file.path}
-                      </span>
-                      <span
-                        className="resource-command-filesize"
-                        title={`${file.size.toLocaleString()} bytes`}
-                      >
-                        {fileSize(file.size)}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              </section>
-            )}
-            {kind === "delete" && !!preview?.paths?.length && (
-              <section
-                className="resource-command-paths"
-                aria-label="Local copies affected"
-              >
-                <h3>Local copies affected</h3>
-                <ul tabIndex={0}>
-                  {preview.paths.map((path) => (
-                    <li key={path}>{path}</li>
-                  ))}
-                </ul>
-              </section>
-            )}
-          </>
+          !!preview?.paths?.length && (
+            <section
+              className="resource-command-paths"
+              aria-label="Local copies affected"
+            >
+              <h3>Local copies affected</h3>
+              <ul tabIndex={0}>
+                {preview.paths.map((path) => (
+                  <li key={path}>{path}</li>
+                ))}
+              </ul>
+            </section>
+          )
         )}
         {preview?.note && (
           <p className="resource-command-note">{preview.note}</p>
@@ -1233,20 +1142,14 @@ function ResourceCommandDialog({
             Cancel
           </Button>
           <Button
-            className={`resource-command-confirm${kind === "delete" ? " management-danger" : ""}`}
+            className="resource-command-confirm management-danger"
             disabled={busy || context.busy || loading || !preview || stale}
             onClick={() => void submit()}
           >
             <span className="resource-command-button-size" aria-hidden="true">
-              {kind === "share" ? "Share this snapshot" : "Confirm deletion"}
+              Confirm deletion
             </span>
-            <span>
-              {busy
-                ? "Working…"
-                : kind === "share"
-                  ? "Share this snapshot"
-                  : "Confirm deletion"}
-            </span>
+            <span>{busy ? "Working…" : "Confirm deletion"}</span>
           </Button>
         </div>
       </div>

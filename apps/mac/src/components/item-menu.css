@@ -254,34 +254,6 @@
   line-height: var(--label-sm-line-height);
 }
 
-.resource-command-destination {
-  display: grid;
-  gap: 6px;
-  flex-shrink: 0;
-  margin: 16px 0 10px;
-  font-size: var(--body-xs-font-size);
-  line-height: var(--body-xs-line-height);
-}
-
-.resource-command-destination > div {
-  display: grid;
-  grid-template-columns: 64px minmax(0, 1fr);
-  gap: 12px;
-}
-
-.resource-command-destination dt {
-  color: var(--text-tertiary);
-}
-
-.resource-command-destination dd {
-  overflow: hidden;
-  margin: 0;
-  color: var(--text-primary);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.modal.resource-command-dialog .command-copy,
 .modal.resource-command-dialog .resource-command-note {
   flex-shrink: 0;
   color: var(--text-secondary);
@@ -301,29 +273,6 @@
   flex-shrink: 0;
 }
 
-.resource-command-manifest {
-  display: flex;
-  flex: 0 1 auto;
-  flex-direction: column;
-  min-height: 78px;
-  overflow: hidden;
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-control);
-}
-
-.resource-command-manifest-heading {
-  display: flex;
-  flex-shrink: 0;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px 12px;
-  padding: 10px 12px;
-  background: var(--surface-tertiary);
-  color: var(--text-secondary);
-  font-size: var(--body-2xs-font-size);
-  line-height: var(--body-xs-line-height);
-}
-
 .modal.resource-command-dialog h3 {
   margin: 0;
   color: var(--text-primary);
@@ -332,50 +281,10 @@
   line-height: var(--label-xs-line-height);
 }
 
-.resource-command-files {
-  flex: 1;
-  min-height: 0;
-  max-height: 200px;
-  overflow-y: auto;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.resource-command-files > li {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  padding: 10px 12px;
-  border-top: 1px solid var(--border-default);
-  font-size: var(--body-xs-font-size);
-  line-height: var(--body-xs-line-height);
-}
-
-.resource-command-files:focus-visible,
 .resource-command-paths ul:focus-visible,
 .resource-command-workspace:focus-visible {
   outline: 2px solid var(--border-focus);
   outline-offset: -2px;
-}
-
-.resource-command-files .ui-icon {
-  margin-top: 3px;
-}
-
-.resource-command-filename {
-  min-width: 0;
-  flex: 1;
-  overflow: hidden;
-  color: var(--text-primary);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.resource-command-filesize {
-  flex-shrink: 0;
-  color: var(--text-tertiary);
-  font-variant-numeric: tabular-nums;
 }
 
 .resource-command-paths {
