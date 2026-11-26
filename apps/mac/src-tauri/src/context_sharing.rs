@@ -32,57 +32,103 @@ pub(crate) fn automatic_skill_request(db: &Connection, queued: &Value) -> Result
     .map_err(|error| error.to_string())
 }
 
-/// Move pilot rows to the downgrade-compatible representation before selecting
-/// uploads. A previous desktop can have rejected the old marker as an unknown
-/// field even when the server already has the original request's receipt.
-pub(crate) fn migrate_skill_requests(db: &Connection, project: &str) -> Result<()> {
-    let rows = db::rows(
-        db,
-        "SELECT json_object('id',o.id,'path',o.path,'project',o.project,'value',json(o.value),'error',o.error)
+/// Prepare persisted skill requests before selecting uploads. Pilot rows can
+/// carry an older local marker, a downgraded desktop can refresh their drafts,
+/// and a definitive server refusal can outlive the conditions that caused it.
+pub(crate) fn reconcile_skill_requests(db: &Connection, project: &str) -> Result<()> {
+    let rows = db::rows(db,
+        "SELECT json_object('id',o.id,'project',o.project,'path',o.path,'body',o.value,'error',o.error,'draft',d.value)
          FROM outbox o JOIN drafts d ON d.project=o.project AND d.id=json_extract(o.value,'$.skillImport')
-         WHERE o.project=?1 AND o.path=?2 AND json_extract(d.value,'$.submission.id')=o.id
-           AND (json_extract(o.value,'$.automaticSkillMerge')=1
-                OR (o.error=?3 AND json_extract(d.value,'$.automaticMergeRequestId')=o.id))",
-        &[&project, &crate::global_skills::IMPORT_PATH, &crate::sync::EXACT_REVISION_CONFLICT],
-    )?;
-    for row in rows {
-        // A downgraded desktop can also leave the genuine stale response in the
-        // outbox. Settle that definitive refusal without a new upload attempt.
-        if row["error"] == crate::sync::EXACT_REVISION_CONFLICT
-            && crate::skill_reconciliation::release_stale(
-                db,
-                &row,
-                crate::sync::EXACT_REVISION_CONFLICT,
-            )?
+         WHERE o.project=?1 AND o.path=?2
+           AND (json_extract(o.value,'$.automaticSkillMerge')=1 OR
+                (json_extract(d.value,'$.automaticMergeRequestId')=o.id AND
+                 (json_extract(d.value,'$.submission') IS NULL OR o.error IN (?3,?4))))",
+        &[&project, &crate::global_skills::IMPORT_PATH, &crate::sync::EXACT_REVISION_CONFLICT, &crate::sync::PUBLISH_DENIED])?;
+    for mut row in rows {
+        let id = row["id"]
+            .as_str()
+            .ok_or("Missing queued skill request")?
+            .to_owned();
+        let saved_draft = row["draft"]
+            .as_str()
+            .ok_or("Missing queued skill draft")?
+            .to_owned();
+        let draft: Value = serde_json::from_str(&saved_draft).map_err(|error| error.to_string())?;
+        let original = row["body"]
+            .as_str()
+            .ok_or("Missing queued skill change")?
+            .to_owned();
+        row["value"] = serde_json::from_str(&original).map_err(|error| error.to_string())?;
+        let change = wire_change(&row)?;
+        // An older refresh-draft can clear these two fields while retaining the
+        // outbox. Reattach only the frozen request for this exact captured draft.
+        let refreshed = draft["submission"].is_null()
+            && draft["requestId"].is_null()
+            && (draft["automaticMergeRequestId"] == id
+                || (row["value"]["automaticSkillMerge"] == true
+                    && draft["automaticMergeCandidate"] == true
+                    && draft["skillReconciliation"] == true))
+            && change["resource"].as_object().is_some_and(|fields| {
+                fields
+                    .iter()
+                    .all(|(field, value)| draft["resource"].get(field) == Some(value))
+            });
+        if change["id"] != id
+            || change["projectId"] != project
+            || (!refreshed && (draft["submission"] != change || draft["requestId"] != id))
         {
             continue;
         }
-        if row["value"]["automaticSkillMerge"] != true {
-            continue;
+        if refreshed || row["value"]["automaticSkillMerge"] == true {
+            let tx =
+                rusqlite::Transaction::new_unchecked(db, rusqlite::TransactionBehavior::Immediate)
+                    .map_err(|error| error.to_string())?;
+            let draft_id = draft["id"].as_str().ok_or("Missing queued skill draft")?;
+            let updated = tx.execute(
+                "UPDATE drafts SET value=json_set(value,'$.automaticMergeRequestId',?1,'$.requestId',?1,'$.submission',json(?2))
+                 WHERE id=?3 AND project=?4 AND value=?5
+                 AND EXISTS(SELECT 1 FROM outbox WHERE id=?1 AND project=?4 AND value=?6)",
+                rusqlite::params![id,change.to_string(),draft_id,project,saved_draft,original]
+            ).map_err(|error| error.to_string())?;
+            if updated != 1 {
+                continue;
+            }
+            if row["value"]["automaticSkillMerge"] == true {
+                row["value"]
+                    .as_object_mut()
+                    .ok_or("Missing queued skill change")?
+                    .remove("automaticSkillMerge");
+                tx.execute(
+                    "UPDATE outbox SET value=?1,error=CASE WHEN error='400: Invalid request' THEN NULL ELSE error END
+                     WHERE project=?2 AND id=?3",
+                    rusqlite::params![row["value"].to_string(),project,id],
+                ).map_err(|error| error.to_string())?;
+            }
+            tx.commit().map_err(|error| error.to_string())?;
         }
-        let id = row["id"].as_str().ok_or("Missing queued skill request")?;
-        let draft = row["value"]["skillImport"]
-            .as_str()
-            .ok_or("Missing queued skill draft")?;
-        let tx = rusqlite::Transaction::new_unchecked(db, rusqlite::TransactionBehavior::Immediate)
-            .map_err(|error| error.to_string())?;
-        let updated = tx
-            .execute(
-                "UPDATE drafts SET value=json_set(value,'$.automaticMergeRequestId',?1)
-             WHERE id=?2 AND project=?3 AND json_extract(value,'$.submission.id')=?1",
-                rusqlite::params![id, draft, project],
+        if row["error"] == crate::sync::EXACT_REVISION_CONFLICT {
+            crate::skill_reconciliation::release_stale(
+                db,
+                &row,
+                crate::sync::EXACT_REVISION_CONFLICT,
+            )?;
+        } else if row["error"] == crate::sync::PUBLISH_DENIED
+            && row["value"]["reviewRequired"] != true
+            && check_automatic_skill_upload(db, &row).is_ok()
+        {
+            // Access can change between our last pull and the server check.
+            // Retry exactly the original publication after publish access returns.
+            db.execute(
+                "UPDATE outbox SET error=NULL WHERE project=?1 AND id=?2 AND error=?3 AND value=?4",
+                rusqlite::params![
+                    project,
+                    id,
+                    crate::sync::PUBLISH_DENIED,
+                    row["value"].to_string()
+                ],
             )
             .map_err(|error| error.to_string())?;
-        if updated == 1 {
-            tx.execute(
-                "UPDATE outbox SET value=json_remove(value,'$.automaticSkillMerge'),
-                 error=CASE WHEN error='400: Invalid request' THEN NULL ELSE error END
-                 WHERE project=?1 AND id=?2 AND json_extract(value,'$.automaticSkillMerge')=1",
-                rusqlite::params![project, id],
-            )
-            .map_err(|error| error.to_string())?;
         }
-        tx.commit().map_err(|error| error.to_string())?;
     }
     Ok(())
 }
@@ -135,7 +181,9 @@ fn check_automatic_skill_upload(db: &Connection, queued: &Value) -> Result<()> {
         || current["sourceId"] != skill["sourceId"]
         || current["kind"] != "skill"
         || (current["deleted"] == true && !newer_revision)
-        || current["access"]["mode"] != "publish"
+        || !(current["access"]["mode"] == "publish"
+            || (queued["value"]["reviewRequired"] == true
+                && current["access"]["mode"] == "suggest"))
     {
         return Err("Automatic skill publication needs sharing and publish access. The queued edit is preserved.".into());
     }
@@ -393,6 +441,9 @@ pub(crate) fn pending_publications(
         if request["author"] != owner
             || request["status"] != "pending"
             || request["canReview"] != true
+            || (draft["automaticMergeRequestId"].is_string()
+                && draft["automaticMergeRequestId"] == request["id"]
+                && !matches_skill_proposal(&draft["submission"], request, owner))
         {
             continue;
         }
@@ -527,6 +578,54 @@ pub(crate) fn queue_in(
     Ok(json!({"status":"queued"}))
 }
 
+fn wire_change(queued: &Value) -> Result<Value> {
+    let mut change = queued["value"].clone();
+    let fields = change.as_object_mut().ok_or("Missing import change")?;
+    fields.remove("skillImport");
+    fields.remove("contextDraft");
+    fields.remove("reviewRequired");
+    fields.remove("automaticSkillMerge");
+    Ok(change)
+}
+
+pub(crate) fn matches_skill_proposal(change: &Value, proposal: &Value, owner: &str) -> bool {
+    let submitted = &change["resource"];
+    proposal["id"] == change["id"]
+        && proposal["projectId"] == change["projectId"]
+        && proposal["resourceId"] == submitted["resourceId"]
+        && proposal["baseRevision"] == change["baseRevision"]
+        && proposal["author"] == owner
+        && proposal["type"] == "change"
+        && matches!(
+            proposal["status"].as_str(),
+            Some("pending" | "approved" | "rejected" | "stale")
+        )
+        && proposal["previewHash"] == db::digest(submitted.to_string().as_bytes())
+}
+
+/// The preceding desktop durably chose suggestion on a publish denial. The
+/// freshly authorized catalog can settle that exact proposal without another
+/// upload, including after its author loses publish access.
+pub(crate) fn frozen_skill_proposal(
+    db: &Connection,
+    queued: &Value,
+    owner: &str,
+) -> Result<Option<Value>> {
+    if queued["value"]["reviewRequired"] != true || !automatic_skill_request(db, queued)? {
+        return Ok(None);
+    }
+    let project = queued["project"].as_str().ok_or("Missing project")?;
+    let catalog = db::get(db, &format!("governance:{project}"))?;
+    Ok(catalog["requests"]
+        .as_array()
+        .and_then(|requests| {
+            requests
+                .iter()
+                .find(|request| matches_skill_proposal(&queued["value"], request, owner))
+        })
+        .map(|request| json!({"proposal":request})))
+}
+
 pub async fn share(db: &Connection, owner: &str, queued: &Value) -> Result<Value> {
     let automatic_merge = automatic_skill_request(db, queued)?;
     if automatic_merge {
@@ -534,12 +633,7 @@ pub async fn share(db: &Connection, owner: &str, queued: &Value) -> Result<Value
         check_automatic_skill_upload(db, queued)
             .map_err(|error| format!("Local upload: {error}"))?;
     }
-    let mut change = queued["value"].clone();
-    let fields = change.as_object_mut().ok_or("Missing import change")?;
-    fields.remove("skillImport");
-    fields.remove("contextDraft");
-    fields.remove("reviewRequired");
-    fields.remove("automaticSkillMerge");
+    let change = wire_change(queued)?;
     if queued["value"]["reviewRequired"] != true {
         match crate::sync::api_as(owner, "POST", "/v2/sync/push", Some(&change)).await {
             Ok(receipt) => return Ok(receipt),
@@ -581,10 +675,20 @@ pub fn complete(db: &Connection, queued: &Value, receipt: &Value) -> Result<()> 
     .into_iter()
     .next()
     .ok_or("Context draft unavailable")?;
-    if automatic_skill_request(db, queued)? {
+    let automatic_merge = automatic_skill_request(db, queued)?;
+    if automatic_merge && receipt["proposal"].is_object() {
+        let owner = db::get(db, "user")?;
+        if queued["value"]["reviewRequired"] != true
+            || !owner.as_str().is_some_and(|owner| {
+                matches_skill_proposal(&queued["value"], &receipt["proposal"], owner)
+            })
+        {
+            return Err("Approval request differs from the frozen skill update".into());
+        }
+    } else if automatic_merge {
         let submitted = &queued["value"]["resource"];
         let accepted = &receipt["event"]["resource"];
-        if receipt["proposal"].is_object()
+        if queued["value"]["reviewRequired"] == true
             || receipt["conflict"] == true
             || receipt["event"]["conflicts"]
                 .as_array()
@@ -613,7 +717,15 @@ pub fn complete(db: &Connection, queued: &Value, receipt: &Value) -> Result<()> 
         {
             return Err("Approval request differs from the queued context".into());
         }
-        draft["status"] = json!("proposed");
+        draft["status"] = if automatic_merge {
+            match receipt["proposal"]["status"].as_str() {
+                Some("pending") => json!("proposed"),
+                Some("approved") => json!("published"),
+                _ => receipt["proposal"]["status"].clone(),
+            }
+        } else {
+            json!("proposed")
+        };
         draft["request"] = receipt["proposal"].clone();
     } else {
         let resource = &receipt["event"]["resource"];
@@ -630,7 +742,10 @@ pub fn complete(db: &Connection, queued: &Value, receipt: &Value) -> Result<()> 
         draft["status"] = json!("published");
     }
     db::upsert(db, "drafts", draft_id, project_id, &draft)?;
-    if draft["status"] == "published" && draft["resource"]["kind"] == "skill" {
+    if !receipt["proposal"].is_object()
+        && draft["status"] == "published"
+        && draft["resource"]["kind"] == "skill"
+    {
         let resource = &receipt["event"]["resource"];
         let project = governance::project(db, project_id)?;
         let binding = crate::global_skills::adopt_import(

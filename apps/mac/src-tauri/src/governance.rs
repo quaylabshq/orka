@@ -190,6 +190,17 @@ pub fn capture(
         .as_bytes(),
     );
     let id = Uuid::new_v5(&Uuid::NAMESPACE_URL, fingerprint.as_bytes()).to_string();
+    capture_as(db, project, resource, paths, id)
+}
+
+pub(crate) fn capture_as(
+    db: &Connection,
+    project: &Value,
+    resource: &Value,
+    paths: &Value,
+    id: String,
+) -> Result<String> {
+    let project_id = project["id"].as_str().ok_or("Missing project")?;
     let mut resource = resource.clone();
     crate::sources::scope(project, &mut resource);
     if project["governed"] == true {
@@ -648,6 +659,18 @@ pub fn reconcile_requests(db: &Connection, project: &str, requests: &Value) -> R
             .as_array()
             .and_then(|rows| rows.iter().find(|r| r["id"] == draft["requestId"]))
         {
+            if draft["automaticMergeRequestId"].is_string()
+                && draft["automaticMergeRequestId"] == request["id"]
+                && !db::get(db, "user")?.as_str().is_some_and(|owner| {
+                    crate::context_sharing::matches_skill_proposal(
+                        &draft["submission"],
+                        request,
+                        owner,
+                    )
+                })
+            {
+                continue;
+            }
             draft["status"] = match request["status"].as_str() {
                 Some("pending") => json!("proposed"),
                 Some("approved") => json!("published"),

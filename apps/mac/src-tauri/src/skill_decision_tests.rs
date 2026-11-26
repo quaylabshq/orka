@@ -295,7 +295,7 @@ fn skill_decision_migrates_old_outbox_metadata_and_retries_the_original_id() {
     .unwrap();
     f.db.execute("UPDATE outbox SET value=json_set(value,'$.automaticSkillMerge', json('true')), error='400: Invalid request'", []).unwrap();
     for _ in 0..2 {
-        crate::context_sharing::migrate_skill_requests(&f.db, project).unwrap();
+        crate::context_sharing::reconcile_skill_requests(&f.db, project).unwrap();
         assert_eq!(f.outbox(), vec![frozen.clone()]);
         let row = db::rows(&f.db, "SELECT json_object('id',id,'path',path,'project',project,'value',json(value),'error',error) FROM outbox", &[]).unwrap().remove(0);
         assert!(row["error"].is_null());
@@ -313,8 +313,144 @@ fn skill_decision_migrates_old_outbox_metadata_and_retries_the_original_id() {
         [crate::sync::EXACT_REVISION_CONFLICT],
     )
     .unwrap();
-    crate::context_sharing::migrate_skill_requests(&f.db, project).unwrap();
+    crate::context_sharing::reconcile_skill_requests(&f.db, project).unwrap();
     assert!(f.outbox().is_empty());
+}
+
+#[test]
+fn skill_decision_resumes_only_the_exact_proposal_route_frozen_by_an_older_desktop() {
+    let (f, mut current, _, claude) = setup(BASE, TEAM, LOCAL, "publish");
+    let project = f.project["id"].as_str().unwrap();
+    let owner = db::get(&f.db, "user").unwrap();
+    let owner = owner.as_str().unwrap();
+    assert!(sync::materialize(&f.db, &f.project, &current).is_err());
+    crate::skill_reconciliation::queue_verified(&f.db, &f.project).unwrap();
+    let mut row = db::rows(
+        &f.db,
+        "SELECT json_object('id',id,'path',path,'project',project,'value',json(value)) FROM outbox",
+        &[],
+    )
+    .unwrap()
+    .remove(0);
+    let change = row["value"].clone();
+    let proposal = json!({"id":row["id"],"type":"change","projectId":project,"resourceId":current["resourceId"],
+        "author":owner,"status":"pending","baseRevision":current["revision"],
+        "previewHash":db::digest(change["resource"].to_string().as_bytes())});
+    db::set(
+        &f.db,
+        &format!("governance:{project}"),
+        &json!({"requests":[proposal]}),
+    )
+    .unwrap();
+    current["access"]["mode"] = json!("suggest");
+    persist(&f, &current);
+    assert!(crate::context_sharing::check_upload_eligibility(&f.db, &row).is_err());
+    assert!(
+        crate::context_sharing::frozen_skill_proposal(&f.db, &row, owner)
+            .unwrap()
+            .is_none()
+    );
+    assert!(crate::context_sharing::complete(&f.db, &row, &json!({"proposal":proposal})).is_err());
+    row["value"]["reviewRequired"] = json!(true);
+    f.db.execute("UPDATE outbox SET value=?", [row["value"].to_string()])
+        .unwrap();
+    crate::context_sharing::check_upload_eligibility(&f.db, &row).unwrap();
+    for (field, value) in [
+        ("previewHash", json!("different")),
+        ("id", json!("different")),
+        ("author", json!("another")),
+        ("baseRevision", json!(0)),
+    ] {
+        let mut wrong = proposal.clone();
+        wrong[field] = value;
+        assert!(crate::context_sharing::complete(&f.db, &row, &json!({"proposal":wrong})).is_err());
+    }
+    let receipt = crate::context_sharing::frozen_skill_proposal(&f.db, &row, owner)
+        .unwrap()
+        .unwrap();
+    crate::context_sharing::complete(&f.db, &row, &receipt).unwrap();
+    let draft = || {
+        governance::latest_draft(&f.db, project, current["resourceId"].as_str().unwrap())
+            .unwrap()
+            .unwrap()
+    };
+    assert_eq!(draft()["status"], "proposed");
+    let mut approved = proposal;
+    approved["status"] = json!("approved");
+    crate::context_sharing::complete(&f.db, &row, &json!({"proposal":approved})).unwrap();
+    assert_eq!(draft()["status"], "published");
+    assert_eq!(fs::read_to_string(claude).unwrap(), LOCAL);
+}
+
+#[test]
+fn skill_decision_recovers_the_exact_outbox_after_an_older_draft_refresh() {
+    let (f, current, _, _) = setup(BASE, TEAM, LOCAL, "publish");
+    let project = f.project["id"].as_str().unwrap();
+    assert!(sync::materialize(&f.db, &f.project, &current).is_err());
+    crate::skill_reconciliation::queue_verified(&f.db, &f.project).unwrap();
+    let original = f.outbox().remove(0);
+    let draft = || {
+        governance::latest_draft(&f.db, project, current["resourceId"].as_str().unwrap())
+            .unwrap()
+            .unwrap()
+    };
+    let frozen = draft()["submission"].clone();
+    f.db.execute("UPDATE drafts SET value=json_set(value,'$.submission',null,'$.requestId',null,'$.request',null,'$.status','local')", []).unwrap();
+    crate::context_sharing::reconcile_skill_requests(&f.db, project).unwrap();
+    assert_eq!(draft()["submission"], frozen);
+    assert_eq!(draft()["requestId"], original["id"]);
+    f.db.execute(
+        "UPDATE outbox SET error=?1",
+        [sync::EXACT_REVISION_CONFLICT],
+    )
+    .unwrap();
+    f.db.execute(
+        "UPDATE drafts SET value=json_set(value,'$.submission.id','newer','$.requestId','newer')",
+        [],
+    )
+    .unwrap();
+    crate::context_sharing::reconcile_skill_requests(&f.db, project).unwrap();
+    assert_eq!(draft()["requestId"], "newer");
+    assert_eq!(f.outbox(), vec![original]);
+    f.db.execute(
+        "UPDATE drafts SET value=json_remove(value,'$.submission','$.requestId')",
+        [],
+    )
+    .unwrap();
+    crate::context_sharing::reconcile_skill_requests(&f.db, project).unwrap();
+    assert!(f.outbox().is_empty());
+    assert_eq!(draft()["lastRejectedSubmission"], frozen);
+}
+
+#[test]
+fn skill_decision_retries_a_server_publish_denial_only_after_access_returns() {
+    let (f, mut current, _, _) = setup(BASE, TEAM, LOCAL, "publish");
+    let project = f.project["id"].as_str().unwrap();
+    assert!(sync::materialize(&f.db, &f.project, &current).is_err());
+    crate::skill_reconciliation::queue_verified(&f.db, &f.project).unwrap();
+    let original = f.outbox().remove(0);
+    f.db.execute("UPDATE outbox SET error=?", [sync::PUBLISH_DENIED])
+        .unwrap();
+    let error = || {
+        f.db.query_row("SELECT error FROM outbox", [], |row| {
+            row.get::<_, Option<String>>(0)
+        })
+        .unwrap()
+    };
+    current["access"]["mode"] = json!("suggest");
+    persist(&f, &current);
+    crate::context_sharing::reconcile_skill_requests(&f.db, project).unwrap();
+    assert_eq!(error().as_deref(), Some(sync::PUBLISH_DENIED));
+    current["access"]["mode"] = json!("publish");
+    persist(&f, &current);
+    crate::context_sharing::reconcile_skill_requests(&f.db, project).unwrap();
+    assert_eq!(error(), None);
+    assert_eq!(f.outbox(), vec![original.clone()]);
+    assert!(original["reviewRequired"].is_null());
+    f.db.execute("UPDATE outbox SET error='403: Receipt access denied'", [])
+        .unwrap();
+    crate::context_sharing::reconcile_skill_requests(&f.db, project).unwrap();
+    assert_eq!(error().as_deref(), Some("403: Receipt access denied"));
 }
 
 #[test]

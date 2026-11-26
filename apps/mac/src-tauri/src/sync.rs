@@ -2774,6 +2774,11 @@ impl<'a> SyncPass<'a> {
                 if q["path"] == crate::context_sharing::QUEUE_PATH
                     || q["path"] == crate::global_skills::IMPORT_PATH
                 {
+                    if let Some(receipt) =
+                        crate::context_sharing::frozen_skill_proposal(db, &q, owner)?
+                    {
+                        return Ok(Some(receipt));
+                    }
                     crate::context_sharing::upload(db, owner, &q).await?;
                 } else if input["resource"]["files"].is_array() {
                     crate::repair::upload(
@@ -3522,7 +3527,7 @@ impl<'p> ProjectOutbox<'p> {
 
     fn open(db: &rusqlite::Connection, project: &'p str) -> Result<Self> {
         Self::migrate(db)?;
-        crate::context_sharing::migrate_skill_requests(db, project)?;
+        crate::context_sharing::reconcile_skill_requests(db, project)?;
         let cursor_key = format!("{}:{project}", Self::LEGACY_CURSOR);
         let cursor = db::get(db, &cursor_key)?.as_i64().unwrap_or(0);
         Ok(Self {
