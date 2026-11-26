@@ -133,7 +133,7 @@ export function useSessionMessages(
   if (query.data) previous.current = { key, data: query.data };
   const data = query.data ?? earlier;
   const messages = data?.pages.flatMap((page) => page.messages ?? []);
-  const last = data?.pages.at(-1);
+  const last = data?.pages[data.pages.length - 1];
   const loading = query.isFetching;
   const error = query.error ? String(query.error) : "";
   return {

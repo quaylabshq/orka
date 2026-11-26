@@ -237,6 +237,8 @@ for (const outcome of ["success", "failure"] as const)
 test("session deep links reset memory diff mode and keep the segmented modes", async ({
   page,
 }) => {
+  // Orka supports the macOS 12.0 WebView, which predates Array.prototype.at.
+  await page.addInitScript(() => Reflect.deleteProperty(Array.prototype, "at"));
   await resourceFixture(page);
   await page.getByRole("button", { name: /^Memories/ }).click();
   await page
@@ -282,6 +284,10 @@ test("session deep links reset memory diff mode and keep the segmented modes", a
   await expect(page.locator(".session-view pre.content")).toHaveText([
     /Some content/,
   ]);
+  const transcript = page.getByRole("region", { name: "Transcript text" });
+  await transcript.focus();
+  await transcript.press("End");
+  await expect(transcript).toContainText("End of transcript");
   await modes
     .getByRole("button", { name: "Conversation", exact: true })
     .click();

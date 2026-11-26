@@ -19,12 +19,12 @@ function observeOverlays(changed: () => void) {
   return () => observer.disconnect();
 }
 
-const activeOverlay = () =>
-  Array.from(
-    document.querySelectorAll<HTMLElement>(
-      '.modal[data-state="open"], .drawer[data-state="open"]',
-    ),
-  ).at(-1) ?? null;
+function activeOverlay() {
+  const overlays = document.querySelectorAll<HTMLElement>(
+    '.modal[data-state="open"], .drawer[data-state="open"]',
+  );
+  return overlays[overlays.length - 1] ?? null;
+}
 
 export default function AnnotationTools() {
   // Keep annotation input inside Radix's active focus boundary.

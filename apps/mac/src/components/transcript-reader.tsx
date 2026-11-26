@@ -327,7 +327,7 @@ function TranscriptText({
             ...next,
             blocks: retained,
             start: retained[0].offset,
-            end: retained.at(-1)!.end,
+            end: retained[retained.length - 1].end,
             eof: !backwards && range.eof,
           };
         }
@@ -353,7 +353,10 @@ function TranscriptText({
           ? "Preparing the end of the transcript…"
           : "Preparing the start of the transcript…",
       );
-    const restored = request.kind === "restore" ? request.blocks.at(-1) : null;
+    const restored =
+      request.kind === "restore"
+        ? request.blocks[request.blocks.length - 1]
+        : null;
     void invoke<SessionTranscriptRange>("read_transcript", {
       readerId,
       offset: request.offset,
@@ -664,7 +667,7 @@ function TranscriptText({
       return;
     latestJump.current = kind;
     const end = kind === "end";
-    const target = end ? blocks.at(-1) : blocks[0];
+    const target = blocks[end ? blocks.length - 1 : 0];
     if (
       target &&
       (end ? index?.eof : index?.start === 0) &&

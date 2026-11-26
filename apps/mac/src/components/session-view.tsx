@@ -185,7 +185,7 @@ export function SessionView({
     getItemKey: (index) => messages[index].index,
   });
   const items = virtualizer.getVirtualItems();
-  const lastVisible = items.at(-1)?.index ?? -1;
+  const lastVisible = items[items.length - 1]?.index ?? -1;
   useEffect(() => {
     if (
       conversation &&
