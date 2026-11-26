@@ -1177,17 +1177,7 @@ pub fn resolve_session_recovery(
             return Err("Local changes need individual review.".into());
         }
     } else {
-        // This exact server response proves the older choice was rejected.
-        // A transport error or a pending request can still receive a receipt.
-        let rejected = db::rows(&tx,
-            "SELECT json_object('id',id) FROM outbox WHERE project=? AND path='/v2/sessions/resolve' AND error='409: Conflict changed; refresh before resolving' AND json_extract(value,'$.resourceId')=? AND json_extract(value,'$.expectedRevision')<?",
-            &[&project_id, &id, &expected_revision])?;
-        for row in rejected {
-            let prior_id = row["id"].as_str().ok_or("Missing rejected request ID")?;
-            tx.execute("DELETE FROM outbox WHERE id=?", [prior_id])
-                .map_err(|e| e.to_string())?;
-            sync::clear_session_copy(&tx, prior_id)?;
-        }
+        sync::retire_rejected_session_choices(&tx, &project_id, Some(&id))?;
     }
     let pending: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM outbox WHERE project=? AND coalesce(json_extract(value,'$.resourceId'),json_extract(value,'$.resource.resourceId'))=?)",
@@ -1385,15 +1375,14 @@ pub async fn retry_uploads(project_id: Option<String>) -> Result<()> {
         } else {
             None
         };
-        if project_id.is_none() {
-            db.execute(
-                "DELETE FROM outbox WHERE path='/v2/sessions/resolve' AND error LIKE '409:%'",
-                [],
-            )
-            .map_err(|e| e.to_string())?;
-        }
-        db.execute("UPDATE outbox SET error=NULL WHERE ?1 IS NULL OR (project=?1 AND (error IS NULL OR error NOT GLOB '4[0-9][0-9]:*' OR substr(error,1,3) IN ('401','408','429')))", [&project_id])
-            .map_err(|e| e.to_string())?;
+        // Retire definitive session refusals only after checking the accepted
+        // resource. Retrying an uncertain request must keep its frozen ID.
+        db.execute(
+            "UPDATE outbox SET error=NULL WHERE
+                (?1 IS NULL OR (project=?1 AND (error IS NULL OR error NOT GLOB '4[0-9][0-9]:*' OR substr(error,1,3) IN ('401','408','429'))))
+                AND (path<>'/v2/sessions/resolve' OR error IS NULL OR error NOT IN (?2,?3))",
+            rusqlite::params![project_id, sync::SESSION_CONFLICT_CHANGED, sync::PUBLISH_DENIED],
+        ).map_err(|e| e.to_string())?;
         scope
     };
     if let Some((owner, origin, project, previous_sync, retried_errors)) = scope {

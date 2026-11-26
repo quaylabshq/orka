@@ -2,6 +2,7 @@ import { useProductView } from "./desktop-usage.js";
 import { TriangleAlertIcon } from "lucide-react";
 import React from "react";
 import type { SessionConflict } from "@portable/protocol";
+import { sessionRecoverySharingHint } from "./session-recovery.js";
 import { Button } from "./button.js";
 import type {
   SessionActionName,
@@ -16,6 +17,7 @@ export function ConflictPanel({
   owner,
   busy,
   recovery,
+  sharingOff,
   multipleCandidates,
   canPublish,
   canCopy,
@@ -30,6 +32,7 @@ export function ConflictPanel({
   owner: string;
   busy: boolean;
   recovery?: boolean;
+  sharingOff?: boolean;
   multipleCandidates?: boolean;
   canPublish?: boolean;
   canCopy?: boolean;
@@ -46,7 +49,8 @@ export function ConflictPanel({
   const local: SessionVersion =
     conflict.deviceId === deviceId ? "candidate" : "current";
   const remote: SessionVersion = local === "current" ? "candidate" : "current";
-  const ownerOnly = busy || owner !== user || canPublish === false;
+  const ownerOnly =
+    busy || sharingOff || owner !== user || canPublish === false;
   const session = conflict.candidate.kind === "session";
   return (
     <div className="conflict rounded-xl border border-line bg-panel">
@@ -67,6 +71,7 @@ export function ConflictPanel({
             ? "Open sessions stay untouched. Override applies after the session closes."
             : "Review the shared and incoming versions before choosing which to keep."}
       </p>
+      {sharingOff && <p>{sessionRecoverySharingHint}</p>}
       <div className="actions">
         {!recovery && (
           <Button
@@ -107,7 +112,9 @@ export function ConflictPanel({
           {recovery ? "Restore session" : "Override"}
         </Button>
         <Button
-          disabled={busy || conflict.author !== user || canCopy === false}
+          disabled={
+            busy || sharingOff || conflict.author !== user || canCopy === false
+          }
           onClick={() =>
             onResolve("copy", conflict.id, recovery ? "candidate" : local)
           }

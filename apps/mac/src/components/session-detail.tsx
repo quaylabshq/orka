@@ -235,6 +235,9 @@ export function SessionDetail({
               deviceId={deviceId}
               user={user}
               owner={resource.owner}
+              sharingOff={
+                resource.deleted && project.sharing?.session === false
+              }
               recovery={resource.deleted && !conflict.candidate.deleted}
               multipleCandidates={
                 conflicts.filter((c) => c.resourceId === resource.resourceId)

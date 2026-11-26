@@ -343,7 +343,8 @@ pub(crate) fn reconcile(
         let queued: bool = db.query_row(
             "SELECT EXISTS(SELECT 1 FROM outbox o JOIN drafts d ON d.id=json_extract(o.value,'$.skillImport')
               WHERE o.project=?1 AND d.project=o.project AND o.error IS NULL
-              AND json_extract(o.value,'$.automaticSkillMerge')=1 AND json_extract(d.value,'$.skillReviewFingerprint')=?2)",
+              AND (json_extract(o.value,'$.automaticSkillMerge')=1 OR json_extract(d.value,'$.automaticMergeRequestId')=o.id)
+              AND json_extract(d.value,'$.skillReviewFingerprint')=?2)",
             params![project_id, &fingerprint], |row| row.get(0),
         ).map_err(|error| error.to_string())?;
         if queued {
@@ -529,9 +530,8 @@ pub(crate) fn queue_verified(db: &Connection, project: &Value) -> Result<()> {
 /// stale-base refusal is definitive; a lost response is not. Keep the rejected
 /// request in the draft and let the next pull evaluate the new shared head.
 pub(crate) fn release_stale(db: &Connection, queued: &Value, error: &str) -> Result<bool> {
-    if queued["path"] != crate::global_skills::IMPORT_PATH
-        || queued["value"]["automaticSkillMerge"] != true
-        || error != "409: Resource changed; refresh and review the exact version again"
+    if error != crate::sync::EXACT_REVISION_CONFLICT
+        || !crate::context_sharing::automatic_skill_request(db, queued)?
     {
         return Ok(false);
     }
@@ -550,7 +550,7 @@ pub(crate) fn release_stale(db: &Connection, queued: &Value, error: &str) -> Res
             "UPDATE drafts SET value=json_remove(json_set(value,
              '$.lastRejectedSubmission',json_extract(value,'$.submission'),
              '$.automaticMergeCandidate',json('false'),'$.automaticSharing',json('false'),
-             '$.conflictReview',json('true')), '$.requestId','$.submission')
+             '$.conflictReview',json('true')), '$.requestId','$.submission','$.automaticMergeRequestId')
          WHERE id=?1 AND project=?2 AND json_extract(value,'$.requestId')=?3
            AND json_extract(value,'$.submission.resource')=json(?4)
            AND EXISTS(SELECT 1 FROM outbox WHERE id=?3 AND project=?2 AND value=?5)",

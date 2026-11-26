@@ -28,7 +28,7 @@ fn project_removal_clears_only_its_frozen_pending_session_snapshots() {
 fn session(f: &Fixture, label: &str, revision: i64) -> Value {
     let resource_id = uuid::Uuid::new_v4().to_string();
     let bytes = native::encode(&[
-        json!({"type":"user","uuid":uuid::Uuid::new_v4().to_string(),"message":{"role":"user","content":label}}),
+        json!({"type":"user","uuid":uuid::Uuid::new_v4().to_string(),"sessionId":resource_id,"cwd":f.root,"message":{"role":"user","content":label}}),
     ]);
     json!({"resourceId":resource_id,"projectId":f.project["id"],"kind":"session","source":"claude","logicalPath":format!("claude/{resource_id}"),"title":label,"files":[{"path":"session.jsonl","hash":db::blob(&bytes).unwrap(),"size":bytes.len(),"executable":false}],"deleted":false,"revision":revision,"owner":db::get(&f.db,"user").unwrap()})
 }
@@ -381,7 +381,12 @@ fn recovery_rereview_retires_only_a_definitively_rejected_older_choice() {
             false,
         )
     };
-    for error in [None, Some("503: unavailable"), Some("409: unknown failure")] {
+    for error in [
+        None,
+        Some("503: unavailable"),
+        Some("409: unknown failure"),
+        Some("403: Receipt access denied"),
+    ] {
         f.db.execute("UPDATE outbox SET error=? WHERE id='rejected'", [error])
             .unwrap();
         assert!(choose().is_err());
@@ -394,4 +399,123 @@ fn recovery_rereview_retires_only_a_definitively_rejected_older_choice() {
     assert_eq!(f.outbox()[0]["expectedRevision"], 5);
     assert_eq!(f.outbox()[0]["selected"], "current");
     assert!(db::get(&f.db, "sessionCopy:rejected").unwrap().is_null());
+}
+
+#[test]
+fn recovery_rereview_can_replace_a_denied_choice_after_publish_access_returns() {
+    let f = Fixture::new();
+    let mut current = session(&f, "Deleted", 5);
+    current["deleted"] = json!(true);
+    current["files"] = json!([]);
+    save(&f, &current);
+    let c = conflict(&f, &current, "Incoming", current["owner"].as_str().unwrap());
+    let choose = |choice: &str| {
+        crate::commands::resolve_session_recovery(
+            current["projectId"].as_str().unwrap().into(),
+            current["resourceId"].as_str().unwrap().into(),
+            5,
+            c["id"].as_str().unwrap().into(),
+            choice.into(),
+            false,
+        )
+    };
+    choose("restore").unwrap();
+    let refused = f.outbox()[0]["id"].as_str().unwrap().to_owned();
+    f.db.execute(
+        "UPDATE outbox SET error=? WHERE id=?",
+        rusqlite::params![sync::PUBLISH_DENIED, refused],
+    )
+    .unwrap();
+    let mut restricted = current.clone();
+    restricted["access"] = json!({"mode":"read"});
+    save(&f, &restricted);
+    assert!(choose("keep").is_err());
+    assert_eq!(f.outbox()[0]["id"], refused);
+    save(&f, &current);
+    choose("keep").unwrap();
+    let queued = f.outbox();
+    assert_eq!(queued.len(), 1);
+    assert_ne!(queued[0]["id"], refused);
+    assert_eq!(queued[0]["selected"], "current");
+    assert!(db::get(&f.db, &format!("sessionCopy:{refused}"))
+        .unwrap()
+        .is_null());
+}
+
+#[test]
+fn recovery_pull_retires_a_definitively_rejected_choice_after_remote_settlement() {
+    for (choice, restored) in [("restore", false), ("restore", true), ("copy", true)] {
+        let f = Fixture::new();
+        let mut tombstone = session(&f, "Deleted", 5);
+        tombstone["deleted"] = json!(true);
+        tombstone["files"] = json!([]);
+        save(&f, &tombstone);
+        let candidate = conflict(
+            &f,
+            &tombstone,
+            "Incoming",
+            tombstone["owner"].as_str().unwrap(),
+        );
+        let project = tombstone["projectId"].as_str().unwrap();
+        let resource = tombstone["resourceId"].as_str().unwrap();
+        crate::commands::resolve_session_recovery(
+            project.into(),
+            resource.into(),
+            5,
+            candidate["id"].as_str().unwrap().into(),
+            choice.into(),
+            false,
+        )
+        .unwrap();
+        let request = f.outbox().remove(0);
+        let id = request["id"].as_str().unwrap();
+        let frozen_key = format!("sessionCopy:{id}");
+        let reconcile = || {
+            let tx = f.db.unchecked_transaction().unwrap();
+            sync::retire_rejected_session_choices(&tx, project, None).unwrap();
+            tx.commit().unwrap();
+        };
+        let mut accepted = if restored {
+            candidate["candidate"].clone()
+        } else {
+            tombstone.clone()
+        };
+        accepted["revision"] = json!(6);
+        sync::apply_event(&f.db, &json!({"resource":accepted,"conflicts":[]})).unwrap();
+        for error in [
+            None,
+            Some("503: unavailable"),
+            Some("403: Receipt access denied"),
+            Some("409: unknown failure"),
+        ] {
+            f.db.execute(
+                "UPDATE outbox SET error=? WHERE id=?",
+                rusqlite::params![error, id],
+            )
+            .unwrap();
+            reconcile();
+            assert_eq!(f.outbox(), vec![request.clone()]);
+            assert!(db::get(&f.db, &frozen_key).unwrap().is_object());
+        }
+        f.db.execute(
+            "UPDATE outbox SET error=? WHERE id=?",
+            rusqlite::params![sync::SESSION_CONFLICT_CHANGED, id],
+        )
+        .unwrap();
+        reconcile();
+        reconcile();
+        assert!(f.outbox().is_empty());
+        assert!(db::get(&f.db, &frozen_key).unwrap().is_null());
+        sync::materialize(&f.db, &f.project, &accepted).unwrap();
+        if restored && choice != "copy" {
+            assert!(db::rows(&f.db, "SELECT value FROM drafts", &[])
+                .unwrap()
+                .is_empty());
+        } else {
+            let draft = only_draft(&f);
+            assert_eq!(draft["status"], "local");
+            assert_eq!(draft["resource"]["files"], candidate["candidate"]["files"]);
+            assert_eq!(draft["paths"], json!([]));
+        }
+    }
 }

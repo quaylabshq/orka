@@ -1,6 +1,9 @@
 import type { ProjectResource, Snapshot } from "../types.js";
 import type { AttentionItem } from "./sync-attention.js";
 
+export const sessionRecoverySharingHint =
+  "Recovery choices require “Share automatically” for Sessions on this Mac. You can change this in Settings → General → Sharing.";
+
 const sessionConflictMessage =
   "Session conflict: choose Keep, Override, or Create copy";
 

@@ -60,6 +60,7 @@ const deterministic = counts(),
   withVeto = counts(),
   timings = [],
   controls = [],
+  excluded = [],
   results = [];
 for (const [i, row] of native.entries()) {
   const c = cases[i];
@@ -69,6 +70,10 @@ for (const [i, row] of native.entries()) {
   if (!c.context.publish || !c.context.auto_share) {
     assert.equal(row.disposition, "excluded");
     controls.push(c.id);
+    continue;
+  }
+  if (row.disposition === "excluded") {
+    excluded.push(c.id);
     continue;
   }
   const accepted =
@@ -112,6 +117,7 @@ console.log(
   JSON.stringify(
     {
       cases: results.length,
+      excluded,
       controls,
       deterministic,
       ...(mode && {

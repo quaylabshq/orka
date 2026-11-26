@@ -1,6 +1,6 @@
 # Replay skill merge decisions
 
-The frozen synthetic inputs cover 20 skill cases and one publish-permission control. The native backtest runs the skill materializer and publish queue against disposable installed copies and SQLite. It reports the exact queued, installed or privately staged candidate. A queued change still needs an accepted server receipt in the product.
+The frozen synthetic inputs cover 20 skill cases and one publish-permission control. Of the 20 skill cases, 17 exercise the native materializer and publish queue against disposable installed copies and SQLite. The harness prefilters the deletion, executable-mode change, binary input and separate permission control. The scorer lists the three excluded case IDs and the control separately from the native results. It reports the exact queued, installed or privately staged candidate. A queued change still needs an accepted server receipt in the product.
 
 Run from the repository root after installing the desktop dependencies.
 

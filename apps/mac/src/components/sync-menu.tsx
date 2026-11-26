@@ -30,6 +30,7 @@ import type {
 import { recoveryEpisodes } from "./session-recovery.js";
 import {
   SessionRecoveryCard,
+  useSessionRecoveryReview,
   type RecoveryResult,
 } from "./session-recovery-card.js";
 import { useQueuedUploadReview } from "./resource-menu.js";
@@ -84,6 +85,7 @@ export function SyncMenu({
   onOpenRequestHistory?: () => void;
 }) {
   const reviewUpload = useQueuedUploadReview();
+  const recoveryReview = useSessionRecoveryReview(state);
   const memberName = useMemberLabel(state.user);
   const [localOpen, setLocalOpen] = useState(false);
   const open = controlledOpen ?? localOpen;
@@ -768,9 +770,12 @@ export function SyncMenu({
               )}
               {episodes.map((episode) => (
                 <SessionRecoveryCard
-                  key={episode.sessions
-                    .map((s) => s.conflictId + ":" + s.revision)
-                    .join("/")}
+                  key={episode.sessions[0].id}
+                  review={recoveryReview}
+                  sharing={
+                    state.projects.find((p) => p.id === projectId)?.sharing
+                      ?.session !== false
+                  }
                   episode={episode}
                   device={
                     state.devices?.find((d) => d.id === episode.device)?.name

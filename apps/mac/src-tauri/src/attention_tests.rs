@@ -482,6 +482,15 @@ fn attention_retry_is_scoped_to_the_selected_active_project() {
         .block_on(commands::retry_uploads(Some("missing".into())))
         .is_err());
     runtime.block_on(commands::retry_uploads(None)).unwrap();
+    // Account-wide retry must retain a resolution with an ambiguous 409 so
+    // the same request can recover its receipt.
+    let retried = db::rows(
+        &f.db,
+        "SELECT value FROM outbox WHERE id=? AND error IS NULL",
+        &[&format!("{other}-resolve")],
+    )
+    .unwrap();
+    assert_eq!(retried[0]["frozen"], "Original operation bytes");
     // Retrying every project queues it at user priority instead of writing the flag.
     assert_eq!(
         db::get(&f.db, "syncRequest").unwrap(),

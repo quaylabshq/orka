@@ -26,7 +26,10 @@ pub(crate) fn pull_applied_resources(project: &str) -> usize {
     PULL_APPLIED_RESOURCES.with_borrow(|counts| counts.get(project).copied().unwrap_or(0))
 }
 
-const PLAN_REVISION_CONFLICT: &str =
+pub(crate) const SESSION_CONFLICT_CHANGED: &str = "409: Conflict changed; refresh before resolving";
+pub(crate) const PUBLISH_DENIED: &str =
+    "403: Publishing requires permission; save a draft or submit a suggestion";
+pub(crate) const EXACT_REVISION_CONFLICT: &str =
     "409: Resource changed; refresh and review the exact version again";
 const PLAN_REVIEW_PENDING: &str = "Queued plan upload needs review";
 pub(crate) const DESKTOP_VERSION_HEADER: &str = "X-Orka-Desktop-Version";
@@ -578,6 +581,68 @@ pub(crate) fn queue_session_resolution(db: &rusqlite::Connection, input: &Value)
 
 pub(crate) fn store_recovery_resolution(db: &rusqlite::Connection, input: &Value) -> Result<()> {
     store_session_resolution(db, input, input["action"] == "copy")
+}
+
+/// A definitive refusal and the accepted resource together tell us whether a
+/// queued choice can be retired. A candidate that still exists requires a new
+/// individual decision. Transport errors and inaccessible receipts stay frozen.
+pub(crate) fn retire_rejected_session_choices(
+    tx: &Transaction<'_>,
+    project: &str,
+    reviewed_session: Option<&str>,
+) -> Result<()> {
+    let rows = db::rows(tx,
+        "SELECT json_object('request',json(o.value),'current',json(r.value),'open',
+            EXISTS(SELECT 1 FROM conflicts c WHERE c.project=o.project
+                AND c.id=json_extract(o.value,'$.conflictId')
+                AND json_extract(c.value,'$.resourceId')=r.id))
+         FROM outbox o JOIN resources r ON r.project=o.project AND r.id=json_extract(o.value,'$.resourceId')
+         WHERE o.project=?1 AND o.path='/v2/sessions/resolve' AND o.error IN (?2,?3)
+           AND json_extract(o.value,'$.projectId')=o.project AND json_extract(o.value,'$.id')=o.id
+           AND json_extract(r.value,'$.kind')='session' AND json_type(o.value,'$.conflictId')='text'
+           AND (?4 IS NULL OR r.id=?4)
+           AND (json_extract(r.value,'$.revision') > json_extract(o.value,'$.expectedRevision')
+                OR (?4 IS NOT NULL AND o.error=?3
+                    AND json_extract(r.value,'$.revision')=json_extract(o.value,'$.expectedRevision')))",
+        &[&project, &SESSION_CONFLICT_CHANGED, &PUBLISH_DENIED, &reviewed_session])?;
+    for row in rows {
+        let still_open = row["open"] == 1;
+        if still_open && reviewed_session.is_none() {
+            continue;
+        }
+        let request = &row["request"];
+        let id = request["id"]
+            .as_str()
+            .ok_or("Missing rejected request ID")?;
+        if !still_open {
+            let selected = queued_session_snapshot(tx, request)?;
+            if selected.is_none() && !db::get(tx, &copy_state_key(id))?.is_null() {
+                // An unrecognized frozen record may still contain local work.
+                // Older ID-only requests have no such record to preserve.
+                continue;
+            }
+            let current = &row["current"];
+            if let Some(selected) = selected.filter(|snapshot| {
+                snapshot["deleted"] == false
+                    && (request["action"] == "copy"
+                        || current["deleted"] == true
+                        || snapshot["files"] != current["files"])
+            }) {
+                // Keep an explicit copy or displaced candidate privately,
+                // without binding the cloud snapshot to native history.
+                if selected["owner"] != db::get(tx, "user")? {
+                    continue;
+                }
+                let project = crate::governance::project(tx, project)?;
+                let source = crate::sources::for_resource(&project, &selected).unwrap_or(project);
+                crate::governance::capture(tx, &source, &selected, &json!([]))?;
+            }
+        }
+        tx.execute("DELETE FROM outbox WHERE id=?", [id])
+            .map_err(|error| error.to_string())?;
+        clear_session_copy(tx, id)?;
+    }
+    Ok(())
 }
 
 fn store_session_resolution(
@@ -1759,6 +1824,9 @@ async fn pull(owner: &str, db: &mut rusqlite::Connection, project: &str, name: &
         crate::governance::reconcile_requests(&tx, project, &requests)?;
         for e in response["events"].as_array().ok_or("Invalid events")? {
             apply_event(&tx, e)?;
+        }
+        if response["hasMore"] != true {
+            retire_rejected_session_choices(&tx, project, None)?;
         }
         tx.execute("INSERT INTO cursors VALUES(?,?) ON CONFLICT(project) DO UPDATE SET cursor=excluded.cursor",params![project,response["cursor"].as_i64()]).map_err(|e|e.to_string())?;
         db::set(&tx, &format!("presence:{project}"), &response["presence"])?;
@@ -3307,7 +3375,7 @@ fn reconcile_shared_plan_uploads(db: &mut rusqlite::Connection, project: &str) -
            AND r.id=json_extract(o.value,'$.resource.resourceId')
          WHERE o.project=? AND o.path='/v2/sync/push' AND o.error=?
            AND json_extract(o.value,'$.resource.kind')='plan'",
-        &[&project, &PLAN_REVISION_CONFLICT],
+        &[&project, &EXACT_REVISION_CONFLICT],
     )?;
     for row in stale {
         let change = &row["change"];
@@ -3342,7 +3410,7 @@ fn reconcile_shared_plan_uploads(db: &mut rusqlite::Connection, project: &str) -
         {
             tx.execute(
                 "DELETE FROM outbox WHERE project=? AND id=? AND error=?",
-                params![project, row["id"].as_str(), PLAN_REVISION_CONFLICT],
+                params![project, row["id"].as_str(), EXACT_REVISION_CONFLICT],
             )
             .map_err(|error| error.to_string())?;
         }
@@ -3454,6 +3522,7 @@ impl<'p> ProjectOutbox<'p> {
 
     fn open(db: &rusqlite::Connection, project: &'p str) -> Result<Self> {
         Self::migrate(db)?;
+        crate::context_sharing::migrate_skill_requests(db, project)?;
         let cursor_key = format!("{}:{project}", Self::LEGACY_CURSOR);
         let cursor = db::get(db, &cursor_key)?.as_i64().unwrap_or(0);
         Ok(Self {
@@ -4048,14 +4117,14 @@ mod queue_tests {
             "a",
             0,
             shared_fields.clone(),
-            Some(PLAN_REVISION_CONFLICT),
+            Some(EXACT_REVISION_CONFLICT),
         );
         put(
             "another-project",
             "b",
             0,
             shared_fields.clone(),
-            Some(PLAN_REVISION_CONFLICT),
+            Some(EXACT_REVISION_CONFLICT),
         );
         put("newer-request", "a", 1, shared_fields.clone(), None);
         put(
@@ -4072,7 +4141,7 @@ mod queue_tests {
             "a",
             0,
             different_copy,
-            Some(PLAN_REVISION_CONFLICT),
+            Some(EXACT_REVISION_CONFLICT),
         );
         let mut different_context = shared_fields;
         different_context
@@ -4084,7 +4153,7 @@ mod queue_tests {
             "a",
             0,
             different_context,
-            Some(PLAN_REVISION_CONFLICT),
+            Some(EXACT_REVISION_CONFLICT),
         );
 
         reconcile_shared_plan_uploads(&mut db, "a").unwrap();
@@ -4159,7 +4228,7 @@ mod queue_tests {
         let change = json!({"id":"upload","projectId":"a","baseRevision":0,"resource":input});
         db.execute(
             "INSERT INTO outbox VALUES('upload','a','/v2/sync/push',?,?)",
-            params![change.to_string(), PLAN_REVISION_CONFLICT],
+            params![change.to_string(), EXACT_REVISION_CONFLICT],
         )
         .unwrap();
 
@@ -4176,7 +4245,7 @@ mod queue_tests {
         assert!(plan_upload_needs_review(&db, "a", "plan").unwrap());
         db.execute(
             "UPDATE outbox SET error=? WHERE id='upload'",
-            [PLAN_REVISION_CONFLICT],
+            [EXACT_REVISION_CONFLICT],
         )
         .unwrap();
         reconcile_shared_plan_uploads(&mut db, "a").unwrap();
