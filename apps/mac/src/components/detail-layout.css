@@ -1085,6 +1085,7 @@
   height: 8px;
   width: 82%;
   border-radius: var(--radius-control);
+  background: var(--text-disabled);
   background: color-mix(
     in srgb,
     var(--text-secondary) 30%,

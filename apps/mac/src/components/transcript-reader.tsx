@@ -144,7 +144,11 @@ function TranscriptLines() {
 
 function TranscriptLoading() {
   return (
-    <div className="transcript-initial" role="status">
+    <div
+      className="transcript-initial"
+      role="status"
+      aria-label="Loading transcript…"
+    >
       <span className="sr-only">Loading transcript…</span>
       <TranscriptLines />
       <TranscriptLines />
