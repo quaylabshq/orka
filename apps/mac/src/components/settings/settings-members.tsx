@@ -26,7 +26,7 @@ import {
   ItemMenuButton,
   type ItemMenuAction,
 } from "../item-menu.js";
-import { Overlay } from "../overlay.js";
+import { Modal } from "../modal.js";
 import { LoadingRegion } from "../loading-region.js";
 import { ActivityIndicator } from "../activity-indicator.js";
 import { SettingsHeading } from "./settings-shared.js";
@@ -588,8 +588,8 @@ export function SettingsMembers({
         />
       )}
       {revoking && (
-        <Overlay
-          open
+        <Modal
+          legacyFrame
           title="Revoke invite?"
           className="settings-confirm"
           onClose={() => {
@@ -612,11 +612,11 @@ export function SettingsMembers({
               Revoke invite
             </Button>
           </div>
-        </Overlay>
+        </Modal>
       )}
       {confirmation && (
-        <Overlay
-          open
+        <Modal
+          legacyFrame
           title={
             confirmation.action === "remove-member"
               ? "Remove member?"
@@ -668,7 +668,7 @@ export function SettingsMembers({
                 : "Transfer ownership"}
             </Button>
           </div>
-        </Overlay>
+        </Modal>
       )}
     </>
   );

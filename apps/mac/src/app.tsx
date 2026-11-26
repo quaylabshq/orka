@@ -41,7 +41,7 @@ import { ENV_ENABLED } from "./lib/features.js";
 import { isTauri } from "@tauri-apps/api/core";
 import { invoke } from "./components/product-command.js";
 import { listen } from "@tauri-apps/api/event";
-import { Overlay } from "./components/overlay.js";
+import { Modal } from "./components/modal.js";
 import { SettingsUpdates } from "./components/settings/settings-updates.js";
 import { SettingsPluginConnections } from "./components/settings/settings-plugin-connections.js";
 import type { WorkspaceResource as Resource } from "./types.js";
@@ -780,8 +780,8 @@ function WorkspaceApp({
   );
   const updatesDialog =
     settings === "updates" && (!state.user || state.onboarding?.active) ? (
-      <Overlay
-        open
+      <Modal
+        legacyFrame
         onClose={() => setSettings(null)}
         title="Updates"
         className="settings-updates-dialog"
@@ -790,12 +790,12 @@ function WorkspaceApp({
           <SettingsUpdates updates={updates} />
           <Button onClick={() => setSettings(null)}>Done</Button>
         </div>
-      </Overlay>
+      </Modal>
     ) : null;
   const connectorsDialog =
     settings === "connections" && (!state.user || state.onboarding?.active) ? (
-      <Overlay
-        open
+      <Modal
+        legacyFrame
         title="Connectors"
         onClose={() => setSettings(null)}
         className="settings-updates-dialog"
@@ -804,7 +804,7 @@ function WorkspaceApp({
           <SettingsPluginConnections state={state} />
           <Button onClick={() => setSettings(null)}>Done</Button>
         </div>
-      </Overlay>
+      </Modal>
     ) : null;
   const connectorDialog = activeConnectorRequest && (
     <PluginAuthorization

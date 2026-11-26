@@ -12,7 +12,7 @@ import { listen } from "@tauri-apps/api/event";
 import { forgetShapes } from "skullet";
 import type { Snapshot } from "../../types.js";
 import { Button } from "../button.js";
-import { Overlay } from "../overlay.js";
+import { Modal } from "../modal.js";
 import { Switch } from "../switch.js";
 import { SegmentedControl } from "../segmented-control.js";
 import { ActivityIndicator } from "../activity-indicator.js";
@@ -1032,8 +1032,8 @@ export const SettingsModal = forwardRef<
         </div>
       </section>
       {pending !== null && (
-        <Overlay
-          open
+        <Modal
+          legacyFrame
           title={serviceDirty ? "Discard service setup?" : "Save your changes?"}
           className="settings-confirm"
           onCloseAutoFocus={(event) => {
@@ -1089,11 +1089,11 @@ export const SettingsModal = forwardRef<
               </Button>
             )}
           </div>
-        </Overlay>
+        </Modal>
       )}
       {confirmation && (
-        <Overlay
-          open
+        <Modal
+          legacyFrame
           title={`${confirmationLabel}?`}
           className="settings-confirm"
           onClose={() => {
@@ -1133,7 +1133,7 @@ export const SettingsModal = forwardRef<
               {confirmationLabel}
             </Button>
           </div>
-        </Overlay>
+        </Modal>
       )}
     </>
   );

@@ -5,7 +5,7 @@ import type { LocalDraft } from "../types.js";
 import { Button } from "./button.js";
 import { FileReview } from "./file-review.js";
 import { IconButton } from "./icon-button.js";
-import { Overlay } from "./overlay.js";
+import { Modal } from "./modal.js";
 import { displayText } from "./resource-presentation.js";
 import { handleReviewTab } from "./review-focus.js";
 import type { FileManifestEntry } from "./diff-model.js";
@@ -45,8 +45,8 @@ export function ProjectChangeReview({
       ? "Shared version"
       : "Not shared";
   return (
-    <Overlay
-      open
+    <Modal
+      legacyFrame
       title="Review changes"
       className="changes-review-modal"
       onClose={() => {
@@ -138,6 +138,6 @@ export function ProjectChangeReview({
           {detail.canPublish ? "Publish update" : "Send for approval"}
         </Button>
       </footer>
-    </Overlay>
+    </Modal>
   );
 }

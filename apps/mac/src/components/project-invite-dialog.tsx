@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Button } from "./button.js";
 import { IconButton } from "./icon-button.js";
-import { Overlay } from "./overlay.js";
+import { Modal } from "./modal.js";
 import { TextField } from "./text-field.js";
 import { SegmentedControl } from "./segmented-control.js";
 
@@ -108,8 +108,8 @@ export function ProjectInviteDialog({
   };
 
   return (
-    <Overlay
-      open
+    <Modal
+      legacyFrame
       title={title}
       className="create-project-modal"
       onCloseAutoFocus={onCloseAutoFocus}
@@ -214,6 +214,6 @@ export function ProjectInviteDialog({
           </Button>
         </div>
       </form>
-    </Overlay>
+    </Modal>
   );
 }

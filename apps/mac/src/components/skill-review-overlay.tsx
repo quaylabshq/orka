@@ -18,7 +18,7 @@ import type {
   ProjectResource,
   Snapshot,
 } from "../types.js";
-import { Overlay } from "./overlay.js";
+import { Drawer } from "./modal.js";
 import { handleReviewTab } from "./review-focus.js";
 import { Button } from "./button.js";
 import { Icon } from "./icon.js";
@@ -491,9 +491,7 @@ export function SkillReviewOverlay({
   })();
 
   return (
-    <Overlay
-      open
-      drawer
+    <Drawer
       title={title}
       className={`review-drawer${empty ? " review-drawer--empty" : ""}`}
       onClose={() => {
@@ -644,6 +642,6 @@ export function SkillReviewOverlay({
         />
       </div>
       {footer && <footer className="review-footer">{footer}</footer>}
-    </Overlay>
+    </Drawer>
   );
 }

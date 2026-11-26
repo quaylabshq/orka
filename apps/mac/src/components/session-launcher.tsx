@@ -17,7 +17,7 @@ import type { Project, ProjectResource } from "../types.js";
 import { Button } from "./button.js";
 import { Icon } from "./icon.js";
 import { IconButton } from "./icon-button.js";
-import { Overlay } from "./overlay.js";
+import { Modal } from "./modal.js";
 import { Textarea } from "./textarea.js";
 import { CopyLinkButton } from "./copy-link-button.js";
 import { ActionPopover } from "./resource-actions.js";
@@ -414,8 +414,8 @@ export function SessionLauncher({
         )}
       </ActionPopover>
       {actions.manualCommand && (
-        <Overlay
-          open
+        <Modal
+          legacyFrame
           title={`Continue in ${actions.manualDestination}`}
           onClose={actions.dismissManualCommand}
           dismissOnBackdrop
@@ -443,7 +443,7 @@ export function SessionLauncher({
               onError={onError}
             />
           </div>
-        </Overlay>
+        </Modal>
       )}
     </div>
   );

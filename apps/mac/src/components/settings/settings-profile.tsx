@@ -18,7 +18,7 @@ import { CopyLinkButton } from "../copy-link-button.js";
 import { ActivityIndicator } from "../activity-indicator.js";
 import { LoadingRegion } from "../loading-region.js";
 import { SettingsAccount } from "./settings-account.js";
-import { Overlay } from "../overlay.js";
+import { Modal } from "../modal.js";
 import { PermissionSelect } from "../permission-select.js";
 import { SettingsHeading, type SettingsEditor } from "./settings-shared.js";
 import { useSettingsQuery } from "./use-settings-query.js";
@@ -339,8 +339,8 @@ export const SettingsProfile = forwardRef<
         </p>
       )}
       {review && value && base && (
-        <Overlay
-          open
+        <Modal
+          legacyFrame
           title="Review latest profile"
           className="settings-migration"
           onClose={() => setReview(null)}
@@ -452,7 +452,7 @@ export const SettingsProfile = forwardRef<
               Use reviewed values
             </Button>
           </div>
-        </Overlay>
+        </Modal>
       )}
       <section aria-label="Account" className="settings-account-rows">
         <h3>Account</h3>

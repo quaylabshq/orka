@@ -4,7 +4,7 @@ import { invoke } from "./product-command.js";
 import { PlugIcon, XIcon } from "lucide-react";
 import { Button } from "./button.js";
 import { IconButton } from "./icon-button.js";
-import { Overlay } from "./overlay.js";
+import { Modal } from "./modal.js";
 
 export interface PluginAccount {
   id: string;
@@ -141,8 +141,8 @@ export function PluginAuthorization({
   };
   useProductView(preview ? "connector_consent_viewed" : undefined);
   return (
-    <Overlay
-      open
+    <Modal
+      legacyFrame
       title="Connect to Orka"
       onClose={() => void close()}
       className="plugin-authorization"
@@ -279,6 +279,6 @@ export function PluginAuthorization({
           </Button>
         )}
       </footer>
-    </Overlay>
+    </Modal>
   );
 }

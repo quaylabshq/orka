@@ -7,7 +7,7 @@ import {
   useToasts,
   useToastNotice,
 } from "../../../apps/mac/src/components/toasts.js";
-import { Overlay } from "../../../apps/mac/src/components/overlay.js";
+import { Modal } from "../../../apps/mac/src/components/modal.js";
 import { Button } from "../../../apps/mac/src/components/button.js";
 import "@fontsource-variable/inter";
 import "../../../apps/mac/src/style.css";
@@ -81,9 +81,9 @@ function Demo({ onProject }: { onProject: () => void }) {
     ),
     open &&
       h(
-        Overlay,
+        Modal,
         {
-          open: true,
+          legacyFrame: true,
           title: "Toast review",
           onClose: () => setOpen(false),
           children: null,

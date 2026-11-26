@@ -24,7 +24,7 @@ import { SourceSyncButton } from "./source-sync-button.js";
 import { PermissionSelect } from "./permission-select.js";
 import { IconButton } from "./icon-button.js";
 import { TextField } from "./text-field.js";
-import { Overlay } from "./overlay.js";
+import { Modal } from "./modal.js";
 import {
   ItemContextMenu,
   ItemMenuButton,
@@ -195,8 +195,8 @@ export function RepositoryConnections({
       />
     ) : (
       dialog?.source && (
-        <Overlay
-          open
+        <Modal
+          legacyFrame
           title="Request repository access"
           className="repository-dialog"
           onClose={() => {
@@ -263,7 +263,7 @@ export function RepositoryConnections({
             </Button>
           </div>
           {error && <p role="alert">{error}</p>}
-        </Overlay>
+        </Modal>
       )
     );
   const content = (
@@ -649,8 +649,8 @@ export function RepositoryConnections({
   );
   if (dialogOnly && multipleSources)
     return (
-      <Overlay
-        open
+      <Modal
+        legacyFrame
         title="Connect project repositories"
         className="repository-dialog"
         onClose={close}
@@ -666,7 +666,7 @@ export function RepositoryConnections({
           />
         </div>
         {content}
-      </Overlay>
+      </Modal>
     );
   return dialogOnly ? dialogUi : content;
 }

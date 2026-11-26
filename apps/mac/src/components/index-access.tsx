@@ -3,7 +3,7 @@ import React, { useRef, useState } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { IconButton } from "./icon-button.js";
 import type { IconGlyph } from "./icons.js";
-import { Overlay } from "./overlay.js";
+import { Modal } from "./modal.js";
 
 /** One warning leads to the folder and permission actions for this project. */
 export function IndexAccessDialog({
@@ -33,8 +33,8 @@ export function IndexAccessDialog({
         <InfoIcon size={12} aria-hidden="true" />
       </button>
       {open && (
-        <Overlay
-          open
+        <Modal
+          legacyFrame
           title="Project access"
           className="index-access-dialog"
           onClose={() => {
@@ -57,7 +57,7 @@ export function IndexAccessDialog({
             />
           </div>
           {children}
-        </Overlay>
+        </Modal>
       )}
     </>
   );

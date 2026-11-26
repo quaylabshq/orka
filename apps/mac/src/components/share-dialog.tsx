@@ -15,7 +15,6 @@ import {
   ShieldCheckIcon,
   TriangleAlertIcon,
   UsersIcon,
-  XIcon,
 } from "lucide-react";
 import React, { useEffect, useRef, useState } from "react";
 import { Channel } from "@tauri-apps/api/core";
@@ -25,9 +24,8 @@ import { ActivityIndicator } from "./activity-indicator.js";
 import { Button } from "./button.js";
 import { productAction, useDesktopFeature } from "./desktop-usage.js";
 import { Icon } from "./icon.js";
-import { IconButton } from "./icon-button.js";
 import type { IconGlyph } from "./icons.js";
-import { Overlay } from "./overlay.js";
+import { Modal } from "./modal.js";
 import { invoke } from "./product-command.js";
 import {
   shareStatus,
@@ -279,106 +277,91 @@ export function ShareDialog({
     : "Everyone in this project";
 
   return (
-    <Overlay
-      open
+    <Modal
       title={status.heading}
       onClose={onClose}
       className="share-dialog"
       onCloseAutoFocus={onCloseAutoFocus}
-    >
-      <div className="share-dialog-header">
-        <h2 title={status.heading}>{status.heading}</h2>
-        <IconButton
-          icon={XIcon}
-          size="sm"
-          variant="tertiary"
-          aria-label="Close"
-          title="Close"
-          onClick={onClose}
-        />
-      </div>
-      <div className="share-dialog-body">
-        <section
-          className="share-dialog-preview"
-          aria-label="Selected item"
-          data-kind={resource.kind}
-        >
-          <div className="share-dialog-card share-dialog-card--back" />
-          <div className="share-dialog-card">
-            <span className="share-dialog-kind">
-              <Icon icon={kindIcon} size="sm" />
-              {kindNames[resource.kind]}
-            </span>
-            <p className="share-dialog-title" title={title}>
-              {title}
-            </p>
-            <p className="share-dialog-detail" title={detail}>
-              {detail}
-            </p>
-          </div>
-        </section>
-        <dl className="share-dialog-facts">
-          <div>
-            <dt>
-              <Icon icon={FolderIcon} size="sm" />
-              Project
-            </dt>
-            <dd title={projectName}>{projectName}</dd>
-          </div>
-          <div>
-            <dt>
-              <Icon icon={UsersIcon} size="sm" />
-              People
-            </dt>
-            <dd title={people}>{people}</dd>
-          </div>
-          <div>
-            <dt>
-              <Icon icon={ActivityIcon} size="sm" />
-              Status
-            </dt>
-            <dd>
-              <span
-                className={`share-dialog-pill share-dialog-pill--${status.tone}`}
-                role="status"
-                aria-live="polite"
-                title={status.pill}
-                data-shimmer={phase.step === "sending" || undefined}
-              >
-                {status.icon === "loader" ? (
-                  <ActivityIndicator />
-                ) : (
-                  <Icon icon={statusIcons[status.icon]} size="sm" />
-                )}
-                <span>{status.pill}</span>
-              </span>
-            </dd>
-          </div>
-        </dl>
-      </div>
-      <div className="share-dialog-footer">
-        {error && (
-          <p className="share-dialog-error" role="alert" title={error}>
-            {error}
-          </p>
-        )}
-        {status.secondary && (
-          <Button size="sm" onClick={() => act(status.secondary!.action)}>
-            {status.secondary.label}
+      error={error}
+      footer={
+        <>
+          {status.secondary && (
+            <Button size="sm" onClick={() => act(status.secondary!.action)}>
+              {status.secondary.label}
+            </Button>
+          )}
+          <Button
+            variant="primary"
+            size="sm"
+            className="share-dialog-action"
+            disabled={
+              status.actionDisabled ||
+              (status.action === "share" && context.busy)
+            }
+            onClick={() => act(status.action)}
+          >
+            {status.actionLabel}
           </Button>
-        )}
-        <Button
-          variant="primary"
-          size="sm"
-          className="share-dialog-action"
-          disabled={
-            status.actionDisabled || (status.action === "share" && context.busy)
-          }
-          onClick={() => act(status.action)}
-        >
-          {status.actionLabel}
-        </Button>
-      </div>
-    </Overlay>
+        </>
+      }
+    >
+      <section
+        className="share-dialog-preview"
+        aria-label="Selected item"
+        data-kind={resource.kind}
+      >
+        <div className="share-dialog-card share-dialog-card--back" />
+        <div className="share-dialog-card">
+          <span className="share-dialog-kind">
+            <Icon icon={kindIcon} size="sm" />
+            {kindNames[resource.kind]}
+          </span>
+          <p className="share-dialog-title" title={title}>
+            {title}
+          </p>
+          <p className="share-dialog-detail" title={detail}>
+            {detail}
+          </p>
+        </div>
+      </section>
+      <dl className="share-dialog-facts">
+        <div>
+          <dt>
+            <Icon icon={FolderIcon} size="sm" />
+            Project
+          </dt>
+          <dd title={projectName}>{projectName}</dd>
+        </div>
+        <div>
+          <dt>
+            <Icon icon={UsersIcon} size="sm" />
+            People
+          </dt>
+          <dd title={people}>{people}</dd>
+        </div>
+        <div>
+          <dt>
+            <Icon icon={ActivityIcon} size="sm" />
+            Status
+          </dt>
+          <dd>
+            <span
+              className={`share-dialog-pill share-dialog-pill--${status.tone}`}
+              role="status"
+              aria-live="polite"
+              title={status.pill}
+              data-shimmer={phase.step === "sending" || undefined}
+            >
+              {status.icon === "loader" ? (
+                <ActivityIndicator />
+              ) : (
+                <Icon icon={statusIcons[status.icon]} size="sm" />
+              )}
+              <span>{status.pill}</span>
+            </span>
+          </dd>
+        </div>
+      </dl>
+    </Modal>
   );
 }

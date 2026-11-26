@@ -12,7 +12,7 @@ import {
 import type { Project, Snapshot } from "../../types.js";
 import { ActivityIndicator } from "../activity-indicator.js";
 import { Button } from "../button.js";
-import { Overlay } from "../overlay.js";
+import { Modal } from "../modal.js";
 import { TextField } from "../text-field.js";
 import { Icon } from "../icon.js";
 import { inactiveReason } from "../project-inactive.js";
@@ -556,8 +556,8 @@ export function SettingsDanger({
         </p>
       )}
       {dialog && (
-        <Overlay
-          open
+        <Modal
+          legacyFrame
           title={title}
           className="settings-confirm project-lifecycle-confirm"
           onCloseAutoFocus={standaloneDelete?.onCloseAutoFocus}
@@ -628,7 +628,7 @@ export function SettingsDanger({
                   : "Delete now"}
             </Button>
           </div>
-        </Overlay>
+        </Modal>
       )}
     </>
   );

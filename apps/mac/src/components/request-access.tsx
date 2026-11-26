@@ -5,7 +5,7 @@ import type { Project, Snapshot } from "../types.js";
 import { Button } from "./button.js";
 import { IconButton } from "./icon-button.js";
 import { PermissionSelect } from "./permission-select.js";
-import { Overlay } from "./overlay.js";
+import { Modal } from "./modal.js";
 import {
   governanceCall,
   permissionSections,
@@ -202,8 +202,8 @@ export function RequestAccess({
             : "Ask to edit"}
       </Button>
       {open && (
-        <Overlay
-          open
+        <Modal
+          legacyFrame
           title="Request access"
           onClose={() => {
             if (!busy) setOpen(false);
@@ -223,7 +223,7 @@ export function RequestAccess({
             />
           </div>
           {fields}
-        </Overlay>
+        </Modal>
       )}
     </>
   );
