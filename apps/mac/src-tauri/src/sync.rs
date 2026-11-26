@@ -26,7 +26,10 @@ pub(crate) fn pull_applied_resources(project: &str) -> usize {
     PULL_APPLIED_RESOURCES.with_borrow(|counts| counts.get(project).copied().unwrap_or(0))
 }
 
-const PLAN_REVISION_CONFLICT: &str =
+pub(crate) const SESSION_CONFLICT_CHANGED: &str = "409: Conflict changed; refresh before resolving";
+pub(crate) const PUBLISH_DENIED: &str =
+    "403: Publishing requires permission; save a draft or submit a suggestion";
+pub(crate) const EXACT_REVISION_CONFLICT: &str =
     "409: Resource changed; refresh and review the exact version again";
 const PLAN_REVIEW_PENDING: &str = "Queued plan upload needs review";
 pub(crate) const DESKTOP_VERSION_HEADER: &str = "X-Orka-Desktop-Version";
@@ -572,20 +575,141 @@ pub(crate) fn queue_session_resolution(db: &rusqlite::Connection, input: &Value)
     let tx = db
         .unchecked_transaction()
         .map_err(|error| error.to_string())?;
-    let source = selected_resolution_snapshot(&tx, input)?
+    store_session_resolution(&tx, input, false)?;
+    tx.commit().map_err(|error| error.to_string())
+}
+
+pub(crate) fn store_recovery_resolution(db: &rusqlite::Connection, input: &Value) -> Result<()> {
+    store_session_resolution(db, input, true)
+}
+
+fn recovery_bytes_available(snapshot: &Value) -> Result<bool> {
+    let store = db::BlobStore::current()?;
+    Ok(snapshot["files"]
+        .as_array()
+        .is_some_and(|files| !files.is_empty() && store.all_present(files)))
+}
+
+/// A definitive refusal and the accepted resource together tell us whether a
+/// queued choice can be retired. A candidate that still exists requires a new
+/// individual decision. Transport errors and inaccessible receipts stay frozen.
+pub(crate) fn retire_rejected_session_choices(
+    tx: &Transaction<'_>,
+    project: &str,
+    reviewed_session: Option<&str>,
+) -> Result<()> {
+    let rows = db::rows(tx,
+        "SELECT json_object('request',json(o.value),'current',json(r.value),'open',
+            EXISTS(SELECT 1 FROM conflicts c WHERE c.project=o.project
+                AND c.id=json_extract(o.value,'$.conflictId')
+                AND json_extract(c.value,'$.resourceId')=r.id))
+         FROM outbox o JOIN resources r ON r.project=o.project AND r.id=json_extract(o.value,'$.resourceId')
+         WHERE o.project=?1 AND o.path='/v2/sessions/resolve' AND o.error IN (?2,?3)
+           AND json_extract(o.value,'$.projectId')=o.project AND json_extract(o.value,'$.id')=o.id
+           AND json_extract(r.value,'$.kind')='session' AND json_type(o.value,'$.conflictId')='text'
+           AND (?4 IS NULL OR r.id=?4)
+           AND (json_extract(r.value,'$.revision') > json_extract(o.value,'$.expectedRevision')
+                OR (?4 IS NOT NULL AND o.error=?3
+                    AND json_extract(r.value,'$.revision')=json_extract(o.value,'$.expectedRevision')))",
+        &[&project, &SESSION_CONFLICT_CHANGED, &PUBLISH_DENIED, &reviewed_session])?;
+    for row in rows {
+        let still_open = row["open"] == 1;
+        if still_open && reviewed_session.is_none() {
+            continue;
+        }
+        let request = &row["request"];
+        let id = request["id"]
+            .as_str()
+            .ok_or("Missing rejected request ID")?;
+        if !still_open {
+            let selected = queued_session_snapshot(tx, request)?;
+            if selected.is_none() && !db::get(tx, &copy_state_key(id))?.is_null() {
+                // An unrecognized frozen record may still contain local work.
+                // Older ID-only requests have no such record to preserve.
+                continue;
+            }
+            let current = &row["current"];
+            if let Some(selected) = selected.filter(|snapshot| {
+                snapshot["deleted"] == false
+                    && (request["action"] == "copy"
+                        || current["deleted"] == true
+                        || snapshot["files"] != current["files"])
+            }) {
+                // Keep an explicit copy or displaced candidate privately,
+                // without binding the cloud snapshot to native history.
+                if selected["owner"] != db::get(tx, "user")?
+                    || !recovery_bytes_available(&selected)?
+                {
+                    // An older client could freeze the manifest before downloading the bytes.
+                    continue;
+                }
+                let saved: bool = tx
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM drafts WHERE project=?1
+                       AND json_extract(value,'$.resource.resourceId')=?2
+                       AND json_extract(value,'$.resource.files')=?3
+                       AND json_extract(value,'$.resource.owner')=?4
+                       AND json_extract(value,'$.paths')='[]'
+                       AND json_extract(value,'$.status')='local'
+                       AND json_extract(value,'$.submission') IS NULL)",
+                        params![
+                            project,
+                            selected["resourceId"].as_str(),
+                            selected["files"].to_string(),
+                            selected["owner"].as_str()
+                        ],
+                        |r| r.get(0),
+                    )
+                    .map_err(|e| e.to_string())?;
+                if !saved {
+                    let project = crate::governance::project(tx, project)?;
+                    let source =
+                        crate::sources::for_resource(&project, &selected).unwrap_or(project);
+                    // This private copy belongs to this decision. A submitted or dismissed
+                    // draft with the same content keeps its identity and history.
+                    crate::governance::capture_as(
+                        tx,
+                        &source,
+                        &selected,
+                        &json!([]),
+                        uuid::Uuid::new_v4().to_string(),
+                    )?;
+                }
+            }
+        }
+        tx.execute("DELETE FROM outbox WHERE id=?", [id])
+            .map_err(|error| error.to_string())?;
+        clear_session_copy(tx, id)?;
+    }
+    Ok(())
+}
+
+fn store_session_resolution(
+    db: &rusqlite::Connection,
+    input: &Value,
+    recovery: bool,
+) -> Result<()> {
+    let source = selected_resolution_snapshot(db, input)?
         .ok_or("The selected session version is unavailable; refresh before resolving")?;
+    if recovery && source["deleted"] == false && !recovery_bytes_available(&source)? {
+        return Err("Sync to download the incoming session, then choose again.".into());
+    }
     indexer::queue(
-        &tx,
+        db,
         input["projectId"].as_str().ok_or("Missing project")?,
         "/v2/sessions/resolve",
         input,
     )?;
+    let mut state = json!({"source":source,"resolution":input});
+    if recovery && input["action"] == "copy" {
+        // A recovered cloud copy has no claim on this Mac's original transcript.
+        state["preserveOriginalBinding"] = json!(true);
+    }
     db::set(
-        &tx,
+        db,
         &copy_state_key(input["id"].as_str().ok_or("Missing request ID")?),
-        &json!({"source":source,"resolution":input}),
-    )?;
-    tx.commit().map_err(|error| error.to_string())
+        &state,
+    )
 }
 
 /// Freeze the wire body before its first attempt. A service upgrade must not
@@ -943,8 +1067,14 @@ pub(crate) fn acknowledge_session(
             db::upsert(db, "bindings", id, project, &binding)?;
         }
     }
-    if path == "/v2/sessions/copy" || (path == "/v2/sessions/resolve" && input["action"] == "copy")
-    {
+    let resolution_copy = path == "/v2/sessions/resolve" && input["action"] == "copy";
+    if path == "/v2/sessions/copy" || resolution_copy {
+        if resolution_copy {
+            let id = input["id"].as_str().ok_or("Missing request ID")?;
+            if db::get(db, &copy_state_key(id))?["preserveOriginalBinding"] == true {
+                return clear_session_copy(db, id);
+            }
+        }
         let old = input["resourceId"]
             .as_str()
             .ok_or("Missing copied resource")?;
@@ -1140,9 +1270,13 @@ fn automatic_skill_binding(
     if guards
         .iter()
         .any(|hash| hash != &empty && hash != &base && hash != &incoming)
-        && !crate::skill_reconciliation::reconcile(db, project, resource, &mut binding, &copies)?
     {
-        return Err(crate::skill_reconciliation::LOCAL_EDITS.into());
+        use crate::skill_reconciliation::{reconcile, Outcome};
+        match reconcile(db, project, resource, &mut binding, &copies)? {
+            Outcome::Install => {}
+            Outcome::Queued => return Ok(None),
+            Outcome::Review => return Err(crate::skill_reconciliation::LOCAL_EDITS.into()),
+        }
     }
     binding["reviewedRevision"] = resource["revision"].clone();
     binding["guards"] = json!(guards);
@@ -1732,6 +1866,9 @@ async fn pull(owner: &str, db: &mut rusqlite::Connection, project: &str, name: &
         crate::governance::reconcile_requests(&tx, project, &requests)?;
         for e in response["events"].as_array().ok_or("Invalid events")? {
             apply_event(&tx, e)?;
+        }
+        if response["hasMore"] != true {
+            retire_rejected_session_choices(&tx, project, None)?;
         }
         tx.execute("INSERT INTO cursors VALUES(?,?) ON CONFLICT(project) DO UPDATE SET cursor=excluded.cursor",params![project,response["cursor"].as_i64()]).map_err(|e|e.to_string())?;
         db::set(&tx, &format!("presence:{project}"), &response["presence"])?;
@@ -2676,7 +2813,14 @@ impl<'a> SyncPass<'a> {
                         .await
                         .map(Some);
                 }
-                if q["path"] == crate::context_sharing::QUEUE_PATH {
+                if q["path"] == crate::context_sharing::QUEUE_PATH
+                    || q["path"] == crate::global_skills::IMPORT_PATH
+                {
+                    if let Some(receipt) =
+                        crate::context_sharing::frozen_skill_proposal(db, &q, owner)?
+                    {
+                        return Ok(Some(receipt));
+                    }
                     crate::context_sharing::upload(db, owner, &q).await?;
                 } else if input["resource"]["files"].is_array() {
                     crate::repair::upload(
@@ -2702,12 +2846,20 @@ impl<'a> SyncPass<'a> {
             }
             .await;
             match result {
+                Ok(Some(receipt)) if q["path"] == crate::selective_sharing::QUEUE_PATH => {
+                    let tx = db.transaction().map_err(|e| e.to_string())?;
+                    let waiting = crate::selective_sharing::complete(&tx, &q, &receipt)?;
+                    tx.commit().map_err(|e| e.to_string())?;
+                    if waiting {
+                        deferred.insert(q["id"].clone());
+                    } else {
+                        deferred.remove(&q["id"]);
+                    }
+                }
                 Ok(receipt) => {
                     let tx = db.transaction().map_err(|e| e.to_string())?;
                     if let Some(receipt) = receipt {
-                        if q["path"] == crate::selective_sharing::QUEUE_PATH {
-                            crate::selective_sharing::complete(&tx, &q, &receipt)?;
-                        } else if q["path"] == crate::global_skills::IMPORT_PATH
+                        if q["path"] == crate::global_skills::IMPORT_PATH
                             || q["path"] == crate::context_sharing::QUEUE_PATH
                         {
                             crate::context_sharing::complete(&tx, &q, &receipt)?;
@@ -2736,6 +2888,11 @@ impl<'a> SyncPass<'a> {
                             == 1
                         && replace_unavailable_session_copy(db, &input, &device)?
                     {
+                        deferred.remove(&q["id"]);
+                        outbox.advance(db, &q["sequence"])?;
+                        continue;
+                    }
+                    if crate::skill_reconciliation::release_stale(db, &q, &error)? {
                         deferred.remove(&q["id"]);
                         outbox.advance(db, &q["sequence"])?;
                         continue;
@@ -2933,6 +3090,13 @@ impl<'a> SyncPass<'a> {
         }
         if crate::projects::foreground_waiting()? || boundary(db, project)?.is_break() {
             return Ok(Break(()));
+        }
+        if !retry_only {
+            record_result(
+                db,
+                &format!("{project}:skill-sharing"),
+                crate::skill_reconciliation::queue_verified(db, p),
+            )?;
         }
         record_result(
             db,
@@ -3266,7 +3430,7 @@ fn reconcile_shared_plan_uploads(db: &mut rusqlite::Connection, project: &str) -
            AND r.id=json_extract(o.value,'$.resource.resourceId')
          WHERE o.project=? AND o.path='/v2/sync/push' AND o.error=?
            AND json_extract(o.value,'$.resource.kind')='plan'",
-        &[&project, &PLAN_REVISION_CONFLICT],
+        &[&project, &EXACT_REVISION_CONFLICT],
     )?;
     for row in stale {
         let change = &row["change"];
@@ -3301,7 +3465,7 @@ fn reconcile_shared_plan_uploads(db: &mut rusqlite::Connection, project: &str) -
         {
             tx.execute(
                 "DELETE FROM outbox WHERE project=? AND id=? AND error=?",
-                params![project, row["id"].as_str(), PLAN_REVISION_CONFLICT],
+                params![project, row["id"].as_str(), EXACT_REVISION_CONFLICT],
             )
             .map_err(|error| error.to_string())?;
         }
@@ -3384,7 +3548,8 @@ fn consolidation_pending(queued: &Value, error: &str) -> bool {
     };
     matches!(
         reason,
-        "invalid_answers"
+        "owner_decision_pending"
+            | "invalid_answers"
             | "jev_disabled"
             | "jev_missing_key"
             | "jev_context_limit"
@@ -3413,6 +3578,7 @@ impl<'p> ProjectOutbox<'p> {
 
     fn open(db: &rusqlite::Connection, project: &'p str) -> Result<Self> {
         Self::migrate(db)?;
+        crate::context_sharing::reconcile_skill_requests(db, project)?;
         let cursor_key = format!("{}:{project}", Self::LEGACY_CURSOR);
         let cursor = db::get(db, &cursor_key)?.as_i64().unwrap_or(0);
         Ok(Self {
@@ -3527,6 +3693,12 @@ impl<'a> SyncError<'a> {
     /// error; every other code keeps the plain `"<status>: <message>"` shape.
     fn message(status: u16, body: &Value, fallback: &str) -> String {
         let message = body["error"].as_str().unwrap_or(fallback);
+        if status == 503
+            && body["code"] == "owner_decision_pending"
+            && message == "Memory consolidation pending: jev_uncertain"
+        {
+            return crate::selective_sharing::OWNER_DECISION_PENDING.into();
+        }
         match body["code"]
             .as_str()
             .filter(|code| Self::ACCESS.contains(code))
@@ -4007,14 +4179,14 @@ mod queue_tests {
             "a",
             0,
             shared_fields.clone(),
-            Some(PLAN_REVISION_CONFLICT),
+            Some(EXACT_REVISION_CONFLICT),
         );
         put(
             "another-project",
             "b",
             0,
             shared_fields.clone(),
-            Some(PLAN_REVISION_CONFLICT),
+            Some(EXACT_REVISION_CONFLICT),
         );
         put("newer-request", "a", 1, shared_fields.clone(), None);
         put(
@@ -4031,7 +4203,7 @@ mod queue_tests {
             "a",
             0,
             different_copy,
-            Some(PLAN_REVISION_CONFLICT),
+            Some(EXACT_REVISION_CONFLICT),
         );
         let mut different_context = shared_fields;
         different_context
@@ -4043,7 +4215,7 @@ mod queue_tests {
             "a",
             0,
             different_context,
-            Some(PLAN_REVISION_CONFLICT),
+            Some(EXACT_REVISION_CONFLICT),
         );
 
         reconcile_shared_plan_uploads(&mut db, "a").unwrap();
@@ -4118,7 +4290,7 @@ mod queue_tests {
         let change = json!({"id":"upload","projectId":"a","baseRevision":0,"resource":input});
         db.execute(
             "INSERT INTO outbox VALUES('upload','a','/v2/sync/push',?,?)",
-            params![change.to_string(), PLAN_REVISION_CONFLICT],
+            params![change.to_string(), EXACT_REVISION_CONFLICT],
         )
         .unwrap();
 
@@ -4135,7 +4307,7 @@ mod queue_tests {
         assert!(plan_upload_needs_review(&db, "a", "plan").unwrap());
         db.execute(
             "UPDATE outbox SET error=? WHERE id='upload'",
-            [PLAN_REVISION_CONFLICT],
+            [EXACT_REVISION_CONFLICT],
         )
         .unwrap();
         reconcile_shared_plan_uploads(&mut db, "a").unwrap();
@@ -4445,6 +4617,11 @@ mod queue_tests {
 
     #[test]
     fn only_known_memory_consolidation_failures_are_deferred() {
+        let compatible = json!({"error":"Memory consolidation pending: jev_uncertain","code":"owner_decision_pending"});
+        assert_eq!(
+            SyncError::message(503, &compatible, "Service unavailable"),
+            crate::selective_sharing::OWNER_DECISION_PENDING
+        );
         let memory = queued(1, "memory");
         for path in [
             "/v2/sync/push",
@@ -4462,6 +4639,7 @@ mod queue_tests {
             );
         }
         for reason in [
+            "owner_decision_pending",
             "jev_uncertain",
             "jev_http_503",
             "jev_network",
@@ -4528,6 +4706,47 @@ mod queue_tests {
             .unwrap();
         }
         (root, db)
+    }
+
+    #[test]
+    fn skill_decision_resumes_the_same_request_after_access_or_source_recovery() {
+        let (dir, db) = outbox_db(&["a"]);
+        let mut project =
+            json!({"id":"a","governed":true,"sharing":{"skill":true},"path":dir.path()});
+        db::upsert(&db, "projects", "a", "", &project).unwrap();
+        let mut skill = json!({"resourceId":"s","projectId":"a","kind":"skill","access":{"mode":"publish"},"revision":2,"deleted":false});
+        db::upsert(&db, "resources", "s", "a", &skill).unwrap();
+        let frozen = json!({"id":"req","resource":{"resourceId":"s","kind":"skill"},"baseRevision":2,"automaticSkillMerge":true,"skillImport":"d"});
+        indexer::queue(&db, "a", crate::global_skills::IMPORT_PATH, &frozen).unwrap();
+        let outbox = ProjectOutbox::open(&db, "a").unwrap();
+        for paused in ["role", "folder"] {
+            if paused == "role" {
+                skill["access"]["mode"] = json!("suggest");
+                db::upsert(&db, "resources", "s", "a", &skill).unwrap();
+            } else {
+                project["path"] = Value::Null;
+                db::upsert(&db, "projects", "a", "", &project).unwrap();
+            }
+            let queued = outbox.queued(&db).unwrap().remove(0);
+            let error = crate::context_sharing::check_upload_eligibility(&db, &queued).unwrap_err();
+            assert!(defer_upload(&queued, &error));
+            assert!(!outbox.fail(&db, &queued, &error).unwrap());
+            skill["access"]["mode"] = json!("publish");
+            // The formerly lost response can still be fetched by retrying its
+            // frozen ID even after the shared feed has already advanced.
+            skill["revision"] = json!(3);
+            db::upsert(&db, "resources", "s", "a", &skill).unwrap();
+            project["path"] = json!(dir.path());
+            db::upsert(&db, "projects", "a", "", &project).unwrap();
+            let retry = outbox.eligible(&db, &project).unwrap().remove(0);
+            assert_eq!(retry["value"], frozen);
+            crate::context_sharing::check_upload_eligibility(&db, &retry).unwrap();
+        }
+        let retry = outbox.eligible(&db, &project).unwrap().remove(0);
+        outbox
+            .fail(&db, &retry, "403: Receipt access denied")
+            .unwrap();
+        assert!(outbox.eligible(&db, &project).unwrap().is_empty());
     }
 
     fn automatic_change(id: &str, hash: &str) -> Value {

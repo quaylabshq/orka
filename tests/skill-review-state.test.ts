@@ -1,11 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import type { LocalDraft, ProjectResource } from "../apps/mac/src/types.js";
-import { skillDraft } from "../apps/mac/src/components/skill-review-state.js";
+import {
+  skillDraft,
+  skillReviewState,
+} from "../apps/mac/src/components/skill-review-state.js";
 
 const resource = {
   resourceId: "skill",
   projectId: "project",
+  kind: "skill",
 } as ProjectResource;
 const draft = (
   id: string,
@@ -74,4 +78,33 @@ await test("captures from other resources and projects do not supersede this ski
     )?.id,
     selected.id,
   );
+});
+
+await test("an automatic skill merge only needs review after its frozen request fails or a new edit arrives", () => {
+  const shared = resource;
+  const queued = {
+    ...draft("draft", "2026-11-10T10:00:00Z"),
+    automaticSharing: true,
+    submission: { id: "request" },
+  };
+  const state = {
+    bindings: [{ resourceId: shared.resourceId, installationState: "queued" }],
+    drafts: [queued],
+    governance: [],
+    outbox: [{ id: "request", project: shared.projectId, error: null }],
+  };
+  assert.equal(
+    skillReviewState(shared, state, { governed: true }).outgoing,
+    false,
+  );
+  for (const changed of [
+    { ...state, outbox: [] },
+    { ...state, outbox: [{ ...state.outbox[0], error: "Access changed" }] },
+    { ...state, drafts: [draft("new", "2026-11-11T10:00:00Z")] },
+  ]) {
+    assert.equal(
+      skillReviewState(shared, changed, { governed: true }).outgoing,
+      true,
+    );
+  }
 });

@@ -1,0 +1,28 @@
+{
+  "T02": ["Log to a file.\n"],
+  "T04": ["## Inputs\n- path\n- profile\n"],
+  "T06": ["Mode: quick"],
+  "T08": [
+    "# Parser\nRead one UTF-8 file.\n\n## Output\nWrite the JSON report.\n"
+  ],
+  "T10": ["Input format: TSV\nOutput format: YAML\n"],
+  "T12": ["Préface révisée.\r\n\r\nRapport établi.\r\n"],
+  "T14": ["title = \"Inspect\"\n\n# Output\nReturn JSONL."],
+  "T16": ["## Prepare\nRead the runbook.\n\n## Verify\nRun the suite.\n"],
+  "T18": [],
+  "T20": [],
+  "T22": [],
+  "T24": [],
+  "T26": [],
+  "T28": [],
+  "T30": [
+    "## References\n[guide]: https://docs.example.test/guide\n[tests]: https://docs.example.test/tests\n[formats]: https://docs.example.test/formats\n[mac]: https://docs.example.test/mac\n",
+    "## References\n[guide]: https://docs.example.test/guide\n[tests]: https://docs.example.test/tests\n[mac]: https://docs.example.test/mac\n[formats]: https://docs.example.test/formats\n"
+  ],
+  "T32": [],
+  "T33": [],
+  "T36": [],
+  "T37": [],
+  "T39": [],
+  "T40": []
+}

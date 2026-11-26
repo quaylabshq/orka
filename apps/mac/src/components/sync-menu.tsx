@@ -27,6 +27,12 @@ import type {
   ProjectAttention,
   SyncReviewItem,
 } from "./sync-attention.js";
+import { recoveryEpisodes } from "./session-recovery.js";
+import {
+  SessionRecoveryCard,
+  useSessionRecoveryReview,
+  type RecoveryResult,
+} from "./session-recovery-card.js";
 import { useQueuedUploadReview } from "./resource-menu.js";
 
 export function SyncMenu({
@@ -79,6 +85,7 @@ export function SyncMenu({
   onOpenRequestHistory?: () => void;
 }) {
   const reviewUpload = useQueuedUploadReview();
+  const recoveryReview = useSessionRecoveryReview(state);
   const memberName = useMemberLabel(state.user);
   const [localOpen, setLocalOpen] = useState(false);
   const open = controlledOpen ?? localOpen;
@@ -144,14 +151,58 @@ export function SyncMenu({
     actionError &&
     actionError !== attention.accountError &&
     !attention.items.some((item) => item.messages.includes(actionError));
-  const attentionItems = attention.items.filter(
-    (item) =>
+  const queuedResolutions = new Map(
+    attention.outbox
+      .filter((entry) => !entry.error && entry.sessionResolution)
+      .map((entry) => [entry.resourceId, entry.sessionResolution]),
+  );
+  const attentionItems = attention.items.filter((item) => {
+    const pending = queuedResolutions.get(item.resourceId);
+    const sole = item.conflicts.length === 1 && item.conflicts[0];
+    const awaitingSync =
+      pending &&
+      sole &&
+      sole.id === pending.conflictId &&
+      !item.binding &&
+      !item.draft &&
+      !item.requests.length &&
+      !item.uploads.length &&
+      item.errors.every(
+        (error) =>
+          error.source === item.resourceId &&
+          (error.error ===
+            "Session conflict: choose Keep, Override, or Create copy" ||
+            error.error ===
+              "Local changes are queued; incoming version staged"),
+      ) &&
+      state.resources.some(
+        (r) =>
+          r.resourceId === item.resourceId &&
+          r.projectId === projectId &&
+          r.kind === "session" &&
+          r.deleted &&
+          r.revision === pending.revision,
+      );
+    return (
+      !awaitingSync &&
       !reviews.some(
         (review) => review.projectId === projectId && review.item === item,
-      ),
+      )
+    );
+  });
+  const episodes = recoveryEpisodes(state, attentionItems, projectId);
+  const bySession = new Map(
+    episodes.flatMap((episode) =>
+      episode.sessions.map((session) => [session.id, episode] as const),
+    ),
   );
+  const [recoveryResult, setRecoveryResult] = useState<
+    (RecoveryResult & { projectId?: string; user: string | null }) | null
+  >(null);
   const attentionCount =
-    attentionItems.length +
+    attentionItems.length -
+    bySession.size +
+    episodes.length +
     Number(Boolean(attention.accountError)) +
     Number(Boolean(independentActionError)) +
     Number(Boolean(setup && !setup.deferred && !setupRunning));
@@ -216,7 +267,13 @@ export function SyncMenu({
       : activeName && progress?.detail?.startsWith(`${activeName} · `)
         ? progress.detail.slice(activeName.length + 3)
         : progress?.detail;
+  const currentRecoveryResult =
+    recoveryResult?.projectId === projectId &&
+    recoveryResult?.user === state.user
+      ? recoveryResult
+      : null;
   const hasFeed = Boolean(
+    currentRecoveryResult ||
     waiting.length ||
     count ||
     setup ||
@@ -677,7 +734,63 @@ export function SyncMenu({
                   <p>{attention.accountError}</p>
                 </section>
               )}
-              {attentionItems.map((item) => attentionCard(item))}
+              {currentRecoveryResult && (
+                <section className="sync-menu-notification" role="status">
+                  <h4>
+                    {currentRecoveryResult.queued}{" "}
+                    {currentRecoveryResult.queued === 1 ? "choice" : "choices"}{" "}
+                    queued for sync
+                  </h4>
+                  {currentRecoveryResult.failures.length > 0 && (
+                    <>
+                      <p>
+                        {currentRecoveryResult.failures.length} still need
+                        review.
+                      </p>
+                      <ul>
+                        {currentRecoveryResult.failures.map((message, i) => (
+                          <li key={i}>{message}</li>
+                        ))}
+                      </ul>
+                    </>
+                  )}
+                  <Button
+                    variant="tertiary"
+                    size="sm"
+                    onClick={() => setRecoveryResult(null)}
+                  >
+                    Dismiss
+                  </Button>
+                </section>
+              )}
+              {attentionItems.map((item) =>
+                bySession.has(item.resourceId ?? "")
+                  ? null
+                  : attentionCard(item),
+              )}
+              {episodes.map((episode) => (
+                <SessionRecoveryCard
+                  key={episode.sessions[0].id}
+                  review={recoveryReview}
+                  sharing={
+                    state.projects.find((p) => p.id === projectId)?.sharing
+                      ?.session !== false
+                  }
+                  episode={episode}
+                  device={
+                    state.devices?.find((d) => d.id === episode.device)?.name
+                  }
+                  busy={busy}
+                  onOpen={(id) => leave(() => onOpen(id))}
+                  onFinish={(result) =>
+                    setRecoveryResult({
+                      ...result,
+                      projectId,
+                      user: state.user,
+                    })
+                  }
+                />
+              ))}
               {needsReconnect && (
                 <div className="sync-menu-notification">
                   <Button

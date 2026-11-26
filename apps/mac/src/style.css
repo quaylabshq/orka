@@ -645,6 +645,18 @@
   .sync-menu-notification summary {
     @apply flex cursor-pointer list-none items-center gap-1.5 rounded;
   }
+  .session-recovery-list {
+    @apply mt-3 flex flex-col gap-2;
+  }
+  .session-recovery-row {
+    @apply flex items-center justify-between gap-2;
+  }
+  .session-recovery-row label {
+    @apply m-0 flex min-w-0 flex-row items-center gap-2;
+  }
+  .session-recovery-actions {
+    @apply flex flex-wrap gap-2;
+  }
   .sync-menu-notification summary::-webkit-details-marker {
     display: none;
   }

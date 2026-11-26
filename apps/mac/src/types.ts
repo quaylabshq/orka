@@ -159,6 +159,7 @@ export interface Snapshot {
     title?: string | null;
     kind?: Resource["kind"] | null;
     reviewable?: boolean;
+    sessionResolution?: { conflictId: string; revision: number } | null;
   }[];
   errors: { source: string; error: string }[];
   sync: { online: boolean; lastSync?: string; error?: string } | null;

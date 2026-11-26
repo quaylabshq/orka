@@ -23,7 +23,10 @@ export interface SkillReviewState {
   incomingBlocked: boolean;
 }
 
-type ReviewSnapshot = Pick<Snapshot, "bindings" | "drafts" | "governance">;
+type ReviewSnapshot = Pick<
+  Snapshot,
+  "bindings" | "drafts" | "governance" | "outbox"
+>;
 
 export function skillBinding(
   state: Pick<Snapshot, "bindings">,
@@ -76,8 +79,19 @@ export function skillReviewState(
   const draft = skillDraft(state, resource);
   const installation = binding?.installationState ?? "current";
   const pending = draft?.status === "proposed";
+  const automaticallyQueued =
+    installation === "queued" &&
+    draft?.automaticSharing &&
+    state.outbox.some(
+      (entry) =>
+        entry.project === resource.projectId &&
+        entry.id === draft.submission?.id &&
+        !entry.error,
+    );
   const actionable = Boolean(
-    draft && actionableDraftStatuses.includes(draft.status),
+    draft &&
+    actionableDraftStatuses.includes(draft.status) &&
+    !automaticallyQueued,
   );
   const available = binding?.availableRevision;
   const installedRevision = binding?.base?.revision;

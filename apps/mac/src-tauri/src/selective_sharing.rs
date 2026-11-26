@@ -11,6 +11,14 @@ pub const QUEUE_PATH: &str = "/local/selected-share";
 pub(crate) const PI_SERVICE_UPGRADE: &str =
     "Update the Orka service to share Pi sessions. The selected snapshot is queued on this Mac.";
 
+pub(crate) const OWNER_DECISION_PENDING: &str =
+    "503: Memory consolidation pending: owner_decision_pending";
+
+fn awaiting_owner(receipt: &Value) -> bool {
+    receipt["status"] == "approval_required"
+        && receipt["result"]["request"]["decisionKind"] == "memory_conflict"
+}
+
 pub(crate) fn context(db: &Connection, input: &Value) -> Result<Value> {
     let user = db::get(db, "user")?;
     let config = db::get(db, "config")?;
@@ -184,7 +192,7 @@ pub fn queue(db: &Connection, project: &Value, input: &Value) -> Result<Value> {
             |row| row.get(0),
         )
         .map_err(|e| e.to_string())?;
-    if !prior.is_null() && (prior["status"] != "queued" || pending) {
+    if !prior.is_null() && ((prior["status"] != "queued" && !awaiting_owner(&prior)) || pending) {
         return Ok(prior);
     }
     let receipt = json!({"requestId":id,"projectId":project["id"],"accountId":input["accountId"],"serviceOrigin":input["serviceOrigin"],"payloadHash":hash,"status":"queued","automaticSharingChanged":false,"paths":preview["paths"],"nativeId":preview["nativeId"],"localResourceId":preview["localResourceId"],"path":preview["path"],"folderIdentity":preview["folderIdentity"]});
@@ -223,7 +231,7 @@ pub fn authorized_origin(db: &Connection, queued: &Value) -> Result<Option<Strin
     let Some(origin) = config["apiUrl"].as_str() else {
         return Ok(None);
     };
-    let authorized = receipt["status"] == "queued"
+    let authorized = (receipt["status"] == "queued" || awaiting_owner(&receipt))
         && receipt["accountId"] == db::get(db, "user")?
         && receipt["serviceOrigin"]
             .as_str()
@@ -261,29 +269,41 @@ pub async fn send(db: &Connection, owner: &str, queued: &Value) -> Result<Value>
         owner,
         &origin,
         "POST",
-        "/v2/sharing/selected",
+        "/v2/sharing/selected?memoryDecision=1",
         Some(&queued["value"]),
     )
     .await
 }
 
-pub fn complete(db: &Connection, queued: &Value, result: &Value) -> Result<()> {
+/// Persist the receipt with its outbox update. An owner decision keeps the
+/// original request retryable even after the sender closes the app.
+pub fn complete(db: &Connection, queued: &Value, result: &Value) -> Result<bool> {
     let id = queued["id"].as_str().ok_or("Missing share request")?;
     let mut receipt = db::get(db, &format!("selected-share:{id}"))?;
-    match result["status"].as_str() {
-        Some("published" | "conflict") => {
+    let outcome = crate::context_sharing::memory_outcome(queued, &result["receipt"])?;
+    let status = result["status"]
+        .as_str()
+        .ok_or("Missing selected share status")?;
+    let status = match (status, outcome) {
+        ("published", Some(status)) => status,
+        ("rejected", Some("rejected")) => "rejected",
+        ("rejected", _) | (_, Some(_)) => return Err("Invalid selected memory decision".into()),
+        (status, None) => status,
+    };
+    match status {
+        "published" | "conflict" | "rejected" => {
             let actual = &result["receipt"]["event"]["resource"];
             let selected = &queued["value"]["resource"];
             if actual["resourceId"] != selected["resourceId"]
                 || actual["projectId"] != queued["project"]
                 || actual["kind"] != selected["kind"]
-                || (result["status"] == "published"
+                || (status == "published"
                     && selected["kind"] == "session"
                     && actual["files"] != selected["files"])
             {
                 return Err("Share receipt differs from the selected resource".into());
             }
-            if result["status"] == "conflict"
+            if status == "conflict"
                 && !result["receipt"]["event"]["conflicts"]
                     .as_array()
                     .is_some_and(|items| {
@@ -296,7 +316,7 @@ pub fn complete(db: &Connection, queued: &Value, result: &Value) -> Result<()> {
                 return Err("Conflict receipt did not retain the selected snapshot".into());
             }
             sync::apply_event(db, &result["receipt"]["event"])?;
-            if result["status"] == "published"
+            if status == "published"
                 && actual["source"] != "pi"
                 && actual["resourceId"] == receipt["localResourceId"]
                 && actual["files"] == selected["files"]
@@ -337,19 +357,34 @@ pub fn complete(db: &Connection, queued: &Value, result: &Value) -> Result<()> {
                 }
             }
         }
-        Some("approval_required") => {
+        "approval_required" => {
             if result["request"]["id"] != queued["id"]
                 || result["request"]["resourceId"] != queued["value"]["resource"]["resourceId"]
                 || result["request"]["projectId"] != queued["project"]
+                || (result["request"]["decisionKind"] == "memory_conflict"
+                    && (queued["value"]["resource"]["kind"] != "memory"
+                        || result["request"]["status"] != "pending"))
             {
                 return Err("Approval request differs from the selected resource".into());
             }
         }
         _ => return Err("Invalid selected share receipt".into()),
     }
-    receipt["status"] = result["status"].clone();
+    receipt["status"] = json!(status);
     receipt["result"] = result.clone();
-    db::set(db, &format!("selected-share:{id}"), &receipt)
+    receipt["result"]["status"] = json!(status);
+    db::set(db, &format!("selected-share:{id}"), &receipt)?;
+    let waiting = awaiting_owner(&receipt);
+    if waiting {
+        db.execute(
+            "UPDATE outbox SET error=? WHERE id=?",
+            params![OWNER_DECISION_PENDING, id],
+        )
+    } else {
+        db.execute("DELETE FROM outbox WHERE id=?", [id])
+    }
+    .map_err(|error| error.to_string())?;
+    Ok(waiting)
 }
 
 pub async fn command(action: &str, input: &Value) -> Result<Value> {
@@ -380,7 +415,7 @@ async fn command_bound(
         "preview_share" => preview(&db, &project, input),
         "share_selected" => {
             let receipt = queue(&db, &project, input)?;
-            if receipt["status"] != "queued" {
+            if receipt["status"] != "queued" && !awaiting_owner(&receipt) {
                 return Ok(public_receipt(&receipt));
             }
             let id = receipt["requestId"]
@@ -393,8 +428,6 @@ async fn command_bound(
                 Ok(result) => {
                     let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
                     complete(&tx, &queued, &result)?;
-                    tx.execute("DELETE FROM outbox WHERE id=?", [id])
-                        .map_err(|e| e.to_string())?;
                     tx.commit().map_err(|e| e.to_string())?;
                     Ok(public_receipt(&db::get(
                         &db,

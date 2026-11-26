@@ -11,3 +11,6 @@ b379426d9ccccd2d2585faf7cb74020422dfbc8c:pr-188/aa36680e3c13eb044cc8eea35629a671
 
 # Verified PNG SHA-256 values in the immutable PR #198 screenshot manifest.
 45c65a19faa7f4e5e154988fba78aaf40c7b2548:pr-198/846b03edbf2cf33e1dd87158c2b7ac60745529c2/933d752e838d/capture.json:generic-api-key:1
+
+# Verified SHA-256 digests for the four PR #217 PNG captures.
+eae2563b5891d263811beb60f6aa3e548951c211:pr-217/20e37d556e642c4974cedd4ae73b8afa5f2c1b9c/9209321e8abc/capture.json:generic-api-key:1

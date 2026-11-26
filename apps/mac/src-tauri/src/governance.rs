@@ -190,6 +190,17 @@ pub fn capture(
         .as_bytes(),
     );
     let id = Uuid::new_v5(&Uuid::NAMESPACE_URL, fingerprint.as_bytes()).to_string();
+    capture_as(db, project, resource, paths, id)
+}
+
+pub(crate) fn capture_as(
+    db: &Connection,
+    project: &Value,
+    resource: &Value,
+    paths: &Value,
+    id: String,
+) -> Result<String> {
+    let project_id = project["id"].as_str().ok_or("Missing project")?;
     let mut resource = resource.clone();
     crate::sources::scope(project, &mut resource);
     if project["governed"] == true {
@@ -648,6 +659,18 @@ pub fn reconcile_requests(db: &Connection, project: &str, requests: &Value) -> R
             .as_array()
             .and_then(|rows| rows.iter().find(|r| r["id"] == draft["requestId"]))
         {
+            if draft["automaticMergeRequestId"].is_string()
+                && draft["automaticMergeRequestId"] == request["id"]
+                && !db::get(db, "user")?.as_str().is_some_and(|owner| {
+                    crate::context_sharing::matches_skill_proposal(
+                        &draft["submission"],
+                        request,
+                        owner,
+                    )
+                })
+            {
+                continue;
+            }
             draft["status"] = match request["status"].as_str() {
                 Some("pending") => json!("proposed"),
                 Some("approved") => json!("published"),
@@ -916,10 +939,15 @@ pub async fn governance_command(action: String, input: Value) -> Result<Value> {
         }
         "refresh-draft"=>{
             let id=input["id"].as_str().ok_or("Choose a draft")?;
-            let mut draft=db::rows(&db,"SELECT value FROM drafts WHERE id=? AND project=?",&[&id,&project_id])?.into_iter().next().ok_or("Draft unavailable")?;
+            let tx = rusqlite::Transaction::new_unchecked(&db, rusqlite::TransactionBehavior::Immediate).map_err(|e| e.to_string())?;
+            let mut draft=db::rows(&tx,"SELECT value FROM drafts WHERE id=? AND project=?",&[&id,&project_id])?.into_iter().next().ok_or("Draft unavailable")?;
             if draft["status"]=="proposed" {return Err("This suggestion is still pending; review its decision before retrying".into());}
+            let frozen: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM outbox WHERE project=? AND json_extract(value,'$.skillImport')=? AND (json_extract(value,'$.automaticSkillMerge')=1 OR outbox.id=?))", params![project_id, id, draft["automaticMergeRequestId"].as_str()], |row| row.get(0)).map_err(|e|e.to_string())?;
+            if frozen {return Err("This skill update is queued. Wait for sync before refreshing the draft.".into());}
             draft["requestId"]=Value::Null;draft["submission"]=Value::Null;draft["request"]=Value::Null;draft["status"]=json!("local");
-            db::upsert(&db,"drafts",id,project_id,&draft)?;return Ok(draft);
+            db::upsert(&tx,"drafts",id,project_id,&draft)?;
+            tx.commit().map_err(|e|e.to_string())?;
+            return Ok(draft);
         }
         "draft"|"submit-draft"=>{
             let id=input["id"].as_str().ok_or("Choose a draft")?;
@@ -1047,7 +1075,9 @@ pub async fn governance_command(action: String, input: Value) -> Result<Value> {
     if db::get(&current, "user")? != account || db::get(&current, "config")?["apiUrl"] != service {
         return Err("Account or service changed. Reopen Settings.".into());
     }
-    if action == "request" {
+    // The two owner choices may each contain independent edits. The server
+    // returns their complete text under the same preview hash as the decision.
+    if action == "request" && result["request"]["decisionKind"] != "memory_conflict" {
         let r = &result["content"]["resource"];
         if r["files"].is_array() {
             let owner = account.as_str().ok_or("Sign in required")?;

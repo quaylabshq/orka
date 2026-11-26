@@ -717,7 +717,7 @@ async fn sent_failed_or_earlier_deletion_rows_are_never_rewritten() {
             "failed" => {
                 f.db.execute(
                     "UPDATE outbox SET error=? WHERE id=?",
-                    params![PLAN_REVISION_CONFLICT, id],
+                    params![EXACT_REVISION_CONFLICT, id],
                 )
                 .unwrap();
             }
@@ -926,7 +926,7 @@ async fn held_count_covers_captured_and_unsent_rows_but_not_failed_ones() {
     let first = f.outbox()[0]["id"].as_str().unwrap().to_owned();
     f.db.execute(
         "UPDATE outbox SET error=? WHERE id=?",
-        params![PLAN_REVISION_CONFLICT, first],
+        params![EXACT_REVISION_CONFLICT, first],
     )
     .unwrap();
     assert_eq!(f.held_count(), 2);
@@ -934,7 +934,7 @@ async fn held_count_covers_captured_and_unsent_rows_but_not_failed_ones() {
         .unwrap();
     f.db.execute(
         "UPDATE outbox SET error=? WHERE id=?",
-        params![PLAN_REVISION_CONFLICT, queued],
+        params![EXACT_REVISION_CONFLICT, queued],
     )
     .unwrap();
     assert_eq!(f.held_count(), 2);

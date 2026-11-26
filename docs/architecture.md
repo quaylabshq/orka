@@ -55,8 +55,17 @@ After a successful pull, the desktop clears a stale plan upload when every
 submitted field matches the accepted revision. An upload with differing content
 keeps its local version. For skills, the installed revision and file manifests
 give the desktop a common base for comparing local mirrors with the shared
-version. Clean merges become local drafts for review. Skill and plan conflicts
-remain visible in Sync while other items continue at the normal cadence.
+version. On a governed project with skill sharing enabled and resource-level
+publish access, the desktop can queue one unopposed edit to an existing
+non-executable Markdown file. Concurrent edits can queue when they only append
+distinct HTTPS link definitions to the same standalone References table. For a
+single Markdown conversion specification, the desktop can also combine edits to
+separate recognized fields such as input encoding and output format. It checks
+the whole document before using that rule. Other prose changes stay private for
+review. The desktop rechecks both mirrors and the shared revision, then freezes the request
+and waits for the exact accepted package before installing it. Other clean
+merges become private drafts for review. Skill and plan conflicts remain visible
+in Sync while other items continue at the normal cadence.
 
 ## Project lifecycle
 

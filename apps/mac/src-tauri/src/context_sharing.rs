@@ -10,7 +10,134 @@ use uuid::Uuid;
 
 pub const QUEUE_PATH: &str = "/local/context-share";
 
+/// Keep automatic publication metadata on the draft. Older desktops forward
+/// unknown fields from the outbox body as part of the strict change contract.
+pub(crate) fn automatic_skill_request(db: &Connection, queued: &Value) -> Result<bool> {
+    if queued["path"] != crate::global_skills::IMPORT_PATH {
+        return Ok(false);
+    }
+    if queued["value"]["automaticSkillMerge"] == true {
+        return Ok(true);
+    }
+    db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM drafts WHERE id=?1 AND project=?2
+           AND json_extract(value,'$.automaticMergeRequestId')=?3)",
+        rusqlite::params![
+            queued["value"]["skillImport"].as_str(),
+            queued["project"].as_str(),
+            queued["id"].as_str()
+        ],
+        |row| row.get(0),
+    )
+    .map_err(|error| error.to_string())
+}
+
+/// Prepare persisted skill requests before selecting uploads. Pilot rows can
+/// carry an older local marker, a downgraded desktop can refresh their drafts,
+/// and a definitive server refusal can outlive the conditions that caused it.
+pub(crate) fn reconcile_skill_requests(db: &Connection, project: &str) -> Result<()> {
+    let rows = db::rows(db,
+        "SELECT json_object('id',o.id,'project',o.project,'path',o.path,'body',o.value,'error',o.error,'draft',d.value)
+         FROM outbox o JOIN drafts d ON d.project=o.project AND d.id=json_extract(o.value,'$.skillImport')
+         WHERE o.project=?1 AND o.path=?2
+           AND (json_extract(o.value,'$.automaticSkillMerge')=1 OR
+                (json_extract(d.value,'$.automaticMergeRequestId')=o.id AND
+                 (json_extract(d.value,'$.submission') IS NULL OR o.error IN (?3,?4))))",
+        &[&project, &crate::global_skills::IMPORT_PATH, &crate::sync::EXACT_REVISION_CONFLICT, &crate::sync::PUBLISH_DENIED])?;
+    for mut row in rows {
+        let id = row["id"]
+            .as_str()
+            .ok_or("Missing queued skill request")?
+            .to_owned();
+        let saved_draft = row["draft"]
+            .as_str()
+            .ok_or("Missing queued skill draft")?
+            .to_owned();
+        let draft: Value = serde_json::from_str(&saved_draft).map_err(|error| error.to_string())?;
+        let original = row["body"]
+            .as_str()
+            .ok_or("Missing queued skill change")?
+            .to_owned();
+        row["value"] = serde_json::from_str(&original).map_err(|error| error.to_string())?;
+        let change = wire_change(&row)?;
+        // An older refresh-draft can clear these two fields while retaining the
+        // outbox. Reattach only the frozen request for this exact captured draft.
+        let refreshed = draft["submission"].is_null()
+            && draft["requestId"].is_null()
+            && (draft["automaticMergeRequestId"] == id
+                || (row["value"]["automaticSkillMerge"] == true
+                    && draft["automaticMergeCandidate"] == true
+                    && draft["skillReconciliation"] == true))
+            && change["resource"].as_object().is_some_and(|fields| {
+                fields
+                    .iter()
+                    .all(|(field, value)| draft["resource"].get(field) == Some(value))
+            });
+        if change["id"] != id
+            || change["projectId"] != project
+            || (!refreshed && (draft["submission"] != change || draft["requestId"] != id))
+        {
+            continue;
+        }
+        if refreshed || row["value"]["automaticSkillMerge"] == true {
+            let tx =
+                rusqlite::Transaction::new_unchecked(db, rusqlite::TransactionBehavior::Immediate)
+                    .map_err(|error| error.to_string())?;
+            let draft_id = draft["id"].as_str().ok_or("Missing queued skill draft")?;
+            let updated = tx.execute(
+                "UPDATE drafts SET value=json_set(value,'$.automaticMergeRequestId',?1,'$.requestId',?1,'$.submission',json(?2))
+                 WHERE id=?3 AND project=?4 AND value=?5
+                 AND EXISTS(SELECT 1 FROM outbox WHERE id=?1 AND project=?4 AND value=?6)",
+                rusqlite::params![id,change.to_string(),draft_id,project,saved_draft,original]
+            ).map_err(|error| error.to_string())?;
+            if updated != 1 {
+                continue;
+            }
+            if row["value"]["automaticSkillMerge"] == true {
+                row["value"]
+                    .as_object_mut()
+                    .ok_or("Missing queued skill change")?
+                    .remove("automaticSkillMerge");
+                tx.execute(
+                    "UPDATE outbox SET value=?1,error=CASE WHEN error='400: Invalid request' THEN NULL ELSE error END
+                     WHERE project=?2 AND id=?3",
+                    rusqlite::params![row["value"].to_string(),project,id],
+                ).map_err(|error| error.to_string())?;
+            }
+            tx.commit().map_err(|error| error.to_string())?;
+        }
+        if row["error"] == crate::sync::EXACT_REVISION_CONFLICT {
+            crate::skill_reconciliation::release_stale(
+                db,
+                &row,
+                crate::sync::EXACT_REVISION_CONFLICT,
+            )?;
+        } else if row["error"] == crate::sync::PUBLISH_DENIED
+            && row["value"]["reviewRequired"] != true
+            && check_automatic_skill_upload(db, &row).is_ok()
+        {
+            // Access can change between our last pull and the server check.
+            // Retry exactly the original publication after publish access returns.
+            db.execute(
+                "UPDATE outbox SET error=NULL WHERE project=?1 AND id=?2 AND error=?3 AND value=?4",
+                rusqlite::params![
+                    project,
+                    id,
+                    crate::sync::PUBLISH_DENIED,
+                    row["value"].to_string()
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn check_upload_eligibility(db: &Connection, queued: &Value) -> Result<()> {
+    if automatic_skill_request(db, queued)? {
+        return check_automatic_skill_upload(db, queued)
+            .map_err(|error| format!("Local upload: {error}"));
+    }
     if queued["path"] != QUEUE_PATH {
         return Ok(());
     }
@@ -32,6 +159,38 @@ pub(crate) fn check_upload_eligibility(db: &Connection, queued: &Value) -> Resul
         return Err("409: Queued instruction is now ignored or excluded; review its source in Orka before retrying. Original queued bytes and request ID preserved".into());
     }
     Ok(())
+}
+
+// Local eligibility can recover after a role or repository change. Keep these
+// failures retryable and distinct from a definitive HTTP refusal.
+fn check_automatic_skill_upload(db: &Connection, queued: &Value) -> Result<()> {
+    let project_id = queued["project"].as_str().ok_or("Missing project")?;
+    let project = governance::project(db, project_id)?;
+    let skill = &queued["value"]["resource"];
+    let current = governance::resource(db, skill["resourceId"].as_str().ok_or("Missing skill")?)?;
+    // A newer tombstone cannot be overwritten by this governed exact-base
+    // request. Retrying its original ID retrieves a lost receipt or a definitive
+    // stale rejection so the local draft can settle.
+    let newer_revision = current["revision"]
+        .as_u64()
+        .zip(queued["value"]["baseRevision"].as_u64())
+        .is_some_and(|(current, base)| current > base);
+    if project["governed"] != true
+        || project["sharing"]["skill"] != true
+        || current["projectId"] != project_id
+        || current["sourceId"] != skill["sourceId"]
+        || current["kind"] != "skill"
+        || (current["deleted"] == true && !newer_revision)
+        || !(current["access"]["mode"] == "publish"
+            || (queued["value"]["reviewRequired"] == true
+                && current["access"]["mode"] == "suggest"))
+    {
+        return Err("Automatic skill publication needs sharing and publish access. The queued edit is preserved.".into());
+    }
+    let source = crate::sources::for_resource(&project, skill)
+        .filter(|source| source["firstSyncWaiting"] != true)
+        .ok_or("Reconnect the skill's source folder to resume automatic publication.")?;
+    crate::sources::validate(&source)
 }
 
 pub(crate) async fn upload(db: &Connection, owner: &str, queued: &Value) -> Result<()> {
@@ -279,9 +438,13 @@ pub(crate) fn pending_publications(
         }) else {
             continue;
         };
-        if request["author"] != owner
+        if request["decisionKind"] == "memory_conflict"
+            || request["author"] != owner
             || request["status"] != "pending"
             || request["canReview"] != true
+            || (draft["automaticMergeRequestId"].is_string()
+                && draft["automaticMergeRequestId"] == request["id"]
+                && !matches_skill_proposal(&draft["submission"], request, owner))
         {
             continue;
         }
@@ -291,6 +454,19 @@ pub(crate) fn pending_publications(
 }
 
 pub fn queue(db: &Connection, project: &Value, draft_id: &str) -> Result<Value> {
+    let tx = rusqlite::Transaction::new_unchecked(db, rusqlite::TransactionBehavior::Immediate)
+        .map_err(|error| error.to_string())?;
+    let result = queue_in(&tx, project, draft_id, false)?;
+    tx.commit().map_err(|error| error.to_string())?;
+    Ok(result)
+}
+
+pub(crate) fn queue_in(
+    db: &rusqlite::Transaction<'_>,
+    project: &Value,
+    draft_id: &str,
+    automatic_merge: bool,
+) -> Result<Value> {
     let project_id = project["id"].as_str().ok_or("Missing project")?;
     let mut draft = db::rows(
         db,
@@ -385,11 +561,11 @@ pub fn queue(db: &Connection, project: &Value, draft_id: &str) -> Result<Value> 
     draft["automaticSharing"] = json!(true);
     let mut change = draft["submission"].clone();
     change[marker] = json!(draft_id);
-    let tx = db
-        .unchecked_transaction()
-        .map_err(|error| error.to_string())?;
-    db::upsert(&tx, "drafts", draft_id, project_id, &draft)?;
-    let pending: bool = tx
+    if automatic_merge {
+        draft["automaticMergeRequestId"] = change["id"].clone();
+    }
+    db::upsert(db, "drafts", draft_id, project_id, &draft)?;
+    let pending: bool = db
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM outbox WHERE id=?)",
             [change["id"].as_str()],
@@ -397,23 +573,72 @@ pub fn queue(db: &Connection, project: &Value, draft_id: &str) -> Result<Value> 
         )
         .map_err(|error| error.to_string())?;
     if !pending {
-        indexer::queue(&tx, project_id, path, &change)?;
-        SyncQueue::request(&tx, project_id, Priority::Local, "share")?;
+        indexer::queue(db, project_id, path, &change)?;
+        SyncQueue::request(db, project_id, Priority::Local, "share")?;
     }
-    tx.commit().map_err(|error| error.to_string())?;
     Ok(json!({"status":"queued"}))
 }
 
-pub async fn share(db: &Connection, owner: &str, queued: &Value) -> Result<Value> {
+fn wire_change(queued: &Value) -> Result<Value> {
     let mut change = queued["value"].clone();
     let fields = change.as_object_mut().ok_or("Missing import change")?;
     fields.remove("skillImport");
     fields.remove("contextDraft");
     fields.remove("reviewRequired");
+    fields.remove("automaticSkillMerge");
+    Ok(change)
+}
+
+pub(crate) fn matches_skill_proposal(change: &Value, proposal: &Value, owner: &str) -> bool {
+    let submitted = &change["resource"];
+    proposal["id"] == change["id"]
+        && proposal["projectId"] == change["projectId"]
+        && proposal["resourceId"] == submitted["resourceId"]
+        && proposal["baseRevision"] == change["baseRevision"]
+        && proposal["author"] == owner
+        && proposal["type"] == "change"
+        && matches!(
+            proposal["status"].as_str(),
+            Some("pending" | "approved" | "rejected" | "stale")
+        )
+        && proposal["previewHash"] == db::digest(submitted.to_string().as_bytes())
+}
+
+/// The preceding desktop durably chose suggestion on a publish denial. The
+/// freshly authorized catalog can settle that exact proposal without another
+/// upload, including after its author loses publish access.
+pub(crate) fn frozen_skill_proposal(
+    db: &Connection,
+    queued: &Value,
+    owner: &str,
+) -> Result<Option<Value>> {
+    if queued["value"]["reviewRequired"] != true || !automatic_skill_request(db, queued)? {
+        return Ok(None);
+    }
+    let project = queued["project"].as_str().ok_or("Missing project")?;
+    let catalog = db::get(db, &format!("governance:{project}"))?;
+    Ok(catalog["requests"]
+        .as_array()
+        .and_then(|requests| {
+            requests
+                .iter()
+                .find(|request| matches_skill_proposal(&queued["value"], request, owner))
+        })
+        .map(|request| json!({"proposal":request})))
+}
+
+pub async fn share(db: &Connection, owner: &str, queued: &Value) -> Result<Value> {
+    let automatic_merge = automatic_skill_request(db, queued)?;
+    if automatic_merge {
+        // Sharing or source access can change while the blobs upload.
+        check_automatic_skill_upload(db, queued)
+            .map_err(|error| format!("Local upload: {error}"))?;
+    }
+    let change = wire_change(queued)?;
     if queued["value"]["reviewRequired"] != true {
         match crate::sync::api_as(owner, "POST", "/v2/sync/push", Some(&change)).await {
             Ok(receipt) => return Ok(receipt),
-            Err(error) if error.starts_with("403:") => {
+            Err(error) if error.starts_with("403:") && !automatic_merge => {
                 // Persist the route before submitting, so a lost response retries
                 // the same approval request even if permissions later change.
                 let mut value = queued["value"].clone();
@@ -437,6 +662,28 @@ pub async fn share(db: &Connection, owner: &str, queued: &Value) -> Result<Value
     Ok(json!({"proposal":request}))
 }
 
+/// A terminal owner decision acknowledges the original frozen upload, including
+/// a rejected edit to a memory that has since been deleted.
+pub(crate) fn memory_outcome(queued: &Value, receipt: &Value) -> Result<Option<&'static str>> {
+    let decision = &receipt["memoryDecision"];
+    if decision.is_null() {
+        return Ok(None);
+    }
+    if queued["value"]["resource"]["kind"] != "memory"
+        || decision["requestId"] != queued["id"]
+        || receipt["event"]["resource"]["kind"] != "memory"
+    {
+        return Err("Memory decision differs from the queued update".into());
+    }
+    match decision["status"].as_str() {
+        Some("approved") if receipt["event"]["resource"]["deleted"] != true => {
+            Ok(Some("published"))
+        }
+        Some("rejected") => Ok(Some("rejected")),
+        _ => Err("Invalid terminal memory decision".into()),
+    }
+}
+
 pub fn complete(db: &Connection, queued: &Value, receipt: &Value) -> Result<()> {
     let project_id = queued["project"].as_str().ok_or("Missing project")?;
     let draft_id = queued["value"]["skillImport"]
@@ -451,6 +698,41 @@ pub fn complete(db: &Connection, queued: &Value, receipt: &Value) -> Result<()> 
     .into_iter()
     .next()
     .ok_or("Context draft unavailable")?;
+    let automatic_merge = automatic_skill_request(db, queued)?;
+    if automatic_merge && receipt["proposal"].is_object() {
+        let owner = db::get(db, "user")?;
+        if queued["value"]["reviewRequired"] != true
+            || !owner.as_str().is_some_and(|owner| {
+                matches_skill_proposal(&queued["value"], &receipt["proposal"], owner)
+            })
+        {
+            return Err("Approval request differs from the frozen skill update".into());
+        }
+    } else if automatic_merge {
+        let submitted = &queued["value"]["resource"];
+        let accepted = &receipt["event"]["resource"];
+        if queued["value"]["reviewRequired"] == true
+            || receipt["conflict"] == true
+            || receipt["event"]["conflicts"]
+                .as_array()
+                .is_none_or(|conflicts| !conflicts.is_empty())
+            || accepted["updatedBy"] != db::get(db, "user")?
+            || accepted["revision"]
+                .as_u64()
+                .zip(queued["value"]["baseRevision"].as_u64())
+                .is_none_or(|(revision, base)| revision <= base)
+            || submitted.as_object().is_none_or(|fields| {
+                fields
+                    .iter()
+                    .any(|(field, value)| accepted.get(field) != Some(value))
+            })
+        {
+            return Err(
+                "Published skill differs from the queued merge. The original edit is preserved."
+                    .into(),
+            );
+        }
+    }
     if receipt["proposal"].is_object() {
         if receipt["proposal"]["projectId"] != project_id
             || receipt["proposal"]["resourceId"] != queued["value"]["resource"]["resourceId"]
@@ -458,24 +740,36 @@ pub fn complete(db: &Connection, queued: &Value, receipt: &Value) -> Result<()> 
         {
             return Err("Approval request differs from the queued context".into());
         }
-        draft["status"] = json!("proposed");
+        draft["status"] = if automatic_merge {
+            match receipt["proposal"]["status"].as_str() {
+                Some("pending") => json!("proposed"),
+                Some("approved") => json!("published"),
+                _ => receipt["proposal"]["status"].clone(),
+            }
+        } else {
+            json!("proposed")
+        };
         draft["request"] = receipt["proposal"].clone();
     } else {
         let resource = &receipt["event"]["resource"];
+        let outcome = memory_outcome(queued, receipt)?;
         if resource["projectId"] != project_id
             || resource["resourceId"] != queued["value"]["resource"]["resourceId"]
             || resource["kind"] != queued["value"]["resource"]["kind"]
-            || resource["deleted"] == true
+            || (resource["deleted"] == true && outcome != Some("rejected"))
             || (resource["kind"] == "skill"
                 && resource["files"] != queued["value"]["resource"]["files"])
         {
             return Err("Published resource differs from the queued context".into());
         }
+        draft["status"] = json!(outcome.unwrap_or("published"));
         crate::sync::apply_event(db, &receipt["event"])?;
-        draft["status"] = json!("published");
     }
     db::upsert(db, "drafts", draft_id, project_id, &draft)?;
-    if draft["status"] == "published" && draft["resource"]["kind"] == "skill" {
+    if !receipt["proposal"].is_object()
+        && draft["status"] == "published"
+        && draft["resource"]["kind"] == "skill"
+    {
         let resource = &receipt["event"]["resource"];
         let project = governance::project(db, project_id)?;
         let binding = crate::global_skills::adopt_import(

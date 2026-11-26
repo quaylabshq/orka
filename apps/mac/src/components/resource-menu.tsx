@@ -1006,11 +1006,13 @@ function ResourceCommandDialog({
             : "Shared item deleted. Local copies follow sync and review rules."
           : result.status === "published"
             ? "Snapshot shared"
-            : result.status === "approval_required"
-              ? "Snapshot sent for approval"
-              : result.status === "conflict"
-                ? "Snapshot needs conflict review"
-                : "Snapshot sharing queued",
+            : result.status === "rejected"
+              ? "The owner kept the current memory wording"
+              : result.status === "approval_required"
+                ? "Snapshot sent for approval"
+                : result.status === "conflict"
+                  ? "Snapshot needs conflict review"
+                  : "Snapshot sharing queued",
       );
       finished = true;
       setProgress({ label: "Refreshing project…" });

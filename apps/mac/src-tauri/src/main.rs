@@ -47,6 +47,7 @@ mod session_redaction;
 mod session_translation;
 mod settings;
 mod settings_lifecycle;
+mod skill_decision;
 mod skill_reconciliation;
 mod skill_usage;
 mod sources;
@@ -387,6 +388,7 @@ fn main() {
                 commands::session_display_title,
                 commands::open_editor,
                 commands::session_action,
+                commands::resolve_session_recovery,
                 commands::resume_session,
                 commands::session_launch_options,
                 commands::session_handoff_prompt,

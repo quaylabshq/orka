@@ -343,6 +343,187 @@ test("R02 new memory", async ({ page }) => {
     "Topic and scope are rows in the details panel.",
   );
 });
+const memoryConflict = req("m1", "Desktop interaction guidelines", {
+  decisionKind: "memory_conflict",
+  author: "owner",
+});
+const memoryDecision = {
+  currentText: "Release from main.\nUse stable signing.\n",
+  proposedText: "Release from a tag.\nUse stable signing.\n",
+};
+
+for (const choice of [
+  {
+    label: "Keep current",
+    decision: "reject",
+    memoryChoice: "keep_current",
+    governed: false,
+  },
+  {
+    label: "Use proposed",
+    decision: "approve",
+    memoryChoice: "accept_incoming",
+    governed: true,
+  },
+]) {
+  test(`owner resolves a learned memory with ${choice.label}`, async ({
+    page,
+  }) => {
+    await start(
+      page,
+      { governed: choice.governed, requests: [memoryConflict], memoryDecision },
+      choice.governed ? undefined : compact,
+    );
+    await toReviews(page);
+    await openRow(page, /Desktop interaction/);
+    await expect(
+      detail(page)
+        .getByRole("region", { name: "Current wording" })
+        .locator("pre"),
+    ).toHaveText(memoryDecision.currentText);
+    await expect(
+      detail(page)
+        .getByRole("region", { name: "Proposed wording" })
+        .locator("pre"),
+    ).toHaveText(memoryDecision.proposedText);
+    await shot(
+      page,
+      `owner-memory-${choice.governed ? "wide" : "compact"}`,
+      "Owner reviews both complete versions of the learned memory.",
+    );
+    const button = detail(page).getByRole("button", { name: choice.label });
+    await button.focus();
+    await button.press("Enter");
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            (window as unknown as { reviewDecisionsSent: unknown[] })
+              .reviewDecisionsSent,
+        ),
+      )
+      .toEqual([
+        {
+          projectId: "project",
+          id: memoryConflict.id,
+          decision: choice.decision,
+          memoryChoice: choice.memoryChoice,
+          previewHash: memoryConflict.previewHash,
+          expectedPolicyRevision: 1,
+        },
+      ]);
+    await expect(detail(page)).toBeHidden();
+  });
+}
+
+test("a refreshed memory choice under the same request ID unlocks its new preview", async ({
+  page,
+}) => {
+  await start(page, { requests: [memoryConflict], memoryDecision });
+  await toReviews(page);
+  await openRow(page, /Desktop interaction/);
+  await flag(page, { decideStale: true, failNextCatalog: true });
+  await detail(page).getByRole("button", { name: "Keep current" }).click();
+  await expect(info(page)).toContainText("Needs refresh");
+  await flag(page, { decideStale: false });
+  await setReviewRequests(page, [
+    { ...memoryConflict, previewHash: "refreshed-hash" },
+  ]);
+  await detail(page).getByRole("button", { name: "Use proposed" }).click();
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        (
+          window as unknown as {
+            reviewDecisionsSent: { previewHash: string }[];
+          }
+        ).reviewDecisionsSent.map((item) => item.previewHash),
+      ),
+    )
+    .toEqual([memoryConflict.previewHash, "refreshed-hash"]);
+});
+
+test("the author sees a memory choice awaiting its project owner", async ({
+  page,
+}) => {
+  await start(page, {
+    role: "member",
+    governed: false,
+    requests: [{ ...memoryConflict, author: "mira", canReview: false }],
+    memoryDecision,
+  });
+  await toReviews(page);
+  await openRow(page, /Desktop interaction/);
+  await expect(info(page)).toContainText("Awaiting approval");
+  await expect(
+    detail(page).getByRole("region", { name: "Proposed wording" }),
+  ).toBeVisible();
+  await expect(
+    detail(page).getByRole("button", { name: "Use proposed" }),
+  ).toHaveCount(0);
+  await expect(
+    detail(page).getByRole("button", { name: "Keep current" }),
+  ).toHaveCount(0);
+});
+
+test("opening a stale memory in History lets the owner review the current deletion", async ({
+  page,
+}) => {
+  await start(page, {
+    requests: [{ ...memoryConflict, status: "stale", canReview: false }],
+    memoryDecision: { ...memoryDecision, currentText: "" },
+    keepMemoryDeleted: true,
+    refreshedMemoryDetail: {
+      status: "pending",
+      canReview: true,
+      previewHash: "refrozen-after-delete",
+    },
+  });
+  await toReviews(page);
+  await reviews(page).getByRole("button", { name: "History" }).click();
+  await openRow(page, /Desktop interaction/);
+  await expect(
+    detail(page).getByRole("region", { name: "Current version (deleted)" }),
+  ).toBeVisible();
+  await expect(
+    detail(page).getByRole("button", { name: "Restore memory" }),
+  ).toBeEnabled();
+  await detail(page).getByRole("button", { name: "Keep deleted" }).click();
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        (
+          window as unknown as {
+            reviewDecisionsSent: {
+              previewHash: string;
+              memoryChoice: string;
+            }[];
+          }
+        ).reviewDecisionsSent
+          .slice(-1)
+          .map((x) => [x.previewHash, x.memoryChoice]),
+      ),
+    )
+    .toEqual([["refrozen-after-delete", "keep_current"]]);
+});
+
+test("an incomplete memory preview prevents either choice", async ({
+  page,
+}) => {
+  await start(page, { requests: [memoryConflict] });
+  await toReviews(page);
+  await openRow(page, /Desktop interaction/);
+  await expect(detail(page).getByRole("alert")).toContainText(
+    "Couldn’t load both memory versions",
+  );
+  await expect(
+    detail(page).getByRole("button", { name: "Use proposed" }),
+  ).toBeDisabled();
+  await expect(
+    detail(page).getByRole("button", { name: "Keep current" }),
+  ).toBeDisabled();
+});
+
 test("a new skill shows the repository from the proposed content", async ({
   page,
 }) => {

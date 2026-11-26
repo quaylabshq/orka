@@ -14,6 +14,8 @@ use std::{
 pub(crate) const LOCAL_EDITS: &str =
     "Local skill edits preserved; resolve them before applying the shared update";
 
+const SKILL_DECISION_VERSION: u64 = 2;
+
 type Copy<'a> = (&'a PathBuf, Value);
 
 fn installed_base<'a>(binding: &'a Value, shared: &Value) -> Option<&'a Value> {
@@ -282,7 +284,7 @@ pub(crate) fn defer_scan(
         if (mirrors_differ && copies.iter().all(|(_, files)| *files != shared["files"]))
             || (!binding["keptLocalSkill"].is_null() && local_differs)
         {
-            if !reconcile(db, project, &shared, binding, copies)? {
+            if reconcile(db, project, &shared, binding, copies)? == Outcome::Review {
                 return Err(LOCAL_EDITS.into());
             }
             return Ok(true);
@@ -320,38 +322,89 @@ pub(crate) fn defer_scan(
     Ok(false)
 }
 
-/// Returns true only when the accepted version already contains every local change.
-/// Otherwise keep the active mirrors and stage a review, with a merged draft when
-/// all versions have a common base and combine cleanly.
+#[derive(PartialEq)]
+pub(crate) enum Outcome {
+    Install,
+    Queued,
+    Review,
+}
+
+/// Reconciliation preserves active files until an accepted version contains every local edit.
 pub(crate) fn reconcile(
     db: &Connection,
     project: &Value,
     shared: &Value,
     binding: &mut Value,
     copies: &[Copy<'_>],
-) -> Result<bool> {
+) -> Result<Outcome> {
     let id = shared["resourceId"].as_str().ok_or("Missing resource")?;
     let project_id = project["id"].as_str().ok_or("Missing project")?;
     let base = installed_base(binding, shared);
     let fingerprint = fingerprint(base, shared, &snapshot(copies));
-    if binding["skillReviewFingerprint"] == fingerprint {
-        return Ok(false);
-    }
-
-    let candidate = base.and_then(|base| {
-        if shared["deleted"] == true {
-            return None;
+    if binding["installationState"] == "queued" {
+        let queued: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM outbox o JOIN drafts d ON d.id=json_extract(o.value,'$.skillImport')
+              WHERE o.project=?1 AND d.project=o.project AND o.error IS NULL
+              AND (json_extract(o.value,'$.automaticSkillMerge')=1 OR json_extract(d.value,'$.automaticMergeRequestId')=o.id)
+              AND json_extract(d.value,'$.skillReviewFingerprint')=?2)",
+            params![project_id, &fingerprint], |row| row.get(0),
+        ).map_err(|error| error.to_string())?;
+        if queued {
+            return Ok(Outcome::Queued);
         }
-        copies
-            .iter()
-            .filter(|(_, files)| files.as_array().is_some_and(|f| !f.is_empty()))
-            .try_fold(shared["files"].clone(), |candidate, (_, files)| {
-                merge_manifest(&base["files"], &candidate, files)
-            })
+    }
+    if binding["skillReviewFingerprint"] == fingerprint {
+        if binding["skillDecisionVersion"] == SKILL_DECISION_VERSION {
+            return Ok(Outcome::Review);
+        }
+        // A new policy may reconsider a private preview, but a definitive
+        // rejection of the same inputs still belongs to the owner.
+        let rejected: bool = db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM drafts WHERE project=?1
+               AND json_extract(value,'$.resource.resourceId')=?2
+               AND json_extract(value,'$.skillReviewFingerprint')=?3
+               AND json_extract(value,'$.lastRejectedSubmission') IS NOT NULL)",
+                params![project_id, id, &fingerprint],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if rejected {
+            return Ok(Outcome::Review);
+        }
+    }
+    let safe = base
+        .filter(|base| {
+            shared["deleted"] != true
+                && (base["revision"] != shared["revision"] || base["files"] == shared["files"])
+                && base["contextSources"] == shared["contextSources"]
+                && base["title"] == shared["title"]
+        })
+        .and_then(|base| {
+            crate::skill_decision::candidate(
+                &base["files"],
+                &shared["files"],
+                copies.iter().map(|(_, files)| files),
+            )
+        });
+    let automatic = safe.is_some() && binding["keptLocalSkill"].is_null();
+
+    let candidate = safe.or_else(|| {
+        base.and_then(|base| {
+            if shared["deleted"] == true {
+                return None;
+            }
+            copies
+                .iter()
+                .filter(|(_, files)| files.as_array().is_some_and(|f| !f.is_empty()))
+                .try_fold(shared["files"].clone(), |candidate, (_, files)| {
+                    merge_manifest(&base["files"], &candidate, files)
+                })
+        })
     });
     if candidate.as_ref() == Some(&shared["files"]) {
         retire_candidates(db, project_id, id, None)?;
-        return Ok(true);
+        return Ok(Outcome::Install);
     }
 
     let tx = db
@@ -373,10 +426,10 @@ pub(crate) fn reconcile(
         draft["files"] = files;
         let paths = copies.iter().map(|(path, _)| *path).collect::<Vec<_>>();
         let draft_id = governance::capture(&tx, project, &draft, &json!(paths))?;
-        // This is a local candidate. An explicit review freezes the version
-        // sent to the existing publication workflow.
+        // Keep a captured candidate private until the pull verifies its guards,
+        // or a person explicitly submits it for review.
         tx.execute(
-            "UPDATE drafts SET value=json_set(value,'$.baseRevision',?1,'$.automaticSharing',json('false'),'$.conflictReview',json('true'),'$.skillReconciliation',json('true'),'$.skillReviewFingerprint',?5)
+            "UPDATE drafts SET value=json_set(value,'$.baseRevision',?1,'$.automaticSharing',json('false'),'$.conflictReview',json('true'),'$.skillReconciliation',json('true'),'$.skillReviewFingerprint',?5,'$.automaticMergeCandidate',json(?6))
              WHERE id=?2 AND project=?3 AND json_extract(value,'$.status')='local'
                AND json_extract(value,'$.submission') IS NULL AND json_extract(value,'$.requestId') IS NULL AND NOT ?4",
             params![
@@ -384,7 +437,8 @@ pub(crate) fn reconcile(
                 &draft_id,
                 project_id,
                 existing,
-                &fingerprint
+                &fingerprint,
+                if automatic { "true" } else { "false" }
             ],
         )
         .map_err(|error| error.to_string())?;
@@ -396,10 +450,152 @@ pub(crate) fn reconcile(
     binding["installationState"] = json!("locally_modified");
     binding["availableRevision"] = shared["revision"].clone();
     binding["skillReviewFingerprint"] = json!(fingerprint);
+    binding["skillDecisionVersion"] = json!(SKILL_DECISION_VERSION);
     binding["keptLocalSkill"] = Value::Null;
     db::upsert(&tx, "bindings", id, project_id, binding)?;
     tx.commit().map_err(|error| error.to_string())?;
-    Ok(false)
+    Ok(Outcome::Review)
+}
+
+/// Freeze verified candidates only after a successful pull refreshed permissions and revisions.
+/// The ordinary outbox then owns retries and the accepted receipt owns installation.
+pub(crate) fn queue_verified(db: &Connection, project: &Value) -> Result<()> {
+    let project_id = project["id"].as_str().ok_or("Missing project")?;
+    if project["governed"] != true
+        || project["captureOnly"] == true
+        || project["deferAutomaticSharing"] == true
+        || project["sharing"]["skill"] != true
+    {
+        return Ok(());
+    }
+    let ids = db::rows(db, "SELECT json_quote(id) FROM drafts WHERE project=?
+        AND json_extract(value,'$.automaticMergeCandidate')=1 AND json_extract(value,'$.status')='local'
+        AND json_extract(value,'$.submission') IS NULL AND json_extract(value,'$.requestId') IS NULL", &[&project_id])?;
+    for id in ids {
+        let draft_id = id.as_str().ok_or("Missing merge draft")?;
+        let tx = rusqlite::Transaction::new_unchecked(db, rusqlite::TransactionBehavior::Immediate)
+            .map_err(|error| error.to_string())?;
+        let Some(draft) = db::rows(
+            &tx,
+            "SELECT value FROM drafts WHERE id=? AND project=?",
+            &[&draft_id, &project_id],
+        )?
+        .into_iter()
+        .next() else {
+            continue;
+        };
+        let resource_id = draft["resource"]["resourceId"]
+            .as_str()
+            .ok_or("Missing skill")?;
+        let Some(current) = db::rows(
+            &tx,
+            "SELECT value FROM resources WHERE id=? AND project=?",
+            &[&resource_id, &project_id],
+        )?
+        .into_iter()
+        .next() else {
+            continue;
+        };
+        let mut binding = indexer::binding(&tx, resource_id)?;
+        let active_project = governance::project(&tx, project_id)?;
+        let Some(source) = crate::sources::for_resource(&active_project, &current) else {
+            continue;
+        };
+        if active_project["sharing"]["skill"] != true
+            || active_project["governed"] != true
+            || draft["status"] != "local"
+            || !draft["submission"].is_null()
+            || !draft["requestId"].is_null()
+            || draft["automaticMergeCandidate"] != true
+            || draft["skillReconciliation"] != true
+            || [
+                "kind",
+                "sourceId",
+                "source",
+                "logicalPath",
+                "title",
+                "contextSources",
+            ]
+            .into_iter()
+            .any(|field| draft["resource"][field] != current[field])
+            || current["access"]["mode"] != "publish"
+            || current["projectId"] != project["id"]
+            || current["deleted"] == true
+            || source["firstSyncWaiting"] == true
+            || binding["skillReviewFingerprint"] != draft["skillReviewFingerprint"]
+            || !binding["keptLocalSkill"].is_null()
+            || governance::latest_draft(&tx, project_id, resource_id)?
+                .is_none_or(|latest| latest["id"] != id)
+            || crate::attention::blocked(&tx, project_id, resource_id, &binding)?
+            || crate::context_sharing::require_active_source(&active_project, &draft).is_err()
+            || verify_candidate(&tx, &active_project, &draft).is_err()
+        {
+            continue;
+        }
+        let result = crate::context_sharing::queue_in(&tx, &active_project, draft_id, true)?;
+        if result["status"] != "queued" {
+            continue;
+        }
+        binding["installationState"] = json!("queued");
+        binding["skillReviewFingerprint"] = Value::Null;
+        db::upsert(&tx, "bindings", resource_id, project_id, &binding)?;
+        clear_review_errors(&tx, &source, &current)?;
+        tx.commit().map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+/// The server looks up an existing receipt before checking the exact base. Its
+/// stale-base refusal is definitive; a lost response is not. Keep the rejected
+/// request in the draft and let the next pull evaluate the new shared head.
+pub(crate) fn release_stale(db: &Connection, queued: &Value, error: &str) -> Result<bool> {
+    if error != crate::sync::EXACT_REVISION_CONFLICT
+        || !crate::context_sharing::automatic_skill_request(db, queued)?
+    {
+        return Ok(false);
+    }
+    let project = queued["project"].as_str().ok_or("Missing project")?;
+    let id = queued["id"].as_str().ok_or("Missing request")?;
+    let draft = queued["value"]["skillImport"]
+        .as_str()
+        .ok_or("Missing draft")?;
+    let resource = queued["value"]["resource"]["resourceId"]
+        .as_str()
+        .ok_or("Missing skill")?;
+    let tx = rusqlite::Transaction::new_unchecked(db, rusqlite::TransactionBehavior::Immediate)
+        .map_err(|error| error.to_string())?;
+    let updated = tx
+        .execute(
+            "UPDATE drafts SET value=json_remove(json_set(value,
+             '$.lastRejectedSubmission',json_extract(value,'$.submission'),
+             '$.automaticMergeCandidate',json('false'),'$.automaticSharing',json('false'),
+             '$.conflictReview',json('true')), '$.requestId','$.submission','$.automaticMergeRequestId')
+         WHERE id=?1 AND project=?2 AND json_extract(value,'$.requestId')=?3
+           AND json_extract(value,'$.submission.resource')=json(?4)
+           AND EXISTS(SELECT 1 FROM outbox WHERE id=?3 AND project=?2 AND value=?5)",
+            params![
+                draft,
+                project,
+                id,
+                queued["value"]["resource"].to_string(),
+                queued["value"].to_string()
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    if updated != 1 {
+        return Ok(false);
+    }
+    tx.execute(
+        "DELETE FROM outbox WHERE id=? AND project=?",
+        params![id, project],
+    )
+    .map_err(|error| error.to_string())?;
+    tx.execute("UPDATE bindings SET value=json_set(value,'$.installationState','locally_modified',
+        '$.skillReviewFingerprint',(SELECT json_extract(value,'$.skillReviewFingerprint') FROM drafts WHERE id=?1))
+        WHERE id=?2 AND project=?3 AND json_extract(value,'$.installationState')='queued'",
+        params![draft, resource, project]).map_err(|error| error.to_string())?;
+    tx.commit().map_err(|error| error.to_string())?;
+    Ok(true)
 }
 
 fn file_map(files: &Value) -> Option<BTreeMap<&str, &Value>> {

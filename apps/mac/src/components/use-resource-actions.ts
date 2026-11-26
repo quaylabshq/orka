@@ -214,15 +214,31 @@ export function useResourceActions({
         action: SessionActionName,
         conflictId: string | null = null,
         selected: SessionVersion | null = null,
+        recovery = false,
       ) =>
         act(
           async () => {
-            await invoke("session_action", {
-              id,
-              action,
-              conflictId,
-              selected,
-            });
+            if (recovery && conflictId) {
+              await invoke("resolve_session_recovery", {
+                projectId: resource.projectId,
+                id,
+                conflictId,
+                expectedRevision: resource.revision,
+                choice:
+                  action === "copy"
+                    ? "copy"
+                    : selected === "current"
+                      ? "keep"
+                      : "restore",
+                singleCandidate: false,
+              });
+            } else
+              await invoke("session_action", {
+                id,
+                action,
+                conflictId,
+                selected,
+              });
             onNotice(
               action === "copy"
                 ? "Session copy queued"
@@ -255,6 +271,7 @@ export function useResourceActions({
       launchError,
       manualResume,
       resource.revision,
+      resource.projectId,
       startFeature,
     ],
   );
