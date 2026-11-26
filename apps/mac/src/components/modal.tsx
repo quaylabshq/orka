@@ -138,6 +138,9 @@ export function Drawer({
   );
 }
 
+const tabbable =
+  'input:not([disabled]):not([type=hidden]), select:not([disabled]), textarea:not([disabled]), button:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])';
+
 function DialogFrame({
   onClose,
   className,
@@ -188,6 +191,18 @@ function DialogFrame({
           className={className}
           aria-describedby={undefined}
           onKeyDownCapture={onKeyDownCapture}
+          onOpenAutoFocus={(event) => {
+            // Start in the content, then the actions; the close button is last.
+            const frame = event.currentTarget as HTMLElement;
+            const first = [".ui-modal-body", ".ui-modal-footer"]
+              .map((part) =>
+                frame.querySelector(part)?.querySelector<HTMLElement>(tabbable),
+              )
+              .find(Boolean);
+            if (!first) return;
+            event.preventDefault();
+            first.focus();
+          }}
           onEscapeKeyDown={(event) => {
             if (!dismissToastOnEscape(event)) onEscapeKeyDown?.(event);
           }}

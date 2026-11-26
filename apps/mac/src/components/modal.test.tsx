@@ -84,3 +84,25 @@ test("shows a failure reason beside the footer actions", () => {
   expect(alert.textContent).toBe("The service is unavailable.");
   expect(alert.closest("footer")).toBeTruthy();
 });
+
+test("opens with focus on the first action rather than the close button", async () => {
+  render(
+    <Modal
+      title="Remove from this Mac?"
+      onClose={() => {}}
+      footer={
+        <>
+          <Button size="sm">Keep it</Button>
+          <Button size="sm">Remove</Button>
+        </>
+      }
+    >
+      <p>Removing this project clears cached files on this Mac.</p>
+    </Modal>,
+  );
+  await waitFor(() =>
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: "Keep it" }),
+    ),
+  );
+});
