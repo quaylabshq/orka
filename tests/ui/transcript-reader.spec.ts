@@ -563,9 +563,7 @@ test("shows transcript lines while the initial read is pending", async ({
   ).toBeInViewport();
 });
 
-test("shows text-line placeholders while restoring an evicted page", async ({
-  page,
-}) => {
+async function restoreEvictedPage(page: Page, succeeds: boolean) {
   const view = await detailGalleryFixture(page, { kind: "session" });
   await page.evaluate(() => {
     const w = window as any,
@@ -578,10 +576,11 @@ test("shows text-line placeholders while restoring an evicted page", async ({
     w.__TAURI_INTERNALS__.invoke = async (name: string, args: any) => {
       if (name !== "read_transcript") return invoke(name, args);
       if (args.offset < forwardEnd && !released) {
-        await new Promise<void>((resolve) => {
-          w.restorePage = () => {
+        await new Promise<void>((resolve, reject) => {
+          w.restorePage = (succeeds: boolean) => {
             released = true;
-            resolve();
+            if (succeeds) resolve();
+            else reject("Could not restore this range.");
           };
         });
       }
@@ -620,14 +619,48 @@ test("shows text-line placeholders while restoring an evicted page", async ({
     .poll(() => page.evaluate(() => typeof (window as any).restorePage))
     .toBe("function");
   const firstBlock = region.locator('.transcript-block[data-offset="0"]');
-  await expectSkeletonLines(
-    firstBlock.locator(".transcript-block-placeholder"),
+  const placeholder = firstBlock.locator(".transcript-block-placeholder");
+  await expectSkeletonLines(placeholder);
+  const loading = region
+    .getByRole("status")
+    .filter({ hasText: "Loading transcript text…" });
+  await expect(loading).toHaveCount(1);
+  const originalHeight = await placeholder.evaluate(
+    (el) => el.getBoundingClientRect().height,
   );
-  await page.evaluate(() => (window as any).restorePage());
+  await page.evaluate(
+    (succeeds) => (window as any).restorePage(succeeds),
+    succeeds,
+  );
+  await expect(loading).toHaveCount(0);
+  if (!succeeds) {
+    const alert = region.getByRole("alert");
+    await expect(alert).toContainText("Couldn’t load more of the transcript.");
+    await expect(placeholder.locator(".transcript-skeleton-line")).toHaveCount(
+      0,
+    );
+    expect(
+      await placeholder.evaluate((el) => el.getBoundingClientRect().height),
+    ).toBe(originalHeight);
+    const retry = alert.getByRole("button", { name: "Retry", exact: true });
+    await expect(retry).toBeInViewport({ ratio: 1 });
+    await retry.click();
+    await expect(alert).toHaveCount(0);
+  }
   await expect(firstBlock.locator("pre")).toContainText(
     "First restored record",
   );
   await expect(firstBlock.locator(".transcript-block-placeholder")).toHaveCount(
     0,
   );
+}
+test("replaces the placeholder with text after restoring an evicted page", async ({
+  page,
+}) => {
+  await restoreEvictedPage(page, true);
+});
+test("stops the placeholder and offers retry when an evicted page fails", async ({
+  page,
+}) => {
+  await restoreEvictedPage(page, false);
 });
