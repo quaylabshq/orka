@@ -185,16 +185,7 @@ function TranscriptEdge({
       data-transcript-edge={side}
       aria-busy={pending}
     >
-      {pending && (
-        <div role="status">
-          <span className="sr-only">
-            {side === "before"
-              ? "Loading earlier transcript text…"
-              : "Loading more of the transcript…"}
-          </span>
-          <TranscriptLines />
-        </div>
-      )}
+      {pending && <TranscriptLines />}
       {failed && <RangeError retry={retry} />}
     </div>
   );
@@ -764,6 +755,11 @@ function TranscriptText({
     } else read(request);
   };
 
+  const rangeMessages: Partial<Record<Read["kind"], string>> = {
+    before: "Loading earlier transcript text…",
+    after: "Loading more of the transcript…",
+    restore: "Loading transcript text…",
+  };
   const failedRead = failed && failed !== "invalidated" ? failed : null;
   const floatingError =
     index && failedRead && !["before", "after"].includes(failedRead.kind);
@@ -835,7 +831,8 @@ function TranscriptText({
           className={showAnnouncement ? "transcript-jump-status" : "sr-only"}
           role="status"
         >
-          {announcement}
+          {(!showAnnouncement && pending && rangeMessages[pending.kind]) ||
+            announcement}
         </span>
       </div>
       {!index &&
@@ -874,7 +871,7 @@ function TranscriptText({
                   aria-hidden="true"
                   style={{ height: item.size }}
                 >
-                  <TranscriptLines />
+                  {!failed && <TranscriptLines />}
                 </div>
               ) : (
                 <pre className="content">{text}</pre>
