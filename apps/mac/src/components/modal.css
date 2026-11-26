@@ -60,6 +60,11 @@
   padding-bottom: 20px;
 }
 
+/* A confirmation with only a title and actions has no body. */
+.ui-modal-body:empty {
+  display: none;
+}
+
 /* Body copy follows the body gap instead of the legacy modal margins. */
 .modal.ui-modal .ui-modal-body > p {
   margin: 0;
