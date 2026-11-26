@@ -16,6 +16,7 @@ import {
   type TranscriptBlock,
 } from "./transcript-range.js";
 
+const PREVIEW_TOO_LARGE = "transcript_preview_too_large";
 const CACHE_BYTES = 512 * 1024;
 const LOOKAHEAD_PX = 4800;
 const MAX_SELECTION_BLOCKS = 16;
@@ -81,6 +82,15 @@ export function TranscriptReader(props: TranscriptReaderProps) {
       {conflictId ? "Download incoming version" : "Download session"}
     </Button>
   );
+  if (error === PREVIEW_TOO_LARGE)
+    return (
+      <ReaderState
+        illustration="preview-unavailable"
+        title="Transcript exceeds the preview limit"
+        message="Download this version to read the full transcript."
+        action={download}
+      />
+    );
   if (!opened)
     return (
       <section aria-label="Transcript text" className="transcript-reader">
@@ -107,6 +117,7 @@ export function TranscriptReader(props: TranscriptReaderProps) {
       readerRef={props.readerRef}
       offline={offline}
       download={download}
+      onPreviewLimit={() => setError(PREVIEW_TOO_LARGE)}
       reopen={retry}
       onReady={props.onReady}
     />
@@ -174,6 +185,7 @@ function TranscriptText({
   offline,
   download,
   reopen,
+  onPreviewLimit,
   onReady,
 }: {
   readerId: string;
@@ -181,6 +193,7 @@ function TranscriptText({
   offline: boolean;
   download: React.ReactNode;
   reopen: () => void;
+  onPreviewLimit: () => void;
   onReady?: () => void;
 }) {
   const region = useRef<HTMLElement>(null);
@@ -368,6 +381,11 @@ function TranscriptText({
       })
       .catch((reason: unknown) => {
         if (ticket !== generation.current) return;
+        if (reason === PREVIEW_TOO_LARGE) {
+          queuedJump.current = null;
+          onPreviewLimit();
+          return;
+        }
         const invalidated = reason === "transcript_snapshot_invalidated";
         if (queuedJump.current && !invalidated) return;
         if (invalidated) {

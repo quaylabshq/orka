@@ -2573,6 +2573,49 @@ test("session conversations render Mermaid while transcripts stay literal and la
   await expect(page.locator(".mermaid-diagram")).toHaveCount(0);
 });
 
+test("an oversized transcript offers the selected snapshot download", async ({
+  page,
+}) => {
+  await detailFixture(page, { savePath: "/test/export/session.zip" });
+  await page.evaluate(() => {
+    const bridge = (window as any).__TAURI_INTERNALS__;
+    const invoke = bridge.invoke;
+    bridge.invoke = async (command: string, args: unknown) => {
+      if (command === "read_transcript") throw "transcript_preview_too_large";
+      return invoke(command, args);
+    };
+  });
+  await page.getByRole("button", { name: /^Sessions/ }).click();
+  await page
+    .getByRole("button", { name: "Polish navigation", exact: true })
+    .click();
+  await page.getByRole("button", { name: "Transcript", exact: true }).click();
+  const view = page.locator(".session-view");
+  await expect(
+    view.getByText("Transcript exceeds the preview limit"),
+  ).toBeVisible();
+  await view.getByRole("button", { name: "View incoming version" }).click();
+  const state = view
+    .getByRole("status")
+    .filter({ hasText: "Transcript exceeds the preview limit" });
+  await expect(state.getByRole("button", { name: "Retry" })).toHaveCount(0);
+  await state
+    .getByRole("button", { name: "Download incoming version" })
+    .click();
+  await expect
+    .poll(() => calls(page, "export_bundle"))
+    .toEqual([
+      {
+        id: "session-c",
+        path: "/test/export/session.zip",
+        sessionSnapshot: {
+          conflictId: "conflict-1",
+          snapshotHash: "incoming-snapshot",
+        },
+      },
+    ]);
+});
+
 test("a large transcript streams ranges and downloads the selected snapshot", async ({
   page,
 }) => {
