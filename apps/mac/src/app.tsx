@@ -804,28 +804,36 @@ function WorkspaceApp({
   const updatesDialog =
     settings === "updates" && (!state.user || state.onboarding?.active) ? (
       <Modal
-        legacyFrame
         onClose={() => setSettings(null)}
         title="Updates"
         className="settings-updates-dialog"
+        size="wide"
+        footer={
+          <Button size="sm" onClick={() => setSettings(null)}>
+            Done
+          </Button>
+        }
       >
         <div className="settings-panel" data-section="updates">
           <SettingsUpdates updates={updates} />
-          <Button onClick={() => setSettings(null)}>Done</Button>
         </div>
       </Modal>
     ) : null;
   const connectorsDialog =
     settings === "connections" && (!state.user || state.onboarding?.active) ? (
       <Modal
-        legacyFrame
         title="Connectors"
         onClose={() => setSettings(null)}
         className="settings-updates-dialog"
+        size="wide"
+        footer={
+          <Button size="sm" onClick={() => setSettings(null)}>
+            Done
+          </Button>
+        }
       >
         <div className="settings-panel" data-section="connections">
           <SettingsPluginConnections state={state} />
-          <Button onClick={() => setSettings(null)}>Done</Button>
         </div>
       </Modal>
     ) : null;

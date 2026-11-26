@@ -1421,17 +1421,19 @@ test("instruction previews load directly, recover from failures, and require a f
   await expect(install).toHaveAccessibleDescription(
     "Your local edits will be saved privately on this Mac before installation.",
   );
-  const header = await dialog.locator(".review-header").evaluate((element) => {
-    const heading = element.querySelector("h2")!;
-    const close = element.querySelector("button")!;
-    const h = heading.getBoundingClientRect();
-    const c = close.getBoundingClientRect();
-    return {
-      fontSize: getComputedStyle(heading).fontSize,
-      offset: Math.abs(h.y + h.height / 2 - c.y - c.height / 2),
-    };
-  });
-  expect(header.fontSize).toBe("20px");
+  const header = await dialog
+    .locator(".ui-modal-header")
+    .evaluate((element) => {
+      const heading = element.querySelector("h2")!;
+      const close = element.querySelector("button")!;
+      const h = heading.getBoundingClientRect();
+      const c = close.getBoundingClientRect();
+      return {
+        fontSize: getComputedStyle(heading).fontSize,
+        offset: Math.abs(h.y + h.height / 2 - c.y - c.height / 2),
+      };
+    });
+  expect(header.fontSize).toBe("16px");
   expect(header.offset).toBeLessThanOrEqual(1);
   await page.evaluate(() => {
     (window as any).governanceStale = true;

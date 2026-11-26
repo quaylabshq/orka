@@ -1615,16 +1615,6 @@
   }
 }
 
-.modal.governance-dialog {
-  display: flex;
-  flex-direction: column;
-  width: min(870px, calc(100vw - 48px));
-  max-width: 870px;
-  padding: 0;
-  overflow: hidden;
-  background: var(--surface-secondary);
-  border-radius: var(--radius-overlay);
-}
 .governance-dialog section,
 .governance-dialog form {
   display: grid;
@@ -1643,10 +1633,6 @@
   border-radius: var(--radius-control);
   padding: 8px;
 }
-.governance-dialog .review-header h2 {
-  @apply text-heading-xs;
-  margin: 0;
-}
 .governance-dialog .changes-review-body {
   display: flex;
   flex-direction: column;
@@ -1661,7 +1647,7 @@
 .governance-dialog .changes-review-body > p {
   margin: 0;
 }
-.governance-dialog .review-footer > p {
+.governance-dialog .ui-modal-footer > p {
   margin: 0;
   margin-right: auto;
 }
@@ -1699,19 +1685,15 @@
   max-height: 360px;
   overflow: auto;
 }
-.modal.changes-review-modal {
-  display: flex;
-  flex-direction: column;
-  width: min(960px, calc(100vw - 48px));
+/* The review body keeps its own padding and scrolls between header and footer. */
+.changes-review-modal .ui-modal-body {
   padding: 0;
-  overflow: hidden;
-  background: var(--surface-secondary);
 }
 .changes-review-body {
   display: grid;
   gap: 16px;
   min-height: 0;
-  padding: 24px;
+  padding: 16px 20px;
   overflow-y: auto;
 }
 .changes-review-body h3,
@@ -1725,7 +1707,7 @@
   max-height: none;
   overflow: visible;
 }
-.changes-review-modal .review-footer {
+.changes-review-modal .ui-modal-footer {
   flex-wrap: wrap;
 }
 
