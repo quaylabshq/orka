@@ -127,9 +127,17 @@ pub fn publication_resource(db: &Connection, project: &str, resource: &Value) ->
 }
 
 pub fn publication_mode(db: &Connection, project: &str, resource: &Value) -> Result<String> {
+    Ok(known_publication_mode(db, project, resource)?.unwrap_or_else(|| "hidden".into()))
+}
+
+pub(crate) fn known_publication_mode(
+    db: &Connection,
+    project: &str,
+    resource: &Value,
+) -> Result<Option<String>> {
     let catalog = db::get(db, &format!("governance:{project}"))?;
     if catalog["owner"] == true {
-        return Ok("publish".into());
+        return Ok(Some("publish".into()));
     }
     let resource = publication_resource(db, project, resource)?;
     let existing = db::rows(
@@ -138,10 +146,7 @@ pub fn publication_mode(db: &Connection, project: &str, resource: &Value) -> Res
         &[&resource["resourceId"].as_str(), &project],
     )?;
     if let Some(existing) = existing.first() {
-        return Ok(existing["access"]["mode"]
-            .as_str()
-            .unwrap_or("hidden")
-            .into());
+        return Ok(existing["access"]["mode"].as_str().map(str::to_owned));
     }
     let category = if governance::protected(&resource) && resource["kind"] == "memory" {
         "instructions"
@@ -152,8 +157,7 @@ pub fn publication_mode(db: &Connection, project: &str, resource: &Value) -> Res
     };
     Ok(catalog["access"][category]["create"]
         .as_str()
-        .unwrap_or("hidden")
-        .into())
+        .map(str::to_owned))
 }
 
 pub fn queue_automatic(db: &Connection, project: &Value, draft_id: &str) -> Result<()> {

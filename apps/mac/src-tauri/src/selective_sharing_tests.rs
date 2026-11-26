@@ -470,6 +470,43 @@ async fn selected_tools_check_local_account_before_discovering_private_items() {
 }
 
 #[test]
+fn a_review_only_share_keeps_its_destination_across_retries() {
+    let mut f = Fixture::new();
+    prepare(&mut f);
+    let mut input = input(&f);
+    input["kind"] = json!("session");
+    let local = indexer::discover(&f.db, &f.project, "session")
+        .unwrap()
+        .remove(0);
+    input["resourceId"] = local["resource"]["resourceId"].clone();
+    let preview = selective_sharing::preview(&f.db, &f.project, &input).unwrap();
+    input["previewToken"] = preview["previewToken"].clone();
+    input["requireApproval"] = json!(true);
+    let receipt = selective_sharing::queue(&f.db, &f.project, &input).unwrap();
+    let id = receipt["requestId"].as_str().unwrap();
+    let queued = db::rows(&f.db,
+        "SELECT json_object('id',id,'project',project,'path',path,'value',json(value)) FROM outbox WHERE id=?",
+        &[&id]).unwrap().remove(0);
+    assert!(selective_sharing::authorized_origin(&f.db, &queued)
+        .unwrap()
+        .is_some());
+    assert_ne!(
+        receipt["payloadHash"],
+        db::digest(queued["value"].to_string().as_bytes())
+    );
+    input.as_object_mut().unwrap().remove("requireApproval");
+    assert_eq!(
+        selective_sharing::queue(&f.db, &f.project, &input).unwrap(),
+        receipt
+    );
+    f.db.execute("DELETE FROM outbox WHERE id=?", [id]).unwrap();
+    assert_eq!(
+        selective_sharing::queue(&f.db, &f.project, &input).unwrap(),
+        receipt
+    );
+}
+
+#[test]
 fn selected_conflict_receipt_preserves_current_and_candidate_snapshots() {
     let mut f = Fixture::new();
     prepare(&mut f);
@@ -612,8 +649,99 @@ fn queued_shares_name_a_service_update_only_when_one_is_needed() {
         assert_eq!(receipt["status"], "queued");
         assert_eq!(receipt["reason"], "unsupported");
     }
+    for error in [
+        "403: Permission denied",
+        "409: Stale resource",
+        "422: Invalid item",
+    ] {
+        assert_eq!(
+            selective_sharing::queued_receipt("request", error)["reason"],
+            "rejected"
+        );
+    }
+    assert_eq!(
+        selective_sharing::queued_receipt("request", "403: project_archived: Restore the project")
+            ["reason"],
+        "project_inactive"
+    );
+    for transient in [
+        "401: Sign in required",
+        "408: Timeout",
+        "429: Busy",
+        "503: Service unavailable",
+    ] {
+        assert!(selective_sharing::queued_receipt("request", transient)
+            .get("reason")
+            .is_none());
+    }
     let offline =
         selective_sharing::queued_receipt("request", "Cloud unavailable; local work stays queued");
     assert_eq!(offline["status"], "queued");
     assert!(offline.get("reason").is_none());
+}
+
+#[test]
+fn refused_selected_snapshot_keeps_its_frozen_bytes_and_requires_a_new_preview() {
+    let mut f = Fixture::new();
+    prepare(&mut f);
+    let resource = indexer::discover(&f.db, &f.project, "session")
+        .unwrap()
+        .remove(0);
+    let mut request = input(&f);
+    request["kind"] = json!("session");
+    request["resourceId"] = resource["resource"]["resourceId"].clone();
+    let preview = selective_sharing::preview(&f.db, &f.project, &request).unwrap();
+    request["previewToken"] = preview["previewToken"].clone();
+    let first = selective_sharing::queue(&f.db, &f.project, &request).unwrap();
+    let id = first["requestId"].as_str().unwrap();
+    request["requireApproval"] = json!(true);
+    assert!(selective_sharing::queue(&f.db, &f.project, &request)
+        .unwrap_err()
+        .contains("already queued"));
+    let row = json!({"id":id, "path":selective_sharing::QUEUE_PATH});
+    let error = "409: Resource path already exists; edit the accepted resource";
+    assert!(!sync::record_upload_failure(&f.db, &row, error).unwrap());
+    assert_eq!(f.outbox()[0]["resource"]["files"], preview["files"]);
+    let saved: String =
+        f.db.query_row("SELECT error FROM outbox WHERE id=?", [id], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(saved, error);
+    assert!(selective_sharing::queue(&f.db, &f.project, &request)
+        .unwrap_err()
+        .contains("fresh share preview"));
+    let next = selective_sharing::preview(&f.db, &f.project, &request).unwrap();
+    assert_ne!(next["previewToken"], preview["previewToken"]);
+    request["previewToken"] = next["previewToken"].clone();
+    let reviewed = selective_sharing::queue(&f.db, &f.project, &request).unwrap();
+    assert_eq!(reviewed["requestId"], id);
+    assert_eq!(reviewed["requireApproval"], true);
+    assert_ne!(reviewed["payloadHash"], first["payloadHash"]);
+    assert_eq!(f.outbox().len(), 1);
+}
+
+#[test]
+fn new_snapshots_use_creation_access_and_distinguish_an_unknown_rule() {
+    let mut f = Fixture::new();
+    prepare(&mut f);
+    f.project["governed"] = json!(true);
+    f.project["role"] = json!("member");
+    let mut request = input(&f);
+    let local = indexer::discover(&f.db, &f.project, "skill")
+        .unwrap()
+        .remove(0);
+    request["kind"] = json!("skill");
+    request["resourceId"] = local["resource"]["resourceId"].clone();
+    let preview = || selective_sharing::preview(&f.db, &f.project, &request).unwrap();
+    assert_eq!(preview()["publicationMode"], Value::Null);
+    db::set(
+        &f.db,
+        &format!("governance:{}", f.project["id"].as_str().unwrap()),
+        &json!({"access":{"skill":{"mode":"hidden","create":"publish"}}}),
+    )
+    .unwrap();
+    let snapshot = preview();
+    assert_eq!(snapshot["baseRevision"], 0);
+    assert_eq!(snapshot["publicationMode"], "publish");
 }

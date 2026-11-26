@@ -190,10 +190,17 @@ export interface LocalDraft {
   dismissalReason?: string;
   archivedAt?: string;
 }
-export interface SessionSnapshotDownload {
-  conflictId?: string;
-  snapshotHash: string;
-}
+export type SessionSnapshotDownload = { conflictId?: string } & (
+  | { snapshotHash: string }
+  | {
+      reviewed: Pick<
+        WorkspaceResource,
+        "projectId" | "resourceId" | "source"
+      > & {
+        files: Pick<Resource["files"][number], "path" | "hash">[];
+      };
+    }
+);
 
 export type Inspection = {
   conversation?: string | null;

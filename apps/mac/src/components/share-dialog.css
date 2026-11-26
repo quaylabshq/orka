@@ -101,6 +101,18 @@
   line-height: var(--body-xs-line-height);
 }
 
+.modal.share-dialog .share-dialog-scope-note {
+  position: absolute;
+  right: 12px;
+  bottom: 4px;
+  left: 12px;
+  margin: 0;
+  color: var(--amber-text);
+  font-size: var(--body-xs-font-size);
+  line-height: var(--body-xs-line-height);
+  text-align: center;
+}
+
 .share-dialog-facts {
   display: grid;
   grid-template-columns: minmax(0, 1fr);

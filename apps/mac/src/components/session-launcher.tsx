@@ -13,7 +13,11 @@ import {
   SquareTerminalIcon,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
-import type { Project, ProjectResource } from "../types.js";
+import type {
+  Project,
+  ProjectResource,
+  SessionSnapshotDownload,
+} from "../types.js";
 import { Button } from "./button.js";
 import { Icon } from "./icon.js";
 import { IconButton } from "./icon-button.js";
@@ -64,6 +68,7 @@ export function SessionLauncher({
   scope,
   busy,
   actions,
+  sessionDownload,
   onError,
 }: {
   resource: ProjectResource;
@@ -71,6 +76,7 @@ export function SessionLauncher({
   scope: string;
   busy: boolean;
   actions: ResourceActionHandlers;
+  sessionDownload?: SessionSnapshotDownload | null;
   onError: (message: string) => void;
 }) {
   const tool = sessionTool(resource.source);
@@ -377,15 +383,17 @@ export function SessionLauncher({
               setCopyFailure(message ? { key, message } : null)
             }
           />
-          <Button
-            variant="tertiary"
-            size="sm"
-            role="menuitem"
-            disabled={busy}
-            onClick={() => void actions.exportZip()}
-          >
-            <Icon icon={DownloadIcon} /> Download session (.zip)…
-          </Button>
+          {sessionDownload !== null && (
+            <Button
+              variant="tertiary"
+              size="sm"
+              role="menuitem"
+              disabled={busy}
+              onClick={() => void actions.exportZip(sessionDownload)}
+            >
+              <Icon icon={DownloadIcon} /> Download session (.zip)…
+            </Button>
+          )}
         </div>
         {copyFailure?.key === key && (
           <p

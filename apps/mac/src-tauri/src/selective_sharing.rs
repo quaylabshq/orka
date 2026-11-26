@@ -3,7 +3,7 @@ use crate::{
     governance, indexer, projects, sources, sync,
     sync_queue::{Priority, SyncQueue},
 };
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
@@ -127,6 +127,17 @@ pub(crate) fn preview_from_local_with_progress(
     .first()
     .map(|r| r["revision"].clone())
     .unwrap_or(json!(0));
+    let publication_mode = if project["governed"] != true {
+        None
+    } else if project["role"] == "owner" {
+        Some("publish".into())
+    } else {
+        crate::context_sharing::known_publication_mode(
+            db,
+            project["id"].as_str().ok_or("Missing project")?,
+            &resource,
+        )?
+    };
     let token = Uuid::new_v4().to_string();
     let change_id = Uuid::new_v5(&Uuid::NAMESPACE_URL, json!({"account":input["accountId"],"service":input["serviceOrigin"],"project":project["id"],"resource":resource,"base":base}).to_string().as_bytes()).to_string();
     let change = json!({"version":2,"id":change_id,"projectId":project["id"],"deviceId":db::device(db)?,"baseRevision":base,"resource":resource});
@@ -148,8 +159,22 @@ pub(crate) fn preview_from_local_with_progress(
         "This exact snapshot will be shared. Later edits and future turns remain private unless automatic sharing is enabled or you explicitly share again."
     };
     Ok(
-        json!({"previewToken":token,"expiresAt":expires,"title":resource["title"],"kind":resource["kind"],"sourceId":resource["sourceId"],"files":resource["files"],"totalBytes":bytes,"snapshotHash":indexer::manifest_hash(&resource["files"]),"automaticSharingChanged":false,"note":note}),
+        json!({"previewToken":token,"expiresAt":expires,"baseRevision":base,"publicationMode":publication_mode,"title":resource["title"],"kind":resource["kind"],"sourceId":resource["sourceId"],"files":resource["files"],"totalBytes":bytes,"snapshotHash":indexer::manifest_hash(&resource["files"]),"automaticSharingChanged":false,"note":note}),
     )
+}
+
+fn payload_hash(change: &Value, require_approval: bool) -> String {
+    // Bind the review-only destination as well as the frozen bytes. An older
+    // daemon that only knows direct submission cannot authorize this request.
+    if require_approval {
+        db::digest(
+            json!(["submit-for-approval", change])
+                .to_string()
+                .as_bytes(),
+        )
+    } else {
+        db::digest(change.to_string().as_bytes())
+    }
 }
 
 pub fn queue(db: &Connection, project: &Value, input: &Value) -> Result<Value> {
@@ -157,6 +182,9 @@ pub fn queue(db: &Connection, project: &Value, input: &Value) -> Result<Value> {
         .as_str()
         .ok_or("Preview this item before sharing it")?;
     let preview = db::get(db, &format!("share-preview:{token}"))?;
+    if preview.is_null() {
+        return Err("Prepare a fresh share preview before sending this item.".into());
+    }
     for key in ["accountId", "serviceOrigin", "projectId"] {
         if preview[key] != input[key] {
             return Err("Share preview belongs to another account, service, or project".into());
@@ -174,22 +202,46 @@ pub fn queue(db: &Connection, project: &Value, input: &Value) -> Result<Value> {
     let change = &preview["change"];
     let id = change["id"].as_str().ok_or("Missing share request")?;
     let key = format!("selected-share:{id}");
-    let prior = db::get(db, &key)?;
-    let hash = db::digest(change.to_string().as_bytes());
-    if !prior.is_null() && prior["payloadHash"] != hash {
-        return Err("Share request no longer matches the preview".into());
+    let mut prior = db::get(db, &key)?;
+    let was_approval_only = prior["requireApproval"] == true;
+    let require_approval = was_approval_only || input["requireApproval"] == true;
+    let hash = payload_hash(change, require_approval);
+    if !prior.is_null() {
+        if prior["payloadHash"] != payload_hash(change, was_approval_only) {
+            return Err("Share request no longer matches the preview".into());
+        }
+        if prior["status"] != "queued" {
+            return Ok(prior);
+        }
+        let pending: Option<Option<String>> = db
+            .query_row("SELECT error FROM outbox WHERE id=?", [id], |row| {
+                row.get(0)
+            })
+            .optional()
+            .map_err(|e| e.to_string())?;
+        if let Some(error) = pending {
+            if require_approval && !was_approval_only {
+                // A refused request can be reviewed again. A still-pending
+                // direct send may already have reached the service.
+                if !error.as_deref().is_some_and(|reason| {
+                    sync::terminal_error(reason) && !sync::project_held_error(reason)
+                }) {
+                    return Err(
+                        "A share of this snapshot is already queued. Check its status in Sync."
+                            .into(),
+                    );
+                }
+                prior["requireApproval"] = json!(true);
+                prior["payloadHash"] = json!(hash);
+                db::set(db, &key, &prior)?;
+            }
+            return Ok(prior);
+        }
     }
-    let pending: bool = db
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM outbox WHERE id=?)",
-            [id],
-            |row| row.get(0),
-        )
-        .map_err(|e| e.to_string())?;
-    if !prior.is_null() && (prior["status"] != "queued" || pending) {
-        return Ok(prior);
+    let mut receipt = json!({"requestId":id,"projectId":project["id"],"accountId":input["accountId"],"serviceOrigin":input["serviceOrigin"],"payloadHash":hash,"status":"queued","automaticSharingChanged":false,"paths":preview["paths"],"nativeId":preview["nativeId"],"localResourceId":preview["localResourceId"],"path":preview["path"],"folderIdentity":preview["folderIdentity"]});
+    if require_approval {
+        receipt["requireApproval"] = json!(true);
     }
-    let receipt = json!({"requestId":id,"projectId":project["id"],"accountId":input["accountId"],"serviceOrigin":input["serviceOrigin"],"payloadHash":hash,"status":"queued","automaticSharingChanged":false,"paths":preview["paths"],"nativeId":preview["nativeId"],"localResourceId":preview["localResourceId"],"path":preview["path"],"folderIdentity":preview["folderIdentity"]});
     let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
     db::set(&tx, &key, &receipt)?;
     tx.execute(
@@ -216,6 +268,10 @@ pub(crate) fn published_receipt_key(key: &str, receipt: &Value) -> bool {
 }
 
 pub fn authorized_origin(db: &Connection, queued: &Value) -> Result<Option<String>> {
+    Ok(authorization(db, queued)?.map(|(origin, _receipt)| origin))
+}
+
+fn authorization(db: &Connection, queued: &Value) -> Result<Option<(String, Value)>> {
     if queued["path"] != QUEUE_PATH {
         return Ok(None);
     }
@@ -233,12 +289,13 @@ pub fn authorized_origin(db: &Connection, queued: &Value) -> Result<Option<Strin
             == Some(origin.trim_end_matches('/'))
         && receipt["projectId"] == queued["project"]
         && queued["value"]["projectId"] == queued["project"]
-        && receipt["payloadHash"] == db::digest(queued["value"].to_string().as_bytes());
-    Ok(authorized.then(|| origin.to_owned()))
+        && receipt["payloadHash"]
+            == payload_hash(&queued["value"], receipt["requireApproval"] == true);
+    Ok(authorized.then(|| (origin.to_owned(), receipt)))
 }
 
 pub async fn send(db: &Connection, owner: &str, queued: &Value) -> Result<Value> {
-    let origin = authorized_origin(db, queued)?
+    let (origin, receipt) = authorization(db, queued)?
         .ok_or("Selected share authorization no longer matches this snapshot")?;
     let capabilities =
         sync::api_at(owner, &origin, "GET", "/v2/projects/capabilities", None).await?;
@@ -259,6 +316,19 @@ pub async fn send(db: &Connection, owner: &str, queued: &Value) -> Result<Value>
         &queued["value"]["resource"],
     )
     .await?;
+    // The member may have gained publishing rights since clicking Send for approval.
+    // Submit the frozen change for review even when it leaves the outbox later.
+    if receipt["requireApproval"] == true {
+        let request = sync::api_at(
+            owner,
+            &origin,
+            "POST",
+            "/v2/governance/action",
+            Some(&json!({"action":"submit","input":{"projectId":queued["project"],"change":queued["value"]}})),
+        )
+        .await?;
+        return Ok(json!({"status":"approval_required","request":request}));
+    }
     sync::api_at(
         owner,
         &origin,
@@ -404,8 +474,7 @@ async fn command_bound(
                     )?))
                 }
                 Err(error) => {
-                    db.execute("UPDATE outbox SET error=? WHERE id=?", params![error, id])
-                        .map_err(|e| e.to_string())?;
+                    sync::record_upload_failure(&db, &queued, &error)?;
                     Ok(queued_receipt(id, &error))
                 }
             }
@@ -414,14 +483,17 @@ async fn command_bound(
     }
 }
 
-/// A share that stays queued after one send attempt. `reason` is set only
-/// when the service must be updated first, because retrying alone will not
-/// send it.
+/// Report why a retained snapshot is waiting when sending it again would
+/// require a service update, a project restore, or a fresh user review.
 pub(crate) fn queued_receipt(id: &str, error: &str) -> Value {
     let mut receipt =
         json!({"requestId":id,"status":"queued","error":error,"automaticSharingChanged":false});
     if error == SELECTED_SHARING_UPGRADE || error == PI_SERVICE_UPGRADE {
         receipt["reason"] = json!("unsupported");
+    } else if sync::project_held_error(error) {
+        receipt["reason"] = json!("project_inactive");
+    } else if sync::terminal_error(error) {
+        receipt["reason"] = json!("rejected");
     }
     receipt
 }

@@ -1,5 +1,8 @@
 import React, { useId } from "react";
-import type { ProjectResource as Resource } from "../types.js";
+import type {
+  ProjectResource as Resource,
+  SessionSnapshotDownload,
+} from "../types.js";
 import { Button } from "./button.js";
 import { Icon } from "./icon.js";
 import type { IconGlyph } from "./icons.js";
@@ -34,6 +37,8 @@ export interface DetailLayoutProps {
   /** The item whose context menu the reader offers; a review has none. */
   resource?: Resource;
   file?: string;
+  /** The selected conflict version's download, or null when that side was removed. */
+  sessionDownload?: SessionSnapshotDownload | null;
   menuActions?: ItemMenuAction[];
   title: string;
   /** Status chips above the title. */
@@ -79,6 +84,7 @@ export function DetailLayout({
   className,
   resource,
   file,
+  sessionDownload,
   menuActions,
   title,
   status,
@@ -227,6 +233,7 @@ export function DetailLayout({
     <ResourceItemMenu
       resource={resource}
       file={file}
+      sessionDownload={sessionDownload}
       extraActions={menuActions ?? []}
     >
       {() => shell}

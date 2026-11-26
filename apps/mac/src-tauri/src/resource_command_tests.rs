@@ -738,6 +738,8 @@ async fn desktop_share_previews_use_promoted_memory_identity_without_enabling_sh
     let preview = actions::run_command("preview-share".into(), input.clone(), None)
         .await
         .unwrap();
+    assert_eq!(preview["baseRevision"], 4);
+    assert_eq!(preview["publicationMode"], "publish");
     assert_eq!(
         preview["snapshotHash"],
         indexer::manifest_hash(&local["resource"]["files"])

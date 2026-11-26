@@ -2148,7 +2148,7 @@ fn session_conflict_inspection_shows_both_preserved_versions() {
         json!({"type":"turn_context","payload":{"context":"x".repeat(8 * 1024 * 1024)}}),
     ]);
     let project_id = f.project["id"].as_str().unwrap();
-    let r = json!({"resourceId":id,"projectId":project_id,"kind":"session","source":"claude","title":"Session","logicalPath":"claude/session.jsonl","files":[{"path":"session.jsonl","hash":db::blob(&shared).unwrap(),"size":shared.len()}],"deleted":false});
+    let r = json!({"resourceId":id,"projectId":project_id,"kind":"session","owner":db::get(&f.db, "user").unwrap(),"source":"claude","title":"Session","logicalPath":"claude/session.jsonl","files":[{"path":"session.jsonl","hash":db::blob(&shared).unwrap(),"size":shared.len()}],"deleted":false});
     db::upsert(&f.db, "resources", &id, project_id, &r).unwrap();
     let mut candidate = r.clone();
     candidate["files"][0] =
@@ -2169,6 +2169,41 @@ fn session_conflict_inspection_shows_both_preserved_versions() {
         &json!({"previous":{"files":[{"path":"session.jsonl","hash":db::blob(&previous).unwrap()}]}}),
     )
     .unwrap();
+    // This Mac kept editing after its candidate was sent. Neither side of
+    // the conflict should be read from the current local catalog entry.
+    let private = native::encode(&[
+        json!({"type":"user","message":{"role":"user","content":"later private turn"}}),
+    ]);
+    let mut local = r.clone();
+    local["files"][0] =
+        json!({"path":"session.jsonl","hash":db::blob(&private).unwrap(),"size":private.len()});
+    db::upsert(
+        &f.db,
+        "local_resources",
+        &id,
+        project_id,
+        &json!({"resource":local,"path":f.project["path"]}),
+    )
+    .unwrap();
+    assert_eq!(
+        crate::local_resources::resource(&f.db, &id).unwrap()["localChanges"],
+        true
+    );
+    let conversation = |conflict_id| {
+        tauri::async_runtime::block_on(crate::commands::session_messages(
+            id.clone(),
+            conflict_id,
+            None,
+            Some(1),
+        ))
+        .unwrap()["messages"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    assert_eq!(conversation(None), "shared version");
+    assert!(conversation(Some(conflict.clone())).starts_with("incoming version "));
+
     let uncapped =
         crate::commands::inspect_resource(id.clone(), "session.jsonl".into(), None, None).unwrap();
     let shared_transcript = uncapped["content"].as_str().unwrap();
@@ -2246,7 +2281,29 @@ fn session_conflict_inspection_shows_both_preserved_versions() {
         oversized["size"].as_u64().unwrap() as usize
     );
 
+    let reviewed_shared = json!({"sessionSnapshot":{"reviewed":r}});
+    let reviewed_incoming = json!({"sessionSnapshot":{"reviewed":candidate,"conflictId":conflict}});
+    assert_eq!(
+        download_transcript(&reviewed_shared, "reviewed-shared.zip"),
+        shared_transcript
+    );
+    assert_eq!(
+        download_transcript(&reviewed_incoming, "reviewed-incoming.zip"),
+        transcript
+    );
     let blocked = f._home.path().join("blocked.zip");
+    let mut tombstone = r.clone();
+    tombstone["deleted"] = json!(true);
+    db::upsert(&f.db, "resources", &id, project_id, &tombstone).unwrap();
+    assert_eq!(
+        download(&id, &reviewed_shared, &blocked).unwrap_err(),
+        "session_snapshot_changed"
+    );
+    assert!(!blocked.exists());
+    assert_eq!(
+        download_transcript(&reviewed_incoming, "candidate-after-tombstone.zip"),
+        transcript
+    );
     let mut updated = r.clone();
     updated["title"] = json!("Updated session title");
     updated["updatedAt"] = json!(db::now());
@@ -2284,6 +2341,14 @@ fn session_conflict_inspection_shows_both_preserved_versions() {
 
     f.db.execute("DELETE FROM conflicts WHERE id=?", [&conflict])
         .unwrap();
+    assert_eq!(conversation(None), "later private turn");
+    for reviewed in [&reviewed_shared, &reviewed_incoming] {
+        assert_eq!(
+            download(&id, reviewed, &blocked).unwrap_err(),
+            "session_snapshot_changed"
+        );
+        assert!(!blocked.exists());
+    }
     assert_eq!(
         download(&id, &oversized, &blocked).unwrap_err(),
         "session_snapshot_changed"
