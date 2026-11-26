@@ -1,0 +1,11 @@
+:8080 {
+    handle /internal/live-sessions/* {
+        respond 404
+    }
+    handle /v1/live/rooms/* {
+        reverse_proxy live-relay:8091
+    }
+    handle {
+        reverse_proxy api:8080
+    }
+}

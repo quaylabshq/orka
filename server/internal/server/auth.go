@@ -29,6 +29,7 @@ type AuthSettings struct {
 	Mode                                                 string
 	Password, GitHub, MagicLink, TrustProxy              bool
 	EmailProvider, PublicURL, DashboardURL, dashboardKey string
+	liveSessionRelaySecret                               string
 }
 
 func SettingsFromEnv(env map[string]string, managed bool) (AuthSettings, error) {
@@ -73,6 +74,11 @@ func SettingsFromEnv(env map[string]string, managed bool) (AuthSettings, error) 
 		}
 	}
 
+	var err error
+	settings.liveSessionRelaySecret, err = liveSessionSecret(env)
+	if err != nil {
+		return settings, err
+	}
 	if (settings.GitHub || settings.MagicLink) && settings.PublicURL == "" {
 		return settings, fmt.Errorf("PUBLIC_URL is required for browser sign-in")
 	}

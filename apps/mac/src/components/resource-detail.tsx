@@ -98,7 +98,12 @@ export function ResourceDetail(props: ResourceDetailProps) {
   if (resource.kind === "session")
     return (
       <SessionDetail
-        key={resource.resourceId}
+        key={JSON.stringify([
+          props.scope,
+          props.project.id,
+          props.user,
+          resource.resourceId,
+        ])}
         scope={props.scope}
         resource={resource}
         title={title}

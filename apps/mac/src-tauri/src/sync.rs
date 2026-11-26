@@ -52,12 +52,22 @@ async fn request_at(
     method: &str,
     path: &str,
 ) -> Result<reqwest::RequestBuilder> {
-    db::validate_url(base)?;
-    Ok(reqwest::Client::builder()
+    let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .redirect(reqwest::redirect::Policy::none())
         .build()
-        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    authenticated_request(&client, owner, base, method, path).await
+}
+pub(crate) async fn authenticated_request(
+    client: &reqwest::Client,
+    owner: &str,
+    base: &str,
+    method: &str,
+    path: &str,
+) -> Result<reqwest::RequestBuilder> {
+    db::validate_url(base)?;
+    Ok(client
         .request(
             method
                 .parse::<reqwest::Method>()
@@ -2479,6 +2489,7 @@ impl<'a> SyncPass<'a> {
             .ok_or("Configure the service")?
             .to_string();
         let capabilities = register_device(owner, &origin, &device).await?;
+        crate::live_sessions::remember_capabilities(db, &capabilities);
         let projects = api_as(owner, "GET", crate::projects::CATALOG_PATH, None).await?;
         crate::projects::merge_catalog(db, &projects)?;
         // Reuse registration's capabilities instead of probing again for pins.

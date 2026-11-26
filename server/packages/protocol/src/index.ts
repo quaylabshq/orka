@@ -11,6 +11,27 @@ export * from "./role-policies.js";
 export const VERSION = 2 as const;
 export const uuid = z.uuid();
 export const digest = z.string().regex(/^[a-f0-9]{64}$/);
+// Episode IDs are retry identities chosen before the first start attempt.
+export const liveSessionStatus = z.strictObject({
+  projectId: uuid,
+  resourceId: uuid,
+});
+export const liveSessionStop = liveSessionStatus.extend({
+  episodeId: uuid,
+  deviceId: uuid,
+});
+const liveSessionSources = z.array(uuid).max(100);
+export const liveSessionStart = liveSessionStop.extend({
+  expectedRevision: z.number().int().positive(),
+  contextSources: liveSessionSources,
+});
+export const liveSessionAuthorize = z.union([
+  liveSessionStatus.extend({ episodeId: uuid, action: z.literal("read") }),
+  liveSessionStop.extend({
+    action: z.literal("write"),
+    contextSources: liveSessionSources,
+  }),
+]);
 export const projectLifecycleAction = z
   .object({
     requestId: uuid,

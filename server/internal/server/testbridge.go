@@ -175,6 +175,9 @@ func RunTestBridge() error {
 				for key, value := range env {
 					api.Environment[key] = text(value)
 				}
+				if err == nil {
+					api.Settings.liveSessionRelaySecret, err = liveSessionSecret(api.Environment)
+				}
 			}
 			result = Object{"ok": true}
 		case "reader":

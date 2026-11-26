@@ -1,0 +1,35 @@
+# Optional local source-stack overlay. Place it after compose.yml and deploy/local/compose.yml.
+services:
+  api:
+    ports: !reset []
+    environment:
+      ORKA_EXPERIMENTAL_LIVE_SESSIONS: "1"
+      ORKA_LIVE_SESSION_RELAY_SECRET: ${ORKA_LIVE_SESSION_RELAY_SECRET:?Set a private relay secret of at least 32 characters}
+  live-relay:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+      target: live-relay
+    environment:
+      ORKA_EXPERIMENTAL_LIVE_SESSIONS: "1"
+      ORKA_LIVE_SESSION_CORE_URL: http://api:8080
+      ORKA_LIVE_SESSION_RELAY_SECRET: ${ORKA_LIVE_SESSION_RELAY_SECRET:?Set a private relay secret of at least 32 characters}
+      ORKA_LIVE_SESSION_LISTEN: ":8091"
+      ORKA_LIVE_SESSION_JOURNAL_DIR: /var/lib/orka-live
+      GOMEMLIMIT: 256MiB
+    volumes:
+      - live-journal:/var/lib/orka-live
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 384m
+    pids_limit: 100
+    cpus: 0.5
+  caddy:
+    depends_on:
+      live-relay: { condition: service_started }
+    ports: !override ["127.0.0.1:${ORKA_LOCAL_PORT:-8080}:8080"]
+    volumes:
+      - ./deploy/live-sessions/Caddyfile:/etc/caddy/Caddyfile:ro
+volumes:
+  live-journal:

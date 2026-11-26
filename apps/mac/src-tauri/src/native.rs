@@ -1112,7 +1112,7 @@ fn run_hook(tool: &str, input: Value, worktree_scope: Option<&str>) -> Result<Va
                 .map_err(|e| e.to_string())?;
         } else {
             let known = session_sources(db, project_id, id)?;
-            let value = json!({"contextSources":known,"nativeId":id,"project":project["id"],"source":tool,"pid":pid,"ended":false,"updatedAt":db::now(),"transcriptPath":input["transcript_path"]});
+            let value = json!({"contextSources":known,"nativeId":id,"project":project["id"],"source":tool,"sourceId":project["sourceId"],"pid":pid,"ended":false,"updatedAt":db::now(),"transcriptPath":input["transcript_path"]});
             db.execute("INSERT INTO active VALUES(?,?) ON CONFLICT(native_id) DO UPDATE SET value=excluded.value",params![id,value.to_string()]).map_err(|e|e.to_string())?;
             // Promotion is local and durable; the daemon creates the server copy before uploads.
             for mut binding in db::rows(
@@ -1139,9 +1139,7 @@ fn run_hook(tool: &str, input: Value, worktree_scope: Option<&str>) -> Result<Va
     }
     // A deleted project that can still be restored tracks the session, but its
     // shared context is frozen: inject nothing until it is restored.
-    if capture_only
-        || (project["governed"] != true && !crate::projects::sharing_allowed(project, "memory"))
-    {
+    if capture_only {
         transaction.commit().map_err(|e| e.to_string())?;
         return Ok(json!({}));
     }
@@ -1154,15 +1152,29 @@ fn run_hook(tool: &str, input: Value, worktree_scope: Option<&str>) -> Result<Va
         return Ok(json!({}));
     }
     transaction.commit().map_err(|e| e.to_string())?;
-    let context = deliver_hook_context(
-        &mut connection,
-        tool,
-        &input,
-        project,
-        &equivalent_cwd,
-        worktree_only,
-    )?;
+    let mut context =
+        if project["governed"] == true || crate::projects::sharing_allowed(project, "memory") {
+            deliver_hook_context(
+                &mut connection,
+                tool,
+                &input,
+                project,
+                &equivalent_cwd,
+                worktree_only,
+            )?
+        } else {
+            json!({})
+        };
     if worktree_only && db::CacheScope::current()? != scope {
+        return Ok(json!({}));
+    }
+    if let Some(history) = crate::live_sessions::hook_context(project, tool, id, event) {
+        let text = context["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap_or_default();
+        context = json!({"hookSpecificOutput":{"hookEventName":event,"additionalContext":format!("{text}\n{history}")}});
+    }
+    if db::CacheScope::current()? != scope {
         return Ok(json!({}));
     }
     Ok(context)

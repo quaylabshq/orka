@@ -1,4 +1,9 @@
-import React from "react";
+import React, { useCallback, useState } from "react";
+import {
+  LiveControls,
+  LiveConversation,
+  useLiveStatus,
+} from "./live-session.js";
 import { DownloadIcon } from "lucide-react";
 import type { SessionConflict } from "@portable/protocol";
 import type { Project, ProjectResource as Resource } from "../types.js";
@@ -59,13 +64,45 @@ export function SessionDetail({
 }: SessionDetailProps) {
   const layout = useDetailLayout();
   const { notify } = useToasts();
-  const author = useMemberLabel(user)(resource.updatedBy);
+  const memberLabel = useMemberLabel(user);
+  const author = memberLabel(resource.updatedBy);
+  const identity = {
+    id: resource.resourceId,
+    projectId: project.id,
+    userId: user ?? "",
+  };
+  const enabled = Boolean(
+    user &&
+    !view.preview &&
+    (resource.source === "codex" || resource.source === "claude"),
+  );
+  const {
+    data,
+    refetch,
+    isError: liveStatusError,
+  } = useLiveStatus(identity, scope, enabled, offline);
+  const status = enabled && !liveStatusError ? data : undefined;
+  const refresh = useCallback(() => {
+    void refetch();
+  }, [refetch]);
+  const [watching, setWatching] = useState(true);
+  const live = Boolean(
+    !offline && status?.active && status.following && status.episodeId,
+  );
+  const mode =
+    live && watching
+      ? "live"
+      : view.fullTranscript
+        ? "transcript"
+        : "conversation";
   const shared = !resource.local && resource.revision > 0;
   const menuActions = resourceViewMenuActions(view, true);
   const notes = [
     resource.local && "This session is on this Mac and hasn’t been shared.",
     resource.localChanges &&
-      "Local changes are only on this Mac. Shared links open the last shared snapshot.",
+      (status?.active
+        ? "The saved snapshot and the current live conversation can differ."
+        : "Local changes are only on this Mac. Shared links open the last shared snapshot."),
     resource.owner !== user && "Resuming saves your continuation as a copy.",
   ].filter((note): note is string => Boolean(note));
 
@@ -78,7 +115,21 @@ export function SessionDetail({
       )}
       conflictId={view.preview}
       source={resource.source}
-      mode={view.fullTranscript ? "transcript" : "conversation"}
+      mode={mode}
+      live={
+        mode === "live" &&
+        status?.episodeId && (
+          <LiveConversation
+            key={status.episodeId}
+            identity={identity}
+            episodeId={status.episodeId}
+            source={resource.source}
+            author={memberLabel(resource.owner)}
+            raw={view.rawMarkdown}
+            onEnd={refresh}
+          />
+        )
+      }
       raw={view.rawMarkdown}
       transcript={
         <ResourceContent
@@ -226,32 +277,62 @@ export function SessionDetail({
             onError={onError}
           />
         ),
-        context: conflicts
-          .filter((conflict) => conflict.resourceId === resource.resourceId)
-          .map((conflict) => (
-            <ConflictPanel
-              key={conflict.id}
-              conflict={conflict}
-              deviceId={deviceId}
-              user={user}
-              owner={resource.owner}
-              busy={busy}
-              preview={view.preview}
-              onPreview={view.setPreview}
-              onResolve={(action, conflictId, selected) =>
-                void actions.sessionAction(action, conflictId, selected)
-              }
-            />
-          )),
+        context: (
+          <>
+            {enabled && liveStatusError && data?.available && (
+              <p className="detail-info-note" role="status">
+                Live sharing is unavailable.{" "}
+                <Button variant="tertiary" size="sm" onClick={refresh}>
+                  Retry live connection
+                </Button>
+              </p>
+            )}
+            {status?.available && (
+              <LiveControls
+                key={status.episodeId ?? "inactive"}
+                identity={identity}
+                scope={scope}
+                status={status}
+                owner={resource.owner === user}
+                onWatch={() => setWatching(true)}
+                onChange={refresh}
+              />
+            )}
+            {conflicts
+              .filter((conflict) => conflict.resourceId === resource.resourceId)
+              .map((conflict) => (
+                <ConflictPanel
+                  key={conflict.id}
+                  conflict={conflict}
+                  deviceId={deviceId}
+                  user={user}
+                  owner={resource.owner}
+                  busy={busy}
+                  preview={view.preview}
+                  onPreview={view.setPreview}
+                  onResolve={(action, conflictId, selected) =>
+                    void actions.sessionAction(action, conflictId, selected)
+                  }
+                />
+              ))}
+          </>
+        ),
         toolbar: (
           <SegmentedControl
             label="Session view"
-            value={view.fullTranscript ? "transcript" : "conversation"}
+            value={mode}
             options={[
               { value: "conversation", label: "Conversation" },
               { value: "transcript", label: "Transcript" },
+              ...(live
+                ? [{ value: "live" as const, label: "Live turns" }]
+                : []),
             ]}
-            onChange={(mode) => view.setFullTranscript(mode === "transcript")}
+            onChange={(next) => {
+              setWatching(next === "live");
+              if (next !== "live")
+                view.setFullTranscript(next === "transcript");
+            }}
           />
         ),
       }}
