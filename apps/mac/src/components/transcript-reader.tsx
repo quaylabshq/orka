@@ -1,5 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual";
+import {
+  ArrowDownToLineIcon,
+  ArrowUpToLineIcon,
+  CircleAlertIcon,
+  DownloadIcon,
+} from "lucide-react";
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type {
   SessionSnapshotDownload,
@@ -7,7 +13,7 @@ import type {
   SessionTranscriptRange,
 } from "../types.js";
 import { Button } from "./button.js";
-import { LoadingRegion } from "./loading-region.js";
+import { Icon } from "./icon.js";
 import { ReaderState } from "./skill-state.js";
 import {
   restoreTranscriptBlocks,
@@ -77,8 +83,10 @@ export function TranscriptReader(props: TranscriptReaderProps) {
       size="sm"
       variant="secondary"
       disabled={busy || (!!conflictId && !opened?.sessionSnapshot)}
+      className="transcript-download"
       onClick={() => onDownload(opened?.sessionSnapshot ?? null)}
     >
+      <Icon icon={DownloadIcon} size="xs" />
       {conflictId ? "Download incoming version" : "Download session"}
     </Button>
   );
@@ -124,13 +132,67 @@ export function TranscriptReader(props: TranscriptReaderProps) {
   );
 }
 
+function TranscriptLines() {
+  return (
+    <div className="transcript-skeleton loading-fade" aria-hidden="true">
+      <span className="transcript-skeleton-line" />
+      <span className="transcript-skeleton-line" />
+      <span className="transcript-skeleton-line" />
+    </div>
+  );
+}
+
 function TranscriptLoading() {
   return (
-    <LoadingRegion id="transcript-body" label="Loading transcript…" loading>
-      <pre className="content">
-        {"Preparing the transcript\n\nSession records will appear here."}
-      </pre>
-    </LoadingRegion>
+    <div className="transcript-initial" role="status">
+      <span className="sr-only">Loading transcript…</span>
+      <TranscriptLines />
+      <TranscriptLines />
+    </div>
+  );
+}
+
+function RangeError({ retry }: { retry: () => void }) {
+  return (
+    <div className="transcript-range-error" role="alert">
+      <Icon icon={CircleAlertIcon} size="sm" />
+      <span>Couldn’t load more of the transcript.</span>
+      <Button size="sm" variant="secondary" onClick={retry}>
+        Retry
+      </Button>
+    </div>
+  );
+}
+
+function TranscriptEdge({
+  side,
+  pending,
+  failed,
+  retry,
+}: {
+  side: "before" | "after";
+  pending: boolean;
+  failed: boolean;
+  retry: () => void;
+}) {
+  return (
+    <div
+      className="transcript-edge"
+      data-transcript-edge={side}
+      aria-busy={pending}
+    >
+      {pending && (
+        <div role="status">
+          <span className="sr-only">
+            {side === "before"
+              ? "Loading earlier transcript text…"
+              : "Loading more of the transcript…"}
+          </span>
+          <TranscriptLines />
+        </div>
+      )}
+      {failed && <RangeError retry={retry} />}
+    </div>
   );
 }
 
@@ -197,7 +259,7 @@ function TranscriptText({
   onReady?: () => void;
 }) {
   const region = useRef<HTMLElement>(null);
-  const toolbar = useRef<HTMLDivElement>(null);
+  const header = useRef<HTMLDivElement>(null);
   const list = useRef<HTMLDivElement>(null);
   const cache = useRef(new Map<number, { text: string; bytes: number }>());
   const cachedBytes = useRef(0);
@@ -211,7 +273,7 @@ function TranscriptText({
   const position = useRef<"start" | "end" | null>(null);
   const [index, setIndex] = useState<TranscriptIndex | null>(null);
   const [pending, setPending] = useState<Read | null>(null);
-  const [failed, setFailed] = useState<"retry" | "invalidated" | null>(null);
+  const [failed, setFailed] = useState<Read | "invalidated" | null>(null);
   const [announcement, setAnnouncement] = useState("");
   const [selected, setSelected] = useState<number[]>([]);
   const [visible, setVisible] = useState(() => !document.hidden);
@@ -219,7 +281,7 @@ function TranscriptText({
   const [version, redraw] = useState(0);
   const blocks = index?.blocks ?? NO_BLOCKS;
   const ready = index !== null;
-  const transcriptTop = geometry.margin - (toolbar.current?.offsetHeight ?? 0);
+  const transcriptTop = geometry.margin - (header.current?.offsetHeight ?? 0);
   const readingText = (readerRef.current?.scrollTop ?? 0) >= transcriptTop;
   const virtualizer = useVirtualizer({
     count: blocks.length,
@@ -405,7 +467,7 @@ function TranscriptText({
           setIndex(null);
           setSelected([]);
         }
-        setFailed(invalidated ? "invalidated" : "retry");
+        setFailed(invalidated ? "invalidated" : request);
         setAnnouncement("");
       })
       .finally(() => {
@@ -453,7 +515,7 @@ function TranscriptText({
       if (width && width !== nextWidth) {
         const top = scroller.scrollTop;
         const visible = virtualizer.getVirtualItemForOffset(top);
-        if (visible && top >= margin - (toolbar.current?.offsetHeight ?? 0))
+        if (visible && top >= margin - (header.current?.offsetHeight ?? 0))
           anchor.current = {
             offset: Number(visible.key),
             within: top - visible.start,
@@ -469,6 +531,7 @@ function TranscriptText({
     const observer = new ResizeObserver(measure);
     observer.observe(element);
     observer.observe(scroller);
+    if (header.current) observer.observe(header.current);
     for (const child of Array.from(scroller.children))
       if (!child.contains(element)) observer.observe(child);
     return () => observer.disconnect();
@@ -697,6 +760,12 @@ function TranscriptText({
     } else read(request);
   };
 
+  const failedRead = failed && failed !== "invalidated" ? failed : null;
+  const floatingError =
+    index && failedRead && !["before", "after"].includes(failedRead.kind);
+  const showAnnouncement =
+    announcement.startsWith("Preparing") || announcement.startsWith("Select");
+
   // Native closes the reader on a read error. Retry requires a fresh snapshot.
   return (
     <section
@@ -719,52 +788,47 @@ function TranscriptText({
         }
       }}
     >
-      <div ref={toolbar} className="transcript-actions">
-        {failed !== "invalidated" && download}
-        {index && failed ? (
-          <div className="transcript-range-error" role="alert">
-            <p className="content-message">
-              Couldn’t load more of the transcript.
-            </p>
-            <Button size="sm" variant="secondary" onClick={reopen}>
-              Retry
-            </Button>
-          </div>
-        ) : (
-          <>
+      <div ref={header}>
+        <div className="transcript-actions">
+          {(["start", "end"] as const).map((direction) => (
             <Button
+              key={direction}
               size="sm"
               variant="tertiary"
-              onClick={() => jump("start")}
+              aria-label={`Jump to ${direction}`}
+              onClick={() => jump(direction)}
               disabled={
                 !!failed ||
-                pending?.kind === "start" ||
+                pending?.kind === direction ||
                 (!!index && !blocks.length)
               }
             >
-              Jump to start
+              <Icon
+                icon={
+                  direction === "start"
+                    ? ArrowUpToLineIcon
+                    : ArrowDownToLineIcon
+                }
+                size="xs"
+              />
+              {direction === "start" ? "Start" : "End"}
             </Button>
-            <Button
-              size="sm"
-              variant="tertiary"
-              onClick={() => jump("end")}
-              disabled={
-                !!failed ||
-                pending?.kind === "end" ||
-                (!!index && !blocks.length)
-              }
-            >
-              Jump to end
-            </Button>
-          </>
+          ))}
+          {failed !== "invalidated" && download}
+        </div>
+        {index && index.start > 0 && (
+          <TranscriptEdge
+            side="before"
+            pending={pending?.kind === "before"}
+            failed={failedRead?.kind === "before"}
+            retry={reopen}
+          />
         )}
+      </div>
+      <div className="transcript-notice">
+        {floatingError && <RangeError retry={reopen} />}
         <span
-          className={
-            announcement.startsWith("Preparing") ||
-            announcement.startsWith("Select")
-              ? "transcript-jump-status"
-              : "sr-only"
-          }
+          className={showAnnouncement ? "transcript-jump-status" : "sr-only"}
           role="status"
         >
           {announcement}
@@ -805,7 +869,9 @@ function TranscriptText({
                   className="transcript-block-placeholder"
                   aria-hidden="true"
                   style={{ height: item.size }}
-                />
+                >
+                  <TranscriptLines />
+                </div>
               ) : (
                 <pre className="content">{text}</pre>
               )}
@@ -813,12 +879,14 @@ function TranscriptText({
           );
         })}
       </div>
-      {index &&
-        pending &&
-        pending.kind !== "end" &&
-        pending.kind !== "start" && (
-          <span className="sr-only">Loading more of the transcript…</span>
-        )}
+      {index && !index.eof && (
+        <TranscriptEdge
+          side="after"
+          pending={pending?.kind === "after"}
+          failed={failedRead?.kind === "after"}
+          retry={reopen}
+        />
+      )}
     </section>
   );
 }

@@ -1036,7 +1036,7 @@
   margin-block: 0;
 }
 
-/* The transcript keeps its actions close as the shared reading column scrolls. */
+/* Transcript controls scroll with the document. Paging feedback belongs at the missing text. */
 .transcript-reader {
   min-width: 0;
   overflow-anchor: none;
@@ -1046,15 +1046,16 @@
   outline-offset: 3px;
 }
 .transcript-actions {
-  position: sticky;
-  z-index: 1;
-  top: 0;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  background: var(--surface-primary);
-  padding: 8px 0;
+  gap: 4px;
+  padding-bottom: 12px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--border-default);
+}
+.transcript-actions .transcript-download {
+  margin-inline-start: auto;
 }
 .transcript-blocks {
   position: relative;
@@ -1067,16 +1068,77 @@
   inset: 0 0 auto;
 }
 .transcript-block-placeholder {
+  position: relative;
+  overflow: clip;
   min-height: var(--body-md-line-height);
+}
+.transcript-block-placeholder .transcript-skeleton {
+  position: sticky;
+  top: 8px;
+}
+.transcript-skeleton {
+  display: grid;
+  gap: 10px;
+  padding-block: 6px;
+}
+.transcript-skeleton-line {
+  height: 8px;
+  width: 82%;
+  border-radius: var(--radius-control);
+  background: color-mix(
+    in srgb,
+    var(--text-secondary) 30%,
+    var(--surface-secondary)
+  );
+}
+.transcript-skeleton-line:nth-child(2) {
+  width: 94%;
+}
+.transcript-skeleton-line:last-child {
+  width: 56%;
+}
+.transcript-initial {
+  display: grid;
+  gap: 20px;
+  padding-block: 4px;
+}
+.transcript-initial .transcript-skeleton:last-child {
+  width: 86%;
+}
+.transcript-edge {
+  display: grid;
+  align-content: center;
+  min-height: 64px;
 }
 .transcript-range-error {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
+  width: fit-content;
+  max-width: 100%;
+  color: var(--text-secondary);
+  font-size: var(--body-sm-font-size);
+  line-height: var(--body-sm-line-height);
 }
-
-.transcript-jump-status {
+.transcript-range-error .ui-button {
+  margin-inline-start: 4px;
+}
+.transcript-notice {
+  position: sticky;
+  top: 8px;
+  z-index: 1;
+  height: 0;
+  width: fit-content;
+  max-width: 100%;
+}
+.transcript-jump-status,
+.transcript-notice .transcript-range-error {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-control);
+  background: var(--surface-secondary);
   color: var(--text-secondary);
   font-size: var(--body-xs-font-size);
   line-height: var(--body-xs-line-height);
