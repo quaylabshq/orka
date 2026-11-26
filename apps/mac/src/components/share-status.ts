@@ -24,17 +24,20 @@ export type ShareIcon =
   | "clock"
   | "compare"
   | "cloud-off";
-export type ShareAction = "share" | "close" | "retry" | "none";
+export type ShareAction =
+  "share" | "close" | "retry" | "requests" | "compare" | "none";
 
 export interface ShareStatus {
   heading: string;
   pill: string;
   tone: ShareTone;
   icon: ShareIcon;
-  /** The footer's one button. */
+  /** The footer's primary button. */
   action: ShareAction;
   actionLabel: string;
   actionDisabled: boolean;
+  /** A second footer button, only where a result has a real second action. */
+  secondary?: { action: ShareAction; label: string };
 }
 
 export interface ShareFacts {
@@ -88,22 +91,25 @@ export function shareStatus(facts: ShareFacts): ShareStatus {
   const label = shareLabel(facts);
   switch (phase.step) {
     case "approval":
-      return status(
-        "Sent for approval",
-        "Awaiting approval",
-        "neutral",
-        "clock",
-        "close",
-        "Done",
-      );
+      return {
+        ...status(
+          "Sent for approval",
+          "Awaiting approval",
+          "neutral",
+          "clock",
+          "close",
+          "Done",
+        ),
+        secondary: { action: "requests", label: "View request" },
+      };
     case "conflict":
       return status(
         "Someone changed it first",
         "Version conflict",
         "warning",
         "compare",
-        "close",
-        "Done",
+        "compare",
+        "Review changes",
       );
     case "queued":
       return phase.unsupported

@@ -69,6 +69,7 @@ interface ResourceMenuContextValue {
   act: Run;
   onOpen: (resource: ProjectResource, compare?: boolean) => void;
   onReview: (resource: ProjectResource, mode: "incoming" | "outgoing") => void;
+  onOpenRequests: (projectId: string) => void;
   onNotice: (message: string) => void;
   onError: (message: string) => void;
   onRefresh: () => Promise<void>;

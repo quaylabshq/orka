@@ -106,6 +106,7 @@ describe("shareStatus while and after sending", () => {
       heading: "Someone changed it first",
       pill: "Version conflict",
       tone: "warning",
+      actionLabel: "Review changes",
     });
     expect(
       pick({ phase: { step: "share-failed", error: "x" }, stale: true }),

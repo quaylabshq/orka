@@ -145,6 +145,7 @@ const resourceMenu = (
     act={fn}
     onOpen={fn}
     onReview={fn}
+    onOpenRequests={fn}
     onNotice={fn}
     onError={fn}
     onRefresh={fn}

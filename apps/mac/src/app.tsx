@@ -962,6 +962,9 @@ function WorkspaceApp({
       onReview={(item, mode) =>
         leaveSettings(() => setGovernance({ resource: item.resourceId, mode }))
       }
+      onOpenRequests={(projectId) =>
+        openManagement("requests", "open", projectId)
+      }
       onRefresh={async () => {
         await refresh();
         localCatalog.refresh();

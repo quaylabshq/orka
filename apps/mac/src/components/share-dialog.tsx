@@ -31,6 +31,7 @@ import { Overlay } from "./overlay.js";
 import { invoke } from "./product-command.js";
 import {
   shareStatus,
+  type ShareAction,
   type ShareIcon,
   type SharePhase,
 } from "./share-status.js";
@@ -84,6 +85,8 @@ export interface ShareDialogContext {
   isCurrent: (resource: ProjectResource) => boolean;
   onNotice: (message: string) => void;
   onRefresh: () => Promise<void>;
+  onReview: (resource: ProjectResource, mode: "outgoing") => void;
+  onOpenRequests: (projectId: string) => void;
 }
 
 export function fileSize(bytes: number) {
@@ -246,12 +249,19 @@ export function ShareDialog({
     }
   };
 
-  const act = () => {
-    if (status.action === "close") onClose();
+  const act = (action: ShareAction) => {
+    if (action === "close") onClose();
     // A failed share prepares a fresh review rather than resending a token
     // that may have expired or no longer matches the item.
-    else if (status.action === "retry") setAttempt((value) => value + 1);
-    else if (status.action === "share") void submit();
+    else if (action === "retry") setAttempt((value) => value + 1);
+    else if (action === "share") void submit();
+    else if (action === "requests") {
+      onClose();
+      context.onOpenRequests(projectId);
+    } else if (action === "compare") {
+      onClose();
+      context.onReview(resource, "outgoing");
+    }
   };
   const error =
     phase.step === "preview-failed" || phase.step === "share-failed"
@@ -352,6 +362,11 @@ export function ShareDialog({
             {error}
           </p>
         )}
+        {status.secondary && (
+          <Button size="sm" onClick={() => act(status.secondary!.action)}>
+            {status.secondary.label}
+          </Button>
+        )}
         <Button
           variant="primary"
           size="sm"
@@ -359,7 +374,7 @@ export function ShareDialog({
           disabled={
             status.actionDisabled || (status.action === "share" && context.busy)
           }
-          onClick={act}
+          onClick={() => act(status.action)}
         >
           {status.actionLabel}
         </Button>

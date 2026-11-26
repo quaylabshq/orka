@@ -998,6 +998,30 @@ test("a conflict result stays in the dialog instead of claiming success", async 
   await expect(page.getByText("Shared with team", { exact: true })).toHaveCount(
     0,
   );
+  await result
+    .getByRole("button", { name: "Review changes", exact: true })
+    .click();
+  await expect(result).toHaveCount(0);
+});
+
+test("a share sent for approval links to its request in Reviews", async ({
+  page,
+}) => {
+  await menuFixture(page);
+  await collection(page, "Memories");
+  await page.evaluate(() => {
+    (window as unknown as MenuWindow).resourceMenu.shareStatus =
+      "approval_required";
+  });
+  await resourceMenu(page, "Private memory notes", "Share with team…");
+  await shareDialog(page)
+    .getByRole("button", { name: "Share with team", exact: true })
+    .click();
+  const sent = shareDialog(page, "Sent for approval");
+  await expect(statusPill(sent)).toHaveText("Awaiting approval");
+  await sent.getByRole("button", { name: "View request", exact: true }).click();
+  await expect(sent).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Reviews" })).toBeVisible();
 });
 
 test("closing while sending lets the share finish and reports it by toast", async ({
