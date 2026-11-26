@@ -9,7 +9,8 @@ export type SharePhase =
   | { step: "sending"; progress: SyncProgress | null }
   | { step: "share-failed"; error: string }
   | { step: "approval" }
-  | { step: "conflict" }
+  | { step: "conflict"; requestId: string }
+  | { step: "held" }
   | { step: "queued"; unsupported: boolean };
 
 export type ShareTone = "neutral" | "info" | "warning" | "success" | "danger";
@@ -42,10 +43,8 @@ export interface ShareStatus {
 
 export interface ShareFacts {
   phase: SharePhase;
-  resource: Pick<
-    ProjectResource,
-    "local" | "localChanges" | "revision" | "source"
-  >;
+  source: ProjectResource["source"];
+  update: boolean;
   /** The item or its account changed after the dialog opened. */
   stale: boolean;
   /** Files in the reviewed snapshot, once the preview exists. */
@@ -58,8 +57,7 @@ export interface ShareFacts {
 /** The label the confirm button carries before anything is sent. */
 function shareLabel(facts: ShareFacts) {
   if (facts.access === "suggest") return "Send for approval";
-  const { local, revision, localChanges } = facts.resource;
-  if (!local && revision > 0 && localChanges) return "Share update";
+  if (facts.update) return "Share update";
   return "Share with team";
 }
 
@@ -110,6 +108,15 @@ export function shareStatus(facts: ShareFacts): ShareStatus {
         "compare",
         "compare",
         "Review changes",
+      );
+    case "held":
+      return status(
+        "Queued until project restore",
+        "Project inactive",
+        "warning",
+        "clock",
+        "close",
+        "Done",
       );
     case "queued":
       return phase.unsupported
@@ -203,7 +210,7 @@ export function shareStatus(facts: ShareFacts): ShareStatus {
       "Share with team",
       true,
     );
-  if (facts.resource.source === "pi")
+  if (facts.source === "pi")
     return status(
       "Share with team",
       "Includes all branches",

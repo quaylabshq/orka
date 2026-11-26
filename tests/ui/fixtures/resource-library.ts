@@ -29,6 +29,10 @@ export async function resourceLibraryFixture(
     /** The project lists you among its members, as a project you share does. */
     team?: boolean;
     restricted?: boolean;
+    memoryAccess?: Pick<
+      NonNullable<ProjectResource["access"]>,
+      "mode" | "create"
+    >;
     withoutRepositories?: boolean;
     teammateAvatar?: string;
     teammateSessionTitle?: string;
@@ -256,7 +260,7 @@ export async function resourceLibraryFixture(
                   catalog: {
                     access: options.restricted
                       ? {
-                          memory: { mode: "hidden" },
+                          memory: options.memoryAccess ?? { mode: "hidden" },
                           session: { mode: "hidden" },
                           plan: { mode: "hidden" },
                         }

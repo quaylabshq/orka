@@ -6,10 +6,12 @@ import {
 } from "./fixtures/resource-library.js";
 import { skillFixture } from "./fixtures/skill-detail.js";
 import type { SessionLaunchOption } from "../../apps/mac/src/components/use-resource-actions.js";
+import type { AccessMode } from "@portable/protocol";
 import type { Snapshot, SyncProgress } from "../../apps/mac/src/types.js";
 
 interface MenuControls {
   shareStatus: string;
+  shareReason?: string;
   deleteStatus: string;
   deleteFailures: number;
   deferPreview: boolean;
@@ -17,7 +19,9 @@ interface MenuControls {
   previewTitle?: string;
   previewNote?: string;
   previewExpiresIn?: number;
+  previewAccess?: { baseRevision: number; publicationMode: AccessMode };
   projectName?: string;
+  policyRevision?: number;
   previewFiles?: { path: string; size: number }[];
   previewProgress?: (progress: SyncProgress) => void;
   previewProgresses: ((progress: SyncProgress) => void)[];
@@ -111,6 +115,7 @@ async function menuFixture(
             title: controls.previewTitle ?? `Reviewed ${input.resourceId}`,
             kind: input.resourceId.split("-")[0],
             files,
+            ...controls.previewAccess,
             totalBytes: files.reduce((total, file) => total + file.size, 0),
             ...(controls.previewExpiresIn
               ? {
@@ -143,11 +148,14 @@ async function menuFixture(
           if (controls.deferShare)
             return new Promise((resolve, reject) => {
               controls.finishShare = () =>
-                resolve({ status: controls.shareStatus });
+                resolve({
+                  status: controls.shareStatus,
+                  reason: controls.shareReason,
+                });
               controls.failShare = () =>
                 reject(
                   new Error(
-                    "Connection interrupted while sharing. The reviewed snapshot is still available; retry when you are connected.",
+                    "409: Resource changed; refresh and review the exact version again",
                   ),
                 );
             });
@@ -170,6 +178,7 @@ async function menuFixture(
         snapshot.projects = snapshot.projects.map((project) => ({
           ...project,
           name: controls.projectName ?? project.name,
+          policyRevision: controls.policyRevision ?? project.policyRevision,
         }));
         snapshot.resources = snapshot.resources.map((resource) => ({
           ...resource,
@@ -750,6 +759,144 @@ const shareDialog = (page: Page, name = "Share with team") =>
 const statusPill = (dialog: ReturnType<typeof shareDialog>) =>
   dialog.locator(".share-dialog-pill");
 
+for (const [mode, create, pill, action] of [
+  ["hidden", "publish", "On your Mac", "Share with team"],
+  ["suggest", "publish", "On your Mac", "Share with team"],
+  ["publish", "suggest", "Needs approval", "Send for approval"],
+  ["publish", "hidden", "Owners only", "Share with team"],
+] as const) {
+  test(`a first share uses ${create} creation access when edit access is ${mode}`, async ({
+    page,
+  }) => {
+    await menuFixture(page, {
+      restricted: true,
+      memoryAccess: { mode, create },
+    });
+    await collection(page, "Memories");
+    await resourceMenu(page, "Private memory notes", "Share with team…");
+    const dialog = shareDialog(page);
+    await expect(statusPill(dialog)).toHaveText(pill);
+    await expect(
+      dialog.getByRole("button", { name: action, exact: true }),
+    ).toBeEnabled({ enabled: create !== "hidden" });
+    await expect(
+      dialog.locator("dt", { hasText: "People" }).locator("+ dd"),
+    ).toHaveText("Project members with access");
+    expect(await resourceCalls(page, "share")).toEqual([]);
+    if (create === "hidden") return;
+    await dialog.getByRole("button", { name: action, exact: true }).click();
+    const [submitted] = await resourceCalls(page, "share");
+    expect(
+      Boolean(
+        (submitted?.args.input as { requireApproval?: boolean })
+          .requireApproval,
+      ),
+    ).toBe(create === "suggest");
+  });
+}
+
+test("an update uses the frozen publication's edit permission even when the local memory ID was remapped", async ({
+  page,
+}) => {
+  await menuFixture(page, {
+    restricted: true,
+    memoryAccess: { mode: "hidden", create: "publish" },
+  });
+  await collection(page, "Memories");
+  await page.evaluate(() => {
+    (window as unknown as MenuWindow).resourceMenu.previewAccess = {
+      baseRevision: 3,
+      publicationMode: "suggest",
+    };
+  });
+  await resourceMenu(page, "Private memory notes", "Share with team…");
+  const dialog = shareDialog(page);
+  await expect(statusPill(dialog)).toHaveText("Needs approval");
+  await expect(
+    dialog.getByRole("button", { name: "Send for approval" }),
+  ).toBeEnabled();
+  await page.keyboard.press("Escape");
+  await page.evaluate(() => {
+    (window as unknown as MenuWindow).resourceMenu.previewAccess = {
+      baseRevision: 3,
+      publicationMode: "publish",
+    };
+  });
+  await resourceMenu(page, "Private memory notes", "Share with team…");
+  await expect(statusPill(dialog)).toHaveText("Updates shared copy");
+  await expect(
+    dialog.getByRole("button", { name: "Share update" }),
+  ).toBeEnabled();
+});
+
+test("a changed project policy refreshes the share permission before submission", async ({
+  page,
+}) => {
+  await menuFixture(page, {
+    restricted: true,
+    memoryAccess: { mode: "hidden", create: "suggest" },
+  });
+  await collection(page, "Memories");
+  await page.evaluate(() => {
+    (window as unknown as MenuWindow).resourceMenu.previewAccess = {
+      baseRevision: 0,
+      publicationMode: "suggest",
+    };
+  });
+  await resourceMenu(page, "Private memory notes", "Share with team…");
+  const dialog = shareDialog(page);
+  await expect(statusPill(dialog)).toHaveText("Needs approval");
+  await page.evaluate(() => {
+    const controls = (window as unknown as MenuWindow).resourceMenu;
+    controls.previewAccess = { baseRevision: 0, publicationMode: "hidden" };
+    controls.policyRevision = 2;
+  });
+  await expect(statusPill(dialog)).toHaveText("Owners only");
+  await expect(dialog.locator(".share-dialog-action")).toBeDisabled();
+  expect(await resourceCalls(page, "preview-share")).toHaveLength(2);
+  expect(await resourceCalls(page, "share")).toEqual([]);
+});
+
+test("the Pi share confirmation discloses abandoned branches and hidden tool records before sharing", async ({
+  page,
+}, testInfo) => {
+  await page.setViewportSize({ width: 900, height: 640 });
+  await menuFixture(page, { piSession: true });
+  await collection(page, "Sessions");
+  const note =
+    "This snapshot includes all saved branches, including abandoned branches and tool records not shown in the reader. Later edits and future turns stay private unless you share again.";
+  await page.evaluate((note) => {
+    (window as unknown as MenuWindow).resourceMenu.previewNote = note;
+  }, note);
+  await resourceMenu(page, "Private Pi session", "Share with team…");
+  const dialog = shareDialog(page);
+  const action = dialog.getByRole("button", {
+    name: "Share with team",
+    exact: true,
+  });
+  await expect(statusPill(dialog)).toHaveText("Includes all branches");
+  const warning = dialog.getByText(
+    "Shares abandoned branches and hidden tool records.",
+    { exact: true },
+  );
+  await expect(warning).toBeInViewport({ ratio: 1 });
+  await expect(warning).toHaveAttribute("title", note);
+  await expect(action).toHaveAccessibleDescription(await warning.innerText());
+  const frame = await dialog.boundingBox();
+  expect(frame).toMatchObject({ width: 390, height: 438 });
+  const card = (await dialog
+    .locator(".share-dialog-card")
+    .last()
+    .boundingBox())!;
+  expect((await warning.boundingBox())!.y).toBeGreaterThanOrEqual(
+    card.y + card.height,
+  );
+  expect(await resourceCalls(page, "share")).toEqual([]);
+  await dialog.screenshot({
+    path: testInfo.outputPath("pi-share-warning.png"),
+  });
+});
+
 test("sharing a snapshot shows what goes where and submits the exact frozen token without changing category sharing", async ({
   page,
 }) => {
@@ -939,7 +1086,7 @@ for (const viewport of [
         page.getByRole("dialog", { name: "Couldn’t share", exact: true }),
       ).toBeVisible();
       await expect(dialog.getByRole("alert")).toContainText(
-        "Connection interrupted while sharing",
+        "Resource changed; refresh and review the exact version again",
       );
       await stationary();
       await capture("share-failed");
@@ -981,28 +1128,140 @@ for (const viewport of [
   }
 }
 
-test("a conflict result stays in the dialog instead of claiming success", async ({
-  page,
-}) => {
-  await menuFixture(page);
-  await collection(page, "Memories");
-  await page.evaluate(() => {
-    (window as unknown as MenuWindow).resourceMenu.shareStatus = "conflict";
+for (const removed of [false, true]) {
+  test(`Review changes opens the submitted session against its ${removed ? "deleted" : "divergent"} shared version`, async ({
+    page,
+  }) => {
+    await menuFixture(page);
+    await collection(page, "Sessions");
+    await page.evaluate((removed) => {
+      const host = window as unknown as MenuWindow;
+      const previous = host.__TAURI_INTERNALS__.invoke;
+      let shared = false;
+      host.__TAURI_INTERNALS__.invoke = async (command, args = {}) => {
+        if (command === "resource_command" && args.action === "share") {
+          shared = true;
+          return { status: "conflict", requestId: "selected-share" };
+        }
+        const result = await previous(command, args);
+        if (shared && command === "snapshot") {
+          const snapshot = result as Snapshot;
+          const session = snapshot.resources.find(
+            (item) => item.resourceId === "session-own",
+          )!;
+          const candidate = {
+            ...session,
+            source: "codex" as const,
+            deleted: false,
+          };
+          session.hash = "stored-shared-session";
+          session.deleted = removed;
+          session.files = removed
+            ? []
+            : session.files.map((file) => ({
+                ...file,
+                hash: "stored-shared-file",
+              }));
+          snapshot.conflicts = ["earlier-share", "selected-share"].map(
+            (id) => ({
+              id,
+              resourceId: session.resourceId,
+              author: "user",
+              deviceId: id === "selected-share" ? "mac" : "other-mac",
+              revision: session.revision,
+              candidate: { ...candidate, hash: id },
+            }),
+          );
+        }
+        if (
+          shared &&
+          command === "session_messages" &&
+          args.id === "session-own"
+        ) {
+          if (!args.conflictId && removed)
+            return { messages: [], total: 0, offset: 0, removed: true };
+          return {
+            messages: [
+              {
+                index: 0,
+                role: "user",
+                text:
+                  args.conflictId === "selected-share"
+                    ? "The submitted session version"
+                    : "The shared session version",
+              },
+            ],
+            total: 1,
+            offset: 0,
+          };
+        }
+        return result;
+      };
+    }, removed);
+    await resourceMenu(page, "My shared session", "Share with team…");
+    await shareDialog(page)
+      .getByRole("button", { name: "Share update", exact: true })
+      .click();
+    const result = shareDialog(page, "Someone changed it first");
+    await expect(statusPill(result)).toHaveText("Version conflict");
+    await result
+      .getByRole("button", { name: "Review changes", exact: true })
+      .click();
+
+    const candidate = page.locator(".conflict").filter({
+      has: page.getByRole("button", {
+        name: "View incoming version",
+        pressed: true,
+      }),
+    });
+    await expect(candidate).toContainText(
+      "Two session versions need a choice.",
+    );
+    const conversation = page.getByLabel("Conversation", { exact: true });
+    await expect(conversation).toContainText("The submitted session version");
+    if (!removed) {
+      await page.getByRole("button", { name: "More resource actions" }).click();
+      await page
+        .getByRole("menuitem", { name: "Continue or fork in…", exact: true })
+        .click();
+      const launcher = page.getByRole("dialog", {
+        name: "Continue or fork session",
+      });
+      await expect(launcher).toBeVisible();
+      await expect(launcher.getByRole("alert")).toHaveCount(0);
+      await page.keyboard.press("Escape");
+    }
+    await expect(
+      candidate.getByRole("button", { name: "Override", exact: true }),
+    ).toBeEnabled();
+    await expect(
+      candidate.getByRole("button", { name: "Create copy", exact: true }),
+    ).toBeEnabled();
+    await candidate
+      .getByRole("button", { name: "Keep local", exact: true })
+      .click();
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          (window as unknown as MenuWindow).library.calls
+            .filter((call) => call.command === "session_action")
+            .map((call) => call.args),
+        ),
+      )
+      .toContainEqual({
+        id: "session-own",
+        action: "keep",
+        conflictId: "selected-share",
+        selected: "candidate",
+      });
+    await candidate
+      .getByRole("button", { name: "View shared version", exact: true })
+      .click();
+    await expect(conversation).toContainText(
+      removed ? "Removed in this version" : "The shared session version",
+    );
   });
-  await resourceMenu(page, "Private memory notes", "Share with team…");
-  await shareDialog(page)
-    .getByRole("button", { name: "Share with team", exact: true })
-    .click();
-  const result = shareDialog(page, "Someone changed it first");
-  await expect(statusPill(result)).toHaveText("Version conflict");
-  await expect(page.getByText("Shared with team", { exact: true })).toHaveCount(
-    0,
-  );
-  await result
-    .getByRole("button", { name: "Review changes", exact: true })
-    .click();
-  await expect(result).toHaveCount(0);
-});
+}
 
 test("a share sent for approval links to its request in Reviews", async ({
   page,
@@ -1024,32 +1283,48 @@ test("a share sent for approval links to its request in Reviews", async ({
   await expect(page.getByRole("heading", { name: "Reviews" })).toBeVisible();
 });
 
-test("closing while sending lets the share finish and reports it by toast", async ({
-  page,
-}) => {
-  await menuFixture(page);
-  await collection(page, "Memories");
-  await page.evaluate(() => {
-    const controls = (window as unknown as MenuWindow).resourceMenu;
-    controls.deferShare = true;
-    controls.shareStatus = "published";
+for (const [outcome, title, kind, reason] of [
+  ["published", "Shared with team", "success"],
+  ["approval_required", "Sent for approval", "info"],
+  ["conflict", "Someone changed it first", "warning"],
+  ["queued", "Queued to share", "queued"],
+  ["queued", "Queued until project restore", "warning", "project_inactive"],
+  ["queued", "Waiting for Orka update", "warning", "unsupported"],
+  ["failure", "Couldn’t share", "error"],
+] as const) {
+  test(`closing while sending reports ${reason ?? outcome} with toast kind ${kind}`, async ({
+    page,
+  }) => {
+    await menuFixture(page);
+    await collection(page, "Memories");
+    await page.evaluate(
+      ({ outcome, reason }) => {
+        const controls = (window as unknown as MenuWindow).resourceMenu;
+        controls.deferShare = true;
+        controls.shareStatus = outcome;
+        controls.shareReason = reason;
+      },
+      { outcome, reason },
+    );
+    await resourceMenu(page, "Private memory notes", "Share with team…");
+    const dialog = shareDialog(page);
+    await dialog
+      .getByRole("button", { name: "Share with team", exact: true })
+      .click();
+    await expect(statusPill(dialog)).toHaveText("Sending");
+    await page.keyboard.press("Escape");
+    await expect(dialog).toHaveCount(0);
+    await page.evaluate((outcome) => {
+      const controls = (window as unknown as MenuWindow).resourceMenu;
+      if (outcome === "failure") controls.failShare?.();
+      else controls.finishShare?.();
+    }, outcome);
+    const toast = page.locator("[data-orka-toast]").filter({ hasText: title });
+    await expect(toast).toBeVisible();
+    await expect(toast).toHaveAttribute("data-kind", kind);
+    expect(await resourceCalls(page, "share")).toHaveLength(1);
   });
-  await resourceMenu(page, "Private memory notes", "Share with team…");
-  const dialog = shareDialog(page);
-  await dialog
-    .getByRole("button", { name: "Share with team", exact: true })
-    .click();
-  await expect(statusPill(dialog)).toHaveText("Sending");
-  await page.keyboard.press("Escape");
-  await expect(dialog).toHaveCount(0);
-  await page.evaluate(() =>
-    (window as unknown as MenuWindow).resourceMenu.finishShare?.(),
-  );
-  await expect(
-    page.getByText("Shared with team", { exact: true }),
-  ).toBeVisible();
-  expect(await resourceCalls(page, "share")).toHaveLength(1);
-});
+}
 
 test("a review that is about to expire is prepared again on its own", async ({
   page,

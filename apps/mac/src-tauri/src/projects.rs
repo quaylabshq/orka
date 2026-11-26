@@ -385,8 +385,10 @@ fn wake_restored_project(db: &Connection, id: &str, priority: Priority) -> Resul
         return Ok(());
     }
     db.execute(
-        "UPDATE outbox SET error=NULL WHERE project=? AND error LIKE '403:%'",
-        [id],
+        // A project restore can release a lifecycle hold, but a refused one-off
+        // share still needs a fresh review before its frozen payload can go out.
+        "UPDATE outbox SET error=NULL WHERE project=? AND error LIKE '403:%' AND (path!=? OR error GLOB '403: project_archived:*' OR error GLOB '403: project_deleted:*')",
+        [id, crate::selective_sharing::QUEUE_PATH],
     )
     .map_err(|e| e.to_string())?;
     SyncQueue::request(db, id, priority, "restore")
@@ -441,19 +443,19 @@ fn retry_legacy_denials(db: &Connection) -> Result<()> {
     if !db::get(db, LEGACY_DENIED_CLEANUP)?.is_null() {
         return Ok(());
     }
-    let active = format!("project IN (SELECT id FROM projects WHERE {ACTIVE})");
+    let eligible = format!("project IN (SELECT id FROM projects WHERE {ACTIVE}) AND path != ?2");
     for id in db::rows(
         db,
-        &format!("SELECT DISTINCT json_quote(project) FROM outbox WHERE error=? AND {active}"),
-        &[&LEGACY_DENIED],
+        &format!("SELECT DISTINCT json_quote(project) FROM outbox WHERE error=? AND {eligible}"),
+        &[&LEGACY_DENIED, &crate::selective_sharing::QUEUE_PATH],
     )? {
         if let Some(id) = id.as_str() {
             SyncQueue::request(db, id, Priority::Local, "retry")?;
         }
     }
     db.execute(
-        &format!("UPDATE outbox SET error=NULL WHERE error=? AND {active}"),
-        [LEGACY_DENIED],
+        &format!("UPDATE outbox SET error=NULL WHERE error=? AND {eligible}"),
+        [LEGACY_DENIED, crate::selective_sharing::QUEUE_PATH],
     )
     .map_err(|e| e.to_string())?;
     db::set(db, LEGACY_DENIED_CLEANUP, &json!(true))

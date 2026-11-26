@@ -19,6 +19,9 @@ import type { Inspection } from "../types.js";
  */
 export const TRANSCRIPT_RENDER_LIMIT = 4 * 1024 * 1024;
 
+/** The comparison to select when opening a resource reader. */
+export type ResourceComparison = "changes" | { conflictId: string };
+
 export interface ResourceView {
   /** The inspected file: SKILL.md for skills, session.jsonl for sessions, otherwise the first file. */
   file: string;
@@ -29,6 +32,9 @@ export interface ResourceView {
   /** The conflict version being read; empty for the shared version. */
   preview: string;
   setPreview: Dispatch<SetStateAction<string>>;
+  /** The preserved side displayed during a session conflict. */
+  sessionVersion?: Resource;
+  sessionContentKey: string;
   fullTranscript: boolean;
   setFullTranscript: Dispatch<SetStateAction<boolean>>;
   /** Literal line diff against the previous revision. */
@@ -87,7 +93,19 @@ export function useResourceView(
   useEffect(() => {
     if (preview && !conflicts.some((c) => c.id === preview)) setPreview("");
   }, [conflicts, preview]);
-  const conflict = conflicts.find((item) => item.id === preview);
+  const sessionConflicts = conflicts.filter(
+    (item) =>
+      item.resourceId === id &&
+      item.candidate.projectId === resource?.projectId,
+  );
+  const conflict = sessionConflicts.find((item) => item.id === preview);
+  const sessionVersion =
+    kind === "session" && sessionConflicts.length
+      ? (conflict?.candidate ?? resource)
+      : undefined;
+  const sessionContentKey =
+    (sessionVersion ?? resource)?.files.map((item) => item.hash).join(":") ??
+    "";
   const enabled = Boolean(
     selection === selectionKey &&
     id &&
@@ -103,6 +121,7 @@ export function useResourceView(
       resource?.projectId,
       id,
       resource?.revision,
+      Boolean(sessionVersion),
       file,
       resource?.files.find((item) => item.path === file)?.hash,
       preview,
@@ -178,6 +197,10 @@ export function useResourceView(
     },
     preview,
     setPreview,
+    sessionVersion,
+    sessionContentKey: sessionVersion
+      ? `shared:${sessionContentKey}`
+      : sessionContentKey,
     fullTranscript,
     setFullTranscript,
     changes,

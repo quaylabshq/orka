@@ -666,6 +666,20 @@ const calls = (page: Page, name: string) =>
     name,
   );
 
+const reviewedSessionExport = (path: string, conflictId?: string) => ({
+  id: "session-c",
+  path,
+  sessionSnapshot: {
+    ...(conflictId && { conflictId }),
+    reviewed: {
+      projectId: "one",
+      resourceId: "session-c",
+      source: "codex",
+      files: [{ path: "session.jsonl", hash: "hash" }],
+    },
+  },
+});
+
 for (const [width, height, memberCatalog] of [
   [1160, 800, "cached"],
   [900, 640, "fetch"],
@@ -868,6 +882,58 @@ test("a conflict panel sits above the session content with its actions", async (
         selected: "candidate",
       },
     ]);
+});
+
+test("reader downloads pin the selected session version in its buttons and menus", async ({
+  page,
+}) => {
+  const path = "/test/export/reviewed.zip";
+  await detailFixture(page, { savePath: path });
+  await openSession(page);
+  await page
+    .getByRole("button", { name: "Download session", exact: true })
+    .click();
+  const wanted = [reviewedSessionExport(path)];
+  await expect.poll(() => calls(page, "export_bundle")).toEqual(wanted);
+
+  await page.getByRole("button", { name: "View incoming version" }).click();
+  const candidate = reviewedSessionExport(path, "conflict-1");
+  const detail = page.getByLabel("Session details", { exact: true });
+  const nestedDownload = page.getByRole("menuitem", {
+    name: "Download session (.zip)…",
+    exact: true,
+  });
+  await more(page).click();
+  await menu(page)
+    .getByRole("menuitem", { name: "More actions" })
+    .press("ArrowRight");
+  await nestedDownload.click();
+  wanted.push(candidate);
+  await expect.poll(() => calls(page, "export_bundle")).toEqual(wanted);
+
+  await detail
+    .getByRole("button", { name: "View incoming version" })
+    .press("Shift+F10");
+  await page
+    .getByRole("menuitem", { name: "More actions" })
+    .press("ArrowRight");
+  await nestedDownload.click();
+  wanted.push(candidate);
+  await expect.poll(() => calls(page, "export_bundle")).toEqual(wanted);
+
+  await more(page).click();
+  await menu(page)
+    .getByRole("menuitem", { name: "Continue or fork in…" })
+    .click();
+  const launcher = page.getByRole("dialog", {
+    name: "Continue or fork session",
+  });
+  await launcher
+    .getByRole("button", { name: "Choose how to open session" })
+    .click();
+  await nestedDownload.click();
+  wanted.push(candidate);
+  await expect.poll(() => calls(page, "export_bundle")).toEqual(wanted);
 });
 
 test("Plans supports both providers, Markdown, editor actions, and search", async ({
@@ -1949,7 +2015,7 @@ for (const savePath of [null, "/test/export/session.zip"]) {
       page.getByRole("button", { name: "Choose how to open session" }),
     ).toBeEnabled();
     expect(await calls(page, "export_bundle")).toEqual(
-      savePath ? [{ id: "session-c", path: savePath }] : [],
+      savePath ? [reviewedSessionExport(savePath)] : [],
     );
     expect(await calls(page, "resume_session")).toEqual([]);
     if (savePath)
@@ -2136,7 +2202,7 @@ test("a failed session download reports the write error without success", async 
     page.getByRole("status").filter({ hasText: "Download saved" }),
   ).toHaveCount(0);
   expect(await calls(page, "export_bundle")).toEqual([
-    { id: "session-c", path: "/test/unwritable/session.zip" },
+    reviewedSessionExport("/test/unwritable/session.zip"),
   ]);
 });
 

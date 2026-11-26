@@ -18,7 +18,7 @@ import {
 } from "lucide-react";
 import React, { useEffect, useRef, useState } from "react";
 import { Channel } from "@tauri-apps/api/core";
-import { policyClass } from "@portable/protocol";
+import { policyClass, type AccessMode } from "@portable/protocol";
 import type { ProjectResource, Snapshot, SyncProgress } from "../types.js";
 import { ActivityIndicator } from "./activity-indicator.js";
 import { Button } from "./button.js";
@@ -27,6 +27,7 @@ import { Icon } from "./icon.js";
 import type { IconGlyph } from "./icons.js";
 import { Modal } from "./modal.js";
 import { invoke } from "./product-command.js";
+import { useToasts, type ToastInput } from "./toasts.js";
 import {
   shareStatus,
   type ShareAction,
@@ -75,15 +76,17 @@ interface SharePreview {
   expiresAt?: number;
   files?: { path: string; size: number }[];
   totalBytes?: number;
+  baseRevision?: number;
+  publicationMode?: AccessMode | null;
+  note?: string;
 }
 
 export interface ShareDialogContext {
   state: Snapshot;
   busy: boolean;
   isCurrent: (resource: ProjectResource) => boolean;
-  onNotice: (message: string) => void;
   onRefresh: () => Promise<void>;
-  onReview: (resource: ProjectResource, mode: "outgoing") => void;
+  onOpen: (resource: ProjectResource, target: { conflictId: string }) => void;
   onOpenRequests: (projectId: string) => void;
 }
 
@@ -99,13 +102,12 @@ export function fileSize(bytes: number) {
   }
 }
 
-/** The notice for a result that lands after the dialog was closed. */
-const closedNotice: Record<string, string> = {
-  published: "Shared with team",
-  approval_required: "Sent for approval",
-  conflict: "Someone changed it first",
-  queued: "Queued to share",
-};
+const shareNotices = {
+  published: { title: "Shared with team", kind: "success" },
+  approval_required: { title: "Sent for approval", kind: "info" },
+  conflict: { title: "Someone changed it first", kind: "warning" },
+  queued: { title: "Queued to share", kind: "queued" },
+} satisfies Record<string, ToastInput>;
 
 /**
  * Shares one reviewed snapshot of a local item. The frame never changes size;
@@ -123,6 +125,7 @@ export function ShareDialog({
   onCloseAutoFocus?: (event: Event) => void;
 }) {
   const { state } = context;
+  const { notify } = useToasts();
   const project = state.projects.find((item) => item.id === resource.projectId);
   const startFeature = useDesktopFeature();
   const [phase, setPhase] = useState<SharePhase>({ step: "preparing" });
@@ -139,6 +142,14 @@ export function ShareDialog({
   const accountId = state.user;
   const serviceOrigin = state.config?.apiUrl;
   const { projectId, resourceId } = resource;
+  const policyRevision = project?.policyRevision;
+  const previousPolicyRevision = useRef(policyRevision);
+  useEffect(() => {
+    if (previousPolicyRevision.current === policyRevision) return;
+    previousPolicyRevision.current = policyRevision;
+    if (phase.step === "preparing" || phase.step === "ready")
+      setAttempt((value) => value + 1);
+  }, [policyRevision, phase.step]);
 
   useEffect(() => {
     let canceled = false;
@@ -179,16 +190,24 @@ export function ShareDialog({
   const governance = state.governance?.find(
     (entry) => entry.projectId === resource.projectId,
   )?.catalog;
-  const access = !project?.governed
-    ? undefined
-    : (resource.access?.mode ??
-      governance?.access[policyClass(resource)]?.mode);
+  const baseRevision =
+    preview?.baseRevision ??
+    resource.sharedRevision ??
+    (resource.local ? 0 : resource.revision);
+  const classAccess = governance?.access[policyClass(resource)];
+  const cachedMode =
+    baseRevision > 0
+      ? (resource.access?.mode ?? classAccess?.mode)
+      : (classAccess?.create ?? resource.access?.create);
+  const access =
+    preview?.publicationMode ?? (project?.governed ? cachedMode : undefined);
   const files = preview?.files ?? resource.files;
   const bytes =
     preview?.totalBytes ?? files.reduce((total, file) => total + file.size, 0);
   const status = shareStatus({
     phase,
-    resource,
+    source: resource.source,
+    update: baseRevision > 0,
     stale,
     files: preview?.files?.length,
     access,
@@ -205,35 +224,43 @@ export function ShareDialog({
       if (open.current) setPhase({ step: "sending", progress });
     });
     try {
-      const result = await invoke<{ status: string; reason?: string }>(
-        "resource_command",
-        {
-          action: "share",
-          input: {
-            accountId,
-            serviceOrigin,
-            projectId,
-            resourceId,
-            previewToken: preview.previewToken,
-          },
-          onProgress,
+      const result = await invoke<{
+        status: keyof typeof shareNotices;
+        requestId: string;
+        reason?: string;
+      }>("resource_command", {
+        action: "share",
+        input: {
+          accountId,
+          serviceOrigin,
+          projectId,
+          resourceId,
+          previewToken: preview.previewToken,
+          ...(access === "suggest" && { requireApproval: true }),
         },
-      );
+        onProgress,
+      });
       if (result.status === "published") recordShared();
       if (result.status === "queued") record("share_queued");
       if (result.status === "conflict") record("share_failed");
       // The share already landed; a failed refresh must not report it failed.
       await context.onRefresh().catch(() => {});
       if (!open.current) {
-        context.onNotice(closedNotice[result.status] ?? "Queued to share");
+        if (result.reason === "project_inactive")
+          notify({ title: "Queued until project restore", kind: "warning" });
+        else if (result.reason === "unsupported")
+          notify({ title: "Waiting for Orka update", kind: "warning" });
+        else notify(shareNotices[result.status]);
         return;
       }
       if (result.status === "published") {
-        context.onNotice("Shared with team");
+        notify(shareNotices.published);
         onClose();
       } else if (result.status === "approval_required")
         setPhase({ step: "approval" });
-      else if (result.status === "conflict") setPhase({ step: "conflict" });
+      else if (result.status === "conflict")
+        setPhase({ step: "conflict", requestId: result.requestId });
+      else if (result.reason === "project_inactive") setPhase({ step: "held" });
       else
         setPhase({
           step: "queued",
@@ -243,7 +270,7 @@ export function ShareDialog({
       record("share_failed");
       if (open.current)
         setPhase({ step: "share-failed", error: String(failure) });
-      else context.onNotice("Couldn’t share");
+      else notify({ title: "Couldn’t share", kind: "error" });
     }
   };
 
@@ -256,9 +283,28 @@ export function ShareDialog({
     else if (action === "requests") {
       onClose();
       context.onOpenRequests(projectId);
-    } else if (action === "compare") {
+    } else if (action === "compare" && phase.step === "conflict") {
+      // Each preserved version has the request ID of the device that sent it.
+      const conflict = state.conflicts.find(
+        (item) =>
+          item.id === phase.requestId && item.candidate.projectId === projectId,
+      );
+      const shared =
+        conflict &&
+        state.resources.find(
+          (item) =>
+            item.projectId === projectId &&
+            item.resourceId === conflict.resourceId,
+        );
       onClose();
-      context.onReview(resource, "outgoing");
+      if (conflict && shared)
+        context.onOpen(shared, { conflictId: conflict.id });
+      else
+        notify({
+          kind: "info",
+          title:
+            "Conflict unavailable. Refresh the project to see the latest version.",
+        });
     }
   };
   const error =
@@ -268,13 +314,11 @@ export function ShareDialog({
   const kindIcon = resourceKindIcons[resource.kind];
   const title = preview?.title ?? resource.title;
   const detail = `${files.length} ${files.length === 1 ? "file" : "files"} · ${fileSize(bytes)}`;
-  const members = governance?.members?.length;
+  const piWarningId = React.useId();
+  const piSession = resource.source === "pi";
   const projectName = project
     ? `${project.name}${state.config?.mode === "self-hosted" ? " · Self-hosted" : ""}`
     : "";
-  const people = members
-    ? `Everyone · ${members} ${members === 1 ? "member" : "members"}`
-    : "Everyone in this project";
 
   return (
     <Modal
@@ -294,6 +338,9 @@ export function ShareDialog({
             variant="primary"
             size="sm"
             className="share-dialog-action"
+            aria-describedby={
+              piSession && status.action === "share" ? piWarningId : undefined
+            }
             disabled={
               status.actionDisabled ||
               (status.action === "share" && context.busy)
@@ -323,6 +370,15 @@ export function ShareDialog({
             {detail}
           </p>
         </div>
+        {piSession && (
+          <p
+            className="share-dialog-scope-note"
+            id={piWarningId}
+            title={preview?.note}
+          >
+            Shares abandoned branches and hidden tool records.
+          </p>
+        )}
       </section>
       <dl className="share-dialog-facts">
         <div>
@@ -337,7 +393,7 @@ export function ShareDialog({
             <Icon icon={UsersIcon} size="sm" />
             People
           </dt>
-          <dd title={people}>{people}</dd>
+          <dd>Project members with access</dd>
         </div>
         <div>
           <dt>

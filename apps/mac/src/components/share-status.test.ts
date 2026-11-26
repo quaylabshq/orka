@@ -1,15 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { shareStatus, type ShareFacts } from "./share-status.js";
 
-const local = {
-  local: true as const,
-  localChanges: false,
-  revision: 0,
-  source: "codex" as const,
-};
 const facts = (overrides: Partial<ShareFacts> = {}): ShareFacts => ({
   phase: { step: "ready" },
-  resource: local,
+  source: "codex",
+  update: false,
   stale: false,
   files: 1,
   online: true,
@@ -33,7 +28,7 @@ describe("shareStatus before sending", () => {
     });
     expect(
       pick({
-        resource: { localChanges: true, revision: 3, source: "codex" },
+        update: true,
       }),
     ).toMatchObject({
       pill: "Updates shared copy",
@@ -54,9 +49,7 @@ describe("shareStatus before sending", () => {
   });
 
   it("warns that a Pi session sends every branch, without hiding approval", () => {
-    expect(
-      pick({ resource: { ...local, source: "pi" }, access: "suggest" }),
-    ).toMatchObject({
+    expect(pick({ source: "pi", access: "suggest" })).toMatchObject({
       pill: "Includes all branches",
       tone: "warning",
       actionLabel: "Send for approval",
@@ -102,7 +95,9 @@ describe("shareStatus while and after sending", () => {
       pill: "Awaiting approval",
       actionLabel: "Done",
     });
-    expect(pick({ phase: { step: "conflict" } })).toMatchObject({
+    expect(
+      pick({ phase: { step: "conflict", requestId: "conflict-1" } }),
+    ).toMatchObject({
       heading: "Someone changed it first",
       pill: "Version conflict",
       tone: "warning",
@@ -122,6 +117,11 @@ describe("shareStatus while and after sending", () => {
       pick({ phase: { step: "queued", unsupported: false }, online: false })
         .pill,
     ).toBe("Sends when online");
+    expect(pick({ phase: { step: "held" } })).toMatchObject({
+      heading: "Queued until project restore",
+      pill: "Project inactive",
+      actionLabel: "Done",
+    });
     expect(pick({ phase: { step: "queued", unsupported: false } }).pill).toBe(
       "Queued to send",
     );
@@ -138,7 +138,8 @@ describe("shareStatus while and after sending", () => {
       { step: "sending", progress: null },
       { step: "share-failed", error: "x" },
       { step: "approval" },
-      { step: "conflict" },
+      { step: "conflict", requestId: "conflict-1" },
+      { step: "held" },
       { step: "queued", unsupported: true },
       { step: "queued", unsupported: false },
     ];
@@ -150,7 +151,7 @@ describe("shareStatus while and after sending", () => {
         { access: "read" as const },
         { access: "suggest" as const },
         { online: false },
-        { resource: { ...local, source: "pi" as const } },
+        { source: "pi" as const },
       ])
         expect(
           shareStatus(facts({ phase, ...extra })).pill.split(" ").length,

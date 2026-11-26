@@ -33,6 +33,7 @@ import { invoke } from "./product-command.js";
 import type {
   Project,
   ProjectResource,
+  SessionSnapshotDownload,
   Snapshot,
   SyncProgress,
 } from "../types.js";
@@ -47,7 +48,7 @@ import { Icon } from "./icon.js";
 import { IconButton } from "./icon-button.js";
 import { MarkdownMarkIcon } from "./icons.js";
 import { SessionLauncher } from "./session-launcher.js";
-import type { ResourceView } from "./use-resource-view.js";
+import type { ResourceComparison, ResourceView } from "./use-resource-view.js";
 import { sourcePath } from "./project-sources.js";
 import { skillReviewState } from "./skill-review-state.js";
 import { useResourceActions, type Run } from "./use-resource-actions.js";
@@ -67,7 +68,7 @@ interface ResourceMenuContextValue {
   busy: boolean;
   sharedArtifact: (resource: ProjectResource) => ProjectResource | undefined;
   act: Run;
-  onOpen: (resource: ProjectResource, compare?: boolean) => void;
+  onOpen: (resource: ProjectResource, compare?: ResourceComparison) => void;
   onReview: (resource: ProjectResource, mode: "incoming" | "outgoing") => void;
   onOpenRequests: (projectId: string) => void;
   onNotice: (message: string) => void;
@@ -77,7 +78,10 @@ interface ResourceMenuContextValue {
   request: (
     kind: ResourceRequest,
     resource: ProjectResource,
-    uploadId?: string,
+    options?: {
+      uploadId?: string;
+      sessionDownload?: SessionSnapshotDownload | null;
+    },
   ) => void;
   reviewUpload: (uploadId: string) => void;
 }
@@ -224,6 +228,7 @@ export function ResourceMenuProvider({
     | {
         kind: Exclude<ResourceRequest, "retry-upload">;
         resource: ProjectResource;
+        sessionDownload?: SessionSnapshotDownload | null;
         scope: string;
       }
     | null
@@ -245,14 +250,14 @@ export function ResourceMenuProvider({
     ...props,
     isCurrent,
     sharedArtifact,
-    request: (kind, resource, uploadId) => {
+    request: (kind, resource, options) => {
       if (!isCurrent(resource)) return;
       const upload = props.state.outbox.find(
         (entry) =>
           entry.reviewable &&
           entry.project === resource.projectId &&
           entry.resourceId === resource.resourceId &&
-          (!uploadId || entry.id === uploadId),
+          (!options?.uploadId || entry.id === options.uploadId),
       );
       if (kind === "retry-upload") {
         if (upload) setRequest({ kind, upload, scope: props.scope });
@@ -260,7 +265,13 @@ export function ResourceMenuProvider({
         const artifact = sharedArtifact(resource);
         if (artifact)
           setRequest({ kind, resource: artifact, scope: props.scope });
-      } else setRequest({ kind, resource, scope: props.scope });
+      } else
+        setRequest({
+          kind,
+          resource,
+          scope: props.scope,
+          sessionDownload: options?.sessionDownload,
+        });
     },
     reviewUpload: (uploadId) => {
       const upload = props.state.outbox.find(
@@ -302,6 +313,7 @@ export function ResourceMenuProvider({
           <SessionLaunchDialog
             key={`${props.scope}:launch:${identity(request.resource)}`}
             resource={request.resource}
+            sessionDownload={request.sessionDownload}
             context={context}
             onClose={() => setRequest(null)}
           />
@@ -421,11 +433,13 @@ const actionGroups: Record<string, string> = {
 function ResourceMenuTarget({
   resource,
   file,
+  sessionDownload,
   extraActions = [],
   children,
 }: {
   resource: ProjectResource;
   file?: string;
+  sessionDownload?: SessionSnapshotDownload | null;
   extraActions?: ItemMenuAction[];
   children: (actions: ItemMenuAction[]) => React.ReactNode;
 }) {
@@ -506,7 +520,7 @@ function ResourceMenuTarget({
       icon: GitForkIcon,
       label: "Continue or fork in…",
       disabled: context.busy,
-      onSelect: () => context.request("launch", resource),
+      onSelect: () => context.request("launch", resource, { sessionDownload }),
     });
     items.push({
       id: "prompt",
@@ -560,7 +574,7 @@ function ResourceMenuTarget({
         id: "compare",
         icon: GitCompareIcon,
         label: "Compare with previous revision",
-        onSelect: () => context.onOpen(resource, true),
+        onSelect: () => context.onOpen(resource, "changes"),
       });
   }
   if (shared)
@@ -628,7 +642,9 @@ function ResourceMenuTarget({
       label: "Review queued upload…",
       disabled: context.busy,
       onSelect: () =>
-        context.request("retry-upload", resource, queuedUpload.id),
+        context.request("retry-upload", resource, {
+          uploadId: queuedUpload.id,
+        }),
     });
   if (review.incoming)
     secondary.push({
@@ -656,7 +672,7 @@ function ResourceMenuTarget({
       label: "Review local update…",
       onSelect: () => context.onReview(resource, "incoming"),
     });
-  if (resource.kind !== "memory")
+  if (resource.kind !== "memory" && sessionDownload !== null)
     secondary.unshift({
       id: "export",
       icon: DownloadIcon,
@@ -665,7 +681,7 @@ function ResourceMenuTarget({
           ? "Download session (.zip)…"
           : "Export ZIP…",
       disabled: context.busy,
-      onSelect: () => void actions.exportZip(),
+      onSelect: () => void actions.exportZip(sessionDownload ?? undefined),
     });
   const configureAction = (item: ItemMenuAction): ItemMenuAction => ({
     ...item,
@@ -719,6 +735,7 @@ const flatten = (actions: ItemMenuAction[]) =>
 export function ResourceItemMenu({
   resource,
   file,
+  sessionDownload,
   extraActions,
   flat = false,
   onOpenChange,
@@ -726,6 +743,7 @@ export function ResourceItemMenu({
 }: {
   resource: ProjectResource;
   file?: string;
+  sessionDownload?: SessionSnapshotDownload | null;
   extraActions?: ItemMenuAction[];
   /** Show every action in one list instead of nesting the rest under More. */
   flat?: boolean;
@@ -738,6 +756,7 @@ export function ResourceItemMenu({
     <ResourceMenuTarget
       resource={resource}
       file={file}
+      sessionDownload={sessionDownload}
       extraActions={extraActions}
     >
       {(nested) => {
@@ -759,11 +778,13 @@ export function ResourceItemMenu({
 export function ResourceMenuButton({
   resource,
   file,
+  sessionDownload,
   extraActions,
   label = "More resource actions",
 }: {
   resource: ProjectResource;
   file?: string;
+  sessionDownload?: SessionSnapshotDownload | null;
   extraActions?: ItemMenuAction[];
   label?: string;
 }) {
@@ -773,6 +794,7 @@ export function ResourceMenuButton({
     <ResourceMenuTarget
       resource={resource}
       file={file}
+      sessionDownload={sessionDownload}
       extraActions={extraActions}
     >
       {(actions) => (
@@ -797,10 +819,12 @@ function restoreResourceFocus(event: Event, resourceId: string) {
 
 function SessionLaunchDialog({
   resource,
+  sessionDownload,
   context,
   onClose,
 }: {
   resource: ProjectResource;
+  sessionDownload?: SessionSnapshotDownload | null;
   context: ResourceMenuContextValue;
   onClose: () => void;
 }) {
@@ -853,6 +877,7 @@ function SessionLaunchDialog({
             scope={context.scope}
             busy={context.busy || stale}
             actions={actions}
+            sessionDownload={sessionDownload}
             onError={context.onError}
           />
         </div>

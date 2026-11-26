@@ -60,8 +60,27 @@ export function SessionDetail({
   const layout = useDetailLayout();
   const { notify } = useToasts();
   const author = useMemberLabel(user)(resource.updatedBy);
+  const resourceConflicts = conflicts.filter(
+    (conflict) => conflict.resourceId === resource.resourceId,
+  );
   const shared = !resource.local && resource.revision > 0;
   const menuActions = resourceViewMenuActions(view, true);
+  const reviewed = view.sessionVersion;
+  // Only conflict readers override the ordinary download. Capture the side
+  // shown at click time, including while the system Save dialog is open.
+  const sessionDownload = !resourceConflicts.length
+    ? undefined
+    : reviewed && !reviewed.deleted
+      ? {
+          conflictId: view.preview || undefined,
+          reviewed: {
+            projectId: reviewed.projectId,
+            resourceId: reviewed.resourceId,
+            source: reviewed.source,
+            files: reviewed.files.map(({ path, hash }) => ({ path, hash })),
+          },
+        }
+      : null;
   const notes = [
     resource.local && "This session is on this Mac and hasn’t been shared.",
     resource.localChanges &&
@@ -71,13 +90,14 @@ export function SessionDetail({
 
   return (
     <SessionView
+      key={view.sessionVersion ? "comparison" : "session"}
       id={resource.resourceId}
-      contentKey={resource.files.map((file) => file.hash).join(":")}
+      contentKey={view.sessionContentKey}
       refreshOnMount={Boolean(
         resource.local || resource.localChanges || resource.fork,
       )}
       conflictId={view.preview}
-      source={resource.source}
+      source={(view.sessionVersion ?? resource).source}
       mode={view.fullTranscript ? "transcript" : "conversation"}
       raw={view.rawMarkdown}
       transcript={
@@ -96,7 +116,7 @@ export function SessionDetail({
                 <Button
                   size="sm"
                   variant="secondary"
-                  disabled={busy}
+                  disabled={busy || sessionDownload === null}
                   onClick={() =>
                     void actions.exportZip(sessionSnapshot, () =>
                       notify({
@@ -144,8 +164,9 @@ export function SessionDetail({
         layout,
         label: "Session",
         className: "resource-detail--session session-view",
-        resource,
+        resource: resource.deleted ? undefined : resource,
         file: view.file,
+        sessionDownload,
         menuActions,
         title,
         status: (resource.fork || sharingStatus(resource)) && (
@@ -186,12 +207,15 @@ export function SessionDetail({
         ),
         infoActions: (
           <div className="detail-info-actions">
-            <ResourceMenuButton
-              resource={resource}
-              file={view.file}
-              extraActions={menuActions}
-            />
-            {shared && (
+            {!resource.deleted && (
+              <ResourceMenuButton
+                resource={resource}
+                file={view.file}
+                sessionDownload={sessionDownload}
+                extraActions={menuActions}
+              />
+            )}
+            {shared && !resource.deleted && (
               <SkillActionTooltip label="Copy session link">
                 <CopyLinkButton
                   usageEvent="resource_link_copied"
@@ -204,45 +228,46 @@ export function SessionDetail({
                 />
               </SkillActionTooltip>
             )}
-            <SkillActionTooltip label="Download session">
-              <IconButton
-                icon={DownloadIcon}
-                size="sm"
-                variant="tertiary"
-                aria-label="Download session"
-                disabled={busy}
-                onClick={() => void actions.exportZip()}
-              />
-            </SkillActionTooltip>
+            {sessionDownload !== null && (
+              <SkillActionTooltip label="Download session">
+                <IconButton
+                  icon={DownloadIcon}
+                  size="sm"
+                  variant="tertiary"
+                  aria-label="Download session"
+                  disabled={busy}
+                  onClick={() => void actions.exportZip(sessionDownload)}
+                />
+              </SkillActionTooltip>
+            )}
           </div>
         ),
-        primaryActions: (
+        primaryActions: !resource.deleted && (
           <SessionLauncher
             resource={resource}
             project={project}
             scope={scope}
             busy={busy}
             actions={actions}
+            sessionDownload={sessionDownload}
             onError={onError}
           />
         ),
-        context: conflicts
-          .filter((conflict) => conflict.resourceId === resource.resourceId)
-          .map((conflict) => (
-            <ConflictPanel
-              key={conflict.id}
-              conflict={conflict}
-              deviceId={deviceId}
-              user={user}
-              owner={resource.owner}
-              busy={busy}
-              preview={view.preview}
-              onPreview={view.setPreview}
-              onResolve={(action, conflictId, selected) =>
-                void actions.sessionAction(action, conflictId, selected)
-              }
-            />
-          )),
+        context: resourceConflicts.map((conflict) => (
+          <ConflictPanel
+            key={conflict.id}
+            conflict={conflict}
+            deviceId={deviceId}
+            user={user}
+            owner={resource.owner}
+            busy={busy}
+            preview={view.preview}
+            onPreview={view.setPreview}
+            onResolve={(action, conflictId, selected) =>
+              void actions.sessionAction(action, conflictId, selected)
+            }
+          />
+        )),
         toolbar: (
           <SegmentedControl
             label="Session view"

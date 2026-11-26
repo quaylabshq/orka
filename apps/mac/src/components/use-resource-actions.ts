@@ -188,6 +188,7 @@ export function useResourceActions({
               filters: [{ name: "ZIP", extensions: ["zip"] }],
             });
             if (path) {
+              if (sessionSnapshot && activeKey.current !== commandKey) return;
               try {
                 await invoke("export_bundle", {
                   id,
@@ -195,11 +196,12 @@ export function useResourceActions({
                   ...(sessionSnapshot && { sessionSnapshot }),
                 });
               } catch (error) {
-                if (
-                  sessionSnapshot &&
-                  onSnapshotChanged &&
-                  error === "session_snapshot_changed"
-                ) {
+                if (sessionSnapshot && error === "session_snapshot_changed") {
+                  if (!onSnapshotChanged)
+                    throw new Error(
+                      "Session changed. Review it again before downloading.",
+                      { cause: error },
+                    );
                   onSnapshotChanged();
                   return;
                 }
