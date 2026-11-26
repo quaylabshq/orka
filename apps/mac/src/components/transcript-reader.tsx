@@ -172,7 +172,6 @@ interface TranscriptIndex {
   start: number;
   end: number;
   eof: boolean;
-  prepended?: boolean;
 }
 
 interface Anchor {
@@ -203,6 +202,7 @@ function TranscriptText({
   const cache = useRef(new Map<number, { text: string; bytes: number }>());
   const cachedBytes = useRef(0);
   const active = useRef<Read | null>(null);
+  const fetchedAtHeader = useRef(false);
   const queuedJump = useRef<Read | null>(null);
   const latestJump = useRef<"end" | "start" | null>(null);
   const generation = useRef(0);
@@ -236,8 +236,8 @@ function TranscriptText({
       );
     },
     scrollMargin: geometry.margin,
-    // A partial window can prepend even when the scrollbar reaches the header.
-    anchorTo: readingText || index?.prepended ? "end" : "start",
+    // Keep a visible title or conflict action stationary when earlier text arrives.
+    anchorTo: readingText ? "end" : "start",
     followOnAppend: false,
     scrollEndThreshold: 1,
     overscan: 2,
@@ -302,7 +302,6 @@ function TranscriptText({
         start: backwards ? range.offset : current.start,
         end: backwards ? current.end : range.nextOffset,
         eof: backwards ? current.eof : range.eof,
-        prepended: backwards,
       };
 
       // Keep the scroll extent within a browser-safe height on dense logs.
@@ -324,7 +323,6 @@ function TranscriptText({
           for (const block of discarded)
             virtualizer.itemSizeCache.delete(block.offset);
           next = {
-            ...next,
             blocks: retained,
             start: retained[0].offset,
             end: retained[retained.length - 1].end,
@@ -609,6 +607,7 @@ function TranscriptText({
   }, [blocks, first, index, last, selected, version]);
 
   useEffect(() => {
+    if (readingText) fetchedAtHeader.current = false;
     if (active.current || failed || (!visible && ready)) return;
     if (!index) {
       read({ kind: "initial", offset: 0 });
@@ -646,8 +645,12 @@ function TranscriptText({
     if (
       index.start > 0 &&
       top < LOOKAHEAD_PX &&
-      virtualizer.scrollDirection === "backward"
+      virtualizer.scrollDirection === "backward" &&
+      (readingText || !fetchedAtHeader.current)
     ) {
+      // A fast drag to the header exposes one earlier page without draining the
+      // entire history while the controls above the transcript remain visible.
+      fetchedAtHeader.current = !readingText;
       read({ kind: "before", offset: index.start });
     } else if (
       !index.eof &&

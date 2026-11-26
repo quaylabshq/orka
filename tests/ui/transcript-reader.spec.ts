@@ -20,6 +20,7 @@ async function checkPrependAnchor(
     w.__TAURI_INTERNALS__.invoke = async (command: string, request: any) => {
       if (command !== "read_transcript") return invoke(command, request);
       if (request.before) {
+        w.prependCount = (w.prependCount ?? 0) + 1;
         w.prependOffset = request.offset;
         await new Promise<void>((resolve) => {
           w.finishPrepend = resolve;
@@ -33,6 +34,7 @@ async function checkPrependAnchor(
       const nextOffset = backward
         ? position
         : Math.min(transcript.length, position + request.maxBytes);
+      if (request.before) w.previousPageStart = offset;
       return {
         offset,
         nextOffset,
@@ -66,19 +68,23 @@ async function checkPrependAnchor(
     .poll(() => page.evaluate(() => typeof (window as any).finishPrepend))
     .toBe("function");
 
-  const before = await scroller.evaluate((reader) => {
+  const before = await scroller.evaluate((reader, atHeader) => {
     const viewport = reader.getBoundingClientRect();
     const blocks = Array.from(
       reader.querySelectorAll<HTMLElement>(".transcript-block[data-offset]"),
     );
-    const stable = blocks.find(
-      (block) => block.getBoundingClientRect().bottom > viewport.top + 100,
-    )!;
+    const stable = atHeader
+      ? reader.querySelector<HTMLElement>(".detail-title-card")!
+      : blocks.find(
+          (block) => block.getBoundingClientRect().bottom > viewport.top + 100,
+        )!;
     return {
-      offset: stable.dataset.offset,
+      selector: atHeader
+        ? ".detail-title-card"
+        : `.transcript-block[data-offset="${stable.dataset.offset}"]`,
       top: stable.getBoundingClientRect().top - viewport.top,
     };
-  });
+  }, atHeader);
   await page.evaluate(() => (window as any).finishPrepend());
   await expect
     .poll(() =>
@@ -96,10 +102,8 @@ async function checkPrependAnchor(
     .toBe(true);
   await expect
     .poll(() =>
-      scroller.evaluate((reader, { offset, top }) => {
-        const block = reader.querySelector(
-          `.transcript-block[data-offset="${offset}"]`,
-        );
+      scroller.evaluate((reader, { selector, top }) => {
+        const block = reader.querySelector(selector);
         if (!block) return Infinity;
         const actualTop =
           block.getBoundingClientRect().top -
@@ -107,18 +111,31 @@ async function checkPrependAnchor(
         return Math.abs(actualTop - top);
       }, before),
     )
-    .toBeLessThanOrEqual(24);
+    .toBeLessThanOrEqual(atHeader ? 1 : 24);
+  if (atHeader) {
+    await expect(scroller.locator(".detail-title-card")).toBeInViewport();
+    const start = await page.evaluate(() => (window as any).previousPageStart);
+    await expect(
+      text.locator(`.transcript-block[data-offset="${start}"]`),
+    ).toBeInViewport();
+    expect(await page.evaluate(() => (window as any).prependCount)).toBe(1);
+  }
   await expect(text).toBeFocused();
 }
 
-for (const atHeader of [false, true])
-  test(`keeps the visible transcript offset on a backward scroll to the ${atHeader ? "header" : "text"}`, async ({
-    page,
-  }) => {
-    await checkPrependAnchor(page, atHeader);
-  });
+test("keeps the visible transcript offset when preceding text arrives", async ({
+  page,
+}) => {
+  await checkPrependAnchor(page, false);
+});
 
-test("preserves the top anchor when the preceding range reaches the first record", async ({
+test("keeps the visible header stationary while exposing the previous page", async ({
+  page,
+}) => {
+  await checkPrependAnchor(page, true);
+});
+
+test("preserves the header when the preceding range reaches the first record", async ({
   page,
 }) => {
   await checkPrependAnchor(page, true, 350);
