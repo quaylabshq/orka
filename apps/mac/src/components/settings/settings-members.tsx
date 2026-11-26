@@ -596,7 +596,6 @@ export function SettingsMembers({
           }}
           size="compact"
           closeButton={false}
-          heading={`Revoke the invite to ${revoking}?`}
           footer={
             <>
               <Button
@@ -618,7 +617,7 @@ export function SettingsMembers({
             </>
           }
         >
-          <p>Links sent to this address will stop working.</p>
+          <p>Links sent to {revoking} will stop working.</p>
           {error && <p role="alert">{error}</p>}
         </Modal>
       )}
