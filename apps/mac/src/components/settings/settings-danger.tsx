@@ -564,7 +564,7 @@ export function SettingsDanger({
             if (!working) close();
           }}
           size="compact"
-          closeButton={false}
+          closeDisabled={working}
           footer={
             <>
               <Button size="sm" disabled={working} onClick={close}>

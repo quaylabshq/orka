@@ -595,7 +595,7 @@ export function SettingsMembers({
             if (!busy) setRevoking("");
           }}
           size="compact"
-          closeButton={false}
+          closeDisabled={Boolean(busy)}
           footer={
             <>
               <Button
@@ -638,7 +638,7 @@ export function SettingsMembers({
             if (!busy) setConfirmation(null);
           }}
           size="compact"
-          closeButton={false}
+          closeDisabled={Boolean(busy)}
           footer={
             <>
               <Button

@@ -126,7 +126,7 @@ export function InactiveProject({
             if (!busy && !removing) setConfirming(false);
           }}
           size="compact"
-          closeButton={false}
+          closeDisabled={busy || removing}
           footer={
             <>
               <Button

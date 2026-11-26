@@ -1018,7 +1018,7 @@ function ResourceCommandDialog({
     <Modal
       title={title}
       size="compact"
-      closeButton={false}
+      closeDisabled={busy}
       onClose={() => {
         if (!busy) onClose();
       }}

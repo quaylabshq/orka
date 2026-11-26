@@ -1046,7 +1046,7 @@ export const SettingsModal = forwardRef<
             if (!saving) setPending(null);
           }}
           size="compact"
-          closeButton={false}
+          closeDisabled={saving}
           footer={
             <>
               <Button
@@ -1105,7 +1105,7 @@ export const SettingsModal = forwardRef<
             if (!busy && !folderBusy) setConfirmation(null);
           }}
           size="compact"
-          closeButton={false}
+          closeDisabled={busy || folderBusy}
           footer={
             <>
               <Button
