@@ -7,9 +7,9 @@ import { IconButton } from "./icon-button.js";
 import { ReaderState } from "./skill-state.js";
 import { ConflictPanel } from "./conflict-panel.js";
 import { CopyLinkButton } from "./copy-link-button.js";
+import { fileSize } from "./file-size.js";
 import {
   ResourceMenuButton,
-  fileSize,
   resourceViewMenuActions,
 } from "./resource-menu.js";
 import { useDetailLayout } from "./detail-layout.js";
