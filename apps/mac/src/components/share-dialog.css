@@ -1,0 +1,225 @@
+/* One fixed frame for every share state; only text inside it changes. */
+.modal.toast-host-modal.share-dialog {
+  display: flex;
+  width: min(390px, calc(100vw - 48px));
+  height: min(438px, calc(100vh - 48px));
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0;
+  border-radius: var(--radius-overlay);
+}
+
+.share-dialog-header {
+  display: flex;
+  flex: 0 0 48px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 12px 0 20px;
+  border-bottom: 1px solid var(--border-default);
+}
+
+.modal.share-dialog h2 {
+  overflow: hidden;
+  margin: 0;
+  font-size: var(--body-md-font-size);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--body-md-line-height);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.share-dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 20px 0;
+}
+
+.share-dialog-preview {
+  position: relative;
+  display: grid;
+  flex: 0 0 160px;
+  place-items: center;
+  overflow: hidden;
+  border-radius: var(--radius-surface);
+  background:
+    radial-gradient(
+      120% 90% at 50% 100%,
+      rgb(251 191 36 / 7%),
+      transparent 70%
+    ),
+    var(--surface-primary);
+}
+
+.share-dialog-card {
+  position: relative;
+  display: grid;
+  width: 236px;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-surface);
+  background: var(--surface-tertiary);
+  text-align: left;
+}
+
+.share-dialog-card--back {
+  position: absolute;
+  top: calc(50% - 56px);
+  width: 212px;
+  height: 40px;
+  background: var(--surface-secondary);
+}
+
+.share-dialog-kind {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: var(--body-xs-font-size);
+  line-height: var(--body-xs-line-height);
+}
+
+.modal.share-dialog .share-dialog-card p {
+  overflow: hidden;
+  margin: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.modal.share-dialog .share-dialog-title {
+  color: var(--text-primary);
+  font-size: var(--label-sm-font-size);
+  font-weight: var(--label-sm-font-weight);
+  line-height: var(--label-sm-line-height);
+}
+
+.modal.share-dialog .share-dialog-detail {
+  color: var(--text-tertiary);
+  font-size: var(--body-xs-font-size);
+  line-height: var(--body-xs-line-height);
+}
+
+.share-dialog-facts {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  margin: 0;
+  border-radius: var(--radius-control);
+  background: var(--surface-tertiary);
+  font-size: var(--body-xs-font-size);
+  line-height: var(--body-xs-line-height);
+}
+
+.share-dialog-facts > div {
+  display: flex;
+  height: 40px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 12px;
+}
+
+.share-dialog-facts > div + div {
+  border-top: 1px solid var(--border-default);
+}
+
+.share-dialog-facts dt {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.share-dialog-facts dd {
+  min-width: 0;
+  overflow: hidden;
+  margin: 0;
+  color: var(--text-primary);
+  font-weight: var(--font-weight-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.share-dialog-pill {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px 2px 8px;
+  border-radius: var(--radius-full);
+  background: var(--state-pressed);
+  color: var(--text-secondary);
+  line-height: 20px;
+  white-space: nowrap;
+}
+
+.share-dialog-pill > .ui-icon,
+.share-dialog-pill > .activity-indicator {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 12px;
+  mask-size: 12px 12px;
+  -webkit-mask-size: 12px 12px;
+}
+
+.share-dialog-pill > span:not(.sr-only) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.share-dialog-pill--info {
+  background: var(--blue-surface);
+  color: var(--blue-text);
+}
+
+.share-dialog-pill--warning {
+  background: var(--amber-surface);
+  color: var(--amber-text);
+}
+
+.share-dialog-pill--success {
+  background: var(--green-surface);
+  color: var(--green-text);
+}
+
+.share-dialog-pill--danger {
+  background: var(--red-surface);
+  color: var(--red-text);
+}
+
+/* Text shimmer while files send; still text when motion is reduced. */
+@media (prefers-reduced-motion: no-preference) {
+  .share-dialog-pill[data-shimmer] > span:not(.sr-only) {
+    background: linear-gradient(
+        90deg,
+        var(--blue-text) 30%,
+        var(--text-primary) 50%,
+        var(--blue-text) 70%
+      )
+      0 0 / 300% 100%;
+    background-clip: text;
+    -webkit-background-clip: text;
+    color: transparent;
+    animation: share-dialog-shimmer 1.6s linear infinite;
+  }
+}
+
+@keyframes share-dialog-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: 0 0;
+  }
+}
+
+.share-dialog-footer {
+  display: flex;
+  flex-shrink: 0;
+  justify-content: flex-end;
+  margin-top: auto;
+  padding: 16px 20px 20px;
+}

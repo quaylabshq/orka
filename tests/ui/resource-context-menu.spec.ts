@@ -16,6 +16,7 @@ interface MenuControls {
   previewFailures: number;
   previewTitle?: string;
   previewNote?: string;
+  previewExpiresIn?: number;
   projectName?: string;
   previewFiles?: { path: string; size: number }[];
   previewProgress?: (progress: SyncProgress) => void;
@@ -111,6 +112,12 @@ async function menuFixture(
             kind: input.resourceId.split("-")[0],
             files,
             totalBytes: files.reduce((total, file) => total + file.size, 0),
+            ...(controls.previewExpiresIn
+              ? {
+                  expiresAt:
+                    Math.floor(Date.now() / 1000) + controls.previewExpiresIn,
+                }
+              : {}),
             paths: ["/synthetic/library/content.md"],
             note:
               controls.previewNote ??
@@ -738,30 +745,37 @@ test("an uncertain public-link change can be checked before another attempt", as
   expect(await resourceCalls(page, "create-public-link")).toHaveLength(1);
 });
 
-test("snapshot sharing requires review and submits the exact frozen token without changing category sharing", async ({
+const shareDialog = (page: Page, name = "Share with team") =>
+  page.getByRole("dialog", { name, exact: true });
+const statusPill = (dialog: ReturnType<typeof shareDialog>) =>
+  dialog.locator(".share-dialog-pill");
+
+test("sharing a snapshot shows what goes where and submits the exact frozen token without changing category sharing", async ({
   page,
 }) => {
   await menuFixture(page);
   await collection(page, "Memories");
   await resourceMenu(page, "Private memory notes", "Share with team…");
-  const dialog = page.getByRole("dialog", {
-    name: "Share snapshot with project",
+  const dialog = shareDialog(page);
+  const preview = dialog.getByRole("region", {
+    name: "Selected item",
     exact: true,
   });
-  await expect(dialog).toContainText("Reviewed memory-local");
-  await expect(dialog).toContainText("Library");
-  await expect(dialog).toContainText("content.md");
-  await expect(dialog).toContainText(
-    "local original and automatic sharing settings stay unchanged",
+  await expect(preview).toContainText("Memory");
+  await expect(preview).toContainText("Reviewed memory-local");
+  await expect(preview).toContainText("1 file · 20 B");
+  await expect(dialog.locator(".share-dialog-facts")).toContainText(
+    "ProjectLibrary",
   );
+  await expect(statusPill(dialog)).toHaveText("On your Mac");
+  await expect(dialog.getByRole("button", { name: "Cancel" })).toHaveCount(0);
   expect(await resourceCalls(page, "share")).toEqual([]);
   await dialog
-    .getByRole("button", { name: "Share this snapshot", exact: true })
+    .getByRole("button", { name: "Share with team", exact: true })
     .click();
-  await expect(dialog).toHaveCount(0);
-  await expect(
-    page.getByText("Snapshot sharing queued", { exact: true }),
-  ).toBeVisible();
+  // The fixture is offline, so its service queues the share.
+  const queued = shareDialog(page, "Queued to share");
+  await expect(statusPill(queued)).toHaveText("Sends when online");
   expect((await resourceCalls(page, "share"))[0]?.args.input).toEqual({
     accountId: "user",
     serviceOrigin: "https://library.example",
@@ -769,6 +783,8 @@ test("snapshot sharing requires review and submits the exact frozen token withou
     resourceId: "memory-local",
     previewToken: "frozen-preview-share-memory-local",
   });
+  await queued.getByRole("button", { name: "Done", exact: true }).click();
+  await expect(queued).toHaveCount(0);
   const calls = await page.evaluate(
     () => (window as unknown as MenuWindow).library.calls,
   );
@@ -780,13 +796,13 @@ test("snapshot sharing requires review and submits the exact frozen token withou
   ).toEqual([]);
 });
 
-for (const [kind, label] of [
-  ["memory", "Memories"],
-  ["session", "Sessions"],
-  ["plan", "Plans"],
-  ["skill", "Skills"],
+for (const [kind, label, kindName] of [
+  ["memory", "Memories", "Memory"],
+  ["session", "Sessions", "Session"],
+  ["plan", "Plans", "Plan"],
+  ["skill", "Skills", "Skill"],
 ] as const)
-  test(`a published ${kind} snapshot records one successful share`, async ({
+  test(`a published ${kind} closes the dialog and records one successful share`, async ({
     page,
   }) => {
     await menuFixture(page, { localSkill: kind === "skill" });
@@ -795,13 +811,17 @@ for (const [kind, label] of [
       (window as unknown as MenuWindow).resourceMenu.shareStatus = "published";
     });
     await resourceMenu(page, `Private ${kind} notes`, "Share with team…");
-    await page
-      .getByRole("button", { name: "Share this snapshot", exact: true })
-      .click();
+    const dialog = shareDialog(page);
     await expect(
-      page.getByText("Snapshot shared", { exact: true }),
+      dialog.getByRole("region", { name: "Selected item", exact: true }),
+    ).toContainText(kindName);
+    await dialog
+      .getByRole("button", { name: "Share with team", exact: true })
+      .click();
+    await expect(dialog).toHaveCount(0);
+    await expect(
+      page.getByText("Shared with team", { exact: true }),
     ).toBeVisible();
-
     await expect
       .poll(() =>
         page.evaluate(() =>
@@ -821,122 +841,8 @@ for (const viewport of [
   { width: 1160, height: 800 },
   { width: 900, height: 640 },
 ]) {
-  test(`snapshot review groups files and reports actual preparation progress at ${viewport.width}px`, async ({
-    page,
-  }, testInfo) => {
-    await page.setViewportSize(viewport);
-    await menuFixture(page);
-    await page.evaluate(() => {
-      const controls = (window as unknown as MenuWindow).resourceMenu;
-      controls.deferPreview = true;
-      controls.previewTitle =
-        "Review the project navigation, session sharing and resource menus before the next release. Keep the existing workspace and sharing choices intact while checking long session titles.";
-      controls.previewFiles = [{ path: "session.jsonl", size: 8_284_522 }];
-    });
-    await collection(page, "Sessions");
-    await resourceMenu(page, "Private session notes", "Share with team…");
-    const dialog = page.getByRole("dialog", {
-      name: "Share snapshot with project",
-      exact: true,
-    });
-    const confirm = dialog.getByRole("button", {
-      name: "Share this snapshot",
-      exact: true,
-    });
-    const bar = dialog.getByRole("progressbar");
-    await expect(confirm).toBeDisabled();
-    await expect(bar).toHaveCount(1);
-    await expect(bar).not.toHaveAttribute("aria-valuenow");
-    await expect(bar.locator("span")).toHaveCSS("animation-name", "none");
-    await page.evaluate(() => {
-      (window as unknown as MenuWindow).resourceMenu.previewProgress?.({
-        label: "Checking local files",
-        detail: "session.jsonl",
-      });
-    });
-    await expect(bar).toHaveAttribute("aria-label", "Checking local files");
-    await expect(bar).not.toHaveAttribute("aria-valuenow");
-    await expect(dialog.getByRole("status")).toContainText("session.jsonl");
-    await page.screenshot({
-      path: testInfo.outputPath(`snapshot-loading-${viewport.width}.png`),
-    });
-    await page.evaluate(() => {
-      (window as unknown as MenuWindow).resourceMenu.previewProgress?.({
-        label: "Checking local files",
-        detail: "session.jsonl",
-        completed: 3,
-        total: null,
-      });
-    });
-    await expect(bar).not.toHaveAttribute("aria-valuenow");
-    await expect(dialog.getByRole("status")).toContainText("3 checked");
-    await page.evaluate(() => {
-      (window as unknown as MenuWindow).resourceMenu.previewProgress?.({
-        label: "Freezing reviewed snapshot",
-        detail: "session.jsonl",
-        completed: 1,
-        total: 2,
-      });
-    });
-    await expect(bar).toHaveAttribute("aria-valuenow", "1");
-    await expect(bar).toHaveAttribute("aria-valuemax", "2");
-    await expect(bar.locator("span")).toHaveCSS(
-      "width",
-      await bar.evaluate((el) => `${el.clientWidth / 2}px`),
-    );
-    await page.evaluate(() =>
-      (window as unknown as MenuWindow).resourceMenu.finishPreview?.(),
-    );
-    await expect(confirm).toBeEnabled();
-    await expect(bar).toHaveCount(0);
-    const files = dialog.getByRole("list", {
-      name: "Snapshot files",
-      exact: true,
-    });
-    await expect(files.getByRole("listitem")).toHaveCount(1);
-    await expect(files).toContainText("session.jsonl");
-    await expect(files).toContainText("8.3 MB");
-    await expect(
-      dialog.getByRole("region", { name: "Selected item", exact: true }),
-    ).toContainText("Review the project navigation");
-    await expect(dialog.locator("h2").last()).toHaveCSS("font-size", "20px");
-    await expect(
-      dialog.getByRole("region", { name: "Snapshot contents", exact: true }),
-    ).toHaveCSS("border-top-width", "1px");
-    expect(
-      await dialog.evaluate((el) => el.scrollWidth <= el.clientWidth),
-    ).toBe(true);
-    expect(
-      await page.evaluate(
-        () => document.documentElement.scrollWidth <= innerWidth,
-      ),
-    ).toBe(true);
-    expect(
-      (
-        await new AxeBuilder({ page })
-          .include(".resource-command-dialog")
-          .analyze()
-      ).violations,
-    ).toEqual([]);
-    await page.screenshot({
-      path: testInfo.outputPath(`snapshot-ready-${viewport.width}.png`),
-    });
-    await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
-    await expect(
-      resourceRow(page, "Private session notes").getByRole("button", {
-        name: "Private session notes",
-        exact: true,
-      }),
-    ).toBeFocused();
-  });
-}
-
-for (const viewport of [
-  { width: 1160, height: 800 },
-  { width: 900, height: 640 },
-]) {
   for (const motion of ["reduce", "no-preference"] as const) {
-    test(`snapshot review controls stay stationary through every state at ${viewport.width}px with ${motion} motion`, async ({
+    test(`the share dialog keeps one frame through every state at ${viewport.width}px with ${motion} motion`, async ({
       page,
     }, testInfo) => {
       await page.setViewportSize(viewport);
@@ -947,316 +853,200 @@ for (const viewport of [
         controls.deferPreview = true;
         controls.deferShare = true;
         controls.previewTitle =
-          "A much longer reviewed session title that must remain inside its reserved title area without moving the project details, status area or footer buttons across review states.";
-        controls.previewNote =
-          "Only this exact snapshot will be shared. Later changes remain private. The local original and automatic sharing choices are preserved. "
-            .repeat(5)
-            .trim();
-        controls.previewFiles = Array.from({ length: 18 }, (_, index) => ({
-          path: `references/${"long-snapshot-filename-".repeat(6)}${index}.md`,
-          size: 12_500 + index,
-        }));
+          "A much longer reviewed session title that must stay on one line inside the preview card without moving the details table or the footer button.";
       });
       await collection(page, "Sessions");
       await resourceMenu(page, "Private session notes", "Share with team…");
-      const dialog = page.getByRole("dialog", {
-        name: "Share snapshot with project",
-        exact: true,
-      });
+      const dialog = page.getByRole("dialog");
       await page.evaluate(() => document.fonts.ready);
       const geometry = () =>
-        dialog.evaluate((el) => {
-          const selectors = [
-            "h2[title]",
-            ".resource-command-item",
-            ".resource-command-destination",
-            ".command-copy",
-            ".resource-command-workspace",
-            ".actions",
-            ".resource-command-main-actions > button:first-child",
-            ".resource-command-confirm",
-          ];
-          return [
+        dialog.evaluate((el) =>
+          [
             el,
-            ...selectors.map((selector) => el.querySelector(selector)!),
+            ...[
+              ".share-dialog-header",
+              ".share-dialog-preview",
+              ".share-dialog-facts",
+              ".share-dialog-action",
+            ].map((selector) => el.querySelector(selector)!),
           ].map((node) => {
             const rect = node.getBoundingClientRect();
-            return [rect.x, rect.y, rect.width, rect.height].map(
+            return [rect.right, rect.y, rect.height].map(
               (value) => Math.round(value * 100) / 100,
             );
-          });
-        });
+          }),
+        );
       const initial = await geometry();
-      const stationary = async () => {
-        await expect.poll(geometry).toEqual(initial);
-      };
-      const confirm = dialog.getByRole("button", {
-        name: "Share this snapshot",
-        exact: true,
-      });
-      await expect(confirm).toBeDisabled();
+      const stationary = () => expect.poll(geometry).toEqual(initial);
+      const capture = (name: string) =>
+        motion === "reduce"
+          ? page.screenshot({
+              path: testInfo.outputPath(`share-${name}-${viewport.width}.png`),
+            })
+          : Promise.resolve();
+      const action = dialog.locator(".share-dialog-action");
+      await expect(statusPill(dialog)).toHaveText("Preparing preview");
+      await expect(action).toBeDisabled();
       await page.evaluate(() => {
         (window as unknown as MenuWindow).resourceMenu.projectName =
-          "A long project name that must truncate within the destination row instead of increasing the modal height or moving any controls";
+          "A long project name that must truncate within the details table instead of growing the dialog";
       });
       await expect(
-        dialog.locator(".resource-command-destination dd").first(),
-      ).toContainText("A long project name");
-      await stationary();
-      await expect(
-        dialog.locator(".resource-command-destination dd").first(),
+        dialog.locator(".share-dialog-facts dd").first(),
       ).toHaveAttribute("title", /A long project name/);
-      await page.evaluate(() =>
-        (window as unknown as MenuWindow).resourceMenu.previewProgress?.({
-          label: "Checking local files",
-          detail: "session.jsonl",
-        }),
-      );
-      await expect(dialog.getByRole("progressbar")).toHaveAttribute(
-        "aria-label",
-        "Checking local files",
-      );
       await stationary();
       await page.evaluate(() =>
         (window as unknown as MenuWindow).resourceMenu.failPreview?.(),
       );
-      await expect(dialog.getByRole("alert")).toContainText(
-        "Local folder temporarily unavailable",
+      await expect(statusPill(dialog)).toContainText("Preview failed");
+      await expect(statusPill(dialog)).toHaveAttribute(
+        "title",
+        /Local folder temporarily unavailable/,
       );
-      await expect(dialog.getByRole("alert")).toBeInViewport({ ratio: 1 });
       await stationary();
-      await dialog
-        .getByRole("button", { name: "Try again", exact: true })
-        .click();
-      await expect(dialog.getByRole("progressbar")).toBeVisible();
-      await expect(dialog.getByRole("progressbar")).toBeInViewport({
-        ratio: 1,
-      });
-      await stationary();
+      await capture("preview-failed");
+      await action.click();
+      await expect(statusPill(dialog)).toHaveText("Preparing preview");
       await page.evaluate(() =>
         (window as unknown as MenuWindow).resourceMenu.finishPreview?.(),
       );
-      await expect(confirm).toBeEnabled();
-      await stationary();
-      const itemTitle = dialog.locator(".resource-command-item p");
-      await expect(itemTitle).toHaveAttribute(
-        "title",
-        /A much longer reviewed session title/,
-      );
-      const filename = dialog.locator(".resource-command-filename").first();
+      await expect(statusPill(dialog)).toHaveText("On your Mac");
+      await expect(action).toHaveText("Share with team");
+      await expect(action).toBeEnabled();
+      const title = dialog.locator(".share-dialog-title");
       expect(
-        await filename.evaluate((el) => el.scrollWidth > el.clientWidth),
+        await title.evaluate((el) => el.scrollWidth > el.clientWidth),
       ).toBe(true);
-      await expect(filename).toHaveAttribute(
-        "title",
-        /references\/long-snapshot-filename/,
-      );
-      const note = dialog.locator(".resource-command-note");
-      const fullNote = await page.evaluate(
-        () => (window as unknown as MenuWindow).resourceMenu.previewNote,
-      );
-      await expect(note).toHaveText(fullNote!);
-      await expect(note).toHaveCSS("-webkit-line-clamp", "none");
-      const details = dialog.getByRole("region", {
-        name: "Review details",
-        exact: true,
-      });
-      expect(
-        await details.evaluate((el) => el.scrollHeight > el.clientHeight),
-      ).toBe(true);
-      await note.scrollIntoViewIfNeeded();
       await stationary();
-      await confirm.click();
-      await expect(
-        dialog.getByRole("button", { name: "Working…", exact: true }),
-      ).toBeDisabled();
-      await expect(dialog.getByRole("progressbar")).toBeVisible();
-      await expect(dialog.getByRole("progressbar")).toBeInViewport({
-        ratio: 1,
-      });
+      await capture("ready");
+      await action.click();
+      await expect(action).toHaveText("Sharing…");
+      await expect(action).toBeDisabled();
+      await page.evaluate(() =>
+        (window as unknown as MenuWindow).resourceMenu.shareProgress?.({
+          label: "Uploading reviewed files",
+          completed: 2,
+          total: 3,
+        }),
+      );
+      await expect(statusPill(dialog)).toHaveText("Sending 2 of 3");
       await stationary();
+      await capture("sending");
       await page.evaluate(() =>
         (window as unknown as MenuWindow).resourceMenu.failShare?.(),
       );
-      await expect(dialog.getByRole("alert")).toContainText(
-        "Connection interrupted while sharing",
-      );
-      await expect(dialog.getByRole("alert")).toBeInViewport({ ratio: 1 });
-      await expect(confirm).toBeEnabled();
-      await stationary();
-      await expect(note).toHaveText(fullNote!);
-      if (motion === "reduce")
-        await page.screenshot({
-          path: testInfo.outputPath(
-            `snapshot-error-stable-${viewport.width}.png`,
-          ),
-        });
-      await confirm.click();
       await expect(
-        dialog.getByRole("button", { name: "Working…", exact: true }),
-      ).toBeDisabled();
-      await stationary();
-      await page.evaluate(() =>
-        (window as unknown as MenuWindow).resourceMenu.finishShare?.(),
+        page.getByRole("dialog", { name: "Couldn’t share", exact: true }),
+      ).toBeVisible();
+      await expect(statusPill(dialog)).toHaveAttribute(
+        "title",
+        /Connection interrupted while sharing/,
       );
-      await expect(dialog).toHaveCount(0);
+      await stationary();
+      await capture("share-failed");
+      // Trying again prepares a fresh review instead of resending the old token.
+      await action.click();
+      await expect(statusPill(dialog)).toHaveText("Preparing preview");
+      await page.evaluate(() =>
+        (window as unknown as MenuWindow).resourceMenu.finishPreview?.(),
+      );
+      await action.click();
+      await page.evaluate(() => {
+        const controls = (window as unknown as MenuWindow).resourceMenu;
+        controls.shareStatus = "approval_required";
+        controls.finishShare?.();
+      });
+      await expect(
+        page.getByRole("dialog", { name: "Sent for approval", exact: true }),
+      ).toBeVisible();
+      await expect(statusPill(dialog)).toHaveText("Awaiting approval");
+      await stationary();
+      await capture("sent-for-approval");
+      expect(await resourceCalls(page, "preview-share")).toHaveLength(3);
+      expect(await resourceCalls(page, "share")).toHaveLength(2);
+      expect(
+        await dialog.evaluate((el) => el.scrollWidth <= el.clientWidth),
+      ).toBe(true);
+      expect(
+        (await new AxeBuilder({ page }).include(".share-dialog").analyze())
+          .violations,
+      ).toEqual([]);
+      await dialog.getByRole("button", { name: "Done", exact: true }).click();
+      await expect(
+        resourceRow(page, "Private session notes").getByRole("button", {
+          name: "Private session notes",
+          exact: true,
+        }),
+      ).toBeFocused();
     });
   }
 }
 
-test("snapshot file review bounds long manifests in a compact window", async ({
-  page,
-}, testInfo) => {
-  await page.setViewportSize({ width: 900, height: 640 });
-  await menuFixture(page);
-  await page.evaluate(() => {
-    const controls = (window as unknown as MenuWindow).resourceMenu;
-    controls.previewTitle = "Complete project review package";
-    controls.previewFiles = Array.from({ length: 18 }, (_, index) => ({
-      path: `references/${"long-review-filename-".repeat(8)}${index}.md`,
-      size: 12_500 + index,
-    }));
-  });
-  await collection(page, "Memories");
-  await resourceMenu(page, "Private memory notes", "Share with team…");
-  const dialog = page.getByRole("dialog", {
-    name: "Share snapshot with project",
-    exact: true,
-  });
-  const files = dialog.getByRole("list", {
-    name: "Snapshot files",
-    exact: true,
-  });
-  await expect(files.getByRole("listitem")).toHaveCount(18);
-  expect(
-    await files.evaluate(
-      (el) => el.scrollHeight > el.clientHeight && el.clientHeight <= 200,
-    ),
-  ).toBe(true);
-  await files.focus();
-  await files.press("End");
-  await expect
-    .poll(() => files.evaluate((el) => el.scrollTop))
-    .toBeGreaterThan(0);
-  await files.press("Home");
-  expect(await dialog.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(
-    true,
-  );
-  await expect(
-    dialog.getByRole("button", { name: "Share this snapshot", exact: true }),
-  ).toBeEnabled();
-  expect(
-    await dialog.evaluate((el) => {
-      const confirm = el.querySelector(".actions button:last-child")!;
-      return (
-        confirm.getBoundingClientRect().bottom <=
-        el.getBoundingClientRect().bottom - 20
-      );
-    }),
-  ).toBe(true);
-  expect(
-    (
-      await new AxeBuilder({ page })
-        .include(".resource-command-dialog")
-        .analyze()
-    ).violations,
-  ).toEqual([]);
-  await page.screenshot({
-    path: testInfo.outputPath("snapshot-files-900.png"),
-  });
-});
-
-test("snapshot retry and submission ignore earlier progress channels", async ({
+test("a conflict result stays in the dialog instead of claiming success", async ({
   page,
 }) => {
   await menuFixture(page);
   await collection(page, "Memories");
   await page.evaluate(() => {
-    (window as unknown as MenuWindow).resourceMenu.previewFailures = 1;
+    (window as unknown as MenuWindow).resourceMenu.shareStatus = "conflict";
   });
   await resourceMenu(page, "Private memory notes", "Share with team…");
-  const dialog = page.getByRole("dialog", {
-    name: "Share snapshot with project",
-    exact: true,
-  });
-  await expect(dialog.getByRole("alert")).toContainText(
-    "Local folder temporarily unavailable",
+  await shareDialog(page)
+    .getByRole("button", { name: "Share with team", exact: true })
+    .click();
+  const result = shareDialog(page, "Someone changed it first");
+  await expect(statusPill(result)).toHaveText("Version conflict");
+  await expect(page.getByText("Shared with team", { exact: true })).toHaveCount(
+    0,
   );
+});
+
+test("closing while sending lets the share finish and reports it by toast", async ({
+  page,
+}) => {
+  await menuFixture(page);
+  await collection(page, "Memories");
   await page.evaluate(() => {
     const controls = (window as unknown as MenuWindow).resourceMenu;
-    controls.deferPreview = true;
     controls.deferShare = true;
+    controls.shareStatus = "published";
   });
-  await dialog.getByRole("button", { name: "Try again", exact: true }).click();
-  await page.evaluate(() => {
-    const controls = (window as unknown as MenuWindow).resourceMenu;
-    controls.previewProgresses[0]?.({
-      label: "Stale failed preview",
-      completed: 99,
-      total: 100,
-    });
-    controls.previewProgress?.({
-      label: "Checking fresh files",
-      detail: "content.md",
-    });
-  });
-  await expect(dialog.getByRole("progressbar")).toHaveAttribute(
-    "aria-label",
-    "Checking fresh files",
-  );
-  await expect(dialog).not.toContainText("Stale failed preview");
-  await page.evaluate(() =>
-    (window as unknown as MenuWindow).resourceMenu.finishPreview?.(),
-  );
-  const confirm = dialog.getByRole("button", {
-    name: "Share this snapshot",
-    exact: true,
-  });
-  await expect(confirm).toBeEnabled();
-  await confirm.click();
-  await expect(
-    dialog.getByRole("button", { name: "Working…", exact: true }),
-  ).toBeDisabled();
-  await expect(dialog.getByRole("progressbar")).toHaveAttribute(
-    "aria-label",
-    "Sharing reviewed snapshot…",
-  );
-  await page.evaluate(() => {
-    const controls = (window as unknown as MenuWindow).resourceMenu;
-    controls.previewProgress?.({
-      label: "Late finished preview",
-      completed: 1,
-      total: 1,
-    });
-  });
-  await expect(dialog.getByRole("progressbar")).toHaveAttribute(
-    "aria-label",
-    "Sharing reviewed snapshot…",
-  );
-  await page.evaluate(() => {
-    (window as unknown as MenuWindow).resourceMenu.shareProgress?.({
-      label: "Uploading reviewed files",
-      detail: "content.md",
-      completed: 1,
-      total: 2,
-    });
-  });
-  await expect(dialog.getByRole("progressbar")).toHaveAttribute(
-    "aria-valuenow",
-    "1",
-  );
-  await expect(dialog.getByRole("progressbar")).toHaveAttribute(
-    "aria-label",
-    "Uploading reviewed files",
-  );
+  await resourceMenu(page, "Private memory notes", "Share with team…");
+  const dialog = shareDialog(page);
+  await dialog
+    .getByRole("button", { name: "Share with team", exact: true })
+    .click();
+  await expect(statusPill(dialog)).toHaveText("Sending");
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
   await page.evaluate(() =>
     (window as unknown as MenuWindow).resourceMenu.finishShare?.(),
   );
-  await expect(dialog).toHaveCount(0);
   await expect(
-    page.getByText("Snapshot sharing queued", { exact: true }),
+    page.getByText("Shared with team", { exact: true }),
   ).toBeVisible();
   expect(await resourceCalls(page, "share")).toHaveLength(1);
+});
+
+test("a review that is about to expire is prepared again on its own", async ({
+  page,
+}) => {
+  await page.clock.install();
+  await menuFixture(page);
+  await collection(page, "Memories");
+  await page.evaluate(() => {
+    (window as unknown as MenuWindow).resourceMenu.previewExpiresIn = 600;
+  });
+  await resourceMenu(page, "Private memory notes", "Share with team…");
+  const dialog = shareDialog(page);
+  await expect(statusPill(dialog)).toHaveText("On your Mac");
+  expect(await resourceCalls(page, "preview-share")).toHaveLength(1);
+  await page.clock.runFor(600_000);
+  await expect
+    .poll(async () => (await resourceCalls(page, "preview-share")).length)
+    .toBe(2);
+  await expect(statusPill(dialog)).toHaveText("On your Mac");
+  expect(await resourceCalls(page, "share")).toEqual([]);
 });
 
 test("canceled snapshot preparation cannot update a reopened review", async ({
@@ -1268,31 +1058,18 @@ test("canceled snapshot preparation cannot update a reopened review", async ({
     (window as unknown as MenuWindow).resourceMenu.deferPreview = true;
   });
   await resourceMenu(page, "Private memory notes", "Share with team…");
-  const dialog = page.getByRole("dialog", {
-    name: "Share snapshot with project",
-    exact: true,
-  });
-  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  const dialog = shareDialog(page);
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
   await expect(dialog).toHaveCount(0);
   await resourceMenu(page, "Private memory notes", "Share with team…");
   await page.evaluate(() => {
-    const controls = (window as unknown as MenuWindow).resourceMenu;
-    controls.previewProgresses[0]?.({ label: "Canceled preview progress" });
-    controls.finishPreviews[0]?.();
-    controls.previewProgress?.({
-      label: "Reading current snapshot",
-      detail: "content.md",
-    });
+    (window as unknown as MenuWindow).resourceMenu.finishPreviews[0]?.();
   });
-  await expect(dialog.getByRole("progressbar")).toHaveAttribute(
-    "aria-label",
-    "Reading current snapshot",
-  );
-  await expect(dialog).not.toContainText("Canceled preview progress");
   const confirm = dialog.getByRole("button", {
-    name: "Share this snapshot",
+    name: "Share with team",
     exact: true,
   });
+  await expect(statusPill(dialog)).toHaveText("Preparing preview");
   await expect(confirm).toBeDisabled();
   await page.evaluate(() =>
     (window as unknown as MenuWindow).resourceMenu.finishPreview?.(),
@@ -1300,35 +1077,6 @@ test("canceled snapshot preparation cannot update a reopened review", async ({
   await expect(confirm).toBeEnabled();
   expect(await resourceCalls(page, "share")).toEqual([]);
 });
-
-for (const [status, notice] of [
-  ["approval_required", "Snapshot sent for approval"],
-  ["conflict", "Snapshot needs conflict review"],
-]) {
-  test(`${status} share receipt is not reported as publication`, async ({
-    page,
-  }) => {
-    await menuFixture(page);
-    await collection(page, "Memories");
-    await page.evaluate((status) => {
-      (window as unknown as MenuWindow).resourceMenu.shareStatus = status;
-    }, status);
-    await resourceMenu(page, "Private memory notes", "Share with team…");
-    const dialog = page.getByRole("dialog", {
-      name: "Share snapshot with project",
-      exact: true,
-    });
-    await dialog
-      .getByRole("button", { name: "Share this snapshot", exact: true })
-      .click();
-    await expect(dialog).toHaveCount(0);
-    await expect(page.getByText(notice, { exact: true })).toBeVisible();
-    await expect(
-      page.getByText("Snapshot shared", { exact: true }),
-    ).toHaveCount(0);
-    expect(await resourceCalls(page, "share")).toHaveLength(1);
-  });
-}
 
 test("shared deletion retries a network failure with the same reviewed token before acknowledged success", async ({
   page,
@@ -1481,12 +1229,9 @@ test("a late snapshot preview cannot be submitted after changing accounts", asyn
     (window as unknown as MenuWindow).resourceMenu.deferPreview = true;
   });
   await resourceMenu(page, "Private memory notes", "Share with team…");
-  const dialog = page.getByRole("dialog", {
-    name: "Share snapshot with project",
-    exact: true,
-  });
+  const dialog = shareDialog(page);
   await expect(
-    dialog.getByRole("button", { name: "Share this snapshot", exact: true }),
+    dialog.getByRole("button", { name: "Share with team", exact: true }),
   ).toBeDisabled();
   await page.evaluate(() => {
     (window as unknown as MenuWindow).library.user = "another-user";
