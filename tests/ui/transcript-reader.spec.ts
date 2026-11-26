@@ -4,6 +4,10 @@ import { detailGalleryFixture } from "./fixtures/detail-gallery.js";
 async function expectSkeletonLines(area: Locator) {
   const lines = area.locator(".transcript-skeleton-line");
   await expect(lines.first()).toBeInViewport();
+  await expect(lines.first()).not.toHaveCSS(
+    "background-color",
+    "rgba(0, 0, 0, 0)",
+  );
   await expect(lines.nth(1)).toBeVisible();
 }
 
