@@ -647,7 +647,7 @@ for (const width of [1160, 900])
       (await calls(page)).filter((call) => call.action === "clone"),
     ).toHaveLength(0);
     const heading = await picker(page)
-      .locator(".repository-dialog-heading h2")
+      .locator(".ui-modal-header h2")
       .boundingBox();
     const close = await picker(page)
       .getByRole("button", { name: "Close repository connection" })

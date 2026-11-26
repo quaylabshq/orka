@@ -1,4 +1,3 @@
-import { XIcon } from "lucide-react";
 import { EnvConflictDialog } from "./conflict-dialog.js";
 import { DeleteEnvDialog } from "./delete-dialog.js";
 import { ApplyEnvDialog } from "./apply-dialog.js";
@@ -7,42 +6,15 @@ import { DeviceApprovalDialog } from "./device-dialog.js";
 import { ApprovalCodeDialog } from "./code-dialog.js";
 import { ImportEnvDialog } from "./import-dialog.js";
 import { Button } from "../button.js";
-import { IconButton } from "../icon-button.js";
 import { Modal } from "../modal.js";
 import type { EnvController } from "./use-environments.js";
-import type { ReactNode } from "react";
-function EnvDialog({
-  title,
-  onClose,
-  children,
-}: {
-  title: string;
-  onClose: () => void;
-  children: ReactNode;
-  wide?: boolean;
-  className?: string;
-}) {
-  return (
-    <Modal legacyFrame title={title} onClose={onClose} className="env-dialog">
-      <header className="env-dialog-heading">
-        <h2>{title}</h2>
-        <IconButton
-          icon={XIcon}
-          aria-label="Close dialog"
-          variant="tertiary"
-          size="sm"
-          onClick={onClose}
-        />
-      </header>
-      {children}
-    </Modal>
-  );
-}
 export function EnvDialogs({ c }: { c: EnvController }) {
   const { modal, close, busy, error } = c;
   if (!modal) return null;
   return (
-    <EnvDialog
+    <Modal
+      size="wide"
+      closeLabel="Close dialog"
       title={
         {
           import: "Import environment variables",
@@ -58,7 +30,6 @@ export function EnvDialogs({ c }: { c: EnvController }) {
         }[modal]
       }
       onClose={close}
-      wide={modal === "import" || modal === "conflict"}
       className="env-dialog"
     >
       {busy && <p role="status">{busy}</p>}
@@ -147,6 +118,6 @@ export function EnvDialogs({ c }: { c: EnvController }) {
           </div>
         </>
       )}
-    </EnvDialog>
+    </Modal>
   );
 }

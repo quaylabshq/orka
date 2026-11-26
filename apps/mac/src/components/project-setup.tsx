@@ -4,14 +4,12 @@ import {
   LogInIcon,
   PlusIcon,
   TriangleAlertIcon,
-  XIcon,
 } from "lucide-react";
 import { TextField } from "./text-field.js";
-import { IconButton } from "./icon-button.js";
 import { Button } from "./button.js";
 import { EmptyState } from "./empty-state.js";
 import { Icon } from "./icon.js";
-import React, { useLayoutEffect, useRef } from "react";
+import React, { useId, useLayoutEffect, useRef } from "react";
 import { Modal } from "./modal.js";
 import { ProjectSharingChoices } from "./project-sharing.js";
 import { SegmentedControl } from "./segmented-control.js";
@@ -80,7 +78,8 @@ export function ProjectSetupDialog({
       ? action
       : (invite?.title ?? action);
   const problem = error || invite?.error || "";
-  const heading = useRef<HTMLHeadingElement>(null);
+  const formId = useId();
+  const fields = useRef<HTMLDivElement>(null);
   const cancel = useRef<HTMLButtonElement>(null);
   const submit = useRef<HTMLButtonElement>(null);
   const attachingFolders = busy && connectingFolders && !folderError;
@@ -93,45 +92,82 @@ export function ProjectSetupDialog({
         : "";
   useLayoutEffect(() => {
     if (waiting && !cancelling) cancel.current?.focus({ preventScroll: true });
-    else if (busy) heading.current?.focus({ preventScroll: true });
+    else if (busy) fields.current?.focus({ preventScroll: true });
     else if (folderError) submit.current?.focus({ preventScroll: true });
   }, [busy, cancelling, folderError, waiting]);
   // While waiting, closing the dialog cancels the pending request instead.
   const dismiss = waiting ? onCancelWait : busy ? undefined : onClose;
   return (
     <Modal
-      legacyFrame
       onClose={() => dismiss?.()}
       title={title}
+      size="wide"
       className="create-project-modal"
+      closeLabel={
+        connectingFolders
+          ? "Close project folder setup"
+          : creating
+            ? "Close create project"
+            : "Close join project"
+      }
+      closeDisabled={!dismiss || cancelling}
+      footer={
+        <>
+          <p
+            className="create-project-status"
+            role="status"
+            aria-label="Project setup progress"
+          >
+            {status}
+          </p>
+          <Button
+            ref={cancel}
+            size="sm"
+            variant="tertiary"
+            onClick={dismiss}
+            disabled={!dismiss || cancelling}
+          >
+            {connectingFolders ? "Open project" : "Cancel"}
+          </Button>
+          <Button
+            ref={submit}
+            size="sm"
+            form={formId}
+            className="create-project-submit"
+            type="submit"
+            variant="primary"
+            disabled={
+              busy ||
+              (connectingFolders
+                ? selection.folders.length === 0
+                : !value.trim() || serviceMismatch || invite?.unavailable)
+            }
+          >
+            {waiting
+              ? "Waiting for sync…"
+              : connectingFolders
+                ? attachingFolders
+                  ? "Connecting…"
+                  : "Retry connection"
+                : busy
+                  ? creating
+                    ? "Creating…"
+                    : "Joining…"
+                  : action}
+          </Button>
+        </>
+      }
     >
       <form
+        id={formId}
         className="create-project-form"
         onSubmit={(event) => {
           event.preventDefault();
           if (!submit.current?.disabled) onSubmit();
         }}
       >
-        <div className="create-project-heading">
-          <h2 ref={heading} title={title} tabIndex={-1}>
-            {title}
-          </h2>
-          <IconButton
-            icon={XIcon}
-            variant="tertiary"
-            size="sm"
-            aria-label={
-              connectingFolders
-                ? "Close project folder setup"
-                : creating
-                  ? "Close create project"
-                  : "Close join project"
-            }
-            disabled={!dismiss || cancelling}
-            onClick={dismiss}
-          />
-        </div>
         <div
+          ref={fields}
           className="create-project-fields"
           aria-busy={busy}
           tabIndex={busy ? 0 : undefined}
@@ -242,47 +278,6 @@ export function ProjectSetupDialog({
             </span>
           </div>
         )}
-        <div className="create-project-footer">
-          <p
-            className="create-project-status"
-            role="status"
-            aria-label="Project setup progress"
-          >
-            {status}
-          </p>
-          <Button
-            ref={cancel}
-            variant="tertiary"
-            onClick={dismiss}
-            disabled={!dismiss || cancelling}
-          >
-            {connectingFolders ? "Open project" : "Cancel"}
-          </Button>
-          <Button
-            ref={submit}
-            className="create-project-submit"
-            type="submit"
-            variant="primary"
-            disabled={
-              busy ||
-              (connectingFolders
-                ? selection.folders.length === 0
-                : !value.trim() || serviceMismatch || invite?.unavailable)
-            }
-          >
-            {waiting
-              ? "Waiting for sync…"
-              : connectingFolders
-                ? attachingFolders
-                  ? "Connecting…"
-                  : "Retry connection"
-                : busy
-                  ? creating
-                    ? "Creating…"
-                    : "Joining…"
-                  : action}
-          </Button>
-        </div>
       </form>
     </Modal>
   );

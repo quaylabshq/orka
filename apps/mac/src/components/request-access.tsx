@@ -1,9 +1,7 @@
-import { XIcon } from "lucide-react";
 import React, { useEffect, useState } from "react";
 import type { AccessMode, Resource } from "@portable/protocol";
 import type { Project, Snapshot } from "../types.js";
 import { Button } from "./button.js";
-import { IconButton } from "./icon-button.js";
 import { PermissionSelect } from "./permission-select.js";
 import { Modal } from "./modal.js";
 import {
@@ -132,52 +130,45 @@ export function RequestAccess({
       setBusy(false);
     }
   };
-  const fields = (
-    <>
-      <label>
-        Permission
-        <PermissionSelect
-          label="Requested permission"
-          value={requestedMode}
-          disabled={busy}
-          options={[
-            { value: "read", label: "View only" },
-            { value: "suggest", label: "Suggest changes" },
-            { value: "publish", label: "Can edit" },
-          ]}
-          onChange={(value) => {
-            setMode(value);
-            setRequestId(crypto.randomUUID());
-          }}
-        />
-      </label>
-      {error && <p role="alert">{error}</p>}
-      <div className="actions">
-        <Button
-          size={renderInDialog ? "sm" : undefined}
-          disabled={busy}
-          onClick={() => void sendRequest()}
-        >
-          {busy ? "Sending…" : "Send request"}
-        </Button>
-        {!renderInDialog && (
-          <Button
-            variant="tertiary"
-            disabled={busy}
-            onClick={() => setOpen(false)}
-          >
-            Cancel
-          </Button>
-        )}
-      </div>
-    </>
+  const permission = (
+    <label>
+      Permission
+      <PermissionSelect
+        label="Requested permission"
+        value={requestedMode}
+        disabled={busy}
+        options={[
+          { value: "read", label: "View only" },
+          { value: "suggest", label: "Suggest changes" },
+          { value: "publish", label: "Can edit" },
+        ]}
+        onChange={(value) => {
+          setMode(value);
+          setRequestId(crypto.randomUUID());
+        }}
+      />
+    </label>
+  );
+  const send = (variant?: "primary") => (
+    <Button
+      size="sm"
+      variant={variant}
+      disabled={busy}
+      onClick={() => void sendRequest()}
+    >
+      {busy ? "Sending…" : "Send request"}
+    </Button>
   );
   if (renderInDialog)
     return renderInDialog(
       alreadyRequested ? (
         <p role="status">Access requested</p>
       ) : (
-        <div className="index-access-request-fields">{fields}</div>
+        <div className="index-access-request-fields">
+          {permission}
+          {error && <p role="alert">{error}</p>}
+          <div className="actions">{send()}</div>
+        </div>
       ),
       busy,
     );
@@ -203,26 +194,29 @@ export function RequestAccess({
       </Button>
       {open && (
         <Modal
-          legacyFrame
           title="Request access"
+          closeLabel="Close access request"
+          closeDisabled={busy}
           onClose={() => {
             if (!busy) setOpen(false);
           }}
           className="access-request-dialog"
+          error={error}
+          footer={
+            <>
+              <Button
+                size="sm"
+                variant="tertiary"
+                disabled={busy}
+                onClick={() => setOpen(false)}
+              >
+                Cancel
+              </Button>
+              {send("primary")}
+            </>
+          }
         >
-          <div className="actions">
-            <h2>Request access</h2>
-            <span className="spacer" />
-            <IconButton
-              icon={XIcon}
-              aria-label="Close access request"
-              variant="tertiary"
-              size="sm"
-              disabled={busy}
-              onClick={() => setOpen(false)}
-            />
-          </div>
-          {fields}
+          {permission}
         </Modal>
       )}
     </>

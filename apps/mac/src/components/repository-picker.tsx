@@ -3,7 +3,6 @@ import {
   ShieldUserIcon,
   UnplugIcon,
   UserPlusIcon,
-  XIcon,
 } from "lucide-react";
 import { GithubMarkIcon } from "./icons.js";
 import { useEffect, useState } from "react";
@@ -14,7 +13,6 @@ import type { RepositoryController } from "./use-repositories.js";
 import { Modal } from "./modal.js";
 import { Button } from "./button.js";
 import { Icon } from "./icon.js";
-import { IconButton } from "./icon-button.js";
 import { TextField } from "./text-field.js";
 import { useConnectProject } from "./use-project-setup.js";
 import { ActionPopover } from "./resource-actions.js";
@@ -298,22 +296,78 @@ export function RepositoryPicker({
   };
   return (
     <Modal
-      legacyFrame
       title="Connect repository"
       className="repository-dialog"
+      closeLabel="Close repository connection"
+      error={error || loadError || matchingError || undefined}
+      closeDisabled={busy}
       onClose={close}
+      footer={
+        ((onLocalFolder && !source && !authorization) ||
+          (status && !needsAuth && !connected)) && (
+          <>
+            {onLocalFolder && !source && !authorization && (
+              <Button
+                size="sm"
+                className="repository-local-option"
+                variant="secondary"
+                disabled={busy}
+                onClick={() =>
+                  void run(async () => {
+                    if (await onLocalFolder()) onConnected();
+                  })
+                }
+              >
+                Use Local Folder
+              </Button>
+            )}
+            {status &&
+              !needsAuth &&
+              !connected &&
+              (sourceAccess?.state === "access_unavailable" ? (
+                <Button
+                  size="sm"
+                  variant="primary"
+                  disabled={busy}
+                  onClick={() => source && onRequestAccess(source)}
+                >
+                  Request access
+                </Button>
+              ) : sourceAccess?.state === "unavailable" ? (
+                <Button
+                  size="sm"
+                  disabled={busy}
+                  onClick={() => void run(() => controller.recheck(source!.id))}
+                >
+                  Retry access check
+                </Button>
+              ) : (
+                <Button
+                  size="sm"
+                  variant="primary"
+                  disabled={
+                    busy ||
+                    loading ||
+                    checkingFolder ||
+                    Boolean(duplicateBinding) ||
+                    Boolean(loadError || matchingError) ||
+                    !selected ||
+                    !canConnectSource ||
+                    (!existing?.path && (!directory || !name))
+                  }
+                  onClick={() => void connect()}
+                >
+                  {busy
+                    ? "Connecting…"
+                    : !canConnectSource
+                      ? "Checking access…"
+                      : "Connect repository"}
+                </Button>
+              ))}
+          </>
+        )
+      }
     >
-      <div className="repository-dialog-heading">
-        <h2>Connect repository</h2>
-        <IconButton
-          icon={XIcon}
-          size="sm"
-          variant="tertiary"
-          aria-label="Close repository connection"
-          disabled={busy}
-          onClick={close}
-        />
-      </div>
       {!status ? (
         <>
           <p role="status">
@@ -611,68 +665,6 @@ export function RepositoryPicker({
             </p>
           )}
         </>
-      )}
-      {((onLocalFolder && !source && !authorization) ||
-        (status && !needsAuth && !connected)) && (
-        <div className="repository-dialog-footer">
-          {onLocalFolder && !source && !authorization && (
-            <Button
-              className="repository-local-option"
-              variant="secondary"
-              disabled={busy}
-              onClick={() =>
-                void run(async () => {
-                  if (await onLocalFolder()) onConnected();
-                })
-              }
-            >
-              Use Local Folder
-            </Button>
-          )}
-          {status &&
-            !needsAuth &&
-            !connected &&
-            (sourceAccess?.state === "access_unavailable" ? (
-              <Button
-                variant="primary"
-                disabled={busy}
-                onClick={() => source && onRequestAccess(source)}
-              >
-                Request access
-              </Button>
-            ) : sourceAccess?.state === "unavailable" ? (
-              <Button
-                disabled={busy}
-                onClick={() => void run(() => controller.recheck(source!.id))}
-              >
-                Retry access check
-              </Button>
-            ) : (
-              <Button
-                variant="primary"
-                disabled={
-                  busy ||
-                  loading ||
-                  checkingFolder ||
-                  Boolean(duplicateBinding) ||
-                  Boolean(loadError || matchingError) ||
-                  !selected ||
-                  !canConnectSource ||
-                  (!existing?.path && (!directory || !name))
-                }
-                onClick={() => void connect()}
-              >
-                {busy
-                  ? "Connecting…"
-                  : !canConnectSource
-                    ? "Checking access…"
-                    : "Connect repository"}
-              </Button>
-            ))}
-        </div>
-      )}
-      {(error || loadError || matchingError) && (
-        <p role="alert">{error || loadError || matchingError}</p>
       )}
     </Modal>
   );

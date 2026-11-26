@@ -84,16 +84,8 @@
   .repository-job-feedback {
     @apply m-0 px-4 pb-4 text-body-xs text-muted;
   }
-  .repository-dialog {
-    @apply flex flex-col gap-5 overflow-y-auto p-6;
-    width: min(520px, calc(100vw - 32px));
-    max-height: calc(100vh - 48px);
-  }
-  .repository-dialog-heading {
-    @apply flex items-center justify-between gap-3;
-  }
-  .repository-dialog .repository-dialog-heading h2 {
-    @apply m-0 text-heading-xs;
+  .repository-dialog .ui-modal-body {
+    @apply gap-4;
   }
   .repository-dialog.modal p {
     @apply m-0 text-body-xs text-muted;
@@ -104,9 +96,6 @@
   }
   .repository-picker-field {
     @apply flex min-w-0 flex-col gap-2 text-label-xs;
-  }
-  .repository-dialog-footer {
-    @apply flex items-center justify-end gap-3 border-t border-line pt-4;
   }
   .repository-location {
     @apply flex flex-col gap-2;
@@ -130,6 +119,7 @@
     @apply text-heading-md tracking-widest;
   }
   .repository-local-option {
+    margin-right: auto;
     outline: 1px solid var(--border-default);
     outline-offset: -1px;
   }
