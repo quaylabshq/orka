@@ -882,7 +882,7 @@ fn visit_stored_jsonl(
             .read_until(b'\n', &mut line)
             .map_err(|error| error.to_string())?;
         if count as u64 > MAX_RECORD_BYTES {
-            return Err("A transcript record exceeds the 16 MiB reader limit. Download the session to read it.".into());
+            return Err(crate::transcript::PREVIEW_TOO_LARGE.into());
         }
         if count == 0 {
             break;

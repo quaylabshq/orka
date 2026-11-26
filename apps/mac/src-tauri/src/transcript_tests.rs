@@ -200,7 +200,8 @@ fn private_transcript_range_and_download_use_the_same_native_snapshot_without_bl
     let path = PathBuf::from(resource["paths"][0].as_str().unwrap());
     // The native source can grow since the last catalog scan. Opening and
     // download must use the fresh redacted manifest in both cases.
-    let mut bytes = fs::read(&path).unwrap();
+    let original = fs::read(&path).unwrap();
+    let mut bytes = original.clone();
     bytes.extend(native::encode(&[json!({"type":"event_msg","payload":{"type":"user_message","message":"A private turn after the catalog scan 🧪"}})]));
     fs::write(&path, bytes).unwrap();
     let live = crate::session_forks::reading_resource(&fixture.db, &resource).unwrap();
@@ -236,7 +237,20 @@ fn private_transcript_range_and_download_use_the_same_native_snapshot_without_bl
             .unwrap()
             .exists());
     }
-    close_transcript(reader.into()).unwrap();
+    local_resources::catalog(&fixture.db, &fixture.project, "session").unwrap();
+    let refreshed = local_resources::resource(&fixture.db, id).unwrap();
+    assert_eq!(
+        opened["sessionSnapshot"]["snapshotHash"],
+        crate::commands::session_snapshot_hash(&refreshed)
+    );
+    assert_eq!(page(reader, Some(0), 16 * 1024, false)["text"], expected);
+
+    // Rolling back to the first catalog manifest must invalidate the reader
+    // once discovery has observed the live version that the user opened.
+    fs::write(&path, original).unwrap();
+    local_resources::catalog(&fixture.db, &fixture.project, "session").unwrap();
+    let result = tauri::async_runtime::block_on(read_transcript(reader.into(), None, 32, None));
+    assert_eq!(result.unwrap_err(), crate::transcript::SNAPSHOT_INVALIDATED);
 }
 
 #[test]
@@ -287,8 +301,7 @@ fn transcript_ranges_report_oversize_record_without_removing_the_snapshot_downlo
     let error =
         tauri::async_runtime::block_on(read_transcript(reader.into(), Some(0), 32 * 1024, None))
             .unwrap_err();
-    assert!(error.contains("16 MiB reader limit"), "{error}");
-    assert!(error.contains("Download the session"), "{error}");
+    assert_eq!(error, crate::transcript::PREVIEW_TOO_LARGE);
     assert_eq!(
         opened["sessionSnapshot"]["snapshotHash"],
         crate::commands::session_snapshot_hash(&resource)
@@ -342,4 +355,87 @@ fn transcript_ranges_reuse_a_verified_head_for_initial_forward_lookahead() {
     assert_eq!(cached["nextOffset"], 32 * 1024);
     assert_eq!(cached["eof"], false);
     close_transcript(reader.into()).unwrap();
+}
+
+#[test]
+fn oversized_unrendered_event_keeps_the_exact_small_transcript_downloadable() {
+    let f = Fixture::new();
+    let resource = publish_fixture(
+        &f,
+        "codex",
+        &native::encode(&[
+            json!({"type":"session_meta","payload":{"id":uuid::Uuid::new_v4(),"cwd":f.root}}),
+            json!({"type":"event_msg","payload":{"type":"exec_command_end","aggregated_output":"x".repeat(16 * 1024 * 1024)}}),
+            json!({"type":"event_msg","payload":{"type":"user_message","message":"Only visible text"}}),
+        ]),
+    );
+    let id = resource["resourceId"].as_str().unwrap();
+    let legacy = crate::commands::inspect_resource(
+        id.into(),
+        "session.jsonl".into(),
+        None,
+        Some(4 * 1024 * 1024),
+    )
+    .unwrap();
+    assert_eq!(legacy["content"], "## user\n\nOnly visible text\n\n");
+    let opened = open(&resource, None);
+    let reader = opened["readerId"].as_str().unwrap();
+    let result =
+        tauri::async_runtime::block_on(read_transcript(reader.into(), Some(0), 16 * 1024, None));
+    assert_eq!(result.unwrap_err(), crate::transcript::PREVIEW_TOO_LARGE);
+    let download = f.root.join("oversized-event.zip");
+    crate::commands::export_bundle(
+        id.into(),
+        download.to_string_lossy().into(),
+        Some(serde_json::from_value(opened["sessionSnapshot"].clone()).unwrap()),
+    )
+    .unwrap();
+    let mut zip = zip::ZipArchive::new(fs::File::open(download).unwrap()).unwrap();
+    let mut text = String::new();
+    zip.by_name("transcript.md")
+        .unwrap()
+        .read_to_string(&mut text)
+        .unwrap();
+    assert_eq!(text, legacy["content"]);
+}
+
+#[test]
+fn deleting_a_session_invalidates_its_open_reader_despite_matching_files() {
+    let f = Fixture::new();
+    let mut resource = publish_fixture(
+        &f,
+        "claude",
+        &native::encode(&[json!({"type":"user","message":{"role":"user","content":"Delete me"}})]),
+    );
+    let opened = open(&resource, None);
+    let reader = opened["readerId"].as_str().unwrap();
+    page(reader, Some(0), 32, false);
+    resource["deleted"] = true.into();
+    store_resource(&f, &resource);
+    let result = tauri::async_runtime::block_on(read_transcript(reader.into(), None, 32, None));
+    assert_eq!(result.unwrap_err(), crate::transcript::SNAPSHOT_INVALIDATED);
+}
+
+#[test]
+fn corrupt_stored_source_cannot_return_even_a_prepared_prefix() {
+    let f = Fixture::new();
+    let mut bytes = native::encode(&[
+        json!({"type":"user","message":{"role":"user","content":"a".repeat(40 * 1024)}}),
+    ]);
+    let resource = publish_fixture(&f, "claude", &bytes);
+    let opened = open(&resource, None);
+    let reader = opened["readerId"].as_str().unwrap();
+    let slot = bytes.iter().rposition(|byte| *byte == b'a').unwrap();
+    bytes[slot] = b'z';
+    let blob = db::blob_path(resource["files"][0]["hash"].as_str().unwrap()).unwrap();
+    fs::write(blob, &bytes).unwrap();
+    let result = tauri::async_runtime::block_on(read_transcript(reader.into(), Some(0), 32, None));
+    assert_eq!(result.unwrap_err(), "Blob hash mismatch");
+
+    bytes.extend_from_slice(b"{bad json}\n");
+    let resource = publish_fixture(&f, "claude", &bytes);
+    let opened = open(&resource, None);
+    let reader = opened["readerId"].as_str().unwrap();
+    let result = tauri::async_runtime::block_on(read_transcript(reader.into(), Some(0), 32, None));
+    assert!(result.unwrap_err().contains("corrupt native transcript"));
 }

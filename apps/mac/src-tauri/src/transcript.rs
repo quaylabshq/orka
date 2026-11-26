@@ -18,13 +18,15 @@ use tokio::sync::Semaphore;
 const PAGE_LIMIT: usize = 32 * 1024;
 const TAPE_LIMIT: u64 = 512 * 1024 * 1024;
 const MAX_READERS: usize = 4;
+pub(crate) const PREVIEW_TOO_LARGE: &str = "transcript_preview_too_large";
 pub(crate) const SNAPSHOT_INVALIDATED: &str = "transcript_snapshot_invalidated";
 
 struct Reader {
     scope: CacheScope,
     id: String,
     conflict_id: Option<String>,
-    candidate_hash: String,
+    catalog_hash: Mutex<String>,
+    snapshot_hash: String,
     resource: Value,
     cancelled: AtomicBool,
     tape: Mutex<Option<Tape>>,
@@ -68,11 +70,19 @@ impl Reader {
         let db = self.scope.open()?;
         let candidate = inspection_candidate(&db, &self.id, self.conflict_id.as_deref())
             .map_err(|_| SNAPSHOT_INVALIDATED)?;
-        if candidate["kind"] != "session"
-            || candidate["deleted"] == true
-            || session_snapshot_hash(&candidate) != self.candidate_hash
-        {
+        if candidate["kind"] != "session" || candidate["deleted"] == true {
             return Err(SNAPSHOT_INVALIDATED.into());
+        }
+        let current_hash = session_snapshot_hash(&candidate);
+        let mut catalog_hash = self.catalog_hash.lock().map_err(|_| SNAPSHOT_INVALIDATED)?;
+        if current_hash != *catalog_hash {
+            // A private session can advance before discovery runs. Accept the
+            // catalog catching up to the opened bytes once. A later rollback
+            // is a different snapshot.
+            if current_hash != self.snapshot_hash {
+                return Err(SNAPSHOT_INVALIDATED.into());
+            }
+            *catalog_hash = current_hash;
         }
         Ok(())
     }
@@ -140,7 +150,8 @@ fn open_in_scope(
         scope,
         id,
         conflict_id: conflict_id.clone(),
-        candidate_hash,
+        catalog_hash: Mutex::new(candidate_hash),
+        snapshot_hash: snapshot_hash.clone(),
         resource,
         cancelled: AtomicBool::new(false),
         tape: Mutex::new(tape),
@@ -294,7 +305,7 @@ impl TapeBuilder {
             }
             self.bytes += count as u64;
             if self.bytes > TAPE_LIMIT {
-                return Err("The temporary transcript exceeds its size limit. Download the session to read it.".into());
+                return Err(PREVIEW_TOO_LARGE.into());
             }
             self.output
                 .write_all(&part.as_bytes()[..count])
@@ -569,6 +580,17 @@ mod tests {
         let expected = crate::native::transcript(&[head, later]);
         assert_eq!(page.text, &expected[..page.next_offset as usize]);
         assert!(!page.eof);
+    }
+
+    #[test]
+    fn formatted_tape_limit_uses_the_download_fallback() {
+        let mut builder = TapeBuilder::new(None).unwrap();
+        builder.bytes = TAPE_LIMIT;
+        let record = json!({"type":"user","message":{"role":"user","content":"last"}});
+        assert_eq!(
+            builder.record(Some(&record)).unwrap_err(),
+            PREVIEW_TOO_LARGE
+        );
     }
 
     #[test]
