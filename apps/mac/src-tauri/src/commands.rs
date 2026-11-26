@@ -231,15 +231,21 @@ pub fn switch_service(config: Value) -> Result<()> {
     db::set(&db, "config", &next)?;
     SyncQueue::request(&db, WORKSPACE, Priority::User, "service")
 }
+// Keep the destinations fixed; callers cannot launch arbitrary URLs or local
+// files through this sign-in action.
+fn legal_link_url(document: &str) -> Option<&'static str> {
+    match document {
+        "terms" => Some("https://tryorka.ai/docs/terms"),
+        "privacy" => Some("https://tryorka.ai/docs/privacy"),
+        _ => None,
+    }
+}
+
 #[tauri::command]
 pub fn open_legal_link(document: String) -> Result<()> {
-    if !matches!(document.as_str(), "terms" | "privacy") {
-        return Err("Unknown legal document".into());
-    }
-    // Keep the approved placeholder destination fixed; callers cannot launch
-    // arbitrary URLs or local files through this sign-in action.
+    let url = legal_link_url(&document).ok_or("Unknown legal document")?;
     let status = Command::new("/usr/bin/open")
-        .arg("https://x.com")
+        .arg(url)
         .status()
         .map_err(|e| e.to_string())?;
     if !status.success() {
@@ -1491,4 +1497,23 @@ pub fn ensure_agent() -> Result<()> {
     }
     FileExt::unlock(&lock).map_err(|e| e.to_string())?;
     background_agent(true)
+}
+
+#[cfg(test)]
+mod legal_link_tests {
+    use super::legal_link_url;
+
+    #[test]
+    fn legal_links_open_only_the_published_docs() {
+        assert_eq!(
+            legal_link_url("terms"),
+            Some("https://tryorka.ai/docs/terms")
+        );
+        assert_eq!(
+            legal_link_url("privacy"),
+            Some("https://tryorka.ai/docs/privacy")
+        );
+        assert_eq!(legal_link_url("https://example.com"), None);
+        assert_eq!(legal_link_url(""), None);
+    }
 }
