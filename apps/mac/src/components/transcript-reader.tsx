@@ -30,6 +30,11 @@ const MAX_WINDOW_BLOCKS = 512;
 const TRIM_WINDOW_BLOCKS = 64;
 const NO_BLOCKS: TranscriptBlock[] = [];
 
+// After a seek, pages can produce blocks with the same start and different ends.
+function blockKey(block: TranscriptBlock) {
+  return `${block.offset}-${block.end}`;
+}
+
 interface TranscriptReaderProps {
   id: string;
   conflictId: string;
@@ -232,7 +237,7 @@ interface TranscriptIndex {
 }
 
 interface Anchor {
-  offset: number;
+  key: string;
   within: number;
 }
 
@@ -265,6 +270,7 @@ function TranscriptText({
   const latestJump = useRef<"end" | "start" | null>(null);
   const generation = useRef(0);
   const anchor = useRef<Anchor | null>(null);
+  const previousListMargin = useRef<number | null>(null);
   const loaded = useRef<TranscriptIndex | null>(null);
   const position = useRef<"start" | "end" | null>(null);
   const [index, setIndex] = useState<TranscriptIndex | null>(null);
@@ -282,7 +288,7 @@ function TranscriptText({
   const virtualizer = useVirtualizer({
     count: blocks.length,
     getScrollElement: () => readerRef.current,
-    getItemKey: (i) => blocks[i].offset,
+    getItemKey: (i) => blockKey(blocks[i]),
     estimateSize: (i) => {
       const { characters, lineCount } = blocks[i];
       return (
@@ -342,6 +348,16 @@ function TranscriptText({
       redraw((value) => value + 1);
       return;
     }
+    if (request.kind === "before" && range.offset === 0) {
+      const scroller = readerRef.current;
+      if (
+        scroller &&
+        header.current &&
+        header.current.getBoundingClientRect().top <=
+          scroller.getBoundingClientRect().top
+      )
+        previousListMargin.current = virtualizer.options.scrollMargin;
+    }
     const nextBlocks = incoming.map(({ block }) => block);
     const current = loaded.current;
     let next: TranscriptIndex = {
@@ -379,7 +395,7 @@ function TranscriptText({
             ? combined.slice(-trim)
             : combined.slice(0, trim);
           for (const block of discarded)
-            virtualizer.itemSizeCache.delete(block.offset);
+            virtualizer.itemSizeCache.delete(blockKey(block));
           next = {
             blocks: retained,
             start: retained[0].offset,
@@ -509,13 +525,20 @@ function TranscriptText({
       const margin = Math.round(
         rect.top - scroller.getBoundingClientRect().top + scroller.scrollTop,
       );
+      const previous = previousListMargin.current;
+      if (previous !== null && margin !== previous) {
+        // The virtualizer anchors the added records, but the final prepend
+        // also removes the reserved loading space above the list.
+        scroller.scrollTop += margin - previous;
+        previousListMargin.current = null;
+      }
       const nextWidth = Math.round(rect.width);
       if (width && width !== nextWidth) {
         const top = scroller.scrollTop;
         const visible = virtualizer.getVirtualItemForOffset(top);
         if (visible && top >= margin - (header.current?.offsetHeight ?? 0))
           anchor.current = {
-            offset: Number(visible.key),
+            key: String(visible.key),
             within: top - visible.start,
           };
         virtualizer.measure();
@@ -547,7 +570,7 @@ function TranscriptText({
     } else if (anchor.current) {
       const saved = anchor.current;
       anchor.current = null;
-      const i = blocks.findIndex(({ offset }) => offset === saved.offset);
+      const i = blocks.findIndex((block) => blockKey(block) === saved.key);
       if (i < 0) return;
       const at = virtualizer.getOffsetForIndex(i, "start");
       if (at) virtualizer.scrollToOffset(at[0] + saved.within);

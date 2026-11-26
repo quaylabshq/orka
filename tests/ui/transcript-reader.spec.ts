@@ -165,6 +165,12 @@ test("preserves the header when the preceding range reaches the first record", a
   await checkPrependAnchor(page, true, 350);
 });
 
+test("preserves the visible text when the preceding range reaches the first record", async ({
+  page,
+}) => {
+  await checkPrependAnchor(page, false, 350);
+});
+
 test("closes a reader whose open reply arrives after leaving Transcript", async ({
   page,
 }) => {
