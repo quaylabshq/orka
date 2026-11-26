@@ -79,7 +79,7 @@ export function Modal({
       onClose={onClose}
       className={`modal toast-host-modal ui-modal ui-modal--${size} ${className}`.trim()}
     >
-      <header className="ui-modal-header">
+      <div className="ui-modal-header">
         <Dialog.Title
           aria-label={heading ? title : undefined}
           title={heading ?? title}
@@ -97,7 +97,7 @@ export function Modal({
             onClick={onClose}
           />
         )}
-      </header>
+      </div>
       <div className="ui-modal-body">{children}</div>
       {(footer || error) && (
         <footer className="ui-modal-footer">
