@@ -519,3 +519,124 @@ fn recovery_pull_retires_a_definitively_rejected_choice_after_remote_settlement(
         }
     }
 }
+
+#[test]
+fn recovery_needs_verified_candidate_bytes_before_queueing_or_retiring_a_private_copy() {
+    for choice in ["restore", "copy", "keep"] {
+        let f = Fixture::new();
+        let mut current = session(&f, "Deleted", 5);
+        current["deleted"] = json!(true);
+        current["files"] = json!([]);
+        save(&f, &current);
+        let c = conflict(&f, &current, "Incoming", current["owner"].as_str().unwrap());
+        let project = f.project["id"].as_str().unwrap();
+        let queue = || {
+            crate::commands::resolve_session_recovery(
+                project.into(),
+                current["resourceId"].as_str().unwrap().into(),
+                5,
+                c["id"].as_str().unwrap().into(),
+                choice.into(),
+                false,
+            )
+        };
+        let hash = c["candidate"]["files"][0]["hash"].as_str().unwrap();
+        let path = db::blob_path(hash).unwrap();
+        let bytes = db::blob_read(hash).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        if choice == "keep" {
+            queue().unwrap();
+            continue;
+        }
+        assert!(queue().unwrap_err().contains("Sync to download"));
+        std::fs::write(&path, vec![0; bytes.len()]).unwrap();
+        assert!(queue().unwrap_err().contains("Sync to download"));
+        assert!(f.outbox().is_empty());
+        db::blob(&bytes).unwrap();
+        queue().unwrap();
+
+        // A pre-upgrade request may already be frozen without local bytes.
+        let request = f.outbox().remove(0);
+        let key = format!("sessionCopy:{}", request["id"].as_str().unwrap());
+        std::fs::remove_file(&path).unwrap();
+        current["revision"] = json!(6);
+        sync::apply_event(&f.db, &json!({"resource":current,"conflicts":[]})).unwrap();
+        f.db.execute(
+            "UPDATE outbox SET error=?",
+            [sync::SESSION_CONFLICT_CHANGED],
+        )
+        .unwrap();
+        let retire = || {
+            let tx = f.db.unchecked_transaction().unwrap();
+            sync::retire_rejected_session_choices(&tx, project, None).unwrap();
+            tx.commit().unwrap();
+        };
+        retire();
+        assert_eq!(f.outbox(), vec![request]);
+        assert!(db::get(&f.db, &key).unwrap().is_object());
+        assert!(db::rows(&f.db, "SELECT value FROM drafts", &[])
+            .unwrap()
+            .is_empty());
+        db::blob(&bytes).unwrap();
+        retire();
+        assert!(f.outbox().is_empty());
+        assert!(db::get(&f.db, &key).unwrap().is_null());
+        assert_eq!(only_draft(&f)["resource"]["files"], c["candidate"]["files"]);
+    }
+}
+
+#[test]
+fn recovery_preserves_historical_session_drafts_and_reuses_only_a_private_copy() {
+    for (status, submitted, paths, reusable) in [
+        ("dismissed", false, json!([]), false),
+        ("published", true, json!([]), false),
+        ("proposed", true, json!([]), false),
+        ("local", true, json!([]), false),
+        ("local", false, json!(["native.jsonl"]), false),
+        ("local", false, json!([]), true),
+    ] {
+        let f = Fixture::new();
+        let mut current = session(&f, "Deleted", 5);
+        current["deleted"] = json!(true);
+        current["files"] = json!([]);
+        save(&f, &current);
+        let c = conflict(&f, &current, "Incoming", current["owner"].as_str().unwrap());
+        let project = f.project["id"].as_str().unwrap();
+        let old_id =
+            crate::governance::capture(&f.db, &f.project, &c["candidate"], &paths).unwrap();
+        let mut old = only_draft(&f);
+        old["status"] = json!(status);
+        if submitted {
+            old["submission"] = json!({"id":"earlier-request"});
+        }
+        db::upsert(&f.db, "drafts", &old_id, project, &old).unwrap();
+        crate::commands::resolve_session_recovery(
+            project.into(),
+            current["resourceId"].as_str().unwrap().into(),
+            5,
+            c["id"].as_str().unwrap().into(),
+            "copy".into(),
+            false,
+        )
+        .unwrap();
+        current["revision"] = json!(6);
+        sync::apply_event(&f.db, &json!({"resource":current,"conflicts":[]})).unwrap();
+        f.db.execute(
+            "UPDATE outbox SET error=?",
+            [sync::SESSION_CONFLICT_CHANGED],
+        )
+        .unwrap();
+        let tx = f.db.unchecked_transaction().unwrap();
+        sync::retire_rejected_session_choices(&tx, project, None).unwrap();
+        tx.commit().unwrap();
+        let drafts = db::rows(&f.db, "SELECT value FROM drafts ORDER BY rowid", &[]).unwrap();
+        assert_eq!(drafts[0], old);
+        assert_eq!(drafts.len(), if reusable { 1 } else { 2 });
+        let saved = drafts.last().unwrap();
+        assert_eq!(saved["status"], "local");
+        assert_eq!(saved["paths"], json!([]));
+        assert!(saved["submission"].is_null());
+        assert_eq!(saved["resource"]["files"], c["candidate"]["files"]);
+        assert!(f.outbox().is_empty());
+    }
+}

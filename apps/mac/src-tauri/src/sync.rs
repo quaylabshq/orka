@@ -580,7 +580,14 @@ pub(crate) fn queue_session_resolution(db: &rusqlite::Connection, input: &Value)
 }
 
 pub(crate) fn store_recovery_resolution(db: &rusqlite::Connection, input: &Value) -> Result<()> {
-    store_session_resolution(db, input, input["action"] == "copy")
+    store_session_resolution(db, input, true)
+}
+
+fn recovery_bytes_available(snapshot: &Value) -> Result<bool> {
+    let store = db::BlobStore::current()?;
+    Ok(snapshot["files"]
+        .as_array()
+        .is_some_and(|files| !files.is_empty() && store.all_present(files)))
 }
 
 /// A definitive refusal and the accepted resource together tell us whether a
@@ -630,12 +637,44 @@ pub(crate) fn retire_rejected_session_choices(
             }) {
                 // Keep an explicit copy or displaced candidate privately,
                 // without binding the cloud snapshot to native history.
-                if selected["owner"] != db::get(tx, "user")? {
+                if selected["owner"] != db::get(tx, "user")?
+                    || !recovery_bytes_available(&selected)?
+                {
+                    // An older client could freeze the manifest before downloading the bytes.
                     continue;
                 }
-                let project = crate::governance::project(tx, project)?;
-                let source = crate::sources::for_resource(&project, &selected).unwrap_or(project);
-                crate::governance::capture(tx, &source, &selected, &json!([]))?;
+                let saved: bool = tx
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM drafts WHERE project=?1
+                       AND json_extract(value,'$.resource.resourceId')=?2
+                       AND json_extract(value,'$.resource.files')=?3
+                       AND json_extract(value,'$.resource.owner')=?4
+                       AND json_extract(value,'$.paths')='[]'
+                       AND json_extract(value,'$.status')='local'
+                       AND json_extract(value,'$.submission') IS NULL)",
+                        params![
+                            project,
+                            selected["resourceId"].as_str(),
+                            selected["files"].to_string(),
+                            selected["owner"].as_str()
+                        ],
+                        |r| r.get(0),
+                    )
+                    .map_err(|e| e.to_string())?;
+                if !saved {
+                    let project = crate::governance::project(tx, project)?;
+                    let source =
+                        crate::sources::for_resource(&project, &selected).unwrap_or(project);
+                    // This private copy belongs to this decision. A submitted or dismissed
+                    // draft with the same content keeps its identity and history.
+                    crate::governance::capture_as(
+                        tx,
+                        &source,
+                        &selected,
+                        &json!([]),
+                        uuid::Uuid::new_v4().to_string(),
+                    )?;
+                }
             }
         }
         tx.execute("DELETE FROM outbox WHERE id=?", [id])
@@ -648,10 +687,13 @@ pub(crate) fn retire_rejected_session_choices(
 fn store_session_resolution(
     db: &rusqlite::Connection,
     input: &Value,
-    preserve_original_binding: bool,
+    recovery: bool,
 ) -> Result<()> {
     let source = selected_resolution_snapshot(db, input)?
         .ok_or("The selected session version is unavailable; refresh before resolving")?;
+    if recovery && source["deleted"] == false && !recovery_bytes_available(&source)? {
+        return Err("Sync to download the incoming session, then choose again.".into());
+    }
     indexer::queue(
         db,
         input["projectId"].as_str().ok_or("Missing project")?,
@@ -659,7 +701,7 @@ fn store_session_resolution(
         input,
     )?;
     let mut state = json!({"source":source,"resolution":input});
-    if preserve_original_binding {
+    if recovery && input["action"] == "copy" {
         // A recovered cloud copy has no claim on this Mac's original transcript.
         state["preserveOriginalBinding"] = json!(true);
     }
