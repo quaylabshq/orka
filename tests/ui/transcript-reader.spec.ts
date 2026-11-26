@@ -1,23 +1,26 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { detailGalleryFixture } from "./fixtures/detail-gallery.js";
 
-test("keeps the visible transcript offset when preceding text becomes ready", async ({
-  page,
-}) => {
+async function checkPrependAnchor(
+  page: Page,
+  atHeader: boolean,
+  records = 3800,
+) {
   const view = await detailGalleryFixture(page, { kind: "session" });
-  await page.evaluate(() => {
+  await page.evaluate((records) => {
     const w = window as any;
     const invoke = w.__TAURI_INTERNALS__.invoke;
     const transcript =
       "Synthetic transcript begins\n" +
       Array.from(
-        { length: 3800 },
+        { length: records },
         (_, i) => `Record ${i} ${"with more text ".repeat((i % 7) + 1)}\n`,
       ).join("") +
       "Exact last line";
     w.__TAURI_INTERNALS__.invoke = async (command: string, request: any) => {
       if (command !== "read_transcript") return invoke(command, request);
       if (request.before) {
+        w.prependOffset = request.offset;
         await new Promise<void>((resolve) => {
           w.finishPrepend = resolve;
         });
@@ -37,7 +40,7 @@ test("keeps the visible transcript offset when preceding text becomes ready", as
         eof: nextOffset === transcript.length,
       };
     };
-  });
+  }, records);
   await view.getByRole("button", { name: "Transcript", exact: true }).click();
   const text = view.getByRole("region", { name: "Transcript text" });
   await expect(text).toContainText("Synthetic transcript begins");
@@ -48,13 +51,17 @@ test("keeps the visible transcript offset when preceding text becomes ready", as
   await expect(text).not.toContainText("Synthetic transcript begins");
 
   const scroller = view.locator(".detail-reader");
-  await scroller.evaluate((reader) => {
+  await scroller.evaluate((reader, atHeader) => {
+    if (atHeader) {
+      reader.scrollTop = 0;
+      return;
+    }
     const blocks = reader.querySelector(".transcript-blocks")!;
     reader.scrollTop +=
       blocks.getBoundingClientRect().top -
       reader.getBoundingClientRect().top -
       40;
-  });
+  }, atHeader);
   await expect
     .poll(() => page.evaluate(() => typeof (window as any).finishPrepend))
     .toBe("function");
@@ -75,6 +82,20 @@ test("keeps the visible transcript offset when preceding text becomes ready", as
   await page.evaluate(() => (window as any).finishPrepend());
   await expect
     .poll(() =>
+      scroller.evaluate((reader) =>
+        Array.from(
+          reader.querySelectorAll<HTMLElement>(
+            ".transcript-block[data-offset]",
+          ),
+        ).some(
+          (block) =>
+            Number(block.dataset.offset) < (window as any).prependOffset,
+        ),
+      ),
+    )
+    .toBe(true);
+  await expect
+    .poll(() =>
       scroller.evaluate((reader, { offset, top }) => {
         const block = reader.querySelector(
           `.transcript-block[data-offset="${offset}"]`,
@@ -88,6 +109,19 @@ test("keeps the visible transcript offset when preceding text becomes ready", as
     )
     .toBeLessThanOrEqual(24);
   await expect(text).toBeFocused();
+}
+
+for (const atHeader of [false, true])
+  test(`keeps the visible transcript offset on a backward scroll to the ${atHeader ? "header" : "text"}`, async ({
+    page,
+  }) => {
+    await checkPrependAnchor(page, atHeader);
+  });
+
+test("preserves the top anchor when the preceding range reaches the first record", async ({
+  page,
+}) => {
+  await checkPrependAnchor(page, true, 350);
 });
 
 test("closes a reader whose open reply arrives after leaving Transcript", async ({
@@ -285,3 +319,109 @@ test("reaches EOF through a dense transcript while keeping scroll geometry bound
   await expect(content.getByText(/Dense file ends/)).toBeInViewport();
   await expect(content).not.toContainText("Dense file begins");
 });
+
+for (const cached of ["start", "end"] as const)
+  test(`honors a jump to the cached ${cached} after a slow opposite jump`, async ({
+    page,
+  }) => {
+    const view = await detailGalleryFixture(page, { kind: "session" });
+    await page.evaluate(() => {
+      const w = window as any;
+      const invoke = w.__TAURI_INTERNALS__.invoke;
+      const text =
+        "First record\n" + "Next record.\n".repeat(12000) + "Last record";
+      w.__TAURI_INTERNALS__.invoke = async (name: string, args: any) => {
+        if (name !== "read_transcript") return invoke(name, args);
+        if (w.holdNextJump && (args.offset === null || args.offset === 0)) {
+          w.holdNextJump = false;
+          await new Promise<void>((resolve) => {
+            w.finishJump = resolve;
+          });
+        }
+        const backward = args.before || args.offset === null;
+        const position = args.offset ?? text.length;
+        const offset = backward
+          ? Math.max(0, position - args.maxBytes)
+          : position;
+        const nextOffset = backward
+          ? position
+          : Math.min(text.length, position + args.maxBytes);
+        return {
+          offset,
+          nextOffset,
+          text: text.slice(offset, nextOffset),
+          eof: nextOffset === text.length,
+        };
+      };
+    });
+    await view.getByRole("button", { name: "Transcript", exact: true }).click();
+    const region = view.getByRole("region", { name: "Transcript text" });
+    await expect(region).toContainText("First record");
+    await region.focus();
+    if (cached === "end") {
+      await region.press("End");
+      await expect(region).toContainText("Last record");
+    }
+    await page.evaluate(() => {
+      (window as any).holdNextJump = true;
+    });
+    await region.press(cached === "end" ? "Home" : "End");
+    await expect
+      .poll(() => page.evaluate(() => typeof (window as any).finishJump))
+      .toBe("function");
+    await region.press(cached === "end" ? "End" : "Home");
+    const endpoint =
+      cached === "end" ? "End of transcript" : "Start of transcript";
+    await expect(region.getByRole("status")).toHaveText(endpoint);
+    await page.evaluate(async () => {
+      (window as any).finishJump();
+      await new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      );
+    });
+    await expect(region.getByRole("status")).toHaveText(endpoint);
+    await expect(region).toContainText(
+      cached === "end" ? "Last record" : "First record",
+    );
+  });
+
+for (const [width, height] of [
+  [1160, 800],
+  [900, 640],
+])
+  test(`offers a visible retry at a failed forward edge at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height });
+    const view = await detailGalleryFixture(page, { kind: "session" });
+    await page.evaluate(() => {
+      const w = window as any,
+        invoke = w.__TAURI_INTERNALS__.invoke;
+      let opened = 0;
+      w.__TAURI_INTERNALS__.invoke = async (name: string, args: any) => {
+        if (name === "open_transcript") opened++;
+        if (name !== "read_transcript") return invoke(name, args);
+        if (args.offset) throw "Read failed.";
+        const recovered = opened > 1;
+        const text = recovered
+          ? "Transcript reopened"
+          : "First record\n".repeat(1800).slice(0, args.maxBytes);
+        return { offset: 0, nextOffset: text.length, text, eof: recovered };
+      };
+    });
+    await view.getByRole("button", { name: "Transcript", exact: true }).click();
+    const region = view.getByRole("region", { name: "Transcript text" });
+    await expect(region).toContainText("First record");
+    await view
+      .locator(".detail-reader")
+      .evaluate((el) => (el.scrollTop = el.scrollHeight));
+    const retry = region.getByRole("button", { name: "Retry" });
+    await expect(retry).toHaveCount(1);
+    await expect(retry).toBeInViewport({ ratio: 1 });
+    await expect(region.getByRole("alert")).toContainText(
+      "Couldn’t load more of the transcript.",
+    );
+    await retry.click();
+    await expect(region).toContainText("Transcript reopened");
+    await expect(retry).toHaveCount(0);
+  });

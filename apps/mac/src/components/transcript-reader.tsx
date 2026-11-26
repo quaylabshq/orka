@@ -172,6 +172,7 @@ interface TranscriptIndex {
   start: number;
   end: number;
   eof: boolean;
+  prepended?: boolean;
 }
 
 interface Anchor {
@@ -203,6 +204,7 @@ function TranscriptText({
   const cachedBytes = useRef(0);
   const active = useRef<Read | null>(null);
   const queuedJump = useRef<Read | null>(null);
+  const latestJump = useRef<"end" | "start" | null>(null);
   const generation = useRef(0);
   const anchor = useRef<Anchor | null>(null);
   const loaded = useRef<TranscriptIndex | null>(null);
@@ -234,9 +236,8 @@ function TranscriptText({
       );
     },
     scrollMargin: geometry.margin,
-    // The shared column also contains the title and conflict controls above the
-    // reader. Preserve a transcript anchor only while the user is reading it.
-    anchorTo: readingText ? "end" : "start",
+    // A partial window can prepend even when the scrollbar reaches the header.
+    anchorTo: readingText || index?.prepended ? "end" : "start",
     followOnAppend: false,
     scrollEndThreshold: 1,
     overscan: 2,
@@ -301,6 +302,7 @@ function TranscriptText({
         start: backwards ? range.offset : current.start,
         end: backwards ? current.end : range.nextOffset,
         eof: backwards ? current.eof : range.eof,
+        prepended: backwards,
       };
 
       // Keep the scroll extent within a browser-safe height on dense logs.
@@ -322,6 +324,7 @@ function TranscriptText({
           for (const block of discarded)
             virtualizer.itemSizeCache.delete(block.offset);
           next = {
+            ...next,
             blocks: retained,
             start: retained[0].offset,
             end: retained.at(-1)!.end,
@@ -361,7 +364,12 @@ function TranscriptText({
     })
       .then((range) => {
         if (ticket !== generation.current) return;
-        if (queuedJump.current) return;
+        if (
+          queuedJump.current ||
+          ((request.kind === "start" || request.kind === "end") &&
+            latestJump.current !== request.kind)
+        )
+          return;
         if (
           range.offset < 0 ||
           range.nextOffset < range.offset ||
@@ -633,7 +641,6 @@ function TranscriptText({
     const bottom = top + (scroller?.clientHeight ?? 0);
     const extent = virtualizer.getTotalSize();
     if (
-      readingText &&
       index.start > 0 &&
       top < LOOKAHEAD_PX &&
       virtualizer.scrollDirection === "backward"
@@ -655,26 +662,20 @@ function TranscriptText({
       queuedJump.current?.kind === kind
     )
       return;
+    latestJump.current = kind;
+    const end = kind === "end";
+    const target = end ? blocks.at(-1) : blocks[0];
     if (
-      kind === "end" &&
-      index?.eof &&
-      blocks.length &&
-      cache.current.has(blocks.at(-1)!.offset)
+      target &&
+      (end ? index?.eof : index?.start === 0) &&
+      cache.current.has(target.offset)
     ) {
+      queuedJump.current = null;
+      setPending(null);
       region.current?.focus({ preventScroll: true });
-      virtualizer.scrollToIndex(blocks.length - 1, { align: "end" });
-      setAnnouncement("End of transcript");
-      return;
-    }
-    if (
-      kind === "start" &&
-      index?.start === 0 &&
-      blocks.length &&
-      cache.current.has(blocks[0].offset)
-    ) {
-      region.current?.focus({ preventScroll: true });
-      readerRef.current?.scrollTo({ top: 0 });
-      setAnnouncement("Start of transcript");
+      if (end) virtualizer.scrollToIndex(blocks.length - 1, { align: "end" });
+      else readerRef.current?.scrollTo({ top: 0 });
+      setAnnouncement(end ? "End of transcript" : "Start of transcript");
       return;
     }
     const request: Read =
@@ -714,26 +715,43 @@ function TranscriptText({
     >
       <div ref={toolbar} className="transcript-actions">
         {failed !== "invalidated" && download}
-        <Button
-          size="sm"
-          variant="tertiary"
-          onClick={() => jump("start")}
-          disabled={
-            !!failed || pending?.kind === "start" || (!!index && !blocks.length)
-          }
-        >
-          Jump to start
-        </Button>
-        <Button
-          size="sm"
-          variant="tertiary"
-          onClick={() => jump("end")}
-          disabled={
-            !!failed || pending?.kind === "end" || (!!index && !blocks.length)
-          }
-        >
-          Jump to end
-        </Button>
+        {index && failed ? (
+          <div className="transcript-range-error" role="alert">
+            <p className="content-message">
+              Couldn’t load more of the transcript.
+            </p>
+            <Button size="sm" variant="secondary" onClick={reopen}>
+              Retry
+            </Button>
+          </div>
+        ) : (
+          <>
+            <Button
+              size="sm"
+              variant="tertiary"
+              onClick={() => jump("start")}
+              disabled={
+                !!failed ||
+                pending?.kind === "start" ||
+                (!!index && !blocks.length)
+              }
+            >
+              Jump to start
+            </Button>
+            <Button
+              size="sm"
+              variant="tertiary"
+              onClick={() => jump("end")}
+              disabled={
+                !!failed ||
+                pending?.kind === "end" ||
+                (!!index && !blocks.length)
+              }
+            >
+              Jump to end
+            </Button>
+          </>
+        )}
         <span
           className={
             announcement.startsWith("Preparing") ||
@@ -752,16 +770,6 @@ function TranscriptText({
         ) : (
           <TranscriptLoading />
         ))}
-      {index && failed && (
-        <div className="transcript-range-error" role="alert">
-          <p className="content-message">
-            Couldn’t load more of the transcript.
-          </p>
-          <Button size="sm" variant="tertiary" onClick={reopen}>
-            Retry
-          </Button>
-        </div>
-      )}
       {index && !blocks.length && (
         <p className="content-message">This transcript is empty.</p>
       )}
