@@ -1586,6 +1586,18 @@ impl Fixture {
             project,
         }
     }
+    fn mock_claude(&self) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let bin = self._home.path().join(".local/bin");
+        fs::create_dir_all(&bin).unwrap();
+        fs::write(
+            bin.join("claude"),
+            "#!/bin/sh\nprintf '2.1.286 (Claude Code)\\n'\n",
+        )
+        .unwrap();
+        fs::set_permissions(bin.join("claude"), fs::Permissions::from_mode(0o700)).unwrap();
+    }
     fn select_codex_binary(&self) {
         if let Some(binary) = std::env::var_os("ORKA_TEST_CODEX_BINARY") {
             let directory = self._home.path().join(".local/bin");

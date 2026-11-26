@@ -361,14 +361,7 @@ fn local_codex_forks_use_complete_cached_history_and_never_replace_source_files(
 #[test]
 fn local_claude_forks_preserve_native_graphs_and_leave_an_active_original_untouched() {
     let f = Fixture::new();
-    let bin = f._home.path().join(".local/bin");
-    fs::create_dir_all(&bin).unwrap();
-    fs::write(
-        bin.join("claude"),
-        "#!/bin/sh\nprintf '2.1.286 (Claude Code)\\n'\n",
-    )
-    .unwrap();
-    fs::set_permissions(bin.join("claude"), fs::Permissions::from_mode(0o700)).unwrap();
+    f.mock_claude();
     let original_id = uuid::Uuid::new_v4().to_string();
     let records = vec![
         json!({"type":"user","sessionId":original_id,"cwd":f.root,"uuid":"first","parentUuid":null,"message":{"role":"user","content":"Keep this history"}}),

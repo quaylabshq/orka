@@ -446,6 +446,7 @@ fn recovery_rereview_can_replace_a_denied_choice_after_publish_access_returns() 
 fn recovery_pull_retires_a_definitively_rejected_choice_after_remote_settlement() {
     for (choice, restored) in [("restore", false), ("restore", true), ("copy", true)] {
         let f = Fixture::new();
+        f.mock_claude();
         let mut tombstone = session(&f, "Deleted", 5);
         tombstone["deleted"] = json!(true);
         tombstone["files"] = json!([]);
