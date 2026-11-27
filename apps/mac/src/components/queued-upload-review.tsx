@@ -40,7 +40,7 @@ export function QueuedUploadReview({
   stale: boolean;
   parentBusy: boolean;
   onClose: () => void;
-  onRefresh: () => Promise<void>;
+  onRefresh: () => Promise<unknown>;
   onNotice: (message: string) => void;
 }) {
   const [preview, setPreview] = useState<UploadPreview | null>(null);

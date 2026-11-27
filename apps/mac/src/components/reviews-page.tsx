@@ -8,12 +8,9 @@ import {
   FolderIcon,
   HistoryIcon,
   KeyRoundIcon,
-  LayersIcon,
   ListChecksIcon,
-  MessagesSquareIcon,
   MonitorIcon,
   RefreshCwIcon,
-  ScrollTextIcon,
   UserIcon,
   UsersIcon,
 } from "lucide-react";
@@ -55,6 +52,7 @@ import {
 } from "./review-presentation.js";
 import { Person, personName, StatusPill } from "./review-status.js";
 import { SegmentedControl } from "./segmented-control.js";
+import { resourceKindIcons } from "./share-dialog.js";
 import { ReaderState } from "./skill-state.js";
 import { projectAttention } from "./sync-attention.js";
 import { useToastNotice, useToasts } from "./toasts.js";
@@ -64,12 +62,9 @@ export type ReviewsView = "open" | "history";
 const rememberedViews = new Map<string, ReviewsView>();
 
 const kindIcons: Record<ReviewKind | "change", IconGlyph> = {
+  ...resourceKindIcons,
   access: KeyRoundIcon,
   change: FileDiffIcon,
-  memory: LayersIcon,
-  plan: ScrollTextIcon,
-  session: MessagesSquareIcon,
-  skill: FileIcon,
 };
 const dateTime = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",

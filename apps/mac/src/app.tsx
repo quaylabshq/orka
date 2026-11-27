@@ -117,7 +117,10 @@ import { PluginAuthorization } from "./components/plugin-authorization.js";
 import { parseProjectInvite } from "./components/project-invite.js";
 import { useIndexFilters } from "./components/use-index-filters.js";
 import { defaultIndexFilters } from "./components/index-pages.js";
-import { useResourceView } from "./components/use-resource-view.js";
+import {
+  useResourceView,
+  type ResourceComparison,
+} from "./components/use-resource-view.js";
 import {
   useSkillSummaries,
   skillSummaryKey,
@@ -279,7 +282,10 @@ function WorkspaceApp({
   const [tab, setTab] = useState<ProjectPage>("home");
   const [envSet, setEnvSet] = useState("");
   const [resource, setResource] = useState("");
-  const [comparison, setComparison] = useState("");
+  const [comparison, setComparison] = useState<{
+    resourceId: string;
+    target: ResourceComparison;
+  } | null>(null);
   // The resource whose reading view Back just closed; its index row takes focus.
   const [returnFocus, setReturnFocus] = useState("");
   const clearReturnFocus = useCallback(() => setReturnFocus(""), []);
@@ -641,23 +647,40 @@ function WorkspaceApp({
     [sessionTitles.previews, skillSummaries, projectPath],
   );
   const conflicted = useMemo(
-    () => new Set(state.conflicts.map((c) => c.resourceId)),
-    [state.conflicts],
+    () =>
+      new Set(
+        state.conflicts
+          .filter((c) => c.candidate.projectId === project)
+          .map((c) => c.resourceId),
+      ),
+    [state.conflicts, project],
   );
-  const selected = catalogResources.find(
-    (r) => r.resourceId === resource && r.projectId === project && !r.deleted,
-  );
+  const sharedConflict = conflicted.has(resource)
+    ? state.resources.find(
+        (r) =>
+          r.resourceId === resource &&
+          r.projectId === project &&
+          r.kind === "session",
+      )
+    : undefined;
+  // Item actions use the catalog identity. Conflict reads use the preserved
+  // versions, including a shared deletion with a still-pending candidate.
+  const selected =
+    catalogResources.find(
+      (r) => r.resourceId === resource && r.projectId === project && !r.deleted,
+    ) ?? sharedConflict;
   const view = useResourceView(
     resource,
-    state.user ? selected : undefined,
+    state.user ? (sharedConflict ?? selected) : undefined,
     state.conflicts,
     workspaceScope,
     state.deviceId,
   );
   useEffect(() => {
-    if (comparison && selected?.resourceId === comparison) {
-      view.setChanges(true);
-      setComparison("");
+    if (comparison && selected?.resourceId === comparison.resourceId) {
+      if (comparison.target === "changes") view.setChanges(true);
+      else view.setPreview(comparison.target.conflictId);
+      setComparison(null);
     }
   }, [comparison, selected?.resourceId, view]);
   const openDeepLink = (link: URL) => {
@@ -956,15 +979,22 @@ function WorkspaceApp({
         leaveSettings(() => {
           setTab(item.kind);
           openResource(item.resourceId);
-          if (compare) setComparison(item.resourceId);
+          setComparison(
+            compare ? { resourceId: item.resourceId, target: compare } : null,
+          );
         })
       }
       onReview={(item, mode) =>
         leaveSettings(() => setGovernance({ resource: item.resourceId, mode }))
       }
+      onOpenRequests={(projectId, view) => {
+        setProject(projectId);
+        openManagement("requests", view, projectId);
+      }}
       onRefresh={async () => {
-        await refresh();
+        const next = await workspace.refreshSnapshot();
         localCatalog.refresh();
+        return next;
       }}
       onNotice={setNotice}
       onError={setError}

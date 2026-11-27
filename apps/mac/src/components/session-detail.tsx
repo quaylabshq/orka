@@ -60,8 +60,12 @@ export function SessionDetail({
   const layout = useDetailLayout();
   const { notify } = useToasts();
   const author = useMemberLabel(user)(resource.updatedBy);
+  const resourceConflicts = conflicts.filter(
+    (conflict) => conflict.resourceId === resource.resourceId,
+  );
   const shared = !resource.local && resource.revision > 0;
   const menuActions = resourceViewMenuActions(view, true);
+  const { sessionSelection } = view;
   const notes = [
     resource.local && "This session is on this Mac and hasn’t been shared.",
     resource.localChanges &&
@@ -71,13 +75,14 @@ export function SessionDetail({
 
   return (
     <SessionView
+      key={view.sessionVersion ? "comparison" : "session"}
       id={resource.resourceId}
-      contentKey={resource.files.map((file) => file.hash).join(":")}
+      contentKey={view.sessionContentKey}
       refreshOnMount={Boolean(
         resource.local || resource.localChanges || resource.fork,
       )}
       conflictId={view.preview}
-      source={resource.source}
+      source={(view.sessionVersion ?? resource).source}
       mode={view.fullTranscript ? "transcript" : "conversation"}
       raw={view.rawMarkdown}
       transcript={
@@ -96,7 +101,7 @@ export function SessionDetail({
                 <Button
                   size="sm"
                   variant="secondary"
-                  disabled={busy}
+                  disabled={busy || sessionSelection === null}
                   onClick={() =>
                     void actions.exportZip(sessionSnapshot, () =>
                       notify({
@@ -144,8 +149,9 @@ export function SessionDetail({
         layout,
         label: "Session",
         className: "resource-detail--session session-view",
-        resource,
+        resource: resource.deleted ? undefined : resource,
         file: view.file,
+        sessionSelection,
         menuActions,
         title,
         status: (resource.fork || sharingStatus(resource)) && (
@@ -186,12 +192,15 @@ export function SessionDetail({
         ),
         infoActions: (
           <div className="detail-info-actions">
-            <ResourceMenuButton
-              resource={resource}
-              file={view.file}
-              extraActions={menuActions}
-            />
-            {shared && (
+            {!resource.deleted && (
+              <ResourceMenuButton
+                resource={resource}
+                file={view.file}
+                sessionSelection={sessionSelection}
+                extraActions={menuActions}
+              />
+            )}
+            {shared && !resource.deleted && (
               <SkillActionTooltip label="Copy session link">
                 <CopyLinkButton
                   usageEvent="resource_link_copied"
@@ -204,45 +213,46 @@ export function SessionDetail({
                 />
               </SkillActionTooltip>
             )}
-            <SkillActionTooltip label="Download session">
-              <IconButton
-                icon={DownloadIcon}
-                size="sm"
-                variant="tertiary"
-                aria-label="Download session"
-                disabled={busy}
-                onClick={() => void actions.exportZip()}
-              />
-            </SkillActionTooltip>
+            {sessionSelection !== null && (
+              <SkillActionTooltip label="Download session">
+                <IconButton
+                  icon={DownloadIcon}
+                  size="sm"
+                  variant="tertiary"
+                  aria-label="Download session"
+                  disabled={busy}
+                  onClick={() => void actions.exportZip(sessionSelection)}
+                />
+              </SkillActionTooltip>
+            )}
           </div>
         ),
-        primaryActions: (
+        primaryActions: !resource.deleted && (
           <SessionLauncher
             resource={resource}
             project={project}
             scope={scope}
             busy={busy}
             actions={actions}
+            sessionSelection={sessionSelection}
             onError={onError}
           />
         ),
-        context: conflicts
-          .filter((conflict) => conflict.resourceId === resource.resourceId)
-          .map((conflict) => (
-            <ConflictPanel
-              key={conflict.id}
-              conflict={conflict}
-              deviceId={deviceId}
-              user={user}
-              owner={resource.owner}
-              busy={busy}
-              preview={view.preview}
-              onPreview={view.setPreview}
-              onResolve={(action, conflictId, selected) =>
-                void actions.sessionAction(action, conflictId, selected)
-              }
-            />
-          )),
+        context: resourceConflicts.map((conflict) => (
+          <ConflictPanel
+            key={conflict.id}
+            conflict={conflict}
+            deviceId={deviceId}
+            user={user}
+            owner={resource.owner}
+            busy={busy}
+            preview={view.preview}
+            onPreview={view.setPreview}
+            onResolve={(action, conflictId, selected) =>
+              void actions.sessionAction(action, conflictId, selected)
+            }
+          />
+        )),
         toolbar: (
           <SegmentedControl
             label="Session view"

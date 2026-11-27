@@ -33,6 +33,7 @@ import { invoke } from "./product-command.js";
 import type {
   Project,
   ProjectResource,
+  SessionSnapshotSelection,
   Snapshot,
   SyncProgress,
 } from "../types.js";
@@ -43,28 +44,27 @@ import {
 } from "./item-menu.js";
 import { Overlay } from "./overlay.js";
 import { Button } from "./button.js";
-import { useDesktopFeature } from "./desktop-usage.js";
 import { Icon } from "./icon.js";
 import { IconButton } from "./icon-button.js";
 import { MarkdownMarkIcon } from "./icons.js";
 import { SessionLauncher } from "./session-launcher.js";
-import type { ResourceView } from "./use-resource-view.js";
+import type { ResourceComparison, ResourceView } from "./use-resource-view.js";
 import { sourcePath } from "./project-sources.js";
 import { skillReviewState } from "./skill-review-state.js";
 import { useResourceActions, type Run } from "./use-resource-actions.js";
 import { QueuedUploadReview } from "./queued-upload-review.js";
 import { ArtifactLinkDialog } from "./artifact-link-dialog.js";
 import { useWorkspaceScope } from "./workspace-cache.js";
+import {
+  fileSize,
+  ShareDialog,
+  type ShareDialogContext,
+} from "./share-dialog.js";
+
+export { fileSize };
 
 type ResourceRequest =
   "share" | "delete" | "launch" | "retry-upload" | "public-link";
-
-const shareEvents = {
-  memory: "feature:memory_shared",
-  skill: "feature:skill_shared",
-  plan: "feature:plan_shared",
-  session: "feature:session_shared",
-} as const;
 
 interface ResourceMenuContextValue {
   scope: string;
@@ -72,16 +72,20 @@ interface ResourceMenuContextValue {
   busy: boolean;
   sharedArtifact: (resource: ProjectResource) => ProjectResource | undefined;
   act: Run;
-  onOpen: (resource: ProjectResource, compare?: boolean) => void;
+  onOpen: (resource: ProjectResource, compare?: ResourceComparison) => void;
   onReview: (resource: ProjectResource, mode: "incoming" | "outgoing") => void;
+  onOpenRequests: ShareDialogContext["onOpenRequests"];
   onNotice: (message: string) => void;
   onError: (message: string) => void;
-  onRefresh: () => Promise<void>;
+  onRefresh: () => Promise<Snapshot | undefined>;
   isCurrent: (resource: ProjectResource) => boolean;
   request: (
     kind: ResourceRequest,
     resource: ProjectResource,
-    uploadId?: string,
+    options?: {
+      uploadId?: string;
+      sessionSelection?: SessionSnapshotSelection | null;
+    },
   ) => void;
   reviewUpload: (uploadId: string) => void;
 }
@@ -228,6 +232,7 @@ export function ResourceMenuProvider({
     | {
         kind: Exclude<ResourceRequest, "retry-upload">;
         resource: ProjectResource;
+        sessionSelection?: SessionSnapshotSelection | null;
         scope: string;
       }
     | null
@@ -249,14 +254,14 @@ export function ResourceMenuProvider({
     ...props,
     isCurrent,
     sharedArtifact,
-    request: (kind, resource, uploadId) => {
+    request: (kind, resource, options) => {
       if (!isCurrent(resource)) return;
       const upload = props.state.outbox.find(
         (entry) =>
           entry.reviewable &&
           entry.project === resource.projectId &&
           entry.resourceId === resource.resourceId &&
-          (!uploadId || entry.id === uploadId),
+          (!options?.uploadId || entry.id === options.uploadId),
       );
       if (kind === "retry-upload") {
         if (upload) setRequest({ kind, upload, scope: props.scope });
@@ -264,7 +269,13 @@ export function ResourceMenuProvider({
         const artifact = sharedArtifact(resource);
         if (artifact)
           setRequest({ kind, resource: artifact, scope: props.scope });
-      } else setRequest({ kind, resource, scope: props.scope });
+      } else
+        setRequest({
+          kind,
+          resource,
+          scope: props.scope,
+          sessionSelection: options?.sessionSelection,
+        });
     },
     reviewUpload: (uploadId) => {
       const upload = props.state.outbox.find(
@@ -306,6 +317,7 @@ export function ResourceMenuProvider({
           <SessionLaunchDialog
             key={`${props.scope}:launch:${identity(request.resource)}`}
             resource={request.resource}
+            sessionSelection={request.sessionSelection}
             context={context}
             onClose={() => setRequest(null)}
           />
@@ -325,10 +337,19 @@ export function ResourceMenuProvider({
               restoreResourceFocus(event, request.resource.resourceId)
             }
           />
+        ) : request.kind === "share" ? (
+          <ShareDialog
+            key={`${props.scope}:share:${identity(request.resource)}`}
+            resource={request.resource}
+            context={context}
+            onClose={() => setRequest(null)}
+            onCloseAutoFocus={(event) =>
+              restoreResourceFocus(event, request.resource.resourceId)
+            }
+          />
         ) : (
           <ResourceCommandDialog
             key={`${props.scope}:${request.kind}:${identity(request.resource)}`}
-            kind={request.kind}
             resource={request.resource}
             context={context}
             onClose={() => setRequest(null)}
@@ -416,11 +437,13 @@ const actionGroups: Record<string, string> = {
 function ResourceMenuTarget({
   resource,
   file,
+  sessionSelection,
   extraActions = [],
   children,
 }: {
   resource: ProjectResource;
   file?: string;
+  sessionSelection?: SessionSnapshotSelection | null;
   extraActions?: ItemMenuAction[];
   children: (actions: ItemMenuAction[]) => React.ReactNode;
 }) {
@@ -434,6 +457,7 @@ function ResourceMenuTarget({
     user: context.state.user,
     onNotice: context.onNotice,
     scope: context.scope,
+    sessionSelection,
   });
   if (!project) return children([]);
   const shared = !resource.local && resource.revision > 0;
@@ -501,20 +525,21 @@ function ResourceMenuTarget({
       icon: GitForkIcon,
       label: "Continue or fork in…",
       disabled: context.busy,
-      onSelect: () => context.request("launch", resource),
+      onSelect: () => context.request("launch", resource, { sessionSelection }),
     });
-    items.push({
-      id: "prompt",
-      icon: CopyIcon,
-      label: "Copy session prompt",
-      disabled: context.busy,
-      onSelect: () =>
-        copy(
-          actions.sessionPrompt,
-          "Session prompt copied",
-          "session_prompt_copied",
-        ),
-    });
+    if (sessionSelection !== null)
+      items.push({
+        id: "prompt",
+        icon: CopyIcon,
+        label: "Copy session prompt",
+        disabled: context.busy,
+        onSelect: () =>
+          copy(
+            actions.sessionPrompt,
+            "Session prompt copied",
+            "session_prompt_copied",
+          ),
+      });
     if (shared && !resource.localChanges)
       items.push({
         id: "copy",
@@ -555,7 +580,7 @@ function ResourceMenuTarget({
         id: "compare",
         icon: GitCompareIcon,
         label: "Compare with previous revision",
-        onSelect: () => context.onOpen(resource, true),
+        onSelect: () => context.onOpen(resource, "changes"),
       });
   }
   if (shared)
@@ -623,7 +648,9 @@ function ResourceMenuTarget({
       label: "Review queued upload…",
       disabled: context.busy,
       onSelect: () =>
-        context.request("retry-upload", resource, queuedUpload.id),
+        context.request("retry-upload", resource, {
+          uploadId: queuedUpload.id,
+        }),
     });
   if (review.incoming)
     secondary.push({
@@ -651,7 +678,7 @@ function ResourceMenuTarget({
       label: "Review local update…",
       onSelect: () => context.onReview(resource, "incoming"),
     });
-  if (resource.kind !== "memory")
+  if (resource.kind !== "memory" && sessionSelection !== null)
     secondary.unshift({
       id: "export",
       icon: DownloadIcon,
@@ -660,7 +687,7 @@ function ResourceMenuTarget({
           ? "Download session (.zip)…"
           : "Export ZIP…",
       disabled: context.busy,
-      onSelect: () => void actions.exportZip(),
+      onSelect: () => void actions.exportZip(sessionSelection ?? undefined),
     });
   const configureAction = (item: ItemMenuAction): ItemMenuAction => ({
     ...item,
@@ -714,6 +741,7 @@ const flatten = (actions: ItemMenuAction[]) =>
 export function ResourceItemMenu({
   resource,
   file,
+  sessionSelection,
   extraActions,
   flat = false,
   onOpenChange,
@@ -721,6 +749,7 @@ export function ResourceItemMenu({
 }: {
   resource: ProjectResource;
   file?: string;
+  sessionSelection?: SessionSnapshotSelection | null;
   extraActions?: ItemMenuAction[];
   /** Show every action in one list instead of nesting the rest under More. */
   flat?: boolean;
@@ -733,6 +762,7 @@ export function ResourceItemMenu({
     <ResourceMenuTarget
       resource={resource}
       file={file}
+      sessionSelection={sessionSelection}
       extraActions={extraActions}
     >
       {(nested) => {
@@ -754,11 +784,13 @@ export function ResourceItemMenu({
 export function ResourceMenuButton({
   resource,
   file,
+  sessionSelection,
   extraActions,
   label = "More resource actions",
 }: {
   resource: ProjectResource;
   file?: string;
+  sessionSelection?: SessionSnapshotSelection | null;
   extraActions?: ItemMenuAction[];
   label?: string;
 }) {
@@ -768,6 +800,7 @@ export function ResourceMenuButton({
     <ResourceMenuTarget
       resource={resource}
       file={file}
+      sessionSelection={sessionSelection}
       extraActions={extraActions}
     >
       {(actions) => (
@@ -792,10 +825,12 @@ function restoreResourceFocus(event: Event, resourceId: string) {
 
 function SessionLaunchDialog({
   resource,
+  sessionSelection,
   context,
   onClose,
 }: {
   resource: ProjectResource;
+  sessionSelection?: SessionSnapshotSelection | null;
   context: ResourceMenuContextValue;
   onClose: () => void;
 }) {
@@ -810,6 +845,7 @@ function SessionLaunchDialog({
     user: context.state.user,
     onNotice: context.onNotice,
     scope: context.scope,
+    sessionSelection,
   });
   return (
     <Overlay
@@ -848,6 +884,7 @@ function SessionLaunchDialog({
             scope={context.scope}
             busy={context.busy || stale}
             actions={actions}
+            sessionSelection={sessionSelection}
             onError={context.onError}
           />
         </div>
@@ -866,25 +903,11 @@ interface CommandPreview {
   paths?: string[];
 }
 
-export function fileSize(bytes: number) {
-  for (const [size, unit] of [
-    [1e9, "GB"],
-    [1e6, "MB"],
-    [1e3, "KB"],
-    [1, "B"],
-  ] as const) {
-    if (bytes >= size || size === 1)
-      return `${(bytes / size).toLocaleString(undefined, { maximumFractionDigits: size === 1 ? 0 : 1 })} ${unit}`;
-  }
-}
-
 function ResourceCommandDialog({
-  kind,
   resource,
   context,
   onClose,
 }: {
-  kind: "share" | "delete";
   resource: ProjectResource;
   context: ResourceMenuContextValue;
   onClose: () => void;
@@ -892,7 +915,6 @@ function ResourceCommandDialog({
   const project = context.state.projects.find(
     (item) => item.id === resource.projectId,
   );
-  const startFeature = useDesktopFeature();
   const [preview, setPreview] = useState<CommandPreview | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -928,25 +950,17 @@ function ResourceCommandDialog({
     setLoading(true);
     setError("");
     setPreview(null);
-    setProgress({
-      label:
-        kind === "share"
-          ? "Preparing snapshot for review…"
-          : "Preparing deletion for review…",
-    });
+    setProgress({ label: "Preparing deletion for review…" });
     const onProgress = new Channel<SyncProgress>((value) => {
       if (!canceled && active.current && current.current) setProgress(value);
     });
     void invoke<CommandPreview>("resource_command", {
-      action: `preview-${kind}`,
+      action: "preview-delete",
       input: { accountId, serviceOrigin, projectId, resourceId },
       onProgress,
     })
       .then((result) => {
-        if (!canceled) {
-          if (kind === "share") productAction()("share_preview_viewed");
-          setPreview(result);
-        }
+        if (!canceled) setPreview(result);
       })
       .catch((failure: unknown) => {
         if (!canceled) setError(String(failure));
@@ -960,64 +974,41 @@ function ResourceCommandDialog({
     return () => {
       canceled = true;
     };
-  }, [kind, attempt, accountId, serviceOrigin, projectId, resourceId]);
+  }, [attempt, accountId, serviceOrigin, projectId, resourceId]);
   const submit = async () => {
     if (busy || !preview || stale) return;
     const record = productAction();
-    if (kind === "share") record("share_submitted");
-    const recordShared =
-      kind === "share" ? startFeature(shareEvents[resource.kind]) : undefined;
     setBusy(true);
     setError("");
-    setProgress({
-      label:
-        kind === "share"
-          ? "Sharing reviewed snapshot…"
-          : "Confirming shared deletion…",
-    });
+    setProgress({ label: "Confirming shared deletion…" });
     let finished = false;
     const onProgress = new Channel<SyncProgress>((value) => {
       if (!finished && active.current && current.current) setProgress(value);
     });
     try {
       const result = await invoke<{ status: string }>("resource_command", {
-        action: kind,
+        action: "delete",
         input: { ...input, previewToken: preview.previewToken },
         onProgress,
       });
-      if (result.status === "published") recordShared?.();
-      if (kind === "delete" && result.status === "deleted")
-        record("resource_deleted");
-      if (kind === "share" && result.status === "queued")
-        record("share_queued");
-      if (kind === "share" && result.status === "conflict")
-        record("share_failed");
+      if (result.status === "deleted") record("resource_deleted");
       if (!active.current) return;
-      if (kind === "delete" && result.status !== "deleted") {
+      if (result.status !== "deleted") {
         setError(
           "The item changed before it could be deleted. Review the latest version and try again.",
         );
         return;
       }
       context.onNotice(
-        kind === "delete"
-          ? resource.source === "pi"
-            ? "Snapshot removed from shared history. The Pi session on its Mac is unchanged."
-            : "Shared item deleted. Local copies follow sync and review rules."
-          : result.status === "published"
-            ? "Snapshot shared"
-            : result.status === "approval_required"
-              ? "Snapshot sent for approval"
-              : result.status === "conflict"
-                ? "Snapshot needs conflict review"
-                : "Snapshot sharing queued",
+        resource.source === "pi"
+          ? "Snapshot removed from shared history. The Pi session on its Mac is unchanged."
+          : "Shared item deleted. Local copies follow sync and review rules.",
       );
       finished = true;
       setProgress({ label: "Refreshing project…" });
       await context.onRefresh();
       if (active.current) onClose();
     } catch (failure) {
-      if (kind === "share") record("share_failed");
       if (active.current) setError(String(failure));
     } finally {
       finished = true;
@@ -1025,11 +1016,9 @@ function ResourceCommandDialog({
     }
   };
   const title =
-    kind === "share"
-      ? "Share snapshot with project"
-      : resource.kind === "session"
-        ? "Remove from history"
-        : `Delete shared ${resource.kind}`;
+    resource.kind === "session"
+      ? "Remove from history"
+      : `Delete shared ${resource.kind}`;
   const total = progress?.total;
   const completed =
     total && total > 0 && progress?.completed !== undefined
@@ -1065,33 +1054,6 @@ function ResourceCommandDialog({
           </p>
         </div>
       </section>
-      {kind === "share" && (
-        <>
-          <dl className="resource-command-destination">
-            <div>
-              <dt>Project</dt>
-              <dd title={project?.name}>{project?.name}</dd>
-            </div>
-            <div>
-              <dt>Service</dt>
-              <dd
-                title={
-                  context.state.config?.mode === "self-hosted"
-                    ? "Your self-hosted service"
-                    : "Orka Cloud"
-                }
-              >
-                {context.state.config?.mode === "self-hosted"
-                  ? "Your self-hosted service"
-                  : "Orka Cloud"}
-              </dd>
-            </div>
-          </dl>
-          <p className="command-copy">
-            The local original and automatic sharing settings stay unchanged.
-          </p>
-        </>
-      )}
       <div
         className="resource-command-workspace"
         ref={workspace}
@@ -1200,7 +1162,7 @@ function ResourceCommandDialog({
                 </ul>
               </section>
             )}
-            {kind === "delete" && !!preview?.paths?.length && (
+            {!!preview?.paths?.length && (
               <section
                 className="resource-command-paths"
                 aria-label="Local copies affected"
@@ -1233,20 +1195,14 @@ function ResourceCommandDialog({
             Cancel
           </Button>
           <Button
-            className={`resource-command-confirm${kind === "delete" ? " management-danger" : ""}`}
+            className="resource-command-confirm management-danger"
             disabled={busy || context.busy || loading || !preview || stale}
             onClick={() => void submit()}
           >
             <span className="resource-command-button-size" aria-hidden="true">
-              {kind === "share" ? "Share this snapshot" : "Confirm deletion"}
+              Confirm deletion
             </span>
-            <span>
-              {busy
-                ? "Working…"
-                : kind === "share"
-                  ? "Share this snapshot"
-                  : "Confirm deletion"}
-            </span>
+            <span>{busy ? "Working…" : "Confirm deletion"}</span>
           </Button>
         </div>
       </div>

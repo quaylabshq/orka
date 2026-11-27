@@ -704,6 +704,83 @@ fn shared_deletion_checks_native_session_activity_before_creating_a_preview() {
 }
 
 #[tokio::test]
+async fn desktop_pi_share_requires_acknowledging_the_exact_frozen_tree() {
+    let mut f = Fixture::new();
+    let mut input = prepare(&mut f);
+    input["serviceOrigin"] = json!("http://127.0.0.1:1");
+    db::set(&f.db, "config", &json!({"apiUrl":input["serviceOrigin"]})).unwrap();
+    let directory = crate::pi_sessions::directory().unwrap();
+    fs::create_dir_all(&directory).unwrap();
+    let id = uuid::Uuid::new_v4().to_string();
+    let path = directory.join(format!("{id}.jsonl"));
+    let mut tree = vec![
+        json!({"type":"session","version":3,"id":id,"cwd":f.root}),
+        json!({"type":"message","id":"a","parentId":null,"message":{"role":"user","content":"Explore"}}),
+        json!({"type":"message","id":"b","parentId":"a","message":{"role":"toolResult","content":[{"type":"text","text":"Private tool output"}]}}),
+        json!({"type":"message","id":"c","parentId":"a","message":{"role":"assistant","content":"Current branch"}}),
+    ];
+    fs::write(&path, native::encode(&tree)).unwrap();
+    let local = indexer::discover(&f.db, &f.project, "session")
+        .unwrap()
+        .into_iter()
+        .find(|entry| entry["resource"]["source"] == "pi")
+        .unwrap();
+    input["resourceId"] = local["resource"]["resourceId"].clone();
+    let first = actions::run_command("preview-share".into(), input.clone(), None)
+        .await
+        .unwrap();
+    assert_eq!(first["piScope"], json!({"entries":3,"offBranchEntries":1}));
+
+    tree.push(json!({"type":"message","id":"d","parentId":"b","message":{"role":"user","content":"Continue older branch"}}));
+    fs::write(&path, native::encode(&tree)).unwrap();
+    let second = actions::run_command("preview-share".into(), input.clone(), None)
+        .await
+        .unwrap();
+    assert_eq!(second["piScope"], json!({"entries":4,"offBranchEntries":1}));
+    assert_ne!(first["previewToken"], second["previewToken"]);
+    let first_key = format!("share-preview:{}", first["previewToken"].as_str().unwrap());
+    let mut expired = db::get(&f.db, &first_key).unwrap();
+    expired["expires"] = json!(0);
+    db::set(&f.db, &first_key, &expired).unwrap();
+    input["previewToken"] = first["previewToken"].clone();
+    input["acknowledgedPiPreviewToken"] = first["previewToken"].clone();
+    assert!(actions::run_command("share".into(), input.clone(), None)
+        .await
+        .unwrap_err()
+        .contains("expired"));
+    assert!(f.outbox().is_empty());
+    input["previewToken"] = second["previewToken"].clone();
+    input["source"] = json!("codex");
+    for acknowledgment in [Value::Null, json!(true), first["previewToken"].clone()] {
+        input["acknowledgedPiPreviewToken"] = acknowledgment;
+        let error = actions::run_command("share".into(), input.clone(), None)
+            .await
+            .unwrap_err();
+        assert!(
+            error.contains("Confirm sharing the complete Pi session"),
+            "{error}"
+        );
+        assert!(f.outbox().is_empty());
+    }
+    input["acknowledgedPiPreviewToken"] = second["previewToken"].clone();
+    let queued = actions::run_command("share".into(), input, None)
+        .await
+        .unwrap();
+    assert_eq!(queued["status"], "queued");
+    let rows = db::rows(
+        &f.db,
+        "select value from outbox where path=?",
+        &[&crate::selective_sharing::QUEUE_PATH],
+    )
+    .unwrap();
+    assert_eq!(rows.len(), 1);
+    let records = crate::history::resource_records(&rows[0]["resource"]).unwrap();
+    assert_eq!(records.len(), 5);
+    assert_eq!(records[2]["message"]["role"], "toolResult");
+    assert_eq!(records[3]["id"], "c");
+}
+
+#[tokio::test]
 async fn desktop_share_previews_use_promoted_memory_identity_without_enabling_sharing() {
     let mut f = Fixture::new();
     let mut input = prepare(&mut f);
@@ -738,6 +815,8 @@ async fn desktop_share_previews_use_promoted_memory_identity_without_enabling_sh
     let preview = actions::run_command("preview-share".into(), input.clone(), None)
         .await
         .unwrap();
+    assert_eq!(preview["baseRevision"], 4);
+    assert_eq!(preview["publicationMode"], "publish");
     assert_eq!(
         preview["snapshotHash"],
         indexer::manifest_hash(&local["resource"]["files"])

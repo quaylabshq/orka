@@ -723,14 +723,22 @@ fn continuation_prompt(source: &str, records: &[Value]) -> Result<String> {
 pub fn handoff_prompt(id: &str) -> Result<Value> {
     let db = db::open()?;
     let resource = session_resource(&db, id)?;
+    let snapshot = session_forks::reading_resource(&db, &resource)?;
+    snapshot_handoff_prompt(&snapshot, &resource["revision"])
+}
+
+pub(crate) fn snapshot_handoff_prompt(
+    snapshot: &crate::history::SessionRead,
+    revision: &Value,
+) -> Result<Value> {
+    let resource = &snapshot.resource;
     let source = if resource["source"] == "pi" {
         "Pi"
     } else {
         Tool::parse(resource["source"].as_str().unwrap_or(""))?.name()
     };
-    let snapshot = session_forks::reading_resource(&db, &resource)?;
     let records = snapshot.records()?;
-    Ok(json!({"text":continuation_prompt(source, &records)?,"revision":resource["revision"]}))
+    Ok(json!({"text":continuation_prompt(source, &records)?,"revision":revision}))
 }
 
 fn checked(command: &mut Command, app: &str) -> Result<()> {
