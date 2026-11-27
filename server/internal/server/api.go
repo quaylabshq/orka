@@ -527,16 +527,18 @@ func (a *API) handle(w http.ResponseWriter, r *http.Request) (any, bool, error) 
 			})
 		}
 		if method == http.MethodGet {
-			var content []byte
 			_, err := s.transaction(r.Context(), func(q *Queries) any {
 				q.Exec("select id from orka.projects where id=$1 for share", project)
 				s.member(q, user, project)
 				if !q.Require(q.One("select 1 from orka.blobs where project_id=$1 and hash=$2", project, hash) != nil, 404, "Blob not found") || !q.Require(s.blobReadable(q, user, project, hash), 404, "Blob not found") {
 					return nil
 				}
-				content = s.readBlob(q, project, hash)
 				return nil
 			})
+			if err != nil {
+				return nil, false, err
+			}
+			content, err := s.Blobs.Read(project, hash)
 			if err != nil {
 				return nil, false, err
 			}
