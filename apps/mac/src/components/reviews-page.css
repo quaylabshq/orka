@@ -330,22 +330,8 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* Access request: the app's confirmation dialog with a close button. */
-.modal.access-request-dialog {
-  display: flex;
-  flex-direction: column;
+.modal.ui-modal.access-request-dialog .ui-modal-body {
   gap: 16px;
-  padding: 12px 16px;
-}
-.access-request-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-.modal.access-request-dialog h2,
-.modal.access-request-dialog p {
-  margin: 0;
 }
 .access-request-change {
   display: flex;
