@@ -66,7 +66,9 @@ test("keeps the accessible name when the visible heading is longer", () => {
   );
   expect(screen.getByRole("dialog", { name: "Revoke invite?" })).toBeTruthy();
   expect(
-    screen.getByText("Revoke the invite to sam@example.com?"),
+    screen.getByRole("heading", {
+      name: "Revoke the invite to sam@example.com?",
+    }),
   ).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Close" })).toBeNull();
 });
@@ -105,4 +107,21 @@ test("opens with focus on the first action rather than the close button", async 
       screen.getByRole("button", { name: "Keep it" }),
     ),
   );
+});
+
+test("focuses the dialog while its only action is disabled", async () => {
+  const content = (disabled: boolean) => (
+    <Modal
+      title="Share with team"
+      onClose={() => {}}
+      footer={<Button disabled={disabled}>Share</Button>}
+    >
+      <p>Preparing preview</p>
+    </Modal>
+  );
+  const { rerender } = render(content(true));
+  const dialog = screen.getByRole("dialog");
+  await waitFor(() => expect(document.activeElement).toBe(dialog));
+  rerender(content(false));
+  expect(document.activeElement).toBe(dialog);
 });
