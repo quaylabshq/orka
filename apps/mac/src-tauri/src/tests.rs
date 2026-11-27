@@ -372,6 +372,8 @@ mod doctor_tests {
 mod global_skill_tests;
 #[path = "governance_tests.rs"]
 mod governance_tests;
+#[path = "handoff_tests.rs"]
+mod handoff_tests;
 #[path = "hook_capture_tests.rs"]
 mod hook_capture_tests;
 #[path = "local_resource_tests.rs"]

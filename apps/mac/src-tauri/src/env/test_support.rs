@@ -204,6 +204,23 @@ pub fn run() {
                     super::field(&input, "operation")?.into(),
                     input["input"].clone(),
                 )),
+                "handoff-candidates" => crate::handoffs::candidates_command(
+                    super::field(&input, "sessionId")?,
+                    input["accountId"].as_str().map(str::to_owned),
+                    input["serviceOrigin"].as_str().map(str::to_owned),
+                ),
+                "create-handoff" => {
+                    runtime.block_on(crate::handoffs::create(input["input"].clone()))
+                }
+                "list-handoffs" => runtime.block_on(crate::handoffs::list_with(
+                    input["accountId"].as_str().map(str::to_owned),
+                    input["serviceOrigin"].as_str().map(str::to_owned),
+                )),
+                "revoke-handoff" => runtime.block_on(crate::handoffs::revoke_with(
+                    super::field(&input, "id")?.into(),
+                    input["accountId"].as_str().map(str::to_owned),
+                    input["serviceOrigin"].as_str().map(str::to_owned),
+                )),
                 "snapshot" => crate::commands::snapshot(),
                 "connect-sources" => runtime
                     .block_on(crate::sources::connect_project_sources(

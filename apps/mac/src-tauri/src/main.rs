@@ -16,6 +16,7 @@ mod env;
 mod git_artifacts;
 mod global_skills;
 mod governance;
+mod handoffs;
 mod history;
 mod indexer;
 mod local_resources;
@@ -394,6 +395,10 @@ fn main() {
                 commands::resume_session,
                 commands::session_launch_options,
                 commands::session_handoff_prompt,
+                handoffs::handoff_candidates,
+                handoffs::create_handoff,
+                handoffs::list_handoffs,
+                handoffs::revoke_handoff,
                 commands::export_bundle,
                 commands::export_project,
                 commands::import_bundle,
