@@ -33,7 +33,7 @@ import { invoke } from "./product-command.js";
 import type {
   Project,
   ProjectResource,
-  SessionSnapshotDownload,
+  SessionSnapshotSelection,
   Snapshot,
   SyncProgress,
 } from "../types.js";
@@ -80,7 +80,7 @@ interface ResourceMenuContextValue {
     resource: ProjectResource,
     options?: {
       uploadId?: string;
-      sessionDownload?: SessionSnapshotDownload | null;
+      sessionSelection?: SessionSnapshotSelection | null;
     },
   ) => void;
   reviewUpload: (uploadId: string) => void;
@@ -228,7 +228,7 @@ export function ResourceMenuProvider({
     | {
         kind: Exclude<ResourceRequest, "retry-upload">;
         resource: ProjectResource;
-        sessionDownload?: SessionSnapshotDownload | null;
+        sessionSelection?: SessionSnapshotSelection | null;
         scope: string;
       }
     | null
@@ -270,7 +270,7 @@ export function ResourceMenuProvider({
           kind,
           resource,
           scope: props.scope,
-          sessionDownload: options?.sessionDownload,
+          sessionSelection: options?.sessionSelection,
         });
     },
     reviewUpload: (uploadId) => {
@@ -313,7 +313,7 @@ export function ResourceMenuProvider({
           <SessionLaunchDialog
             key={`${props.scope}:launch:${identity(request.resource)}`}
             resource={request.resource}
-            sessionDownload={request.sessionDownload}
+            sessionSelection={request.sessionSelection}
             context={context}
             onClose={() => setRequest(null)}
           />
@@ -433,13 +433,13 @@ const actionGroups: Record<string, string> = {
 function ResourceMenuTarget({
   resource,
   file,
-  sessionDownload,
+  sessionSelection,
   extraActions = [],
   children,
 }: {
   resource: ProjectResource;
   file?: string;
-  sessionDownload?: SessionSnapshotDownload | null;
+  sessionSelection?: SessionSnapshotSelection | null;
   extraActions?: ItemMenuAction[];
   children: (actions: ItemMenuAction[]) => React.ReactNode;
 }) {
@@ -453,6 +453,7 @@ function ResourceMenuTarget({
     user: context.state.user,
     onNotice: context.onNotice,
     scope: context.scope,
+    sessionSelection,
   });
   if (!project) return children([]);
   const shared = !resource.local && resource.revision > 0;
@@ -520,20 +521,21 @@ function ResourceMenuTarget({
       icon: GitForkIcon,
       label: "Continue or fork in…",
       disabled: context.busy,
-      onSelect: () => context.request("launch", resource, { sessionDownload }),
+      onSelect: () => context.request("launch", resource, { sessionSelection }),
     });
-    items.push({
-      id: "prompt",
-      icon: CopyIcon,
-      label: "Copy session prompt",
-      disabled: context.busy,
-      onSelect: () =>
-        copy(
-          actions.sessionPrompt,
-          "Session prompt copied",
-          "session_prompt_copied",
-        ),
-    });
+    if (sessionSelection !== null)
+      items.push({
+        id: "prompt",
+        icon: CopyIcon,
+        label: "Copy session prompt",
+        disabled: context.busy,
+        onSelect: () =>
+          copy(
+            actions.sessionPrompt,
+            "Session prompt copied",
+            "session_prompt_copied",
+          ),
+      });
     if (shared && !resource.localChanges)
       items.push({
         id: "copy",
@@ -672,7 +674,7 @@ function ResourceMenuTarget({
       label: "Review local update…",
       onSelect: () => context.onReview(resource, "incoming"),
     });
-  if (resource.kind !== "memory" && sessionDownload !== null)
+  if (resource.kind !== "memory" && sessionSelection !== null)
     secondary.unshift({
       id: "export",
       icon: DownloadIcon,
@@ -681,7 +683,7 @@ function ResourceMenuTarget({
           ? "Download session (.zip)…"
           : "Export ZIP…",
       disabled: context.busy,
-      onSelect: () => void actions.exportZip(sessionDownload ?? undefined),
+      onSelect: () => void actions.exportZip(sessionSelection ?? undefined),
     });
   const configureAction = (item: ItemMenuAction): ItemMenuAction => ({
     ...item,
@@ -735,7 +737,7 @@ const flatten = (actions: ItemMenuAction[]) =>
 export function ResourceItemMenu({
   resource,
   file,
-  sessionDownload,
+  sessionSelection,
   extraActions,
   flat = false,
   onOpenChange,
@@ -743,7 +745,7 @@ export function ResourceItemMenu({
 }: {
   resource: ProjectResource;
   file?: string;
-  sessionDownload?: SessionSnapshotDownload | null;
+  sessionSelection?: SessionSnapshotSelection | null;
   extraActions?: ItemMenuAction[];
   /** Show every action in one list instead of nesting the rest under More. */
   flat?: boolean;
@@ -756,7 +758,7 @@ export function ResourceItemMenu({
     <ResourceMenuTarget
       resource={resource}
       file={file}
-      sessionDownload={sessionDownload}
+      sessionSelection={sessionSelection}
       extraActions={extraActions}
     >
       {(nested) => {
@@ -778,13 +780,13 @@ export function ResourceItemMenu({
 export function ResourceMenuButton({
   resource,
   file,
-  sessionDownload,
+  sessionSelection,
   extraActions,
   label = "More resource actions",
 }: {
   resource: ProjectResource;
   file?: string;
-  sessionDownload?: SessionSnapshotDownload | null;
+  sessionSelection?: SessionSnapshotSelection | null;
   extraActions?: ItemMenuAction[];
   label?: string;
 }) {
@@ -794,7 +796,7 @@ export function ResourceMenuButton({
     <ResourceMenuTarget
       resource={resource}
       file={file}
-      sessionDownload={sessionDownload}
+      sessionSelection={sessionSelection}
       extraActions={extraActions}
     >
       {(actions) => (
@@ -819,12 +821,12 @@ function restoreResourceFocus(event: Event, resourceId: string) {
 
 function SessionLaunchDialog({
   resource,
-  sessionDownload,
+  sessionSelection,
   context,
   onClose,
 }: {
   resource: ProjectResource;
-  sessionDownload?: SessionSnapshotDownload | null;
+  sessionSelection?: SessionSnapshotSelection | null;
   context: ResourceMenuContextValue;
   onClose: () => void;
 }) {
@@ -839,6 +841,7 @@ function SessionLaunchDialog({
     user: context.state.user,
     onNotice: context.onNotice,
     scope: context.scope,
+    sessionSelection,
   });
   return (
     <Overlay
@@ -877,7 +880,7 @@ function SessionLaunchDialog({
             scope={context.scope}
             busy={context.busy || stale}
             actions={actions}
-            sessionDownload={sessionDownload}
+            sessionSelection={sessionSelection}
             onError={context.onError}
           />
         </div>

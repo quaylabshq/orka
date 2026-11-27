@@ -190,7 +190,7 @@ export interface LocalDraft {
   dismissalReason?: string;
   archivedAt?: string;
 }
-export type SessionSnapshotDownload = { conflictId?: string } & (
+export type SessionSnapshotSelection = { conflictId?: string } & (
   | { snapshotHash: string }
   | {
       reviewed: Pick<
@@ -214,7 +214,7 @@ export type Inspection = {
       tooLarge: true;
       content: null;
       size: number;
-      sessionSnapshot: SessionSnapshotDownload;
+      sessionSnapshot: SessionSnapshotSelection;
     }
 );
 export interface SessionMessage {

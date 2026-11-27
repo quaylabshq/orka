@@ -953,9 +953,9 @@ pub fn inspect_resource(
         let records = snapshot.records()?;
         let transcript = native::transcript(&records);
         if transcript.len() > limit {
-            let session_snapshot = SessionSnapshotDownload {
+            let session_snapshot = SessionSnapshotSelection {
                 conflict_id,
-                version: SessionDownloadVersion::Hash {
+                version: SessionSnapshotVersion::Hash {
                     snapshot_hash: session_snapshot_hash(r),
                 },
             };
@@ -1106,10 +1106,19 @@ pub async fn session_launch_options(
         .map_err(|error| error.to_string())?
 }
 #[tauri::command]
-pub async fn session_handoff_prompt(id: String) -> Result<Value> {
-    tauri::async_runtime::spawn_blocking(move || crate::session_launcher::handoff_prompt(&id))
-        .await
-        .map_err(|error| error.to_string())?
+pub async fn session_handoff_prompt(
+    id: String,
+    session_snapshot: Option<SessionSnapshotSelection>,
+) -> Result<Value> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(selection) = session_snapshot else {
+            return crate::session_launcher::handoff_prompt(&id);
+        };
+        let snapshot = validated_session_snapshot(&db::open()?, &id, selection)?;
+        crate::session_launcher::snapshot_handoff_prompt(&snapshot, &snapshot.resource["revision"])
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 #[tauri::command]
 pub async fn resume_session(
@@ -1132,16 +1141,16 @@ pub async fn resume_session(
 }
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SessionSnapshotDownload {
+pub struct SessionSnapshotSelection {
     #[serde(skip_serializing_if = "Option::is_none")]
     conflict_id: Option<String>,
     #[serde(flatten)]
-    version: SessionDownloadVersion,
+    version: SessionSnapshotVersion,
 }
 
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(untagged, rename_all_fields = "camelCase")]
-enum SessionDownloadVersion {
+enum SessionSnapshotVersion {
     Hash { snapshot_hash: String },
     Reviewed { reviewed: Value },
 }
@@ -1168,18 +1177,12 @@ fn session_snapshot_hash(session: &Value) -> String {
     db::digest(snapshot.to_string().as_bytes())
 }
 
-#[tauri::command]
-pub fn export_bundle(
-    id: String,
-    path: String,
-    session_snapshot: Option<SessionSnapshotDownload>,
-) -> Result<()> {
-    let db = db::open()?;
-    let path = PathBuf::from(path);
-    let Some(snapshot) = session_snapshot else {
-        return bundles::export(&db, &id, &path);
-    };
-    let source = inspection_source(&db, &id, snapshot.conflict_id.as_deref()).map_err(|error| {
+fn validated_session_snapshot(
+    db: &rusqlite::Connection,
+    id: &str,
+    snapshot: SessionSnapshotSelection,
+) -> Result<crate::history::SessionRead> {
+    let source = inspection_source(db, id, snapshot.conflict_id.as_deref()).map_err(|error| {
         if error == CONFLICT_PREVIEW_MISSING {
             SESSION_SNAPSHOT_CHANGED.into()
         } else {
@@ -1187,21 +1190,36 @@ pub fn export_bundle(
         }
     })?;
     let expected = match snapshot.version {
-        SessionDownloadVersion::Hash { snapshot_hash } => snapshot_hash,
-        SessionDownloadVersion::Reviewed { reviewed } => {
+        SessionSnapshotVersion::Hash { snapshot_hash } => snapshot_hash,
+        SessionSnapshotVersion::Reviewed { reviewed } => {
             if !source.stored || source.resource["deleted"] == true {
                 return Err(SESSION_SNAPSHOT_CHANGED.into());
             }
             session_snapshot_hash(&reviewed)
         }
     };
-    let resource = source.read(&db)?;
+    let resource = source.read(db)?;
     if resource.resource["kind"] != "session" {
-        return Err("Choose a session version to download".into());
+        return Err("Choose a session version".into());
     }
     if session_snapshot_hash(&resource.resource) != expected {
         return Err(SESSION_SNAPSHOT_CHANGED.into());
     }
+    Ok(resource)
+}
+
+#[tauri::command]
+pub fn export_bundle(
+    id: String,
+    path: String,
+    session_snapshot: Option<SessionSnapshotSelection>,
+) -> Result<()> {
+    let db = db::open()?;
+    let path = PathBuf::from(path);
+    let Some(snapshot) = session_snapshot else {
+        return bundles::export(&db, &id, &path);
+    };
+    let resource = validated_session_snapshot(&db, &id, snapshot)?;
     bundles::export_snapshot(&db, &resource, &path)
 }
 /// Exports the authorized snapshot, returning true when fresh capture was

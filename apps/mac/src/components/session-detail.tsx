@@ -65,22 +65,7 @@ export function SessionDetail({
   );
   const shared = !resource.local && resource.revision > 0;
   const menuActions = resourceViewMenuActions(view, true);
-  const reviewed = view.sessionVersion;
-  // Only conflict readers override the ordinary download. Capture the side
-  // shown at click time, including while the system Save dialog is open.
-  const sessionDownload = !resourceConflicts.length
-    ? undefined
-    : reviewed && !reviewed.deleted
-      ? {
-          conflictId: view.preview || undefined,
-          reviewed: {
-            projectId: reviewed.projectId,
-            resourceId: reviewed.resourceId,
-            source: reviewed.source,
-            files: reviewed.files.map(({ path, hash }) => ({ path, hash })),
-          },
-        }
-      : null;
+  const { sessionSelection } = view;
   const notes = [
     resource.local && "This session is on this Mac and hasn’t been shared.",
     resource.localChanges &&
@@ -116,7 +101,7 @@ export function SessionDetail({
                 <Button
                   size="sm"
                   variant="secondary"
-                  disabled={busy || sessionDownload === null}
+                  disabled={busy || sessionSelection === null}
                   onClick={() =>
                     void actions.exportZip(sessionSnapshot, () =>
                       notify({
@@ -166,7 +151,7 @@ export function SessionDetail({
         className: "resource-detail--session session-view",
         resource: resource.deleted ? undefined : resource,
         file: view.file,
-        sessionDownload,
+        sessionSelection,
         menuActions,
         title,
         status: (resource.fork || sharingStatus(resource)) && (
@@ -211,7 +196,7 @@ export function SessionDetail({
               <ResourceMenuButton
                 resource={resource}
                 file={view.file}
-                sessionDownload={sessionDownload}
+                sessionSelection={sessionSelection}
                 extraActions={menuActions}
               />
             )}
@@ -228,7 +213,7 @@ export function SessionDetail({
                 />
               </SkillActionTooltip>
             )}
-            {sessionDownload !== null && (
+            {sessionSelection !== null && (
               <SkillActionTooltip label="Download session">
                 <IconButton
                   icon={DownloadIcon}
@@ -236,7 +221,7 @@ export function SessionDetail({
                   variant="tertiary"
                   aria-label="Download session"
                   disabled={busy}
-                  onClick={() => void actions.exportZip(sessionDownload)}
+                  onClick={() => void actions.exportZip(sessionSelection)}
                 />
               </SkillActionTooltip>
             )}
@@ -249,7 +234,7 @@ export function SessionDetail({
             scope={scope}
             busy={busy}
             actions={actions}
-            sessionDownload={sessionDownload}
+            sessionSelection={sessionSelection}
             onError={onError}
           />
         ),
