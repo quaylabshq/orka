@@ -384,7 +384,7 @@ test("unsupported diff features keep the file and editor reachable", async ({
     card.getByRole("heading", { name: "SKILL.md", exact: true }),
   ).toBeVisible();
   await expect(card.locator(".diff-card-summary")).toHaveText(
-    "Diff preview unavailable in this macOS webview. Use Open in editor to inspect the files.",
+    "Diff preview unavailable in this window. Use Open in editor to inspect the files.",
   );
   await expect(card.locator("diffs-container")).toHaveCount(0);
   // Unsupported WebViews must never parse the modern renderer's JS module.
