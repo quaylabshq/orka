@@ -1624,9 +1624,16 @@ test("choosing another repository clears a previous folder-matching error", asyn
     exact: true,
   });
   await choose(page, repository, "8484");
-  await expect(picker(page).getByRole("alert")).toContainText(
-    "More than one connected folder",
-  );
+  const error = picker(page).getByRole("alert");
+  await expect(error).toContainText("More than one connected folder");
+  const errorBox = await error.boundingBox();
+  const connectBox = await picker(page)
+    .getByRole("button", { name: "Connect repository", exact: true })
+    .boundingBox();
+  expect(errorBox!.y + errorBox!.height).toBeLessThanOrEqual(connectBox!.y);
+  expect(
+    await error.evaluate((node) => node.scrollHeight - node.clientHeight),
+  ).toBeLessThanOrEqual(1);
   await expect(
     picker(page).getByRole("button", {
       name: "Connect repository",

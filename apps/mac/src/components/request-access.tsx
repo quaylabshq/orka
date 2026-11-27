@@ -202,6 +202,7 @@ export function RequestAccess({
           }}
           className="access-request-dialog"
           error={error}
+          fullWidthError
           footer={
             <>
               <Button

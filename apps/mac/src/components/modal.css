@@ -101,3 +101,15 @@
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
 }
+
+.ui-modal-footer[data-full-width-error] {
+  flex-wrap: wrap;
+}
+
+.modal.ui-modal .ui-modal-footer[data-full-width-error] .ui-modal-error {
+  display: block;
+  flex: 0 0 100%;
+  max-height: 20vh;
+  overflow: auto;
+  overflow-wrap: anywhere;
+}

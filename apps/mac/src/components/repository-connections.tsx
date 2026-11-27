@@ -205,6 +205,7 @@ export function RepositoryConnections({
             if (!busy) close();
           }}
           error={error}
+          fullWidthError
           footer={
             <Button
               size="sm"

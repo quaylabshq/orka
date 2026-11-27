@@ -300,6 +300,7 @@ export function RepositoryPicker({
       className="repository-dialog"
       closeLabel="Close repository connection"
       error={error || loadError || matchingError || undefined}
+      fullWidthError
       closeDisabled={busy}
       onClose={close}
       footer={
