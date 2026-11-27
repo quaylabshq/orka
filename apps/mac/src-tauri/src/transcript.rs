@@ -7,8 +7,9 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::{BufWriter, Read, Write};
 use std::ops::Range;
+use std::os::unix::fs::FileExt;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, LazyLock, Mutex,
@@ -29,7 +30,13 @@ struct Reader {
     snapshot_hash: String,
     resource: Value,
     cancelled: AtomicBool,
-    tape: Mutex<Result<Option<Tape>>>,
+    data: Mutex<Result<TranscriptData>>,
+}
+
+#[derive(Default)]
+struct TranscriptData {
+    tape: Option<Tape>,
+    captured: Option<CapturedSession>,
 }
 
 type Readers = Vec<(String, Arc<Reader>)>;
@@ -89,19 +96,25 @@ impl Reader {
 
     fn page(&self, offset: Option<u64>, max_bytes: usize, before: bool) -> Result<TranscriptPage> {
         let mut state = self
-            .tape
+            .data
             .lock()
             .map_err(|_| "Transcript data is unavailable")?;
-        let tape = state.as_mut().map_err(|error| error.clone())?;
+        let data = state.as_mut().map_err(|error| error.clone())?;
         let first = offset == Some(0) && !before;
         let within_prefix = !before
             && offset
                 .is_some_and(|offset| offset.saturating_add(max_bytes as u64) <= PAGE_LIMIT as u64);
-        if tape.is_none() || (!within_prefix && tape.as_ref().is_some_and(|tape| tape.partial)) {
-            *tape = None;
-            *tape = Some(prepare(self, first)?);
+        if let Some(captured) = &mut data.captured {
+            if captured.extend(data.tape.as_mut().unwrap(), offset, max_bytes, before, self)? {
+                data.captured = None;
+            }
+        } else if data.tape.is_none()
+            || (!within_prefix && data.tape.as_ref().is_some_and(|tape| tape.partial))
+        {
+            data.tape = None;
+            data.tape = Some(prepare(self, first)?);
         }
-        tape.as_mut().unwrap().page(offset, max_bytes, before)
+        data.tape.as_mut().unwrap().page(offset, max_bytes, before)
     }
 }
 
@@ -132,7 +145,7 @@ fn open_in_scope(
     scope: CacheScope,
     id: String,
     conflict_id: Option<String>,
-    format_live: impl FnOnce(&crate::history::SessionRead) -> Result<Tape>,
+    open_live: impl FnOnce(&rusqlite::Connection, Value) -> Result<(Value, Result<TranscriptData>)>,
 ) -> Result<TranscriptOpen> {
     let db = scope.open()?;
     let candidate = inspection_candidate(&db, &id, conflict_id.as_deref())?;
@@ -147,27 +160,10 @@ fn open_in_scope(
         });
     }
     let candidate_hash = session_snapshot_hash(&candidate);
-    let (resource, tape) = {
-        let snapshot = if conflict_id.is_some() {
-            crate::history::SessionRead::stored(candidate)
-        } else {
-            crate::session_forks::reading_resource(&db, &candidate)?
-        };
-        // A live snapshot already owns the exact redacted data authorized by
-        // the native reader. Format it on this worker without persisting it,
-        // then release the native bytes before registering the open handle.
-        let tape = if snapshot.is_live() {
-            // Preserve the authorized manifest and download action when the
-            // redacted snapshot exceeds the text preview budget.
-            match format_live(&snapshot) {
-                Ok(tape) => Ok(Some(tape)),
-                Err(error) if error == PREVIEW_TOO_LARGE => Err(error),
-                Err(error) => return Err(error),
-            }
-        } else {
-            Ok(None)
-        };
-        (snapshot.resource, tape)
+    let (resource, data) = if conflict_id.is_some() {
+        (candidate, Ok(TranscriptData::default()))
+    } else {
+        open_live(&db, candidate)?
     };
     let snapshot_hash = session_snapshot_hash(&resource);
     let reader = Arc::new(Reader {
@@ -178,7 +174,7 @@ fn open_in_scope(
         snapshot_hash: snapshot_hash.clone(),
         resource,
         cancelled: AtomicBool::new(false),
-        tape: Mutex::new(tape),
+        data: Mutex::new(data),
     });
     reader.validate().map_err(|error| {
         if error == SNAPSHOT_INVALIDATED {
@@ -215,23 +211,59 @@ fn open_in_scope(
     })
 }
 
+fn live_data(
+    db: &rusqlite::Connection,
+    candidate: &Value,
+    format: impl FnOnce(&crate::history::SessionRead) -> Result<Tape>,
+) -> Result<(Value, Result<TranscriptData>)> {
+    let snapshot = crate::session_forks::reading_resource(db, candidate)?;
+    let mut data = Ok(TranscriptData::default());
+    if snapshot.is_live() {
+        // Keep the pinned ZIP action even when this snapshot exceeds the text budget.
+        data = match format(&snapshot) {
+            Ok(tape) => Ok(TranscriptData {
+                tape: Some(tape),
+                captured: None,
+            }),
+            Err(error) if error == PREVIEW_TOO_LARGE => Err(error),
+            Err(error) => return Err(error),
+        };
+    }
+    Ok((snapshot.resource, data))
+}
+
 #[tauri::command]
 pub async fn open_transcript(id: String, conflict_id: Option<String>) -> Result<TranscriptOpen> {
     let scope = CacheScope::current()?;
     let permit = PREPARE.acquire().await.map_err(|error| error.to_string())?;
     tauri::async_runtime::spawn_blocking(move || {
         let _permit = permit;
-        open_in_scope(scope, id, conflict_id, prepare_live)
+        open_in_scope(scope, id, conflict_id, |db, candidate| {
+            if let Some(data) = TranscriptData::capture(db, &candidate) {
+                return Ok((candidate, Ok(data)));
+            }
+            live_data(db, &candidate, prepare_live)
+        })
     })
     .await
     .map_err(|error| error.to_string())?
 }
 
 #[cfg(test)]
+pub(crate) fn has_captured_input(id: &str) -> bool {
+    let readers = registry().unwrap();
+    let (_, reader) = readers.iter().find(|(key, _)| key == id).unwrap();
+    let data = reader.data.lock().unwrap();
+    data.as_ref().unwrap().captured.is_some()
+}
+
+#[cfg(test)]
 pub(crate) fn open_oversized_live_fixture(id: String) -> Result<TranscriptOpen> {
-    open_in_scope(CacheScope::current()?, id, None, |snapshot| {
-        assert!(snapshot.is_live());
-        Err(PREVIEW_TOO_LARGE.into())
+    open_in_scope(CacheScope::current()?, id, None, |db, candidate| {
+        live_data(db, &candidate, |snapshot| {
+            assert!(snapshot.is_live());
+            Err(PREVIEW_TOO_LARGE.into())
+        })
     })
 }
 
@@ -463,8 +495,7 @@ impl Tape {
             let initial = bytes.len();
             bytes.resize(initial + length, 0);
             self.file
-                .seek(SeekFrom::Start(range.start + from))
-                .and_then(|_| self.file.read_exact(&mut bytes[initial..]))
+                .read_exact_at(&mut bytes[initial..], range.start + from)
                 .map_err(|error| error.to_string())?;
         }
         let skip = if backwards {
@@ -530,6 +561,119 @@ fn visit_pi(reader: &Reader, builder: &mut TapeBuilder) -> Result<()> {
         }
     }
     builder.record(None)
+}
+
+// A private source whose exact redacted manifest was already established by
+// discovery. Hold the original bytes only in memory, and release them when
+// the full redacted tape supersedes them or the reader closes.
+struct CapturedSession {
+    bytes: Vec<u8>,
+    cursor: usize,
+    builder: TapeBuilder,
+    _budget: tokio::sync::SemaphorePermit<'static>,
+}
+
+static CAPTURE_BYTES: Semaphore = Semaphore::const_new(crate::history::MAX_FILE as usize);
+
+impl TranscriptData {
+    fn capture(db: &rusqlite::Connection, resource: &Value) -> Option<Self> {
+        if resource["nativeSession"] != true
+            || !matches!(resource["source"].as_str(), Some("codex" | "claude"))
+            || resource["files"].as_array()?.len() != 1
+            || resource["files"][0]["path"] != "session.jsonl"
+        {
+            return None;
+        }
+        let (path, stamp) = crate::local_resources::unchanged_session_file(db, resource).ok()??;
+        if path.extension().and_then(|extension| extension.to_str()) != Some("jsonl")
+            || stamp.length > crate::history::MAX_FILE
+        {
+            return None;
+        }
+        let budget = CAPTURE_BYTES.try_acquire_many(stamp.length as u32).ok()?;
+        let file = crate::history::session_file(&path).ok()?;
+        let current_stamp = || crate::scan_cache::FileStamp::from_metadata(&file.metadata().ok()?);
+        if current_stamp().as_ref() != Some(&stamp) {
+            return None;
+        }
+        let mut bytes = vec![0; stamp.length as usize];
+        (&file).read_exact(&mut bytes).ok()?;
+        if current_stamp().as_ref() != Some(&stamp) {
+            return None;
+        }
+        // The formatter recognizes a Pi-style branch header by its record
+        // type. Preserve that adapter even if the catalog provider is Claude.
+        if resource["source"] == "claude" {
+            let (_, first) = crate::native::complete_record_iter(&bytes).next()?;
+            if first.ok()?["type"] == "session" {
+                return None;
+            }
+        }
+        let builder = TapeBuilder::new(None).ok()?;
+        let tape = Tape {
+            file: builder.output.get_ref().try_clone().ok()?,
+            total: 0,
+            partial: false,
+            ranges: Vec::new(),
+        };
+        Some(Self {
+            tape: Some(tape),
+            captured: Some(CapturedSession {
+                bytes,
+                cursor: 0,
+                builder,
+                _budget: budget,
+            }),
+        })
+    }
+}
+
+impl CapturedSession {
+    /// Commit enough deduplicated output to answer this range and distinguish
+    /// EOF. Only an End request needs the complete transcript.
+    fn extend(
+        &mut self,
+        tape: &mut Tape,
+        offset: Option<u64>,
+        budget: usize,
+        before: bool,
+        reader: &Reader,
+    ) -> Result<bool> {
+        let through = offset.map_or(u64::MAX, |offset| {
+            offset.saturating_add(if before { 0 } else { budget as u64 })
+        });
+        if tape.total > through {
+            return Ok(false);
+        }
+
+        let start = self.cursor;
+        let mut records = crate::native::complete_record_iter(&self.bytes[start..]);
+        while self.builder.segment_bytes <= through {
+            reader.check_cancelled()?;
+            let Some((next, record)) = records.next() else {
+                self.cursor = self.bytes.len();
+                break;
+            };
+            self.cursor = start + next;
+            let mut record = record?;
+            crate::session_redaction::SessionRedactor::redact(&mut record);
+            self.builder.record(Some(&record))?;
+        }
+        let eof = self.cursor == self.bytes.len();
+        if eof {
+            self.builder.flush_turn();
+        }
+        self.builder
+            .output
+            .flush()
+            .map_err(|error| error.to_string())?;
+        for range in self.builder.segment.drain(..) {
+            let start = tape.total;
+            tape.total += range.end - range.start;
+            tape.ranges.push((start, range));
+        }
+        Ok(eof)
+    }
 }
 
 fn prepare_live(snapshot: &crate::history::SessionRead) -> Result<Tape> {

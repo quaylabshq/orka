@@ -607,30 +607,39 @@ pub(crate) fn export_session(
 /// A previously discovered file manifest can key the in-memory conversation
 /// cache only while the original and its ancestry are still the same.
 pub(crate) fn unchanged_session_manifest(db: &Connection, resource: &Value) -> Result<bool> {
+    Ok(unchanged_session_file(db, resource)?.is_some())
+}
+
+/// Return the observed native file only after validating its original scan,
+/// repository attribution and complete ancestor set against the current scope.
+pub(crate) fn unchanged_session_file(
+    db: &Connection,
+    resource: &Value,
+) -> Result<Option<(PathBuf, crate::scan_cache::FileStamp)>> {
     use crate::scan_cache::{self, FileStamp};
     let id = resource["resourceId"].as_str().ok_or("Missing session")?;
     let Some((project, entry)) = local_entry(db, id)? else {
-        return Ok(false);
+        return Ok(None);
     };
     if entry["resource"]["nativeSession"] != true || resource["owner"] != db::get(db, "user")? {
-        return Ok(false);
+        return Ok(None);
     }
     let Some(source) = sources::for_resource(&project, &entry["resource"]) else {
-        return Ok(false);
+        return Ok(None);
     };
     sources::validate(&source)?;
     if entry["path"] != source["path"] || entry["folderIdentity"] != source["folderIdentity"] {
-        return Ok(false);
+        return Ok(None);
     }
     let Some(root) = source["path"].as_str().map(Path::new) else {
-        return Ok(false);
+        return Ok(None);
     };
     let root = root.canonicalize().map_err(|error| error.to_string())?;
     let tool = resource["source"]
         .as_str()
         .ok_or("Missing session provider")?;
     let Some(path) = entry["paths"][0].as_str().map(Path::new) else {
-        return Ok(false);
+        return Ok(None);
     };
     let home = session_home(tool)?;
     // Scan-cache keys and dependency paths use the original, configured spelling.
@@ -641,38 +650,41 @@ pub(crate) fn unchanged_session_manifest(db: &Connection, resource: &Value) -> R
         crate::resource_commands::canonical_path(&home, path)?;
     }
     let Some(stamp) = FileStamp::of(path) else {
-        return Ok(false);
+        return Ok(None);
     };
     let key = scan_cache::session_key(&source, &root, tool, path);
     let Some(known) = scan_cache::load_session(db, &key)? else {
-        return Ok(false);
+        return Ok(None);
     };
     if entry["nativeId"] != known.id
+        || (tool == "claude" && path.file_stem().and_then(|name| name.to_str()) != Some(&known.id))
         || resource["files"] != json!(known.files)
         || !known.stamps_match(path, &stamp)
     {
-        return Ok(false);
+        return Ok(None);
     }
     let worktrees_home = worktrees::home()?;
     let sources = worktrees::session_sources(db, &source)?;
     let resolved =
         worktrees::SessionScope::new(db, &source, &root, &sources, &worktrees_home)?.read_only();
     let Some(checkout) = resolved.for_session(tool, &known.id, &known.cwd)? else {
-        return Ok(false);
+        return Ok(None);
     };
     if resolved.cache_scope()? != known.topology {
-        return Ok(false);
+        return Ok(None);
     }
     if tool == "codex" {
         // Import recovery can change eligibility while the file is unchanged.
         if !crate::codex_import::attempts(db)?.is_empty() {
-            return Ok(false);
+            return Ok(None);
         }
         let index = history::CodexSegmentIndex::new(&home);
-        return Ok(index.current_path(path, &known.id)? == path
-            && known.ancestors_match(&index, &checkout));
+        if index.current_path(path, &known.id)? != path || !known.ancestors_match(&index, &checkout)
+        {
+            return Ok(None);
+        }
     }
-    Ok(true)
+    Ok(Some((path.to_path_buf(), stamp)))
 }
 
 pub fn native_binding(db: &Connection, resource: &Value) -> Result<Option<Value>> {

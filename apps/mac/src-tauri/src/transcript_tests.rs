@@ -254,6 +254,147 @@ fn private_transcript_range_and_download_use_the_same_native_snapshot_without_bl
 }
 
 #[test]
+fn unchanged_private_codex_reads_a_redacted_prefix_and_pins_the_remaining_native_bytes() {
+    let mut f = Fixture::new();
+    local_resource_tests::prepare(&mut f);
+    let sessions = native::codex_home().unwrap().join("sessions");
+    let path = fs::read_dir(sessions)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let mut records = native::complete_records(&fs::read(&path).unwrap()).unwrap();
+    let secret = format!("ghp_{}", "1234567890".repeat(3));
+    records.extend([
+        json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":format!("{secret} {}", "🗓".repeat(24_000))}]}}),
+        json!({"type":"event_msg","payload":{"type":"agent_message","message":"last exact turn"}}),
+    ]);
+    fs::write(&path, native::encode(&records)).unwrap();
+    let catalog = crate::local_resources::catalog(&f.db, &f.project, "session").unwrap();
+    let id = catalog["resources"][0]["resourceId"].as_str().unwrap();
+    let resource = crate::local_resources::resource(&f.db, id).unwrap();
+    let opened = open(&resource, None);
+    let reader = opened["readerId"].as_str().unwrap();
+    assert!(crate::transcript::has_captured_input(reader));
+    assert_eq!(
+        opened["sessionSnapshot"]["snapshotHash"],
+        crate::commands::session_snapshot_hash(&resource)
+    );
+
+    let mut edited = records.clone();
+    edited.last_mut().unwrap()["payload"]["message"] = json!("next exact turn");
+    records
+        .iter_mut()
+        .for_each(crate::session_redaction::SessionRedactor::redact);
+    let expected = native::transcript(&records);
+    let zip_path = f.root.join("pinned-private.zip");
+    let download = || {
+        crate::commands::export_bundle(
+            id.into(),
+            zip_path.to_string_lossy().into(),
+            Some(serde_json::from_value(opened["sessionSnapshot"].clone()).unwrap()),
+        )
+    };
+    download().unwrap();
+    let mut archive = zip::ZipArchive::new(fs::File::open(&zip_path).unwrap()).unwrap();
+    let mut transcript = String::new();
+    archive
+        .by_name("transcript.md")
+        .unwrap()
+        .read_to_string(&mut transcript)
+        .unwrap();
+    assert_eq!(transcript, expected);
+
+    // Even a same-length edit before the first page must leave the existing
+    // reader immutable and force a fresh capture on the next open.
+    let changed = native::encode(&edited);
+    assert_eq!(changed.len() as u64, fs::metadata(&path).unwrap().len());
+    fs::write(&path, changed).unwrap();
+    assert_eq!(download().unwrap_err(), "session_snapshot_changed");
+    let head = page(reader, Some(0), 16 * 1024, false);
+    assert_eq!(
+        head["text"],
+        expected[..head["nextOffset"].as_u64().unwrap() as usize]
+    );
+    assert!(head["text"].as_str().unwrap().contains("[REDACTED]"));
+    assert!(!head["text"].as_str().unwrap().contains(&secret));
+    let mut next = head["nextOffset"].as_u64().unwrap();
+    // Scrolling beyond the first 32 KiB should serve another exact page
+    // while the unread tail is still unformatted.
+    for _ in 0..2 {
+        let forward = page(reader, Some(next), 16 * 1024, false);
+        let offset = next as usize;
+        next = forward["nextOffset"].as_u64().unwrap();
+        assert_eq!(forward["text"], expected[offset..next as usize]);
+    }
+    assert!(crate::transcript::has_captured_input(reader));
+    let end = page(reader, None, 16 * 1024, false);
+    assert_eq!(
+        end["text"],
+        expected[end["offset"].as_u64().unwrap() as usize..]
+    );
+    assert!(!crate::transcript::has_captured_input(reader));
+    close_transcript(reader.into()).unwrap();
+    let fresh = open(&resource, None);
+    assert_ne!(fresh["sessionSnapshot"], opened["sessionSnapshot"]);
+    let fresh_reader = fresh["readerId"].as_str().unwrap();
+    assert!(!crate::transcript::has_captured_input(fresh_reader));
+    assert!(page(fresh_reader, None, 1024, false)["text"]
+        .as_str()
+        .unwrap()
+        .contains("next exact turn"));
+    close_transcript(fresh_reader.into()).unwrap();
+}
+
+#[test]
+fn unchanged_private_claude_reads_exact_redacted_ranges_from_the_captured_file() {
+    let mut f = Fixture::new();
+    local_resource_tests::prepare(&mut f);
+    let home = native::claude_home().unwrap().join("projects/test");
+    fs::create_dir_all(&home).unwrap();
+    let native_id = uuid::Uuid::new_v4().to_string();
+    let path = home.join(format!("{native_id}.jsonl"));
+    let mut records = vec![
+        json!({"type":"user","sessionId":native_id,"cwd":f.root,"message":{"role":"user","content":"Private Claude message"}}),
+        json!({"type":"assistant","sessionId":native_id,"message":{"role":"assistant","content":[{"type":"tool_use","input":{"api_key":"private-token","body":"本".repeat(18_000)}}]}}),
+        json!({"type":"assistant","sessionId":native_id,"message":{"role":"assistant","content":"Claude end"}}),
+    ];
+    let mut bytes = native::encode(&records);
+    bytes.extend(b"{partial writer record");
+    fs::write(&path, bytes).unwrap();
+    let catalog = crate::local_resources::catalog(&f.db, &f.project, "session").unwrap();
+    let summary = catalog["resources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["source"] == "claude")
+        .unwrap();
+    let resource =
+        crate::local_resources::resource(&f.db, summary["resourceId"].as_str().unwrap()).unwrap();
+    let opened = open(&resource, None);
+    let reader = opened["readerId"].as_str().unwrap();
+    assert!(crate::transcript::has_captured_input(reader));
+    records
+        .iter_mut()
+        .for_each(crate::session_redaction::SessionRedactor::redact);
+    let expected = native::transcript(&records);
+    assert!(expected.contains("[REDACTED]"));
+    assert!(!expected.contains("private-token"));
+    let mut result = String::new();
+    loop {
+        let page = page(reader, Some(result.len() as u64), 16 * 1024, false);
+        result.push_str(page["text"].as_str().unwrap());
+        if page["eof"] == true {
+            break;
+        }
+    }
+    assert_eq!(result, expected);
+    assert!(!crate::transcript::has_captured_input(reader));
+    close_transcript(reader.into()).unwrap();
+}
+
+#[test]
 fn private_transcript_ranges_use_the_exact_cached_manifest_if_the_native_file_is_missing() {
     use crate::local_resources;
 

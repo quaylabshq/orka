@@ -431,23 +431,28 @@ impl Drop for Rpc {
         let _ = self.child.wait();
     }
 }
+/// Complete records and their exclusive byte offsets. Native writers can
+/// leave a partial final record while an active session is being captured.
+pub(crate) fn complete_record_iter(
+    bytes: &[u8],
+) -> impl Iterator<Item = (usize, Result<Value>)> + '_ {
+    let mut start = 0;
+    memchr::memchr_iter(b'\n', bytes).filter_map(move |newline| {
+        let line = &bytes[start..newline];
+        start = newline + 1;
+        if line.is_empty() {
+            return None;
+        }
+        let value = serde_json::from_slice(line)
+            .map_err(|_| "Unknown or corrupt native transcript; source preserved".into());
+        Some((start, value))
+    })
+}
+
 pub fn complete_records(bytes: &[u8]) -> Result<Vec<Value>> {
-    let end = bytes
-        .iter()
-        .rposition(|b| *b == b'\n')
-        .map(|p| p + 1)
-        .unwrap_or(0);
-    let mut records = Vec::new();
-    for line in bytes[..end]
-        .split(|b| *b == b'\n')
-        .filter(|s| !s.is_empty())
-    {
-        records.push(
-            serde_json::from_slice(line)
-                .map_err(|_| "Unknown or corrupt native transcript; source preserved")?,
-        );
-    }
-    Ok(records)
+    complete_record_iter(bytes)
+        .map(|(_, record)| record)
+        .collect()
 }
 pub fn encode(records: &[Value]) -> Vec<u8> {
     let mut b = Vec::new();

@@ -230,7 +230,7 @@ pub(crate) fn native_read_error(error: io::Error) -> String {
     error.to_string()
 }
 
-pub(crate) fn reader(path: &Path) -> Result<Box<dyn Read>> {
+pub(crate) fn session_file(path: &Path) -> Result<fs::File> {
     let info = fs::symlink_metadata(path).map_err(native_read_error)?;
     if !info.is_file() || info.file_type().is_symlink() {
         return Err("History must be a regular file".into());
@@ -243,6 +243,11 @@ pub(crate) fn reader(path: &Path) -> Result<Box<dyn Read>> {
     if !file.metadata().map_err(native_read_error)?.is_file() {
         return Err("History must be a regular file".into());
     }
+    Ok(file)
+}
+
+pub(crate) fn reader(path: &Path) -> Result<Box<dyn Read>> {
+    let file = session_file(path)?;
     if path.to_string_lossy().ends_with(".jsonl.zst") {
         let mut decoder = zstd::stream::read::Decoder::new(file).map_err(native_read_error)?;
         decoder.window_log_max(27).map_err(|e| e.to_string())?;
@@ -1524,7 +1529,11 @@ pub(crate) fn session_snapshot(
         }
         history.rebase_offsets();
         let content = history.content()?;
-        let redacted_records = history.records();
+        let redacted_records = history
+            .rollouts
+            .into_iter()
+            .flat_map(|rollout| rollout.records)
+            .collect();
         if missing_stamp {
             deps.clear();
         } else {
