@@ -615,3 +615,301 @@ fn codex_discovery_imports_scoped_v2_summaries_and_deduplicates_dual_writes() {
         .any(|item| item["resource"]["title"] == "Curated"));
     assert!(curated.iter().any(|item| item["paths"] == json!([v2_only])));
 }
+
+fn curated_memory(
+    f: &Fixture,
+    project_id: &str,
+    id: &str,
+    title: &str,
+    updated_at: &str,
+    content: &str,
+    supersedes: &[&str],
+) -> Value {
+    let r = json!({
+        "resourceId": id,
+        "projectId": project_id,
+        "kind": "memory",
+        "source": "shared",
+        "logicalPath": format!("knowledge/{id}.md"),
+        "title": title,
+        "memory": {
+            "topic": title,
+            "scope": "",
+            "provider": "manual",
+            "supersedes": supersedes,
+        },
+        "files": [{
+            "path": "content.md",
+            "hash": db::blob(content.as_bytes()).unwrap(),
+            "size": content.len(),
+            "executable": false,
+        }],
+        "deleted": false,
+        "revision": 1,
+        "updatedAt": updated_at,
+    });
+    db::upsert(&f.db, "resources", id, project_id, &r).unwrap();
+    r
+}
+
+#[test]
+fn decision_parser_handles_multiline_and_rejects_malformed() {
+    let formatted = memory_context::format_decision(
+        "Use asyncio.Semaphore\nwith limit 8",
+        "Prevents thread exhaustion\nunder crawler load",
+    );
+    assert_eq!(
+        formatted,
+        "---\norka_type: decision\n---\nDecision: Use asyncio.Semaphore\nwith limit 8\nReason: Prevents thread exhaustion\nunder crawler load\n"
+    );
+    let parsed = memory_context::parse_decision(&formatted).unwrap();
+    assert_eq!(parsed.0, "Use asyncio.Semaphore\nwith limit 8");
+    assert_eq!(parsed.1, "Prevents thread exhaustion\nunder crawler load");
+
+    let crlf = "---\r\norka_type: decision\r\n---\r\nDecision:\r\nLine 1\r\nLine 2\r\nReason:\r\nWhy 1\r\nWhy 2\r\n";
+    assert_eq!(
+        memory_context::parse_decision(crlf),
+        Some(("Line 1\nLine 2".into(), "Why 1\nWhy 2".into()))
+    );
+
+    assert!(memory_context::parse_decision("Ordinary memory text").is_none());
+    assert!(
+        memory_context::parse_decision("---\norka_type: note\n---\nDecision: A\nReason: B\n")
+            .is_none()
+    );
+    assert!(memory_context::parse_decision(
+        "---\norka_type: decision\n---\nDecision: Only decision\n"
+    )
+    .is_none());
+    assert!(memory_context::parse_decision(
+        "---\norka_type: decision\n---\nDecision:   \nReason: B\n"
+    )
+    .is_none());
+    assert!(memory_context::parse_decision(
+        "---\norka_type: decision\n---\nDecision: A\nReason:   \n"
+    )
+    .is_none());
+    assert!(memory_context::parse_decision(
+        "---\norka_type: decision\n---\nStray line\nDecision: A\nReason: B\n"
+    )
+    .is_none());
+}
+
+#[test]
+fn handoff_decisions_filter_accepted_current_project_and_truncate_whole_entries() {
+    let f = Fixture::new();
+    let project_id = f.project["id"].as_str().unwrap();
+
+    // No decisions yet.
+    assert_eq!(
+        memory_context::handoff_decisions_section(&f.db, &f.project).unwrap(),
+        None
+    );
+
+    // Draft in drafts table must never be included.
+    let draft_id = uuid::Uuid::new_v4().to_string();
+    let draft_text = memory_context::format_decision("Draft decision", "Not accepted yet");
+    let draft = json!({
+        "id": draft_id,
+        "projectId": project_id,
+        "status": "local",
+        "resource": {
+            "resourceId": draft_id,
+            "kind": "memory",
+            "source": "shared",
+            "logicalPath": format!("knowledge/{draft_id}.md"),
+            "title": "Draft decision",
+            "memory": {"topic": "Draft decision", "scope": "", "provider": "manual", "supersedes": []},
+            "files": [{"path": "content.md", "hash": db::blob(draft_text.as_bytes()).unwrap(), "size": draft_text.len(), "executable": false}],
+            "deleted": false
+        }
+    });
+    db::upsert(&f.db, "drafts", &draft_id, project_id, &draft).unwrap();
+
+    // Another project's decision must never be included.
+    let other_project = uuid::Uuid::new_v4().to_string();
+    let other_id = uuid::Uuid::new_v4().to_string();
+    curated_memory(
+        &f,
+        &other_project,
+        &other_id,
+        "Other project decision",
+        "2026-11-28T00:00:00Z",
+        &memory_context::format_decision("Foreign decision", "Foreign reason"),
+        &[],
+    );
+
+    // Malformed & ordinary memories must not appear as decisions.
+    let malformed_id = uuid::Uuid::new_v4().to_string();
+    curated_memory(
+        &f,
+        project_id,
+        &malformed_id,
+        "Malformed decision",
+        "2026-11-28T00:00:00Z",
+        "---\norka_type: decision\n---\nDecision: Missing reason\n",
+        &[],
+    );
+    let ordinary_id = uuid::Uuid::new_v4().to_string();
+    curated_memory(
+        &f,
+        project_id,
+        &ordinary_id,
+        "Ordinary note",
+        "2026-11-28T00:00:00Z",
+        "Just a normal memory note.",
+        &[],
+    );
+
+    // Still no valid accepted decisions for this project.
+    assert_eq!(
+        memory_context::handoff_decisions_section(&f.db, &f.project).unwrap(),
+        None
+    );
+
+    // Superseded decision must be excluded.
+    let old_id = uuid::Uuid::new_v4().to_string();
+    curated_memory(
+        &f,
+        project_id,
+        &old_id,
+        "Old decision",
+        "2026-11-01T00:00:00Z",
+        &memory_context::format_decision("Superseded choice", "Old reason"),
+        &[],
+    );
+    let new_id = uuid::Uuid::new_v4().to_string();
+    curated_memory(
+        &f,
+        project_id,
+        &new_id,
+        "New decision",
+        "2026-11-10T00:00:00Z",
+        &memory_context::format_decision("Current choice", "Updated reason"),
+        &[&old_id],
+    );
+
+    let section = memory_context::handoff_decisions_section(&f.db, &f.project)
+        .unwrap()
+        .unwrap();
+    assert!(section.contains("Current choice"));
+    assert!(section.contains("Updated reason"));
+    assert!(section.contains("do not override"));
+    assert!(!section.contains("Superseded choice"));
+    assert!(!section.contains("Draft decision"));
+    assert!(!section.contains("Foreign decision"));
+    assert!(!section.contains("Missing reason"));
+
+    // Many decisions exceeding 4,000 chars: whole decisions only, newest first, exact omitted count.
+    let big_reason = "r".repeat(1700);
+    for (idx, ts) in [
+        ("oldest", "2026-11-11T00:00:00Z"),
+        ("middle", "2026-11-12T00:00:00Z"),
+        ("newest", "2026-11-13T00:00:00Z"),
+    ] {
+        let id = uuid::Uuid::new_v4().to_string();
+        curated_memory(
+            &f,
+            project_id,
+            &id,
+            idx,
+            ts,
+            &memory_context::format_decision(
+                &format!("Choice {idx}"),
+                &format!("{idx}:{big_reason}"),
+            ),
+            &[],
+        );
+    }
+    let truncated = memory_context::handoff_decisions_section(&f.db, &f.project)
+        .unwrap()
+        .unwrap();
+    assert!(truncated.contains("Choice newest"));
+    assert!(truncated.contains("Choice middle"));
+    assert!(!truncated.contains("Choice oldest"));
+    assert!(!truncated.contains("Current choice"));
+    assert!(truncated
+        .contains("2 earlier recorded decisions were omitted due to the 4000-character limit."));
+}
+
+#[test]
+fn context_selection_reserves_at_least_two_slots_for_non_decision_memories() {
+    let f = Fixture::new();
+    let project_id = f.project["id"].as_str().unwrap();
+
+    for i in 1..=3 {
+        let id = uuid::Uuid::new_v4().to_string();
+        curated_memory(
+            &f,
+            project_id,
+            &id,
+            &format!("Decision {i}"),
+            &format!("2026-11-2{i}T00:00:00Z"),
+            &memory_context::format_decision(
+                &format!("Crawler decision {i}"),
+                &format!("Crawler concurrency invariant {i}"),
+            ),
+            &[],
+        );
+    }
+    for i in 1..=3 {
+        memory(
+            &f,
+            &format!("codex/entries/crawler-{i}.md"),
+            &format!("Crawler note {i}"),
+            &format!("Crawler concurrency note {i} for local runs."),
+        );
+    }
+
+    let selected =
+        memory_context::select(&f.db, &f.project, &f.root, Some("crawler concurrency")).unwrap();
+    assert_eq!(selected.len(), 4);
+    let decision_count = selected
+        .iter()
+        .filter(|e| e.text.contains("Decision:") && e.text.contains("Reason:"))
+        .count();
+    assert_eq!(decision_count, 2);
+}
+
+#[test]
+fn context_selection_counts_multiline_decision_with_blank_line_toward_slot_limit() {
+    let f = Fixture::new();
+    let project_id = f.project["id"].as_str().unwrap();
+
+    for i in 1..=3 {
+        let id = uuid::Uuid::new_v4().to_string();
+        curated_memory(
+            &f,
+            project_id,
+            &id,
+            &format!("Decision {i}"),
+            &format!("2026-11-2{i}T00:00:00Z"),
+            &memory_context::format_decision(
+                &format!("Use semaphore {i}\n\nKeep crawler {i} concurrency bounded at 8"),
+                "Prevents thread exhaustion under load",
+            ),
+            &[],
+        );
+    }
+    for i in 1..=3 {
+        memory(
+            &f,
+            &format!("codex/entries/crawler-{i}.md"),
+            &format!("Crawler note {i}"),
+            &format!("Crawler concurrency note {i} for local runs."),
+        );
+    }
+
+    let selected =
+        memory_context::select(&f.db, &f.project, &f.root, Some("crawler concurrency")).unwrap();
+    assert_eq!(selected.len(), 4);
+    let decision_count = selected
+        .iter()
+        .filter(|e| {
+            e.resource["title"]
+                .as_str()
+                .is_some_and(|t| t.starts_with("Decision "))
+        })
+        .count();
+    assert_eq!(decision_count, 2);
+}

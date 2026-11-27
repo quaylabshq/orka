@@ -900,7 +900,19 @@ pub async fn governance_command(action: String, input: Value) -> Result<Value> {
         }
         "save-candidate"=>{
             if !governed(&p) {return Err("Activate resource permissions first".into());}
-            let text=input["content"].as_str().ok_or("Enter a memory")?;
+            let has_decision = input.get("decision").is_some_and(|v| !v.is_null());
+            let has_reason = input.get("reason").is_some_and(|v| !v.is_null());
+            if has_decision != has_reason {
+                return Err("Provide both decision and reason".into());
+            }
+            let formatted_decision = if has_decision {
+                let decision = input["decision"].as_str().map(str::trim).filter(|s| !s.is_empty()).ok_or("Enter a decision")?;
+                let reason = input["reason"].as_str().map(str::trim).filter(|s| !s.is_empty()).ok_or("Enter a reason")?;
+                Some(memory_context::format_decision(decision, reason))
+            } else {
+                None
+            };
+            let text=formatted_decision.as_deref().or_else(||input["content"].as_str()).ok_or("Enter a memory")?;
             if text.len()>1_000_000 || text.contains('\0') {return Err("Memory must be UTF-8 text of at most 1 MB".into());}
             if !input["contextToken"].is_null() && input["contextToken"]!=db::get(&db,&crate::sources::meta_key(&p, "contextToken")?)? {return Err("Context changed; read the current authorized context before saving this candidate".into());}
             let id=Uuid::new_v4().to_string();
