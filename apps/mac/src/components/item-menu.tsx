@@ -247,12 +247,14 @@ export function ItemMenuButton({
   label,
   disabled,
   size = "sm",
+  triggerRef,
   onOpenChange,
 }: {
   actions: ItemMenuAction[];
   label: string;
   disabled?: boolean;
   size?: "sm" | "md" | "lg";
+  triggerRef?: React.Ref<HTMLButtonElement>;
   onOpenChange?: (open: boolean) => void;
 }) {
   const selected = useRef(false);
@@ -266,6 +268,7 @@ export function ItemMenuButton({
     >
       <DropdownMenu.Trigger asChild>
         <IconButton
+          ref={triggerRef}
           icon={EllipsisIcon}
           variant="tertiary"
           size={size}

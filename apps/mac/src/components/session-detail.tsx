@@ -8,6 +8,7 @@ import { CopyLinkButton } from "./copy-link-button.js";
 import {
   ResourceMenuButton,
   resourceViewMenuActions,
+  useBrowserHandoff,
 } from "./resource-menu.js";
 import { useDetailLayout } from "./detail-layout.js";
 import { detailFacts, detailMeta, sharingStatus } from "./detail-facts.js";
@@ -56,6 +57,7 @@ export function SessionDetail({
 }: SessionDetailProps) {
   const layout = useDetailLayout();
   const { notify } = useToasts();
+  const browserHandoff = useBrowserHandoff();
   const author = useMemberLabel(user)(resource.updatedBy);
   const resourceConflicts = conflicts.filter(
     (conflict) => conflict.resourceId === resource.resourceId,
@@ -204,6 +206,11 @@ export function SessionDetail({
             busy={busy}
             actions={actions}
             sessionSelection={sessionSelection}
+            onShareHandoff={
+              browserHandoff.available
+                ? (returnFocus) => browserHandoff.open(resource, returnFocus)
+                : undefined
+            }
             onError={onError}
           />
         ),
