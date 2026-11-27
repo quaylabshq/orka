@@ -416,7 +416,9 @@ export function ShareDialog({
                 aria-describedby={piWarningId}
                 onChange={(event) =>
                   setAcknowledgedPiToken(
-                    event.target.checked && preview ? preview.previewToken : null,
+                    event.target.checked && preview
+                      ? preview.previewToken
+                      : null,
                   )
                 }
               />
