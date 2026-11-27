@@ -2757,3 +2757,56 @@ fn pi_recovery_export_redacts_new_and_legacy_snapshots() {
     .unwrap();
     assert_eq!(exported, snapshot);
 }
+
+#[test]
+fn handoff_prompt_includes_project_decisions_and_creates_handoffs_gitignore() {
+    let f = Fixture::new();
+    let project_id = f.project["id"].as_str().unwrap();
+    let decision_id = uuid::Uuid::new_v4().to_string();
+    let decision_text = crate::memory_context::format_decision(
+        "Keep SQLite WAL mode",
+        "Prevents reader contention during sync",
+    );
+    let decision_resource = json!({
+        "resourceId": decision_id,
+        "projectId": project_id,
+        "kind": "memory",
+        "source": "shared",
+        "logicalPath": format!("knowledge/{decision_id}.md"),
+        "title": "SQLite WAL",
+        "memory": {"topic": "SQLite WAL", "scope": "", "provider": "manual", "supersedes": []},
+        "files": [{"path": "content.md", "hash": db::blob(decision_text.as_bytes()).unwrap(), "size": decision_text.len(), "executable": false}],
+        "deleted": false,
+        "revision": 1,
+        "updatedAt": db::now(),
+    });
+    db::upsert(
+        &f.db,
+        "resources",
+        &decision_id,
+        project_id,
+        &decision_resource,
+    )
+    .unwrap();
+
+    let resource = session(&f, "claude", true);
+    let id = resource["resourceId"].as_str().unwrap().to_owned();
+    let prompt = session_launcher::handoff_prompt(&id).unwrap();
+    let text = prompt["text"].as_str().unwrap();
+    assert!(text.contains("Keep SQLite WAL mode"));
+    assert!(text.contains("Prevents reader contention during sync"));
+    assert!(text.contains("do not override"));
+
+    let host = FakeHost::default();
+    let launched =
+        session_launcher::resume_with(&id, Tool::Codex, Destination::Terminal, &host).unwrap();
+    let handoff_path = PathBuf::from(launched["handoff"].as_str().unwrap());
+    let handoffs_gitignore = handoff_path.parent().unwrap().join(".gitignore");
+    assert_eq!(fs::read_to_string(&handoffs_gitignore).unwrap(), "*\n");
+    assert!(!f.root.join(".gitignore").exists());
+
+    // Existing .orka/handoffs/.gitignore must never be overwritten.
+    fs::write(&handoffs_gitignore, "*.md\n").unwrap();
+    session_launcher::ensure_handoffs_gitignore(handoff_path.parent().unwrap()).unwrap();
+    assert_eq!(fs::read_to_string(&handoffs_gitignore).unwrap(), "*.md\n");
+}

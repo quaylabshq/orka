@@ -1318,3 +1318,50 @@ fn governed_read_operations_remain_available_during_workspace_sync() {
     .unwrap_err();
     assert!(error.contains("operation is in progress"));
 }
+
+#[test]
+fn save_candidate_records_decisions_with_reason_and_rejects_partial_input() {
+    let f = governed_fixture();
+
+    let only_decision = command(
+        &f,
+        "save-candidate",
+        json!({"topic":"Missing reason", "decision":"Use semaphore", "provider":"claude"}),
+    )
+    .unwrap_err();
+    assert!(only_decision.contains("both decision and reason"));
+
+    let only_reason = command(
+        &f,
+        "save-candidate",
+        json!({"topic":"Missing decision", "reason":"Avoids thread exhaustion", "provider":"claude"}),
+    )
+    .unwrap_err();
+    assert!(only_reason.contains("both decision and reason"));
+
+    let saved = command(
+        &f,
+        "save-candidate",
+        json!({
+            "topic": "Crawler concurrency",
+            "decision": "Use asyncio.Semaphore",
+            "reason": "Avoids thread exhaustion under load",
+            "provider": "claude"
+        }),
+    )
+    .unwrap();
+    let draft = command(&f, "draft", json!({"id": saved["id"]})).unwrap();
+    assert_eq!(
+        draft["files"]["content.md"],
+        "---\norka_type: decision\n---\nDecision: Use asyncio.Semaphore\nReason: Avoids thread exhaustion under load\n"
+    );
+
+    let legacy = command(
+        &f,
+        "save-candidate",
+        json!({"topic":"Legacy note", "content":"Plain memory", "provider":"codex"}),
+    )
+    .unwrap();
+    let legacy_draft = command(&f, "draft", json!({"id": legacy["id"]})).unwrap();
+    assert_eq!(legacy_draft["files"]["content.md"], "Plain memory");
+}

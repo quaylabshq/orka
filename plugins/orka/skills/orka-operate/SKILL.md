@@ -21,6 +21,16 @@ Use `get_resource_history` and `compare_revisions` to inspect authors, timestamp
 
 For a requested knowledge write, use `create_memory` or `update_plan` with the selected repository, exact content and current revision where required. Keep the same operation ID when retrying an uncertain result. A stale revision requires reading and reconciling the newer content before a new write. Report the actual outcome, including approval requirements or conflicts. Saving knowledge never enables automatic sharing.
 
+When recording an architectural decision or invariant, use `create_memory` with this exact `text` format so Orka indexes and prioritizes it in handoffs:
+
+```markdown
+---
+orka_type: decision
+---
+Decision: <decision or invariant>
+Reason: <why this choice was made>
+```
+
 ## Skills
 
 `list_skills` discovers accepted shared skills. `list_local_skills` discovers local, global and available shared install packages on this Mac. Use `install_skill` only for a user-requested skill and destination. Pass the selected local discovery entry’s exact `skillId`, `origin` and `snapshotHash`, plus `expectedRevision` for a shared entry. Select the supported project or agent target. It installs the complete package, including supporting files and executable modes. Explain a conflicting destination and preserve its files; do not replace it manually to bypass an installation refusal. Installing a skill does not authorize running its scripts or sharing local content.
