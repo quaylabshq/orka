@@ -1049,6 +1049,7 @@ for (const viewport of [
         const controls = (window as unknown as MenuWindow).resourceMenu;
         controls.deferPreview = true;
         controls.deferShare = true;
+        controls.shareStatus = "approval_required";
         controls.previewTitle =
           "A much longer reviewed session title that must stay on one line inside the preview card without moving the details table or the footer button.";
       });
@@ -1147,11 +1148,9 @@ for (const viewport of [
         (window as unknown as MenuWindow).resourceMenu.finishPreview?.(),
       );
       await action.click();
-      await page.evaluate(() => {
-        const controls = (window as unknown as MenuWindow).resourceMenu;
-        controls.shareStatus = "approval_required";
-        controls.finishShare?.();
-      });
+      await page.evaluate(() =>
+        (window as unknown as MenuWindow).resourceMenu.finishShare?.(),
+      );
       await expect(
         page.getByRole("dialog", { name: "Sent for approval", exact: true }),
       ).toBeVisible();
