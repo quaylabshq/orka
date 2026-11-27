@@ -995,12 +995,14 @@ function WorkspaceApp({
       onReview={(item, mode) =>
         leaveSettings(() => setGovernance({ resource: item.resourceId, mode }))
       }
-      onOpenRequests={(projectId) =>
-        openManagement("requests", "open", projectId)
-      }
+      onOpenRequests={(projectId, view) => {
+        setProject(projectId);
+        openManagement("requests", view, projectId);
+      }}
       onRefresh={async () => {
-        await refresh();
+        const next = await workspace.refreshSnapshot();
         localCatalog.refresh();
+        return next;
       }}
       onNotice={setNotice}
       onError={setError}

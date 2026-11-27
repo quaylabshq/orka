@@ -55,7 +55,11 @@ import { useResourceActions, type Run } from "./use-resource-actions.js";
 import { QueuedUploadReview } from "./queued-upload-review.js";
 import { ArtifactLinkDialog } from "./artifact-link-dialog.js";
 import { useWorkspaceScope } from "./workspace-cache.js";
-import { fileSize, ShareDialog } from "./share-dialog.js";
+import {
+  fileSize,
+  ShareDialog,
+  type ShareDialogContext,
+} from "./share-dialog.js";
 
 export { fileSize };
 
@@ -70,10 +74,10 @@ interface ResourceMenuContextValue {
   act: Run;
   onOpen: (resource: ProjectResource, compare?: ResourceComparison) => void;
   onReview: (resource: ProjectResource, mode: "incoming" | "outgoing") => void;
-  onOpenRequests: (projectId: string) => void;
+  onOpenRequests: ShareDialogContext["onOpenRequests"];
   onNotice: (message: string) => void;
   onError: (message: string) => void;
-  onRefresh: () => Promise<void>;
+  onRefresh: () => Promise<Snapshot | undefined>;
   isCurrent: (resource: ProjectResource) => boolean;
   request: (
     kind: ResourceRequest,

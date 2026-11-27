@@ -90,7 +90,9 @@ describe("shareStatus while and after sending", () => {
   });
 
   it("keeps results in the dialog with their own heading", () => {
-    expect(pick({ phase: { step: "approval" } })).toMatchObject({
+    expect(
+      pick({ phase: { step: "approval", review: "pending" } }),
+    ).toMatchObject({
       heading: "Sent for approval",
       pill: "Awaiting approval",
       actionLabel: "Done",
@@ -137,7 +139,7 @@ describe("shareStatus while and after sending", () => {
       { step: "ready" },
       { step: "sending", progress: null },
       { step: "share-failed", error: "x" },
-      { step: "approval" },
+      { step: "approval", review: "pending" },
       { step: "conflict", requestId: "conflict-1" },
       { step: "held" },
       { step: "queued", unsupported: true },

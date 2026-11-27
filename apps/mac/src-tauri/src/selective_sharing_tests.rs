@@ -123,10 +123,28 @@ async fn pi_session_discovery_reads_the_saved_branch_and_queues_only_an_explicit
         .unwrap()
         .contains("abandoned branches"));
     assert!(preview["note"].as_str().unwrap().contains("tool records"));
-    request["previewToken"] = preview["previewToken"].clone();
     assert_eq!(
-        selective_sharing::queue(&f.db, &f.project, &request).unwrap()["status"],
-        "queued"
+        preview["piScope"],
+        json!({"entries":3,"offBranchEntries":1})
+    );
+    request["previewToken"] = preview["previewToken"].clone();
+    assert!(selective_sharing::queue(&f.db, &f.project, &request)
+        .unwrap_err()
+        .contains("Confirm sharing the complete Pi session"));
+    request["acknowledgedPiPreviewToken"] = json!(uuid::Uuid::new_v4());
+    assert!(selective_sharing::queue(&f.db, &f.project, &request)
+        .unwrap_err()
+        .contains("Confirm sharing the complete Pi session"));
+    assert!(f
+        .outbox()
+        .iter()
+        .all(|entry| entry["resource"]["source"] != "pi"));
+    request["acknowledgedPiPreviewToken"] = preview["previewToken"].clone();
+    let receipt = selective_sharing::queue(&f.db, &f.project, &request).unwrap();
+    assert_eq!(receipt["status"], "queued");
+    assert_eq!(
+        selective_sharing::queue(&f.db, &f.project, &request).unwrap(),
+        receipt
     );
     let queued = db::rows(
         &f.db,
@@ -507,6 +525,154 @@ fn a_review_only_share_keeps_its_destination_across_retries() {
 }
 
 #[test]
+fn a_suggest_only_preview_keeps_approval_after_promotion_without_a_client_hint() {
+    let mut f = Fixture::new();
+    prepare(&mut f);
+    f.project["governed"] = json!(true);
+    let mut request = input(&f);
+    let catalog = format!("governance:{}", f.project["id"].as_str().unwrap());
+    db::set(
+        &f.db,
+        &catalog,
+        &json!({"access":{"session":{"create":"suggest"}}}),
+    )
+    .unwrap();
+    let local = indexer::discover(&f.db, &f.project, "session")
+        .unwrap()
+        .remove(0);
+    request["kind"] = json!("session");
+    request["resourceId"] = local["resource"]["resourceId"].clone();
+    let preview = selective_sharing::preview(&f.db, &f.project, &request).unwrap();
+    assert_eq!(preview["publicationMode"], "suggest");
+    db::set(
+        &f.db,
+        &catalog,
+        &json!({"access":{"session":{"create":"publish"}}}),
+    )
+    .unwrap();
+    request["previewToken"] = preview["previewToken"].clone();
+    let receipt = selective_sharing::queue(&f.db, &f.project, &request).unwrap();
+    assert_eq!(receipt["requireApproval"], true);
+}
+
+#[test]
+fn upgrade_routes_only_intact_legacy_shares_and_keeps_the_frozen_change() {
+    let mut f = Fixture::new();
+    prepare(&mut f);
+    let mut request = input(&f);
+    request["kind"] = json!("session");
+    let local = indexer::discover(&f.db, &f.project, "session")
+        .unwrap()
+        .remove(0);
+    request["resourceId"] = local["resource"]["resourceId"].clone();
+    request["previewToken"] =
+        selective_sharing::preview(&f.db, &f.project, &request).unwrap()["previewToken"].clone();
+    let direct = selective_sharing::queue(&f.db, &f.project, &request).unwrap();
+    assert_eq!(direct["requireApproval"], false);
+    let key = format!("selected-share:{}", direct["requestId"].as_str().unwrap());
+    let queued = db::rows(
+        &f.db,
+        "SELECT json_object('id',id,'project',project,'path',path,'value',json(value)) FROM outbox",
+        &[],
+    )
+    .unwrap()
+    .remove(0);
+    let mut legacy = direct.clone();
+    legacy.as_object_mut().unwrap().remove("requireApproval");
+
+    for (governed, review) in [
+        (json!(false), false),
+        (json!(true), true),
+        (Value::Null, true),
+    ] {
+        f.project["governed"] = governed;
+        db::upsert(
+            &f.db,
+            "projects",
+            f.project["id"].as_str().unwrap(),
+            "",
+            &f.project,
+        )
+        .unwrap();
+        db::set(&f.db, &key, &legacy).unwrap();
+        assert_eq!(
+            selective_sharing::authorized_origin(&f.db, &queued).unwrap(),
+            None
+        );
+        let upgraded = db::open().unwrap();
+        let receipt = db::get(&upgraded, &key).unwrap();
+        assert_eq!(receipt["requireApproval"], review);
+        if review {
+            assert_eq!(receipt["legacyReview"], "inferred");
+            let old_approval_digest = db::digest(
+                json!(["submit-for-approval", queued["value"]])
+                    .to_string()
+                    .as_bytes(),
+            );
+            assert_ne!(receipt["payloadHash"], old_approval_digest);
+        }
+        assert_eq!(receipt["requestId"], legacy["requestId"]);
+        assert_eq!(receipt["payloadHash"] == direct["payloadHash"], !review);
+        assert_eq!(
+            selective_sharing::authorized_origin(&upgraded, &queued)
+                .unwrap()
+                .as_deref(),
+            Some("https://selected.example")
+        );
+        assert_eq!(f.outbox(), vec![queued["value"].clone()]);
+        assert_eq!(db::get(&db::open().unwrap(), &key).unwrap(), receipt);
+    }
+
+    let mut damaged = legacy.clone();
+    damaged["payloadHash"] = json!("invalid digest");
+    db::set(&f.db, &key, &damaged).unwrap();
+    let upgraded = db::open().unwrap();
+    assert_eq!(db::get(&upgraded, &key).unwrap(), damaged);
+    assert_eq!(
+        selective_sharing::authorized_origin(&upgraded, &queued).unwrap(),
+        None
+    );
+
+    // Recover an outbox row missing at upgrade using a fresh confirmation.
+    db::set(&f.db, &key, &legacy).unwrap();
+    f.db.execute("DELETE FROM outbox", []).unwrap();
+    assert_eq!(db::get(&db::open().unwrap(), &key).unwrap(), legacy);
+    request["previewToken"] =
+        selective_sharing::preview(&f.db, &f.project, &request).unwrap()["previewToken"].clone();
+    let restored = selective_sharing::queue(&f.db, &f.project, &request).unwrap();
+    assert_eq!(restored["requireApproval"], true);
+    assert_eq!(restored["requestId"], legacy["requestId"]);
+    assert_eq!(f.outbox(), vec![queued["value"].clone()]);
+
+    // A verified ungoverned service needs a new explicit confirmation.
+    sync::record_upload_failure(&f.db, &queued, selective_sharing::LEGACY_UNGOVERNED).unwrap();
+    f.project["governed"] = json!(false);
+    assert!(selective_sharing::queue(&f.db, &f.project, &request).is_err());
+    request["previewToken"] =
+        selective_sharing::preview(&f.db, &f.project, &request).unwrap()["previewToken"].clone();
+    let confirmed = selective_sharing::queue(&f.db, &f.project, &request).unwrap();
+    assert_eq!(confirmed["requireApproval"], false);
+    assert_eq!(confirmed["payloadHash"], direct["payloadHash"]);
+
+    // An access refusal cannot prove whether the older service committed the share.
+    db::set(&f.db, &key, &restored).unwrap();
+    sync::record_upload_failure(&f.db, &queued, "403: Temporarily denied").unwrap();
+    request["previewToken"] =
+        selective_sharing::preview(&f.db, &f.project, &request).unwrap()["previewToken"].clone();
+    request["requireApproval"] = json!(true);
+    let strict = selective_sharing::queue(&f.db, &f.project, &request).unwrap();
+    assert_eq!(strict["legacyReview"], "confirmed");
+    assert_ne!(strict["payloadHash"], restored["payloadHash"]);
+    sync::record_upload_failure(&f.db, &queued, selective_sharing::LEGACY_UNGOVERNED).unwrap();
+    request["previewToken"] =
+        selective_sharing::preview(&f.db, &f.project, &request).unwrap()["previewToken"].clone();
+    request["requireApproval"] = json!(false);
+    let retry = selective_sharing::queue(&f.db, &f.project, &request).unwrap();
+    assert_eq!(retry["requireApproval"], true);
+    assert_eq!(retry["legacyReview"], "confirmed");
+}
+
+#[test]
 fn selected_conflict_receipt_preserves_current_and_candidate_snapshots() {
     let mut f = Fixture::new();
     prepare(&mut f);
@@ -744,4 +910,174 @@ fn new_snapshots_use_creation_access_and_distinguish_an_unknown_rule() {
     let snapshot = preview();
     assert_eq!(snapshot["baseRevision"], 0);
     assert_eq!(snapshot["publicationMode"], "publish");
+}
+
+fn preview_memory(f: &Fixture, contents: &str, mut request: Value) -> Value {
+    let dir = indexer::claude_memory(&f.root).unwrap();
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("MEMORY.md"), contents).unwrap();
+    let local = indexer::discover(&f.db, &f.project, "memory")
+        .unwrap()
+        .into_iter()
+        .find(|item| item["resource"]["source"] == "claude")
+        .unwrap();
+    request["kind"] = json!("memory");
+    request["resourceId"] = local["resource"]["resourceId"].clone();
+    request["previewToken"] =
+        selective_sharing::preview_from_local(&f.db, &f.project, &request, &local).unwrap()
+            ["previewToken"]
+            .clone();
+    request
+}
+
+fn enqueue_reviewed(f: &Fixture, request: &Value) -> Value {
+    let receipt = selective_sharing::queue(&f.db, &f.project, request).unwrap();
+    db::rows(&f.db, "SELECT json_object('id',id,'project',project,'path',path,'value',json(value)) FROM outbox WHERE id=?", &[&receipt["requestId"].as_str()]).unwrap().remove(0)
+}
+
+#[test]
+fn corrected_share_retires_the_refusal_and_prevents_replay_of_an_obsolete_review() {
+    for status in ["published", "approval_required", "conflict"] {
+        let mut f = Fixture::new();
+        prepare(&mut f);
+        let mut initial = preview_memory(&f, "Original instructions", input(&f));
+        initial["requireApproval"] = json!(true);
+        let rejected = enqueue_reviewed(&f, &initial);
+        assert_ne!(
+            initial["resourceId"],
+            rejected["value"]["resource"]["resourceId"]
+        );
+        sync::record_upload_failure(&f.db, &rejected, "409: Stale revision").unwrap();
+        let obsolete = preview_memory(&f, "Original instructions", input(&f));
+
+        // The same local memory can acquire a different publication ID through
+        // an earlier promotion. Its local selection remains the same.
+        db::upsert(&f.db, "drafts", "promotion", f.project["id"].as_str().unwrap(),
+            &json!({"resource":{"resourceId":initial["resourceId"]},"submission":{"resource":{"resourceId":uuid::Uuid::new_v4()}}})).unwrap();
+        let mut revised = preview_memory(&f, "Corrected instructions", input(&f));
+        revised["requireApproval"] = json!(status == "approval_required");
+        let queued = enqueue_reviewed(&f, &revised);
+        assert_ne!(
+            queued["value"]["resource"]["resourceId"],
+            rejected["value"]["resource"]["resourceId"]
+        );
+        assert_eq!(f.outbox().len(), 2);
+        let mut resource = queued["value"]["resource"].clone();
+        resource["projectId"] = f.project["id"].clone();
+        resource["revision"] = json!(1);
+        let result = match status {
+            "approval_required" => {
+                json!({"status":status,"request":{"id":queued["id"],"resourceId":resource["resourceId"],"projectId":resource["projectId"]}})
+            }
+            "conflict" => {
+                let mut accepted = resource.clone();
+                accepted["files"] = rejected["value"]["resource"]["files"].clone();
+                json!({"status":status,"receipt":{"event":{"resource":accepted,"conflicts":[{"id":queued["id"],"resourceId":resource["resourceId"],"candidate":resource,"revision":1}]}}})
+            }
+            _ => json!({"status":status,"receipt":{"event":{"resource":resource,"conflicts":[]}}}),
+        };
+        let tx = f.db.unchecked_transaction().unwrap();
+        selective_sharing::complete(&tx, &queued, &result).unwrap();
+        tx.execute("DELETE FROM outbox WHERE id=?", [queued["id"].as_str()])
+            .unwrap();
+        tx.commit().unwrap();
+
+        assert!(
+            f.outbox().is_empty(),
+            "the earlier refusal still blocks Sync"
+        );
+        assert!(selective_sharing::authorized_origin(&f.db, &rejected)
+            .unwrap()
+            .is_none());
+        assert!(selective_sharing::queue(&f.db, &f.project, &obsolete)
+            .unwrap_err()
+            .contains("fresh share preview"));
+        // Deliberately restoring the former content and mapping is a new user action.
+        f.db.execute("DELETE FROM drafts WHERE id='promotion'", [])
+            .unwrap();
+        let restored = preview_memory(&f, "Original instructions", input(&f));
+        let replay = selective_sharing::queue(&f.db, &f.project, &restored).unwrap();
+        assert_eq!(replay["requestId"], rejected["id"]);
+        assert_eq!(replay["requireApproval"], true);
+    }
+}
+
+#[test]
+fn corrected_share_preserves_unrelated_waiting_held_and_more_recent_attempts() {
+    let mut f = Fixture::new();
+    prepare(&mut f);
+    let fixed = "Snapshot eventually accepted";
+    let refuse = |queued: &Value| {
+        sync::record_upload_failure(&f.db, queued, "403: Permission denied").unwrap();
+    };
+    let first = enqueue_reviewed(&f, &preview_memory(&f, fixed, input(&f)));
+    refuse(&first);
+    let obsolete = enqueue_reviewed(&f, &preview_memory(&f, "Rejected edit", input(&f)));
+    refuse(&obsolete);
+    let mut keep = Vec::new();
+    for (contents, error) in [
+        (
+            "Offline",
+            Some("Cloud unavailable; local work stays queued"),
+        ),
+        ("Still queued", None),
+        (
+            "Waiting for restore",
+            Some("403: project_archived: Restore the project"),
+        ),
+    ] {
+        let pending = enqueue_reviewed(&f, &preview_memory(&f, contents, input(&f)));
+        if let Some(error) = error {
+            sync::record_upload_failure(&f.db, &pending, error).unwrap();
+        }
+        keep.push(pending["id"].clone());
+    }
+    for (key, other) in [
+        ("accountId", "another-account"),
+        ("serviceOrigin", "https://another.example"),
+    ] {
+        let mut scope = input(&f);
+        scope[key] = json!(other);
+        let pending = enqueue_reviewed(&f, &preview_memory(&f, "Another scope", scope));
+        refuse(&pending);
+        keep.push(pending["id"].clone());
+    }
+    let skill = indexer::discover(&f.db, &f.project, "skill")
+        .unwrap()
+        .remove(0);
+    let mut request = input(&f);
+    request["kind"] = json!("skill");
+    request["resourceId"] = skill["resource"]["resourceId"].clone();
+    request["previewToken"] =
+        selective_sharing::preview_from_local(&f.db, &f.project, &request, &skill).unwrap()
+            ["previewToken"]
+            .clone();
+    let other_item = enqueue_reviewed(&f, &request);
+    refuse(&other_item);
+    keep.push(other_item["id"].clone());
+
+    let fresh = preview_memory(&f, fixed, input(&f));
+    let retry = enqueue_reviewed(&f, &fresh);
+    assert_eq!(retry["id"], first["id"]);
+    let later = enqueue_reviewed(&f, &preview_memory(&f, "Later review", input(&f)));
+    refuse(&later);
+    keep.push(later["id"].clone());
+    let count = f.outbox().len();
+    let result = json!({"status":"approval_required","request":{"id":retry["id"],"resourceId":retry["value"]["resource"]["resourceId"],"projectId":retry["project"]}});
+    let tx = f.db.unchecked_transaction().unwrap();
+    selective_sharing::complete(&tx, &retry, &result).unwrap();
+    tx.rollback().unwrap();
+    assert_eq!(f.outbox().len(), count);
+    let tx = f.db.unchecked_transaction().unwrap();
+    selective_sharing::complete(&tx, &retry, &result).unwrap();
+    tx.execute("DELETE FROM outbox WHERE id=?", [retry["id"].as_str()])
+        .unwrap();
+    tx.commit().unwrap();
+    let pending = db::rows(
+        &f.db,
+        "SELECT json_quote(id) FROM outbox ORDER BY rowid",
+        &[],
+    )
+    .unwrap();
+    assert_eq!(pending, keep);
 }
