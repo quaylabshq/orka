@@ -29,6 +29,10 @@ const MAX_SELECTION_BLOCKS = 16;
 const MAX_WINDOW_BLOCKS = 512;
 const TRIM_WINDOW_BLOCKS = 64;
 const NO_BLOCKS: TranscriptBlock[] = [];
+const preparingJump = {
+  start: "Preparing the start of the transcript…",
+  end: "Preparing the end of the transcript…",
+};
 
 // After a seek, pages can produce blocks with the same start and different ends.
 function blockKey(block: TranscriptBlock) {
@@ -45,16 +49,26 @@ interface TranscriptReaderProps {
   onReady?: () => void;
 }
 
+interface OpenTranscript extends SessionTranscriptOpen {
+  attempt: number;
+  viewKey: number;
+}
+
 export function TranscriptReader(props: TranscriptReaderProps) {
   const { id, conflictId, busy, offline, onDownload, readerRef } = props;
+  const [opened, setOpened] = useState<OpenTranscript | null>(null);
   useLayoutEffect(() => {
     if (readerRef.current) readerRef.current.scrollTop = 0;
-  }, [readerRef]);
-  const [opened, setOpened] = useState<SessionTranscriptOpen | null>(null);
+  }, [readerRef, opened?.viewKey]);
   const [error, setError] = useState("");
   const [attempt, setAttempt] = useState(0);
-  const retry = () => {
-    setOpened(null);
+  const openFailureRetry = useRef<HTMLButtonElement>(null);
+  useLayoutEffect(() => {
+    if (attempt && error && document.activeElement === document.body)
+      openFailureRetry.current?.focus({ preventScroll: true });
+  }, [attempt, error]);
+  const retry = (retain: boolean) => {
+    if (!retain) setOpened(null);
     setError("");
     setAttempt((current) => current + 1);
   };
@@ -71,10 +85,30 @@ export function TranscriptReader(props: TranscriptReaderProps) {
         readerId = result.readerId;
         if (disposed) {
           if (readerId) close(readerId);
-        } else setOpened(result);
+        } else {
+          setOpened((previous) => {
+            const snapshot = result.sessionSnapshot;
+            // A new native handle can address the same immutable transcript.
+            const sameSnapshot =
+              snapshot?.snapshotHash &&
+              snapshot.snapshotHash ===
+                previous?.sessionSnapshot?.snapshotHash &&
+              (snapshot.conflictId ?? null) ===
+                (previous.sessionSnapshot.conflictId ?? null);
+            return {
+              ...result,
+              attempt,
+              viewKey: sameSnapshot ? previous.viewKey : attempt,
+            };
+          });
+        }
       },
       (reason: unknown) => {
-        if (!disposed) setError(String(reason));
+        if (!disposed) {
+          // A failed open cannot confirm continued access to the retained text.
+          setOpened(null);
+          setError(String(reason));
+        }
       },
     );
     return () => {
@@ -109,7 +143,11 @@ export function TranscriptReader(props: TranscriptReaderProps) {
       <section aria-label="Transcript text" className="transcript-reader">
         <div className="transcript-actions">{download}</div>
         {error ? (
-          <TranscriptError offline={offline} retry={retry} />
+          <TranscriptError
+            offline={offline}
+            retry={() => retry(false)}
+            buttonRef={openFailureRetry}
+          />
         ) : (
           <TranscriptLoading />
         )}
@@ -125,8 +163,9 @@ export function TranscriptReader(props: TranscriptReaderProps) {
     );
   return (
     <TranscriptText
-      key={opened.readerId}
-      readerId={opened.readerId}
+      key={opened.viewKey}
+      reader={opened}
+      reopening={attempt !== opened.attempt}
       readerRef={props.readerRef}
       offline={offline}
       download={download}
@@ -199,9 +238,11 @@ function TranscriptEdge({
 function TranscriptError({
   offline,
   retry,
+  buttonRef,
 }: {
   offline: boolean;
   retry: () => void;
+  buttonRef?: React.Ref<HTMLButtonElement>;
 }) {
   return (
     <ReaderState
@@ -216,7 +257,7 @@ function TranscriptError({
       }
       message={offline ? "Reconnect and sync to load it." : undefined}
       action={
-        <Button size="sm" variant="tertiary" onClick={retry}>
+        <Button ref={buttonRef} size="sm" variant="tertiary" onClick={retry}>
           Retry
         </Button>
       }
@@ -242,7 +283,8 @@ interface Anchor {
 }
 
 function TranscriptText({
-  readerId,
+  reader,
+  reopening,
   readerRef,
   offline,
   download,
@@ -250,15 +292,17 @@ function TranscriptText({
   onPreviewLimit,
   onReady,
 }: {
-  readerId: string;
+  reader: OpenTranscript;
+  reopening: boolean;
   readerRef: React.RefObject<HTMLDivElement | null>;
   offline: boolean;
   download: React.ReactNode;
-  reopen: () => void;
+  reopen: (retain: boolean) => void;
   onPreviewLimit: () => void;
   onReady?: () => void;
 }) {
   const region = useRef<HTMLElement>(null);
+  const previousReader = useRef(reader);
   const header = useRef<HTMLDivElement>(null);
   const list = useRef<HTMLDivElement>(null);
   const cache = useRef(new Map<number, { text: string; bytes: number }>());
@@ -421,17 +465,13 @@ function TranscriptText({
     setPending(request);
     setFailed(null);
     if (request.kind === "end" || request.kind === "start")
-      setAnnouncement(
-        request.kind === "end"
-          ? "Preparing the end of the transcript…"
-          : "Preparing the start of the transcript…",
-      );
+      setAnnouncement(preparingJump[request.kind]);
     const restored =
       request.kind === "restore"
         ? request.blocks[request.blocks.length - 1]
         : null;
     void invoke<SessionTranscriptRange>("read_transcript", {
-      readerId,
+      readerId: reader.readerId,
       offset: request.offset,
       maxBytes: restored
         ? Math.max(4, restored.end - (request.offset ?? 0))
@@ -493,6 +533,23 @@ function TranscriptText({
         if (next) read(next);
       });
   };
+
+  useLayoutEffect(() => {
+    if (reader.attempt && document.activeElement === document.body)
+      region.current?.focus({ preventScroll: true });
+  }, [reader]);
+
+  useLayoutEffect(() => {
+    if (previousReader.current === reader) return;
+    previousReader.current = reader;
+    generation.current++;
+    readerClosed.current = false;
+    if (failed && failed !== "invalidated") {
+      if (failed.kind === "start" || failed.kind === "end")
+        latestJump.current = failed.kind;
+      read(failed);
+    }
+  });
 
   // Closing the native reader cancels preparation. Disregard any late IPC reply.
   useEffect(
@@ -773,11 +830,7 @@ function TranscriptText({
     if (active.current) {
       queuedJump.current = request;
       setPending(request);
-      setAnnouncement(
-        kind === "end"
-          ? "Preparing the end of the transcript…"
-          : "Preparing the start of the transcript…",
-      );
+      setAnnouncement(preparingJump[kind]);
     } else read(request);
   };
 
@@ -786,13 +839,25 @@ function TranscriptText({
     after: "Loading more of the transcript…",
     restore: "Loading transcript text…",
   };
-  const failedRead = failed && failed !== "invalidated" ? failed : null;
+  const retry = () => {
+    region.current?.focus({ preventScroll: true });
+    if (
+      failed &&
+      failed !== "invalidated" &&
+      (failed.kind === "start" || failed.kind === "end")
+    )
+      setAnnouncement(preparingJump[failed.kind]);
+    reopen(failed !== "invalidated");
+  };
+  const retryRead = failed && failed !== "invalidated" ? failed : null;
+  const loadingRead = reopening ? retryRead : pending;
+  const failedRead = reopening ? null : retryRead;
   const floatingError =
     index && failedRead && !["before", "after"].includes(failedRead.kind);
   const showAnnouncement =
     announcement.startsWith("Preparing") || announcement.startsWith("Select");
 
-  // Native closes the reader on a read error. Retry requires a fresh snapshot.
+  // Retry obtains a fresh native handle before resuming this snapshot.
   return (
     <section
       ref={region}
@@ -845,25 +910,27 @@ function TranscriptText({
         {index && index.start > 0 && (
           <TranscriptEdge
             side="before"
-            pending={pending?.kind === "before"}
+            pending={loadingRead?.kind === "before"}
             failed={failedRead?.kind === "before"}
-            retry={reopen}
+            retry={retry}
           />
         )}
       </div>
       <div className="transcript-notice">
-        {floatingError && <RangeError retry={reopen} />}
+        {floatingError && <RangeError retry={retry} />}
         <span
           className={showAnnouncement ? "transcript-jump-status" : "sr-only"}
           role="status"
         >
-          {(!showAnnouncement && pending && rangeMessages[pending.kind]) ||
+          {(!showAnnouncement &&
+            loadingRead &&
+            rangeMessages[loadingRead.kind]) ||
             announcement}
         </span>
       </div>
       {!index &&
-        (failed ? (
-          <TranscriptError offline={offline} retry={reopen} />
+        (failed && !reopening ? (
+          <TranscriptError offline={offline} retry={retry} />
         ) : (
           <TranscriptLoading />
         ))}
@@ -897,7 +964,7 @@ function TranscriptText({
                   aria-hidden="true"
                   style={{ height: item.size }}
                 >
-                  {!failed && <TranscriptLines />}
+                  {(!failed || reopening) && <TranscriptLines />}
                 </div>
               ) : (
                 <pre className="content">{text}</pre>
@@ -909,9 +976,9 @@ function TranscriptText({
       {index && !index.eof && (
         <TranscriptEdge
           side="after"
-          pending={pending?.kind === "after"}
+          pending={loadingRead?.kind === "after"}
           failed={failedRead?.kind === "after"}
-          retry={reopen}
+          retry={retry}
         />
       )}
     </section>

@@ -444,7 +444,12 @@ async function openAtForwardEdge(page: Page) {
       if (name !== "read_transcript") return invoke(name, args);
       if (opened > 1) {
         const text = "Transcript reopened";
-        return { offset: 0, nextOffset: text.length, text, eof: true };
+        return {
+          offset: args.offset,
+          nextOffset: args.offset + text.length,
+          text,
+          eof: true,
+        };
       }
       if (failedReader) {
         w.readClosedTranscript = true;
@@ -611,7 +616,11 @@ async function restoreEvictedPage(page: Page, succeeds: boolean) {
     let released = false;
     w.__TAURI_INTERNALS__.invoke = async (name: string, args: any) => {
       if (name !== "read_transcript") return invoke(name, args);
+      if (released)
+        w.recoveryReads.push({ offset: args.offset, maxBytes: args.maxBytes });
       if (args.offset < forwardEnd && !released) {
+        w.restoreRequest = { offset: args.offset, maxBytes: args.maxBytes };
+        w.recoveryReads = [];
         await new Promise<void>((resolve, reject) => {
           w.restorePage = (succeeds: boolean) => {
             released = true;
@@ -649,12 +658,16 @@ async function restoreEvictedPage(page: Page, succeeds: boolean) {
     )
     .toBe(true);
   await scroller.evaluate((el) => {
-    el.scrollTop = 0;
+    el.scrollTop = 24000;
   });
   await expect
     .poll(() => page.evaluate(() => typeof (window as any).restorePage))
     .toBe("function");
-  const firstBlock = region.locator('.transcript-block[data-offset="0"]');
+  const request = await page.evaluate(() => (window as any).restoreRequest);
+  expect(request.offset).toBeGreaterThan(0);
+  const firstBlock = region.locator(
+    `.transcript-block[data-offset="${request.offset}"]`,
+  );
   const placeholder = firstBlock.locator(".transcript-block-placeholder");
   await expectSkeletonLines(placeholder);
   const loading = region
@@ -682,9 +695,13 @@ async function restoreEvictedPage(page: Page, succeeds: boolean) {
     await expect(retry).toBeInViewport({ ratio: 1 });
     await retry.click();
     await expect(alert).toHaveCount(0);
+    await expect
+      .poll(() => page.evaluate(() => (window as any).recoveryReads[0]))
+      .toEqual(request);
+    await expect(region).toBeFocused();
   }
   await expect(firstBlock.locator("pre")).toContainText(
-    "First restored record",
+    "Verify the session transcript",
   );
   await expect(firstBlock.locator(".transcript-block-placeholder")).toHaveCount(
     0,
