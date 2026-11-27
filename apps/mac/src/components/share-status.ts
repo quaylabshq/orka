@@ -9,7 +9,8 @@ export type SharePhase =
   | { step: "sending"; progress: SyncProgress | null }
   | { step: "share-failed"; error: string }
   | { step: "approval" }
-  | { step: "conflict"; requestId: string }
+  | { step: "conflict"; requestId: string; checking?: boolean; error?: string }
+  | { step: "conflict-unavailable" }
   | { step: "held" }
   | { step: "queued"; unsupported: boolean };
 
@@ -100,7 +101,26 @@ export function shareStatus(facts: ShareFacts): ShareStatus {
         ),
         secondary: { action: "requests", label: "View request" },
       };
+    case "conflict-unavailable":
+      return status(
+        "Conflict no longer available",
+        "Project refreshed",
+        "neutral",
+        "refresh",
+        "close",
+        "Done",
+      );
     case "conflict":
+      if (phase.checking)
+        return status(
+          "Someone changed it first",
+          "Refreshing project",
+          "info",
+          "loader",
+          "none",
+          "Refreshing…",
+          true,
+        );
       return status(
         "Someone changed it first",
         "Version conflict",

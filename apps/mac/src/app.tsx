@@ -991,8 +991,9 @@ function WorkspaceApp({
         openManagement("requests", "open", projectId)
       }
       onRefresh={async () => {
-        await refresh();
+        const next = await workspace.refreshSnapshot();
         localCatalog.refresh();
+        return next;
       }}
       onNotice={setNotice}
       onError={setError}

@@ -73,7 +73,7 @@ interface ResourceMenuContextValue {
   onOpenRequests: (projectId: string) => void;
   onNotice: (message: string) => void;
   onError: (message: string) => void;
-  onRefresh: () => Promise<void>;
+  onRefresh: () => Promise<Snapshot | undefined>;
   isCurrent: (resource: ProjectResource) => boolean;
   request: (
     kind: ResourceRequest,

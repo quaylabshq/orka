@@ -78,6 +78,12 @@ pub(crate) fn preview_from_local(
     preview_from_local_with_progress(db, project, input, local, || {})
 }
 
+fn pi_preview_scope(records: &[Value]) -> Result<Value> {
+    let branch = crate::pi_sessions::branch(records)?;
+    let entries = records.len() - 1; // The session header is not a tree entry.
+    Ok(json!({"entries":entries,"offBranchEntries":entries - branch.len()}))
+}
+
 pub(crate) fn preview_from_local_with_progress(
     db: &Connection,
     project: &Value,
@@ -97,19 +103,29 @@ pub(crate) fn preview_from_local_with_progress(
     let scoped = sources::for_resource(project, &resource)
         .ok_or("Connect this resource's repository on this Mac")?;
     sources::validate(&scoped)?;
-    if resource["nativeSession"] == true {
-        let content = crate::local_resources::live_session(db, project, local)?.content;
-        if resource["files"] != json!(content.manifest()) {
+    let is_pi = resource["source"] == "pi";
+    let pi_scope = if resource["nativeSession"] == true {
+        let snapshot = crate::local_resources::live_session(db, project, local)?;
+        if resource["files"] != json!(snapshot.content.manifest()) {
             return Err(
                 "This session changed while preparing the preview. Open the preview again.".into(),
             );
         }
-        resource["files"] = json!(content.persist()?);
+        resource["files"] = json!(snapshot.content.persist()?);
         resource
             .as_object_mut()
             .ok_or("Invalid resource")?
             .remove("nativeSession");
-    }
+        is_pi
+            .then(|| pi_preview_scope(&snapshot.redacted_records))
+            .transpose()?
+    } else if is_pi {
+        Some(pi_preview_scope(&crate::history::resource_records(
+            &resource,
+        )?)?)
+    } else {
+        None
+    };
     prepared();
     resource = crate::context_sharing::publication_resource(
         db,
@@ -145,7 +161,7 @@ pub(crate) fn preview_from_local_with_progress(
     db::set(
         db,
         &format!("share-preview:{token}"),
-        &json!({"accountId":input["accountId"],"serviceOrigin":input["serviceOrigin"],"projectId":project["id"],"sourceId":resource["sourceId"],"path":scoped["path"],"folderIdentity":scoped["folderIdentity"],"paths":local["paths"],"nativeId":local["nativeId"],"localResourceId":local["resource"]["resourceId"],"expires":expires,"change":change}),
+        &json!({"accountId":input["accountId"],"serviceOrigin":input["serviceOrigin"],"projectId":project["id"],"sourceId":resource["sourceId"],"path":scoped["path"],"folderIdentity":scoped["folderIdentity"],"paths":local["paths"],"nativeId":local["nativeId"],"localResourceId":local["resource"]["resourceId"],"expires":expires,"requireApproval":publication_mode.as_deref() == Some("suggest"),"change":change}),
     )?;
     let bytes: u64 = resource["files"]
         .as_array()
@@ -153,14 +169,16 @@ pub(crate) fn preview_from_local_with_progress(
         .iter()
         .filter_map(|file| file["size"].as_u64())
         .sum();
-    let note = if resource["source"] == "pi" {
-        "This snapshot includes all saved branches, including abandoned branches and tool records not shown in the reader. Later edits and future turns stay private unless you share again."
+    let note = if is_pi {
+        "This snapshot includes all saved branches, including abandoned branches, tool records and reasoning omitted from the reader. Later edits and future turns stay private unless you share again."
     } else {
         "This exact snapshot will be shared. Later edits and future turns remain private unless automatic sharing is enabled or you explicitly share again."
     };
-    Ok(
-        json!({"previewToken":token,"expiresAt":expires,"baseRevision":base,"publicationMode":publication_mode,"title":resource["title"],"kind":resource["kind"],"sourceId":resource["sourceId"],"files":resource["files"],"totalBytes":bytes,"snapshotHash":indexer::manifest_hash(&resource["files"]),"automaticSharingChanged":false,"note":note}),
-    )
+    let mut preview = json!({"previewToken":token,"expiresAt":expires,"baseRevision":base,"publicationMode":publication_mode,"title":resource["title"],"kind":resource["kind"],"sourceId":resource["sourceId"],"files":resource["files"],"totalBytes":bytes,"snapshotHash":indexer::manifest_hash(&resource["files"]),"automaticSharingChanged":false,"note":note});
+    if let Some(scope) = pi_scope {
+        preview["piScope"] = scope;
+    }
+    Ok(preview)
 }
 
 fn payload_hash(change: &Value, require_approval: bool) -> String {
@@ -177,11 +195,78 @@ fn payload_hash(change: &Value, require_approval: bool) -> String {
     }
 }
 
+/// Older desktops saved the frozen change but did not record whether the sender
+/// expected a review. Preserve the more restrictive destination for governed
+/// projects. Rebinding the digest also prevents an older daemon from publishing
+/// the migrated change through the direct endpoint.
+pub(crate) fn migrate_share_destinations(db: &Connection) -> Result<()> {
+    const LEGACY: &str = "key GLOB 'selected-share:*'
+        AND json_extract(value,'$.status')='queued'
+        AND json_type(value,'$.requireApproval') IS NULL";
+    // An empty partial index makes this inexpensive on ordinary opens. Recheck
+    // after downgrades, which can add more receipts in the old format.
+    db.execute_batch(&format!(
+        "CREATE INDEX IF NOT EXISTS selected_share_missing_destination ON meta(key) WHERE {LEGACY}"
+    ))
+    .map_err(|e| e.to_string())?;
+    let from = format!(
+        "FROM (SELECT key,value FROM meta WHERE {LEGACY}) m
+         JOIN outbox o ON o.id=substr(m.key,length('selected-share:')+1)
+         LEFT JOIN projects p ON p.id=o.project WHERE o.path=?1"
+    );
+    let exists: bool = db
+        .query_row(
+            &format!("SELECT EXISTS(SELECT 1 {from})"),
+            [QUEUE_PATH],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if !exists {
+        return Ok(());
+    }
+    let tx = rusqlite::Transaction::new_unchecked(db, rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    let rows = db::rows(
+        &tx,
+        &format!(
+            "SELECT json_object(
+            'id',o.id, 'project',o.project, 'change',json(o.value), 'receipt',json(m.value),
+            'review',json_type(p.value,'$.governed') IS NOT 'false') {from}"
+        ),
+        &[&QUEUE_PATH],
+    )?;
+    for row in rows {
+        let change = &row["change"];
+        let mut receipt = row["receipt"].clone();
+        if receipt["requestId"] != row["id"]
+            || change["id"] != row["id"]
+            || receipt["projectId"] != row["project"]
+            || change["projectId"] != row["project"]
+            || receipt["payloadHash"] != payload_hash(change, false)
+        {
+            continue;
+        }
+        let review = row["review"] != 0;
+        receipt["requireApproval"] = json!(review);
+        receipt["payloadHash"] = json!(payload_hash(change, review));
+        db::set(
+            &tx,
+            &format!(
+                "selected-share:{}",
+                row["id"].as_str().ok_or("Missing share request")?
+            ),
+            &receipt,
+        )?;
+    }
+    tx.commit().map_err(|e| e.to_string())
+}
+
 pub fn queue(db: &Connection, project: &Value, input: &Value) -> Result<Value> {
     let token = input["previewToken"]
         .as_str()
         .ok_or("Preview this item before sharing it")?;
-    let preview = db::get(db, &format!("share-preview:{token}"))?;
+    let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
+    let preview = db::get(&tx, &format!("share-preview:{token}"))?;
     if preview.is_null() {
         return Err("Prepare a fresh share preview before sending this item.".into());
     }
@@ -193,6 +278,11 @@ pub fn queue(db: &Connection, project: &Value, input: &Value) -> Result<Value> {
     if preview["expires"].as_i64().unwrap_or(0) < chrono::Utc::now().timestamp() {
         return Err("Share preview expired; preview this item again".into());
     }
+    if preview["change"]["resource"]["source"] == "pi"
+        && input["acknowledgedPiPreviewToken"].as_str() != Some(token)
+    {
+        return Err("Confirm sharing the complete Pi session in this preview.".into());
+    }
     let scoped = sources::for_resource(project, &preview["change"]["resource"])
         .ok_or("Connect this resource's repository")?;
     sources::validate(&scoped)?;
@@ -202,47 +292,47 @@ pub fn queue(db: &Connection, project: &Value, input: &Value) -> Result<Value> {
     let change = &preview["change"];
     let id = change["id"].as_str().ok_or("Missing share request")?;
     let key = format!("selected-share:{id}");
-    let mut prior = db::get(db, &key)?;
+    let prior = db::get(&tx, &key)?;
     let was_approval_only = prior["requireApproval"] == true;
-    let require_approval = was_approval_only || input["requireApproval"] == true;
+    // Outbox cleanup may have removed a legacy row before startup could migrate it.
+    let legacy_review = matches!(prior["status"].as_str(), Some("queued" | "superseded"))
+        && prior.get("requireApproval").is_none()
+        && project["governed"] != false;
+    let require_approval = was_approval_only
+        || legacy_review
+        || preview["requireApproval"] == true
+        || input["requireApproval"] == true;
     let hash = payload_hash(change, require_approval);
     if !prior.is_null() {
         if prior["payloadHash"] != payload_hash(change, was_approval_only) {
             return Err("Share request no longer matches the preview".into());
         }
-        if prior["status"] != "queued" {
+        if !matches!(prior["status"].as_str(), Some("queued" | "superseded")) {
             return Ok(prior);
         }
-        let pending: Option<Option<String>> = db
+        let pending: Option<Option<String>> = tx
             .query_row("SELECT error FROM outbox WHERE id=?", [id], |row| {
                 row.get(0)
             })
             .optional()
             .map_err(|e| e.to_string())?;
         if let Some(error) = pending {
-            if require_approval && !was_approval_only {
-                // A refused request can be reviewed again. A still-pending
-                // direct send may already have reached the service.
-                if !error.as_deref().is_some_and(|reason| {
-                    sync::terminal_error(reason) && !sync::project_held_error(reason)
-                }) {
+            if !error.as_deref().is_some_and(refused) {
+                if require_approval && !was_approval_only {
                     return Err(
                         "A share of this snapshot is already queued. Check its status in Sync."
                             .into(),
                     );
                 }
-                prior["requireApproval"] = json!(true);
-                prior["payloadHash"] = json!(hash);
-                db::set(db, &key, &prior)?;
+                return Ok(prior);
             }
-            return Ok(prior);
+            // A fresh review of the same refused bytes keeps its request ID
+            // and moves to the end of the queue, after prior reviewed attempts.
+            tx.execute("DELETE FROM outbox WHERE id=?", [id])
+                .map_err(|e| e.to_string())?;
         }
     }
-    let mut receipt = json!({"requestId":id,"projectId":project["id"],"accountId":input["accountId"],"serviceOrigin":input["serviceOrigin"],"payloadHash":hash,"status":"queued","automaticSharingChanged":false,"paths":preview["paths"],"nativeId":preview["nativeId"],"localResourceId":preview["localResourceId"],"path":preview["path"],"folderIdentity":preview["folderIdentity"]});
-    if require_approval {
-        receipt["requireApproval"] = json!(true);
-    }
-    let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
+    let receipt = json!({"requestId":id,"projectId":project["id"],"accountId":input["accountId"],"serviceOrigin":input["serviceOrigin"],"payloadHash":hash,"requireApproval":require_approval,"status":"queued","automaticSharingChanged":false,"paths":preview["paths"],"nativeId":preview["nativeId"],"localResourceId":preview["localResourceId"],"path":preview["path"],"folderIdentity":preview["folderIdentity"]});
     db::set(&tx, &key, &receipt)?;
     tx.execute(
         "INSERT INTO outbox VALUES(?,?,?,?,NULL)",
@@ -281,7 +371,12 @@ fn authorization(db: &Connection, queued: &Value) -> Result<Option<(String, Valu
     let Some(origin) = config["apiUrl"].as_str() else {
         return Ok(None);
     };
+    let Some(require_approval) = receipt["requireApproval"].as_bool() else {
+        return Ok(None);
+    };
     let authorized = receipt["status"] == "queued"
+        && receipt["requestId"] == id
+        && queued["value"]["id"] == id
         && receipt["accountId"] == db::get(db, "user")?
         && receipt["serviceOrigin"]
             .as_str()
@@ -289,8 +384,7 @@ fn authorization(db: &Connection, queued: &Value) -> Result<Option<(String, Valu
             == Some(origin.trim_end_matches('/'))
         && receipt["projectId"] == queued["project"]
         && queued["value"]["projectId"] == queued["project"]
-        && receipt["payloadHash"]
-            == payload_hash(&queued["value"], receipt["requireApproval"] == true);
+        && receipt["payloadHash"] == payload_hash(&queued["value"], require_approval);
     Ok(authorized.then(|| (origin.to_owned(), receipt)))
 }
 
@@ -337,6 +431,47 @@ pub async fn send(db: &Connection, owner: &str, queued: &Value) -> Result<Value>
         Some(&queued["value"]),
     )
     .await
+}
+
+fn refused(error: &str) -> bool {
+    sync::terminal_error(error) && !sync::project_held_error(error)
+}
+
+/// The outbox order reflects explicit reviews, including renewed reviews of the
+/// same bytes. A delayed success cannot settle an attempt reviewed after it.
+fn supersede_refused(db: &Connection, receipt: &Value) -> Result<()> {
+    let rows = db::rows(
+        db,
+        "SELECT json_object('id',o.id,'error',o.error)
+         FROM outbox o JOIN meta r ON r.key='selected-share:'||o.id
+         WHERE o.rowid < (SELECT rowid FROM outbox WHERE id=?1)
+           AND o.path=?2 AND o.error IS NOT NULL AND o.project=?3
+           AND json_extract(r.value,'$.projectId')=o.project
+           AND json_extract(r.value,'$.status')='queued'
+           AND json_extract(r.value,'$.accountId')=?4
+           AND rtrim(json_extract(r.value,'$.serviceOrigin'),'/')=rtrim(?5,'/')
+           AND json_extract(r.value,'$.localResourceId')=?6",
+        &[
+            &receipt["requestId"].as_str(),
+            &QUEUE_PATH,
+            &receipt["projectId"].as_str(),
+            &receipt["accountId"].as_str(),
+            &receipt["serviceOrigin"].as_str(),
+            &receipt["localResourceId"].as_str(),
+        ],
+    )?;
+    for row in rows {
+        if row["error"].as_str().is_some_and(refused) {
+            let id = row["id"].as_str().ok_or("Missing refused share request")?;
+            db.execute("DELETE FROM outbox WHERE id=?", [id])
+                .map_err(|e| e.to_string())?;
+            db.execute("UPDATE meta SET value=json_set(value,'$.status','superseded') WHERE key='selected-share:'||?", [id])
+                .map_err(|e| e.to_string())?;
+            db.execute("DELETE FROM meta WHERE key LIKE 'share-preview:%' AND json_extract(value,'$.change.id')=?", [id])
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
 }
 
 pub fn complete(db: &Connection, queued: &Value, result: &Value) -> Result<()> {
@@ -419,6 +554,7 @@ pub fn complete(db: &Connection, queued: &Value, result: &Value) -> Result<()> {
         }
         _ => return Err("Invalid selected share receipt".into()),
     }
+    supersede_refused(db, &receipt)?;
     receipt["status"] = result["status"].clone();
     receipt["result"] = result.clone();
     db::set(db, &format!("selected-share:{id}"), &receipt)

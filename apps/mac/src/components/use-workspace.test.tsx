@@ -161,3 +161,22 @@ test("unmount invalidates delayed queue replies and stops later refreshes", asyn
   expect(native.reads).toHaveLength(1);
   expect(vi.getTimerCount()).toBe(0);
 });
+
+test("a post-action snapshot supersedes a delayed read from the previous account", async () => {
+  const native = bridge();
+  const { result } = renderHook(useWorkspace);
+  await act(async () => {});
+  const oldSnapshot = result.current.state;
+  const pending = deferred<Snapshot>();
+  vi.mocked(invoke).mockImplementationOnce(() => pending.promise);
+  const oldRead = result.current.refreshSnapshot();
+  await act(async () =>
+    result.current.run(async () => native.switch({ user: "bob" })),
+  );
+  expect(result.current.state.user).toBe("bob");
+  await act(async () => {
+    pending.resolve(oldSnapshot);
+    expect(await oldRead).toBeUndefined();
+  });
+  expect(result.current.state.user).toBe("bob");
+});
