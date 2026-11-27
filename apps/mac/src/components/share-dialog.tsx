@@ -18,7 +18,11 @@ import {
 } from "lucide-react";
 import React, { useEffect, useRef, useState } from "react";
 import { Channel } from "@tauri-apps/api/core";
-import { policyClass, type AccessMode } from "@portable/protocol";
+import {
+  policyClass,
+  type AccessMode,
+  type ReviewRequest,
+} from "@portable/protocol";
 import type { ProjectResource, Snapshot, SyncProgress } from "../types.js";
 import { ActivityIndicator } from "./activity-indicator.js";
 import { Button } from "./button.js";
@@ -29,11 +33,13 @@ import { Modal } from "./modal.js";
 import { invoke } from "./product-command.js";
 import { useToasts, type ToastInput } from "./toasts.js";
 import {
+  shareReviewOutcomes,
   shareStatus,
   type ShareAction,
   type ShareIcon,
   type SharePhase,
 } from "./share-status.js";
+import type { ReviewsView } from "./reviews-page.js";
 import "./share-dialog.css";
 
 /** One glyph per shareable kind, shared with Reviews. */
@@ -79,15 +85,16 @@ interface SharePreview {
   baseRevision?: number;
   publicationMode?: AccessMode | null;
   note?: string;
+  piScope?: { entries: number; offBranchEntries: number };
 }
 
 export interface ShareDialogContext {
   state: Snapshot;
   busy: boolean;
   isCurrent: (resource: ProjectResource) => boolean;
-  onRefresh: () => Promise<void>;
+  onRefresh: () => Promise<Snapshot | undefined>;
   onOpen: (resource: ProjectResource, target: { conflictId: string }) => void;
-  onOpenRequests: (projectId: string) => void;
+  onOpenRequests: (projectId: string, view: ReviewsView) => void;
 }
 
 export function fileSize(bytes: number) {
@@ -104,10 +111,22 @@ export function fileSize(bytes: number) {
 
 const shareNotices = {
   published: { title: "Shared with team", kind: "success" },
-  approval_required: { title: "Sent for approval", kind: "info" },
   conflict: { title: "Someone changed it first", kind: "warning" },
   queued: { title: "Queued to share", kind: "queued" },
 } satisfies Record<string, ToastInput>;
+
+type ShareReceipt = {
+  requestId: string;
+  reason?: string;
+} & (
+  | { status: keyof typeof shareNotices | "approval_required" }
+  | {
+      status: "review_closed";
+      result: {
+        request: { status: Exclude<ReviewRequest["status"], "pending"> };
+      };
+    }
+);
 
 /**
  * Shares one reviewed snapshot of a local item. The frame never changes size;
@@ -131,6 +150,9 @@ export function ShareDialog({
   const [phase, setPhase] = useState<SharePhase>({ step: "preparing" });
   const [preview, setPreview] = useState<SharePreview | null>(null);
   const [attempt, setAttempt] = useState(0);
+  const [acknowledgedPiToken, setAcknowledgedPiToken] = useState<string | null>(
+    null,
+  );
   const open = useRef(true);
   useEffect(() => {
     open.current = true;
@@ -155,6 +177,7 @@ export function ShareDialog({
     let canceled = false;
     setPhase({ step: "preparing" });
     setPreview(null);
+    setAcknowledgedPiToken(null);
     void invoke<SharePreview>("resource_command", {
       action: "preview-share",
       input: { accountId, serviceOrigin, projectId, resourceId },
@@ -214,8 +237,18 @@ export function ShareDialog({
     online: state.sync?.online !== false,
   });
 
+  const piSession = resource.source === "pi" || Boolean(preview?.piScope);
+  const piConfirmed =
+    preview !== null && acknowledgedPiToken === preview.previewToken;
+
+  const openRequest = (review: ReviewRequest["status"]) =>
+    context.onOpenRequests(
+      projectId,
+      review === "pending" ? "open" : "history",
+    );
+
   const submit = async () => {
-    if (!preview || stale) return;
+    if (!preview || stale || (piSession && !piConfirmed)) return;
     const record = productAction();
     record("share_submitted");
     const recordShared = startFeature(shareEvents[resource.kind]);
@@ -224,11 +257,7 @@ export function ShareDialog({
       if (open.current) setPhase({ step: "sending", progress });
     });
     try {
-      const result = await invoke<{
-        status: keyof typeof shareNotices;
-        requestId: string;
-        reason?: string;
-      }>("resource_command", {
+      const result = await invoke<ShareReceipt>("resource_command", {
         action: "share",
         input: {
           accountId,
@@ -236,6 +265,7 @@ export function ShareDialog({
           projectId,
           resourceId,
           previewToken: preview.previewToken,
+          ...(piSession && { acknowledgedPiPreviewToken: acknowledgedPiToken }),
           ...(access === "suggest" && { requireApproval: true }),
         },
         onProgress,
@@ -245,6 +275,28 @@ export function ShareDialog({
       if (result.status === "conflict") record("share_failed");
       // The share already landed; a failed refresh must not report it failed.
       await context.onRefresh().catch(() => {});
+      if (
+        result.status === "approval_required" ||
+        result.status === "review_closed"
+      ) {
+        const review =
+          result.status === "review_closed"
+            ? result.result.request.status
+            : "pending";
+        if (open.current) setPhase({ step: "approval", review });
+        else {
+          const { title, kind } = shareReviewOutcomes[review];
+          notify({
+            title,
+            kind,
+            action: {
+              label: "View request",
+              onClick: () => openRequest(review),
+            },
+          });
+        }
+        return;
+      }
       if (!open.current) {
         if (result.reason === "project_inactive")
           notify({ title: "Queued until project restore", kind: "warning" });
@@ -256,9 +308,7 @@ export function ShareDialog({
       if (result.status === "published") {
         notify(shareNotices.published);
         onClose();
-      } else if (result.status === "approval_required")
-        setPhase({ step: "approval" });
-      else if (result.status === "conflict")
+      } else if (result.status === "conflict")
         setPhase({ step: "conflict", requestId: result.requestId });
       else if (result.reason === "project_inactive") setPhase({ step: "held" });
       else
@@ -274,48 +324,76 @@ export function ShareDialog({
     }
   };
 
+  const reviewConflict = async (requestId: string) => {
+    const sharedVersion = (snapshot: Snapshot) => {
+      const conflict = snapshot.conflicts.find(
+        (item) =>
+          item.id === requestId && item.candidate.projectId === projectId,
+      );
+      return (
+        conflict &&
+        snapshot.resources.find(
+          (item) =>
+            item.projectId === projectId &&
+            item.resourceId === conflict.resourceId,
+        )
+      );
+    };
+    let shared = sharedVersion(state);
+    if (!shared) {
+      setPhase({ step: "conflict", requestId, checking: true });
+      const next = await context.onRefresh().catch(() => undefined);
+      if (!open.current) return;
+      if (!next) {
+        setPhase({
+          step: "conflict",
+          requestId,
+          error: "Couldn’t refresh the project. Try Review changes again.",
+        });
+        return;
+      }
+      if (
+        next.user !== accountId ||
+        next.profile !== state.profile ||
+        next.config?.apiUrl !== serviceOrigin
+      )
+        return;
+      shared = sharedVersion(next);
+      if (!shared) {
+        setPhase({ step: "conflict-unavailable" });
+        return;
+      }
+    }
+    onClose();
+    context.onOpen(shared, { conflictId: requestId });
+  };
+
   const act = (action: ShareAction) => {
     if (action === "close") onClose();
     // A failed share prepares a fresh review rather than resending a token
     // that may have expired or no longer matches the item.
     else if (action === "retry") setAttempt((value) => value + 1);
     else if (action === "share") void submit();
-    else if (action === "requests") {
+    else if (action === "requests" && phase.step === "approval") {
       onClose();
-      context.onOpenRequests(projectId);
+      openRequest(phase.review);
     } else if (action === "compare" && phase.step === "conflict") {
-      // Each preserved version has the request ID of the device that sent it.
-      const conflict = state.conflicts.find(
-        (item) =>
-          item.id === phase.requestId && item.candidate.projectId === projectId,
-      );
-      const shared =
-        conflict &&
-        state.resources.find(
-          (item) =>
-            item.projectId === projectId &&
-            item.resourceId === conflict.resourceId,
-        );
-      onClose();
-      if (conflict && shared)
-        context.onOpen(shared, { conflictId: conflict.id });
-      else
-        notify({
-          kind: "info",
-          title:
-            "Conflict unavailable. Refresh the project to see the latest version.",
-        });
+      void reviewConflict(phase.requestId);
     }
   };
   const error =
-    phase.step === "preview-failed" || phase.step === "share-failed"
+    phase.step === "preview-failed" ||
+    phase.step === "share-failed" ||
+    phase.step === "conflict"
       ? phase.error
       : undefined;
   const kindIcon = resourceKindIcons[resource.kind];
   const title = preview?.title ?? resource.title;
-  const detail = `${files.length} ${files.length === 1 ? "file" : "files"} · ${fileSize(bytes)}`;
+  const count = preview?.piScope
+    ? `${preview.piScope.entries} saved ${preview.piScope.entries === 1 ? "entry" : "entries"}`
+    : `${files.length} ${files.length === 1 ? "file" : "files"}`;
+  const detail = `${count} · ${fileSize(bytes)}`;
   const piWarningId = React.useId();
-  const piSession = resource.source === "pi";
   const projectName = project
     ? `${project.name}${state.config?.mode === "self-hosted" ? " · Self-hosted" : ""}`
     : "";
@@ -329,6 +407,22 @@ export function ShareDialog({
       error={error}
       footer={
         <>
+          {piSession && status.action === "share" && (
+            <label className="share-dialog-pi-consent">
+              <input
+                type="checkbox"
+                checked={piConfirmed}
+                disabled={!preview || status.actionDisabled || context.busy}
+                aria-describedby={piWarningId}
+                onChange={(event) =>
+                  setAcknowledgedPiToken(
+                    event.target.checked && preview ? preview.previewToken : null,
+                  )
+                }
+              />
+              Include the complete Pi session
+            </label>
+          )}
           {status.secondary && (
             <Button size="sm" onClick={() => act(status.secondary!.action)}>
               {status.secondary.label}
@@ -343,7 +437,8 @@ export function ShareDialog({
             }
             disabled={
               status.actionDisabled ||
-              (status.action === "share" && context.busy)
+              (status.action === "share" &&
+                (context.busy || (piSession && !piConfirmed)))
             }
             onClick={() => act(status.action)}
           >
@@ -356,6 +451,7 @@ export function ShareDialog({
         className="share-dialog-preview"
         aria-label="Selected item"
         data-kind={resource.kind}
+        data-pi={piSession || undefined}
       >
         <div className="share-dialog-card share-dialog-card--back" />
         <div className="share-dialog-card">
@@ -376,7 +472,14 @@ export function ShareDialog({
             id={piWarningId}
             title={preview?.note}
           >
-            Shares abandoned branches and hidden tool records.
+            {preview?.piScope && (
+              <span>
+                {preview.piScope.offBranchEntries}{" "}
+                {preview.piScope.offBranchEntries === 1 ? "entry" : "entries"}{" "}
+                outside the current branch.
+              </span>
+            )}
+            Includes any hidden tool records and reasoning.
           </p>
         )}
       </section>
