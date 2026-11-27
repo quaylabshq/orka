@@ -33,6 +33,8 @@ export function PermissionSelect<T extends string>({
     >
       <Select.Trigger
         id={id}
+        // Keep this button-backed combobox in WebKit’s form-control tab order.
+        tabIndex={disabled ? undefined : 0}
         className="permission-select-trigger"
         aria-label={label}
         aria-required={required || undefined}
