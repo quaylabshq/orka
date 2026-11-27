@@ -63,13 +63,18 @@
   background: var(--border-default);
 }
 
-.modal.toast-host-modal.resource-command-dialog {
-  display: flex;
-  flex-direction: column;
+.modal.toast-host-modal.ui-modal.resource-command-dialog {
   height: min(560px, calc(100vh - 48px));
-  max-height: calc(100vh - 48px);
+}
+
+/* The review details scroll; the item above them stays put. */
+.resource-command-dialog .ui-modal-body {
+  gap: 0;
   overflow: hidden;
-  padding: 24px;
+}
+
+.resource-command-retry {
+  margin-right: auto;
 }
 
 .artifact-link-dialog .ui-modal-body {
@@ -168,18 +173,6 @@
 
 .artifact-link-status:empty {
   position: absolute;
-}
-
-.modal.resource-command-dialog h2 {
-  flex-shrink: 0;
-  overflow: hidden;
-  margin: 0 0 20px;
-  font-size: var(--heading-xs-font-size);
-  font-weight: var(--heading-xs-font-weight);
-  line-height: var(--heading-xs-line-height);
-  letter-spacing: var(--heading-xs-letter-spacing);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .modal.resource-command-dialog p {
@@ -474,22 +467,6 @@
 
 .modal.resource-command-dialog p[role="alert"] {
   color: var(--red-text);
-}
-
-.modal.resource-command-dialog .actions {
-  flex-shrink: 0;
-  justify-content: space-between;
-  margin-top: 16px;
-  padding-top: 16px;
-  border-top: 1px solid var(--border-default);
-}
-
-.resource-command-main-actions {
-  display: flex;
-  flex-shrink: 0;
-  align-items: center;
-  gap: 8px;
-  margin-left: auto;
 }
 
 .modal.resource-command-dialog .resource-command-confirm {

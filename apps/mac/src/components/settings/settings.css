@@ -461,33 +461,28 @@
   .settings-project-row p {
     @apply mt-1 text-body-xs;
   }
+  /* Confirmations open over the Settings window. */
   .settings-confirm {
-    @apply z-40 w-[480px];
+    @apply z-40;
   }
-  .settings-confirm h2,
+  .settings-confirm-member {
+    @apply grid gap-1;
+    overflow-wrap: anywhere;
+  }
+  .settings-confirm-member h3 {
+    @apply m-0 text-label-sm;
+  }
+  .modal .settings-confirm-member p {
+    @apply m-0 text-body-xs text-secondary;
+  }
   .modal.settings-migration h2 {
     @apply m-0 text-heading-xs;
   }
-  .settings-confirm p,
   .modal.settings-migration p {
     @apply text-body-sm text-secondary;
   }
-  .settings-confirm p {
-    overflow-wrap: anywhere;
-  }
   .settings-confirm-actions {
     @apply flex flex-wrap justify-end gap-2;
-  }
-  .modal.project-lifecycle-confirm {
-    @apply flex flex-col gap-5 border-0 p-6;
-    border-radius: var(--radius-overlay);
-    background: var(--surface-secondary);
-  }
-  .modal.project-lifecycle-confirm p {
-    @apply m-0 text-body-sm text-secondary;
-  }
-  .modal.project-lifecycle-confirm h2 {
-    @apply m-0;
   }
   .modal.project-lifecycle-confirm .ui-field__support p {
     @apply text-body-xs text-muted;
@@ -501,9 +496,6 @@
   }
   .modal.project-lifecycle-confirm .project-lifecycle-policy {
     @apply border-l border-strong pl-3 text-muted;
-  }
-  .project-lifecycle-confirm .settings-confirm-actions {
-    @apply mt-1 border-t border-line pt-5;
   }
   .project-lifecycle-danger {
     color: var(--red-text);

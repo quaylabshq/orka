@@ -406,6 +406,10 @@ export function SettingsMembers({
       },
       `Invite to ${email} revoked.`,
     );
+  const target = confirmation?.member;
+  const targetAccount = target?.email?.trim() || target?.id;
+  const targetName =
+    target?.displayName?.trim() || target?.name?.trim() || targetAccount;
   return (
     <>
       <SettingsHeading
@@ -589,34 +593,40 @@ export function SettingsMembers({
       )}
       {revoking && (
         <Modal
-          legacyFrame
           title="Revoke invite?"
           className="settings-confirm"
           onClose={() => {
             if (!busy) setRevoking("");
           }}
+          size="compact"
+          closeDisabled={Boolean(busy)}
+          footer={
+            <>
+              <Button
+                size="sm"
+                disabled={Boolean(busy)}
+                onClick={() => setRevoking("")}
+              >
+                Stay
+              </Button>
+              <Button
+                size="sm"
+                variant="primary"
+                disabled={Boolean(busy)}
+                onClick={() => revoke(revoking)}
+              >
+                {busy && <ActivityIndicator />}
+                Revoke invite
+              </Button>
+            </>
+          }
         >
-          <h2>Revoke the invite to {revoking}?</h2>
-          <p>Links sent to this address will stop working.</p>
+          <p>Links sent to {revoking} will stop working.</p>
           {error && <p role="alert">{error}</p>}
-          <div className="settings-confirm-actions">
-            <Button disabled={Boolean(busy)} onClick={() => setRevoking("")}>
-              Stay
-            </Button>
-            <Button
-              variant="primary"
-              disabled={Boolean(busy)}
-              onClick={() => revoke(revoking)}
-            >
-              {busy && <ActivityIndicator />}
-              Revoke invite
-            </Button>
-          </div>
         </Modal>
       )}
       {confirmation && (
         <Modal
-          legacyFrame
           title={
             confirmation.action === "remove-member"
               ? "Remove member?"
@@ -626,48 +636,53 @@ export function SettingsMembers({
           onClose={() => {
             if (!busy) setConfirmation(null);
           }}
+          size="compact"
+          closeDisabled={Boolean(busy)}
+          footer={
+            <>
+              <Button
+                size="sm"
+                disabled={Boolean(busy)}
+                onClick={() => setConfirmation(null)}
+              >
+                Stay
+              </Button>
+              <Button
+                size="sm"
+                variant="primary"
+                disabled={Boolean(busy)}
+                onClick={() =>
+                  void mutate(
+                    confirmation.member.id,
+                    () =>
+                      call(confirmation.action, {
+                        userId: confirmation.member.id,
+                        expectedPolicyRevision: query.data?.policyRevision,
+                      }),
+                    confirmation.action === "remove-member"
+                      ? "Member removed."
+                      : "Ownership transferred.",
+                  )
+                }
+              >
+                {busy && <ActivityIndicator />}
+                {confirmation.action === "remove-member"
+                  ? "Remove member"
+                  : "Transfer ownership"}
+              </Button>
+            </>
+          }
         >
-          <h2>
-            {confirmation.action === "remove-member"
-              ? `Remove ${confirmation.member.name ?? "this member"}?`
-              : `Transfer ownership to ${confirmation.member.name ?? "this member"}?`}
-          </h2>
+          <div className="settings-confirm-member">
+            <h3>{targetName}</h3>
+            {targetAccount !== targetName && <p>{targetAccount}</p>}
+          </div>
           <p>
             {confirmation.action === "remove-member"
               ? "Their access to shared content will end. Private local work stays on their Mac, and queued writes are checked again when they reconnect."
               : "They will become the Owner. You will become a Member with the project’s Member permissions."}
           </p>
           {error && <p role="alert">{error}</p>}
-          <div className="settings-confirm-actions">
-            <Button
-              disabled={Boolean(busy)}
-              onClick={() => setConfirmation(null)}
-            >
-              Stay
-            </Button>
-            <Button
-              variant="primary"
-              disabled={Boolean(busy)}
-              onClick={() =>
-                void mutate(
-                  confirmation.member.id,
-                  () =>
-                    call(confirmation.action, {
-                      userId: confirmation.member.id,
-                      expectedPolicyRevision: query.data?.policyRevision,
-                    }),
-                  confirmation.action === "remove-member"
-                    ? "Member removed."
-                    : "Ownership transferred.",
-                )
-              }
-            >
-              {busy && <ActivityIndicator />}
-              {confirmation.action === "remove-member"
-                ? "Remove member"
-                : "Transfer ownership"}
-            </Button>
-          </div>
         </Modal>
       )}
     </>
