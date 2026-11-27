@@ -99,6 +99,46 @@ test("a confirmed missing email does not revive the cached account email", async
   await expect(self.getByText("Morgan Taylor", { exact: true })).toBeVisible();
 });
 
+test("removal and ownership transfer identify the selected member in full", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 900, height: 640 });
+  const settings = await settingsFixture(page);
+  const name = "Jamie Rivera from the application engineering team";
+  const email = "application.engineering.team.jamie.rivera@example.com";
+  await page.evaluate(
+    ({ name, email }) => {
+      const member = (window as any).settingsCatalog.members.find(
+        (m: any) => m.id === "member",
+      );
+      Object.assign(member, { name, email });
+    },
+    { name, email },
+  );
+  await settings.getByRole("button", { name: "Members", exact: true }).click();
+  for (const [action, title] of [
+    ["Remove Member", "Remove member?"],
+    ["Transfer ownership", "Transfer ownership?"],
+  ]) {
+    await settings.getByRole("button", { name: `Actions for ${name}` }).click();
+    await page.getByRole("menuitem", { name: action, exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: title, exact: true });
+    const target = dialog.getByRole("heading", { name, exact: true });
+    await expect(target).toBeVisible();
+    const address = dialog.getByText(email, { exact: true });
+    await expect(address).toBeVisible();
+    for (const text of [target, address])
+      expect(
+        await text.evaluate(
+          (el) =>
+            el.scrollWidth <= el.clientWidth &&
+            el.scrollHeight <= el.clientHeight,
+        ),
+      ).toBe(true);
+    await dialog.getByRole("button", { name: "Stay" }).click();
+  }
+});
+
 test("Members uses invite wording for the invite action and pending invites", async ({
   page,
 }) => {

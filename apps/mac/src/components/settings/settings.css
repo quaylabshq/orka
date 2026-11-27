@@ -475,6 +475,16 @@
   .settings-confirm {
     @apply z-40;
   }
+  .settings-confirm-member {
+    @apply grid gap-1;
+    overflow-wrap: anywhere;
+  }
+  .settings-confirm-member h3 {
+    @apply m-0 text-label-sm;
+  }
+  .modal .settings-confirm-member p {
+    @apply m-0 text-body-xs text-secondary;
+  }
   .modal.settings-migration h2 {
     @apply m-0 text-heading-xs;
   }

@@ -35,6 +35,7 @@ interface MenuControls {
   resourceVersion: number;
   deleted: string[];
   finishLaunchOptions?: () => void;
+  finishResume?: () => void;
   publicLinkVersion?: string;
   publicLinkFailure?: boolean;
 }
@@ -562,6 +563,48 @@ test("the session launcher stays compact while checking apps and keeps its split
   await expect(
     page.getByRole("button", { name: title, exact: true }),
   ).toBeFocused();
+});
+
+test("a pending session launch keeps its manual continuation available", async ({
+  page,
+}) => {
+  await menuFixture(page, { piSession: true });
+  await page.evaluate(() => {
+    const host = window as unknown as MenuWindow;
+    const original = host.__TAURI_INTERNALS__.invoke;
+    host.__TAURI_INTERNALS__.invoke = (command, args) => {
+      if (command !== "resume_session") return original(command, args);
+      return new Promise((resolve) => {
+        host.resourceMenu.finishResume = () =>
+          resolve({
+            manualCommand: "pi --resume example",
+            destinationLabel: "Terminal",
+          });
+      });
+    };
+  });
+  await collection(page, "Sessions");
+  await resourceMenu(page, "Private Pi session", "Continue or fork in…");
+  const launcher = page.getByRole("dialog", {
+    name: "Continue or fork session",
+  });
+  await launcher.getByRole("button", { name: "Open in Pi" }).click();
+  await expect(
+    launcher.getByRole("button", { name: "Close session launcher" }),
+  ).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await expect(launcher).toBeVisible();
+  await page.evaluate(() =>
+    (window as unknown as MenuWindow).resourceMenu.finishResume?.(),
+  );
+  const manual = page.getByRole("dialog", { name: "Continue in Terminal" });
+  await expect(
+    manual.getByRole("textbox", { name: "Resume command" }),
+  ).toHaveValue("pi --resume example");
+  await page.keyboard.press("Escape");
+  await expect(
+    launcher.getByRole("button", { name: "Close session launcher" }),
+  ).toBeEnabled();
 });
 
 test("local and teammate sessions expose useful actions without mutation of another owner's history", async ({

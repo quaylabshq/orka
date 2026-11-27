@@ -406,6 +406,10 @@ export function SettingsMembers({
       },
       `Invite to ${email} revoked.`,
     );
+  const target = confirmation?.member;
+  const targetAccount = target?.email?.trim() || target?.id;
+  const targetName =
+    target?.displayName?.trim() || target?.name?.trim() || targetAccount;
   return (
     <>
       <SettingsHeading
@@ -628,11 +632,6 @@ export function SettingsMembers({
               ? "Remove member?"
               : "Transfer ownership?"
           }
-          heading={
-            confirmation.action === "remove-member"
-              ? `Remove ${confirmation.member.name ?? "this member"}?`
-              : `Transfer ownership to ${confirmation.member.name ?? "this member"}?`
-          }
           className="settings-confirm"
           onClose={() => {
             if (!busy) setConfirmation(null);
@@ -674,6 +673,10 @@ export function SettingsMembers({
             </>
           }
         >
+          <div className="settings-confirm-member">
+            <h3>{targetName}</h3>
+            {targetAccount !== targetName && <p>{targetAccount}</p>}
+          </div>
           <p>
             {confirmation.action === "remove-member"
               ? "Their access to shared content will end. Private local work stays on their Mac, and queued writes are checked again when they reconnect."

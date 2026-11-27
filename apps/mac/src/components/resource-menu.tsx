@@ -844,7 +844,10 @@ function SessionLaunchDialog({
       size="compact"
       className="session-launch-dialog"
       closeLabel="Close session launcher"
-      onClose={onClose}
+      closeDisabled={context.busy}
+      onClose={() => {
+        if (!context.busy) onClose();
+      }}
       onCloseAutoFocus={(event) =>
         restoreResourceFocus(event, resource.resourceId)
       }
