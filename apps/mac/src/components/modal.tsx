@@ -65,6 +65,7 @@ export function Modal({
   legacyFrame = false,
   ...events
 }: ModalProps) {
+  const hasFooter = Boolean(footer || error);
   if (legacyFrame)
     return (
       <DialogFrame
@@ -80,15 +81,12 @@ export function Modal({
     <DialogFrame
       {...events}
       onClose={onClose}
+      accessibleLabel={heading ? title : undefined}
+      onOpenAutoFocus={focusModalContent}
       className={`modal toast-host-modal ui-modal ui-modal--${size} ${className}`.trim()}
     >
       <div className="ui-modal-header">
-        <Dialog.Title
-          aria-label={heading ? title : undefined}
-          title={heading ?? title}
-        >
-          {heading ?? title}
-        </Dialog.Title>
+        <Dialog.Title title={heading ?? title}>{heading ?? title}</Dialog.Title>
         {closeButton && (
           <IconButton
             icon={XIcon}
@@ -101,8 +99,10 @@ export function Modal({
           />
         )}
       </div>
-      <div className="ui-modal-body">{children}</div>
-      {(footer || error) && (
+      <div className="ui-modal-body" data-has-footer={hasFooter || undefined}>
+        {children}
+      </div>
+      {hasFooter && (
         <footer
           className="ui-modal-footer"
           data-full-width-error={error && fullWidthError ? true : undefined}
@@ -149,13 +149,28 @@ export function Drawer({
   );
 }
 
-const tabbable =
-  'input:not([disabled]):not([type=hidden]), select:not([disabled]), textarea:not([disabled]), button:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])';
+function focusModalContent(event: Event) {
+  const frame = event.currentTarget as HTMLElement;
+  event.preventDefault();
+  // DOM order puts body controls before footer actions. A hidden or inert
+  // control can still match the selector, so verify that focus actually moved.
+  const candidates = frame.querySelectorAll<HTMLElement>(
+    ":is(.ui-modal-body, .ui-modal-footer) :is(input, select, textarea, button, a[href], [tabindex])",
+  );
+  for (const candidate of Array.from(candidates)) {
+    if (candidate.tabIndex < 0 || candidate.matches(":disabled")) continue;
+    candidate.focus();
+    if (document.activeElement === candidate) return;
+  }
+  frame.focus();
+}
 
 function DialogFrame({
   onClose,
   className,
   children,
+  accessibleLabel,
+  onOpenAutoFocus,
   onEscapeKeyDown,
   onCloseAutoFocus,
   onKeyDownCapture,
@@ -164,6 +179,8 @@ function DialogFrame({
   onClose: () => void;
   className: string;
   children: React.ReactNode;
+  accessibleLabel?: string;
+  onOpenAutoFocus?: (event: Event) => void;
 }) {
   const { transition, reduced } = useUiMotion();
   const dismissToastOnEscape = useToastEscape();
@@ -201,19 +218,12 @@ function DialogFrame({
           asChild
           className={className}
           aria-describedby={undefined}
+          {...(accessibleLabel && {
+            "aria-label": accessibleLabel,
+            "aria-labelledby": undefined,
+          })}
           onKeyDownCapture={onKeyDownCapture}
-          onOpenAutoFocus={(event) => {
-            // Start in the content, then the actions; the close button is last.
-            const frame = event.currentTarget as HTMLElement;
-            const first = [".ui-modal-body", ".ui-modal-footer"]
-              .map((part) =>
-                frame.querySelector(part)?.querySelector<HTMLElement>(tabbable),
-              )
-              .find(Boolean);
-            if (!first) return;
-            event.preventDefault();
-            first.focus();
-          }}
+          onOpenAutoFocus={onOpenAutoFocus}
           onEscapeKeyDown={(event) => {
             if (!dismissToastOnEscape(event)) onEscapeKeyDown?.(event);
           }}
