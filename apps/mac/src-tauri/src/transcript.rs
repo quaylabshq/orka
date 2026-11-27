@@ -347,7 +347,7 @@ impl TapeBuilder {
     fn append(&mut self, message: &Message) -> Result<Range<u64>> {
         let start = self.bytes;
         let mut remaining = self.prefix.unwrap_or(usize::MAX);
-        for part in ["## ", message.role, "\n\n", &message.full_text, "\n\n"] {
+        for part in message.transcript_parts() {
             let mut count = part.len().min(remaining);
             while !part.is_char_boundary(count) {
                 count -= 1;
@@ -703,7 +703,63 @@ fn prepare_live(snapshot: &crate::history::SessionRead) -> Result<Tape> {
     builder.finish()
 }
 
+pub(crate) fn can_cache_prefix(resource: &Value, records: &[Value]) -> bool {
+    // A prefix tape can stage up to one prefix per candidate before a turn is
+    // deduplicated. Preserve its exceptional size-limit path on very dense inputs.
+    if records.len() as u64 > TAPE_LIMIT / (PAGE_LIMIT as u64 + 4) {
+        return false;
+    }
+    match resource["source"].as_str() {
+        // resource_records_with validated all referenced Codex segments, lineage,
+        // and ordinals. Each segment starts a new translation turn.
+        Some("codex") => true,
+        Some("claude") => {
+            resource["files"]
+                .as_array()
+                .is_some_and(|files| files.len() == 1 && files[0]["path"] == "session.jsonl")
+                && !records
+                    .first()
+                    .is_some_and(|record| record["type"] == "session")
+        }
+        _ => false,
+    }
+}
+
+pub(crate) fn message_prefix(messages: &[Message]) -> Arc<[u8]> {
+    let mut prefix = Vec::new();
+    for part in messages.iter().flat_map(Message::transcript_parts) {
+        let count = (PAGE_LIMIT + 4 - prefix.len()).min(part.len());
+        prefix.extend_from_slice(&part.as_bytes()[..count]);
+        if prefix.len() == PAGE_LIMIT + 4 {
+            break;
+        }
+    }
+    prefix.into()
+}
+
 fn prepare(reader: &Reader, first: bool) -> Result<Tape> {
+    if first {
+        if let Some(prefix) = crate::commands::cached_transcript_prefix(
+            &reader.scope,
+            &reader.resource,
+            reader.conflict_id.as_deref(),
+        )? {
+            crate::history::authenticate_transcript_prefix(
+                &reader.scope,
+                &reader.resource,
+                || reader.check_cancelled(),
+            )?;
+            let mut file = tempfile::tempfile().map_err(|error| error.to_string())?;
+            file.write_all(&prefix).map_err(|error| error.to_string())?;
+            let total = prefix.len() as u64;
+            return Ok(Tape {
+                file,
+                total,
+                partial: prefix.len() > PAGE_LIMIT,
+                ranges: vec![(0, 0..total)],
+            });
+        }
+    }
     // A UTF-8 scalar can require four bytes. Keep enough lookahead to tell a
     // full first page from EOF, without exposing any partial byte sequence.
     let prefix = (first && reader.resource["source"] != "pi").then_some(PAGE_LIMIT + 4);

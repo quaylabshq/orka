@@ -815,38 +815,84 @@ fn inspected_resource(
     }
 }
 
-/// Parsed conversations for the few sessions a reader pages through at once.
-/// Keyed by resource, conflict preview, and file hashes so new revisions miss.
-type Conversations = Vec<(String, Arc<Vec<session_presentation::Message>>)>;
+/// Conversation and transcript share one translation of the same verified stored
+/// records. Keep only the first transcript page alongside each cached conversation.
+struct Conversation {
+    turns: Vec<session_presentation::Message>,
+    transcript_prefix: Option<Arc<[u8]>>,
+}
+
+type Conversations = Vec<(db::CacheScope, String, Option<String>, Arc<Conversation>)>;
 static CONVERSATIONS: LazyLock<Mutex<Conversations>> = LazyLock::new(|| Mutex::new(Vec::new()));
 
-fn cached_conversation(key: &str) -> Result<Option<Arc<Vec<session_presentation::Message>>>> {
+fn conversation_key(resource: &Value, live: bool) -> String {
+    db::digest(
+        json!([
+            resource["projectId"],
+            resource["resourceId"],
+            resource["source"],
+            resource["files"],
+            live,
+        ])
+        .to_string()
+        .as_bytes(),
+    )
+}
+
+fn cached_conversation(
+    scope: &db::CacheScope,
+    snapshot: &str,
+    conflict: Option<&str>,
+) -> Result<Option<Arc<Conversation>>> {
     Ok(CONVERSATIONS
         .lock()
         .map_err(|_| "Conversation cache unavailable")?
         .iter()
-        .find(|(cached, _)| cached == key)
-        .map(|(_, turns)| turns.clone()))
+        .find(|(s, hash, c, _)| s == scope && hash == snapshot && c.as_deref() == conflict)
+        .map(|(_, _, _, value)| Arc::clone(value)))
+}
+
+pub(crate) fn cached_transcript_prefix(
+    scope: &db::CacheScope,
+    resource: &Value,
+    conflict: Option<&str>,
+) -> Result<Option<Arc<[u8]>>> {
+    Ok(
+        cached_conversation(scope, &conversation_key(resource, false), conflict)?
+            .and_then(|value| value.transcript_prefix.clone()),
+    )
 }
 
 fn conversation_turns(
     snapshot: &crate::history::SessionRead,
-    key: String,
-) -> Result<Arc<Vec<session_presentation::Message>>> {
-    if let Some(turns) = cached_conversation(&key)? {
-        return Ok(turns);
+    scope: db::CacheScope,
+    conflict: Option<String>,
+) -> Result<Arc<Conversation>> {
+    let key = conversation_key(&snapshot.resource, snapshot.is_live());
+    if let Some(value) = cached_conversation(&scope, &key, conflict.as_deref())? {
+        return Ok(value);
     }
-    let turns = Arc::new(session_presentation::conversation_messages(
-        &snapshot.records()?,
-    ));
+    let records = if snapshot.is_live() {
+        snapshot.records()?
+    } else {
+        crate::history::resource_records_with(&snapshot.resource, &scope.blob_reader())?.into()
+    };
+    let messages = crate::session_translation::messages(&records);
+    let prefix = (!snapshot.is_live()
+        && crate::transcript::can_cache_prefix(&snapshot.resource, &records))
+    .then(|| crate::transcript::message_prefix(&messages));
+    let value = Arc::new(Conversation {
+        turns: session_presentation::readable_turns(messages),
+        transcript_prefix: prefix,
+    });
     let mut cache = CONVERSATIONS
         .lock()
         .map_err(|_| "Conversation cache unavailable")?;
     if cache.len() >= 6 {
         cache.remove(0);
     }
-    cache.push((key, turns.clone()));
-    Ok(turns)
+    cache.push((scope, key, conflict, Arc::clone(&value)));
+    Ok(value)
 }
 
 /// One page of readable conversation turns, oldest first. Reads happen off the
@@ -859,7 +905,8 @@ pub async fn session_messages(
     limit: Option<usize>,
 ) -> Result<Value> {
     tauri::async_runtime::spawn_blocking(move || {
-        let db = db::open()?;
+        let scope = db::CacheScope::current()?;
+        let db = scope.open()?;
         let resource = inspection_candidate(&db, &id, conflict_id.as_deref())?;
         if resource["deleted"] == true {
             return Ok(json!({"messages":[],"total":0,"offset":0,"removed":true}));
@@ -867,15 +914,8 @@ pub async fn session_messages(
         if resource["kind"] != "session" {
             return Err("Not a session".into());
         }
-        let key = |resource: &Value| {
-            format!(
-                "{id}:{}:{}",
-                conflict_id.as_deref().unwrap_or_default(),
-                session_snapshot_hash(resource)
-            )
-        };
         let cached = if conflict_id.is_none() && resource["nativeSession"] == true {
-            cached_conversation(&key(&resource))?.filter(|_| {
+            cached_conversation(&scope, &conversation_key(&resource, true), None)?.filter(|_| {
                 crate::local_resources::unchanged_session_manifest(&db, &resource).unwrap_or(false)
             })
         } else {
@@ -889,9 +929,10 @@ pub async fn session_messages(
                 } else {
                     crate::session_forks::reading_resource(&db, &resource)?
                 };
-                conversation_turns(&snapshot, key(&snapshot.resource))?
+                conversation_turns(&snapshot, scope, conflict_id)?
             }
         };
+        let turns = &turns.turns;
         let total = turns.len();
         let offset = offset.unwrap_or(0).min(total);
         let limit = limit.unwrap_or(40).clamp(1, 200);

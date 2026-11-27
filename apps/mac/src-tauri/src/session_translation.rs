@@ -87,6 +87,12 @@ pub struct Message {
     pub hidden: bool,
 }
 
+impl Message {
+    pub(crate) fn transcript_parts(&self) -> [&str; 5] {
+        ["## ", self.role, "\n\n", &self.full_text, "\n\n"]
+    }
+}
+
 fn text_content(content: &Value) -> String {
     if let Some(text) = content.as_str() {
         return text.into();

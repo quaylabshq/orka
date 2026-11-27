@@ -84,6 +84,115 @@ fn verify_parity(resource: &Value, reader_id: &str, budget: usize) {
     assert_eq!(pages.iter().rev().cloned().collect::<String>(), expected);
 }
 
+fn read_conversation(resource: &Value, conflict: Option<String>) -> crate::db::Result<Value> {
+    tauri::async_runtime::block_on(crate::commands::session_messages(
+        resource["resourceId"].as_str().unwrap().to_owned(),
+        conflict,
+        None,
+        Some(1),
+    ))
+}
+
+#[test]
+fn conversation_transcript_prefix_preserves_lineage_and_authenticates_all_segments() {
+    let f = Fixture::new();
+    let (resource, _) = paginated_chain(&f);
+    store_resource(&f, &resource);
+    read_conversation(&resource, None).unwrap();
+    let scope = db::CacheScope::current().unwrap();
+    let hash = crate::commands::session_snapshot_hash(&resource);
+    assert!(
+        crate::commands::cached_transcript_prefix(&scope, &resource, None)
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        crate::commands::cached_transcript_prefix(&scope, &resource, Some("other"))
+            .unwrap()
+            .is_none()
+    );
+    let mut changed = resource.clone();
+    changed["files"][0]["size"] = json!(0);
+    assert_eq!(crate::commands::session_snapshot_hash(&changed), hash);
+    assert!(
+        crate::commands::cached_transcript_prefix(&scope, &changed, None)
+            .unwrap()
+            .is_none()
+    );
+    let mut reordered = resource.clone();
+    reordered["files"].as_array_mut().unwrap().reverse();
+    assert_eq!(crate::commands::session_snapshot_hash(&reordered), hash);
+    assert!(
+        crate::commands::cached_transcript_prefix(&scope, &reordered, None)
+            .unwrap()
+            .is_none()
+    );
+    let mut changed = resource.clone();
+    changed["source"] = json!("claude");
+    assert!(
+        crate::commands::cached_transcript_prefix(&scope, &changed, None)
+            .unwrap()
+            .is_none()
+    );
+    let opened = open(&resource, None);
+    let id = opened["readerId"].as_str().unwrap();
+    verify_parity(&resource, id, 37);
+    close_transcript(id.into()).unwrap();
+
+    let leaf = resource["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["path"] == "session.jsonl")
+        .unwrap();
+    let blob = db::blob_path(leaf["hash"].as_str().unwrap()).unwrap();
+    let mut bytes = fs::read(&blob).unwrap();
+    let last = bytes.len() - 2;
+    bytes[last] ^= 1;
+    fs::write(&blob, bytes).unwrap();
+    let opened = open(&resource, None);
+    let id = opened["readerId"].as_str().unwrap();
+    let error =
+        tauri::async_runtime::block_on(read_transcript(id.into(), Some(0), 32, None)).unwrap_err();
+    assert_eq!(error, "Blob hash mismatch");
+}
+
+#[test]
+fn warm_transcript_prefix_joins_a_four_byte_scalar_at_the_page_boundary() {
+    let f = Fixture::new();
+    let limit = 32 * 1024;
+    let content = "z".repeat(limit - "## user\n\n".len() - 1) + "🧪🧪";
+    let records = [json!({"type":"user","message":{"role":"user","content":content}})];
+    let expected = native::transcript(&records);
+    let resource = publish_fixture(&f, "claude", &native::encode(&records));
+    read_conversation(&resource, None).unwrap();
+    let opened = open(&resource, None);
+    let id = opened["readerId"].as_str().unwrap();
+    let first = page(id, Some(0), limit, false);
+    assert_eq!(first["text"], &expected[..limit - 1]);
+    assert_eq!(first["eof"], false);
+    assert_eq!(page(id, Some((limit - 8) as u64), 4, false)["text"], "zzzz");
+    let next = page(id, first["nextOffset"].as_u64(), 4, false);
+    assert_eq!(next["text"], "🧪");
+    assert_eq!(page(id, None, 6, false)["text"], "🧪\n\n");
+    close_transcript(id.into()).unwrap();
+}
+
+#[test]
+fn warm_transcript_retains_the_record_limit_including_the_unfinished_tail() {
+    let f = Fixture::new();
+    let mut bytes =
+        native::encode(&[json!({"type":"user","message":{"content":"a small visible message"}})]);
+    bytes.extend(std::iter::repeat_n(b'x', 16 * 1024 * 1024 + 1));
+    let resource = publish_fixture(&f, "claude", &bytes);
+    read_conversation(&resource, None).unwrap();
+    let opened = open(&resource, None);
+    let id = opened["readerId"].as_str().unwrap();
+    let error =
+        tauri::async_runtime::block_on(read_transcript(id.into(), Some(0), 32, None)).unwrap_err();
+    assert_eq!(error, crate::transcript::PREVIEW_TOO_LARGE);
+}
+
 #[test]
 fn transcript_ranges_preserve_codex_ancestry_and_exact_deduplication() {
     let fixture = Fixture::new();
@@ -118,6 +227,14 @@ fn transcript_ranges_follow_persisted_pi_branch() {
         json!({"type":"custom","id":"heading","parentId":"current"}),
     ];
     let resource = publish_fixture(&fixture, "pi", &native::encode(&records));
+    read_conversation(&resource, None).unwrap();
+    assert!(crate::commands::cached_transcript_prefix(
+        &db::CacheScope::current().unwrap(),
+        &resource,
+        None
+    )
+    .unwrap()
+    .is_none());
     let opened = open(&resource, None);
     let reader = opened["readerId"].as_str().unwrap();
     verify_parity(&resource, reader, 13);
@@ -137,6 +254,7 @@ fn transcript_ranges_bound_large_claude_tool_records_and_reject_changed_snapshot
     let mut bytes = native::encode(&records);
     bytes.extend_from_slice(b"{incomplete");
     let mut resource = publish_fixture(&fixture, "claude", &bytes);
+    read_conversation(&resource, None).unwrap();
     let opened = open(&resource, None);
     let reader = opened["readerId"].as_str().unwrap();
     verify_parity(&resource, reader, 32 * 1024);
@@ -484,6 +602,7 @@ fn transcript_ranges_cancel_open_handles_on_service_switch() {
             json!({"type":"user","message":{"role":"user","content":"The previous service"}}),
         ]),
     );
+    read_conversation(&resource, None).unwrap();
     let opened = open(&resource, None);
     let reader = opened["readerId"].as_str().unwrap();
     page(reader, Some(0), 64, false);
@@ -493,6 +612,13 @@ fn transcript_ranges_cancel_open_handles_on_service_switch() {
         &json!({"apiUrl":"https://other.invalid"}),
     )
     .unwrap();
+    assert!(crate::commands::cached_transcript_prefix(
+        &db::CacheScope::current().unwrap(),
+        &resource,
+        None
+    )
+    .unwrap()
+    .is_none());
     let error =
         tauri::async_runtime::block_on(read_transcript(reader.into(), Some(0), 32 * 1024, None))
             .unwrap_err();
@@ -591,6 +717,7 @@ fn corrupt_stored_source_cannot_return_even_a_prepared_prefix() {
     let resource = publish_fixture(&f, "claude", &bytes);
     let opened = open(&resource, None);
     let reader = opened["readerId"].as_str().unwrap();
+    read_conversation(&resource, None).unwrap();
     let slot = bytes.iter().rposition(|byte| *byte == b'a').unwrap();
     bytes[slot] = b'z';
     let blob = db::blob_path(resource["files"][0]["hash"].as_str().unwrap()).unwrap();
@@ -600,6 +727,7 @@ fn corrupt_stored_source_cannot_return_even_a_prepared_prefix() {
 
     bytes.extend_from_slice(b"{bad json}\n");
     let resource = publish_fixture(&f, "claude", &bytes);
+    assert!(read_conversation(&resource, None).is_err());
     let opened = open(&resource, None);
     let reader = opened["readerId"].as_str().unwrap();
     let result = tauri::async_runtime::block_on(read_transcript(reader.into(), Some(0), 32, None));

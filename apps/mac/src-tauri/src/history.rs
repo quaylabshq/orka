@@ -852,11 +852,11 @@ fn inheritance(meta: &Value, paginated: bool) -> Result<Option<Inheritance>> {
     }))
 }
 
-fn visit_stored_jsonl(
+fn visit_stored_lines(
     scope: &db::CacheScope,
     manifest: &Value,
     cancelled: &impl Fn() -> Result<()>,
-    mut visit: impl FnMut(&Value) -> Result<()>,
+    mut visit: impl FnMut(&[u8]) -> Result<()>,
 ) -> Result<(u64, bool)> {
     use sha2::{Digest, Sha256};
     use std::io::{BufRead, BufReader};
@@ -899,15 +899,39 @@ fn visit_stored_jsonl(
         digest.update(&line);
         complete = line.ends_with(b"\n");
         if complete && count > 1 {
-            let record = serde_json::from_slice(&line[..count - 1])
-                .map_err(|_| "Unknown or corrupt native transcript; source preserved")?;
-            visit(&record)?;
+            visit(&line[..count - 1])?;
         }
     }
     if bytes != size || db::hex(&digest.finalize()) != hash {
         return Err("Blob hash mismatch".into());
     }
     Ok((bytes, complete))
+}
+
+fn visit_stored_jsonl(
+    scope: &db::CacheScope,
+    manifest: &Value,
+    cancelled: &impl Fn() -> Result<()>,
+    mut visit: impl FnMut(&Value) -> Result<()>,
+) -> Result<(u64, bool)> {
+    visit_stored_lines(scope, manifest, cancelled, |line| {
+        let record = serde_json::from_slice(line)
+            .map_err(|_| "Unknown or corrupt native transcript; source preserved")?;
+        visit(&record)
+    })
+}
+
+/// A prior successful stored Conversation decoded these exact content hashes.
+/// Recheck the bytes, lengths and transcript record limit before exposing its prefix.
+pub(crate) fn authenticate_transcript_prefix(
+    scope: &db::CacheScope,
+    resource: &Value,
+    cancelled: impl Fn() -> Result<()>,
+) -> Result<()> {
+    for file in StoredManifest::new(resource)?.files {
+        visit_stored_lines(scope, file, &cancelled, |_| Ok(()))?;
+    }
+    Ok(())
 }
 
 /// Visit immutable snapshot records in manifest lineage order (leaf first).
