@@ -129,6 +129,7 @@ for (const noProject of [false, true]) {
         "Profile",
         "Devices",
         "Projects",
+        "Handoff links",
         "Sync & startup",
         "Connectors",
         "Updates",

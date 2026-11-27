@@ -42,6 +42,24 @@ export async function settingsFixture(
     pendingRequests?: boolean;
     interval?: number;
     devices?: "empty" | "unavailable";
+    handoffs?:
+      | "empty"
+      | "unsupported"
+      | "unavailable"
+      | {
+          id: string;
+          title?: string;
+          source?: string;
+          createdAt?: string;
+          expiresAt?: string;
+          includeToolCalls?: boolean;
+          messageCount?: number;
+          toolCallCount?: number;
+          memoryCount?: number;
+          url: string | null;
+        }[];
+    handoffsDelay?: number;
+    revokeHandoffError?: string;
     deviceRows?: {
       id: string;
       name: string;
@@ -319,6 +337,40 @@ export async function settingsFixture(
       pluginStatusDelay: options.pluginStatusDelay ?? 0,
       pluginSessionCount: options.pluginSessionCount ?? 1,
       pluginStatusError: "",
+      handoffs: Array.isArray(options.handoffs)
+        ? structuredClone(options.handoffs)
+        : options.handoffs === "empty"
+          ? []
+          : [
+              {
+                id: "11111111-1111-4111-8111-111111111111",
+                title: "Investigate webhook retry backoff",
+                source: "claude",
+                createdAt: "2026-11-24T09:30:00Z",
+                expiresAt: "2026-12-01T09:30:00Z",
+                includeToolCalls: true,
+                messageCount: 14,
+                toolCallCount: 5,
+                memoryCount: 2,
+                url: null,
+              },
+              {
+                id: "22222222-2222-4222-8222-222222222222",
+                title: "Refactor session pagination",
+                source: "codex",
+                createdAt: "2026-11-25T14:00:00Z",
+                expiresAt: "2026-12-02T14:00:00Z",
+                includeToolCalls: false,
+                messageCount: 8,
+                toolCallCount: 0,
+                memoryCount: 1,
+                url: null,
+              },
+            ],
+      handoffsSupported: options.handoffs !== "unsupported",
+      handoffsError: options.handoffs === "unavailable",
+      handoffsDelay: options.handoffsDelay ?? 0,
+      revokeHandoffError: options.revokeHandoffError ?? "",
     };
     const wait = (ms: number) =>
       new Promise((resolve) => setTimeout(resolve, ms));
@@ -519,6 +571,30 @@ export async function settingsFixture(
           if (command === "plugin:dialog|open")
             return options.cancelPicker ? null : "/Projects/website";
           if (command.startsWith("plugin:")) return null;
+          if (command === "list_handoffs") {
+            await wait(controls.handoffsDelay);
+            if (controls.handoffsError) {
+              controls.handoffsError = false;
+              throw new Error("Couldn’t reach your Orka service.");
+            }
+            if (!controls.handoffsSupported)
+              return { supported: false, handoffs: [] };
+            return {
+              supported: true,
+              handoffs: structuredClone(controls.handoffs),
+            };
+          }
+          if (command === "revoke_handoff") {
+            if (controls.revokeHandoffError) {
+              const message = controls.revokeHandoffError;
+              controls.revokeHandoffError = "";
+              throw new Error(message);
+            }
+            controls.handoffs = controls.handoffs.filter(
+              (item: { id: string }) => item.id !== args.id,
+            );
+            return { id: args.id, revoked: true };
+          }
           if (command === "auth_capabilities") {
             if (controls.failService)
               throw new Error("This service is unavailable. Try again.");

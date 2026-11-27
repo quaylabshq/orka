@@ -154,6 +154,7 @@ export function canDeleteSharedResource(
 
 export function ResourceMenuProvider({
   resources,
+  onOpenHandoffs,
   children,
   ...props
 }: Omit<
@@ -165,6 +166,7 @@ export function ResourceMenuProvider({
   | "browserHandoffOrigin"
 > & {
   resources: ProjectResource[];
+  onOpenHandoffs?: () => void;
   children: React.ReactNode;
 }) {
   const currentResources = useRef(resources);
@@ -386,6 +388,7 @@ export function ResourceMenuProvider({
             serviceOrigin={service}
             linkOrigin={browserHandoffOrigin}
             stale={!hasSession(request.resource)}
+            onOpenHandoffs={onOpenHandoffs}
             onClose={() => setRequest(null)}
             onCloseAutoFocus={(event) =>
               restoreHandoffFocus(

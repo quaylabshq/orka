@@ -45,7 +45,7 @@ test("opening Settings starts on Profile each time", async ({ page }) => {
   );
 });
 
-test("all nine destinations and no-project account and Mac settings stay usable", async ({
+test("all ten destinations and no-project account and Mac settings stay usable", async ({
   page,
 }) => {
   const settings = await settingsFixture(page, { noProjects: true });
@@ -53,7 +53,7 @@ test("all nine destinations and no-project account and Mac settings stay usable"
     settings
       .getByRole("navigation", { name: "Settings sections" })
       .getByRole("button"),
-  ).toHaveCount(9);
+  ).toHaveCount(10);
   await expect(button(settings, "General")).toBeDisabled();
   await expect(button(settings, "Projects")).toBeEnabled();
   await button(settings, "Projects").click();
