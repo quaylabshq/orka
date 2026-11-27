@@ -584,7 +584,10 @@ impl TranscriptData {
         {
             return None;
         }
-        let (path, stamp) = crate::local_resources::unchanged_session_file(db, resource).ok()??;
+        let source = crate::local_resources::unchanged_session_file(db, resource).ok()??;
+        let raw_hash = source.raw_hash?;
+        let path = source.path;
+        let stamp = source.stamp;
         if path.extension().and_then(|extension| extension.to_str()) != Some("jsonl")
             || stamp.length > crate::history::MAX_FILE
         {
@@ -598,7 +601,7 @@ impl TranscriptData {
         }
         let mut bytes = vec![0; stamp.length as usize];
         (&file).read_exact(&mut bytes).ok()?;
-        if current_stamp().as_ref() != Some(&stamp) {
+        if current_stamp().as_ref() != Some(&stamp) || crate::db::digest(&bytes) != raw_hash {
             return None;
         }
         // The formatter recognizes a Pi-style branch header by its record

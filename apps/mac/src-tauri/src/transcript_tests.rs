@@ -348,6 +348,31 @@ fn unchanged_private_codex_reads_a_redacted_prefix_and_pins_the_remaining_native
 }
 
 #[test]
+fn missing_or_mismatched_raw_hash_uses_the_full_private_snapshot() {
+    let mut f = Fixture::new();
+    local_resource_tests::prepare(&mut f);
+    let catalog = crate::local_resources::catalog(&f.db, &f.project, "session").unwrap();
+    let id = catalog["resources"][0]["resourceId"].as_str().unwrap();
+    let resource = crate::local_resources::resource(&f.db, id).unwrap();
+    for raw_hash in [Some("different bytes with the same stamps"), None] {
+        // Simulate a coarse-timestamp filesystem or a cache from an earlier build.
+        let changed = f.db.execute(
+            "UPDATE meta SET value=json_set(value,'$.raw_hash',?1) WHERE key LIKE 'scanCache:%:session:%' AND json_extract(value,'$.files[0].hash')=?2",
+            rusqlite::params![raw_hash,resource["files"][0]["hash"].as_str().unwrap()],
+        ).unwrap();
+        assert_eq!(changed, 1);
+        let opened = open(&resource, None);
+        let reader = opened["readerId"].as_str().unwrap();
+        assert!(!crate::transcript::has_captured_input(reader));
+        assert!(page(reader, Some(0), 16 * 1024, false)["text"]
+            .as_str()
+            .unwrap()
+            .contains("Private conversation"));
+        close_transcript(reader.into()).unwrap();
+    }
+}
+
+#[test]
 fn unchanged_private_claude_reads_exact_redacted_ranges_from_the_captured_file() {
     let mut f = Fixture::new();
     local_resource_tests::prepare(&mut f);

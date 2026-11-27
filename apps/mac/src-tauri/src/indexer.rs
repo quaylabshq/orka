@@ -2898,6 +2898,11 @@ fn scan_source(
                             id,
                             cwd,
                             title,
+                            raw_hash: (files.len() == 1
+                                && matches!(tool, "claude" | "codex")
+                                && e.path().extension().and_then(|ext| ext.to_str())
+                                    == Some("jsonl"))
+                            .then(|| db::digest(&bytes)),
                             files,
                             logical,
                             native_parent,

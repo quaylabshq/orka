@@ -610,12 +610,18 @@ pub(crate) fn unchanged_session_manifest(db: &Connection, resource: &Value) -> R
     Ok(unchanged_session_file(db, resource)?.is_some())
 }
 
+pub(crate) struct DiscoveredSessionFile {
+    pub(crate) path: PathBuf,
+    pub(crate) stamp: crate::scan_cache::FileStamp,
+    pub(crate) raw_hash: Option<String>,
+}
+
 /// Return the observed native file only after validating its original scan,
 /// repository attribution and complete ancestor set against the current scope.
 pub(crate) fn unchanged_session_file(
     db: &Connection,
     resource: &Value,
-) -> Result<Option<(PathBuf, crate::scan_cache::FileStamp)>> {
+) -> Result<Option<DiscoveredSessionFile>> {
     use crate::scan_cache::{self, FileStamp};
     let id = resource["resourceId"].as_str().ok_or("Missing session")?;
     let Some((project, entry)) = local_entry(db, id)? else {
@@ -684,7 +690,11 @@ pub(crate) fn unchanged_session_file(
             return Ok(None);
         }
     }
-    Ok(Some((path.to_path_buf(), stamp)))
+    Ok(Some(DiscoveredSessionFile {
+        path: path.to_path_buf(),
+        stamp,
+        raw_hash: known.raw_hash,
+    }))
 }
 
 pub fn native_binding(db: &Connection, resource: &Value) -> Result<Option<Value>> {
