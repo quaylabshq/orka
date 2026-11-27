@@ -935,6 +935,66 @@ fn enqueue_reviewed(f: &Fixture, request: &Value) -> Value {
     db::rows(&f.db, "SELECT json_object('id',id,'project',project,'path',path,'value',json(value)) FROM outbox WHERE id=?", &[&receipt["requestId"].as_str()]).unwrap().remove(0)
 }
 
+#[tokio::test]
+async fn sharing_unchanged_bytes_after_a_synced_rejection_returns_the_closed_review() {
+    let mut f = Fixture::new();
+    prepare(&mut f);
+    let contents = "Reviewed memory";
+    let input = input(&f);
+    let first = preview_memory(&f, contents, input.clone());
+    let queued = enqueue_reviewed(&f, &first);
+    let mut review = json!({
+        "id": queued["id"], "projectId": f.project["id"],
+        "resourceId": queued["value"]["resource"]["resourceId"],
+        "author": input["accountId"], "status": "pending"
+    });
+    selective_sharing::complete(
+        &f.db,
+        &queued,
+        &json!({"status":"approval_required","request":review}),
+    )
+    .unwrap();
+    f.db.execute("DELETE FROM outbox WHERE id=?", [queued["id"].as_str()])
+        .unwrap();
+    // Open Share again through the desktop catalog, keeping the file untouched.
+    crate::local_resources::catalog(&f.db, &f.project, "memory").unwrap();
+    let mut second = input;
+    second["resourceId"] = first["resourceId"].clone();
+    let preview =
+        crate::resource_commands::run_command("preview-share".into(), second.clone(), None)
+            .await
+            .unwrap();
+    second["previewToken"] = preview["previewToken"].clone();
+    assert_ne!(first["previewToken"], second["previewToken"]);
+    let key = format!("requests:{}", f.project["id"].as_str().unwrap());
+    let mut unrelated = review.clone();
+    unrelated["status"] = json!("approved");
+    unrelated["author"] = json!("another author");
+    db::set(&f.db, &key, &json!([unrelated])).unwrap();
+    let pending = crate::resource_commands::run_command("share".into(), second.clone(), None)
+        .await
+        .unwrap();
+    assert_eq!(pending["status"], "approval_required");
+    assert_eq!(pending["result"]["request"]["status"], "pending");
+    review["status"] = json!("rejected");
+    db::set(&f.db, &key, &json!([review])).unwrap();
+
+    let receipt = crate::resource_commands::run_command("share".into(), second.clone(), None)
+        .await
+        .unwrap();
+    assert_eq!(receipt["requestId"], queued["id"]);
+    assert_eq!(receipt["status"], "review_closed");
+    assert_eq!(receipt["result"]["request"]["status"], "rejected");
+    db::set(&f.db, &key, &json!([])).unwrap();
+    assert_eq!(
+        crate::resource_commands::run_command("share".into(), second, None)
+            .await
+            .unwrap(),
+        receipt
+    );
+    assert!(f.outbox().is_empty());
+}
+
 #[test]
 fn corrected_share_retires_the_refusal_and_prevents_replay_of_an_obsolete_review() {
     for status in ["published", "approval_required", "conflict"] {

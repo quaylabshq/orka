@@ -526,6 +526,95 @@ async fn recover_legacy_share(
     Ok(None)
 }
 
+async fn project_reviews(owner: &str, origin: &str, project: &Value) -> Result<Value> {
+    sync::api_at(
+        owner,
+        origin,
+        "POST",
+        "/v2/governance/action",
+        Some(&json!({"action":"requests","input":{"projectId":project}})),
+    )
+    .await
+}
+
+fn apply_review_outcome(result: &mut Value, request: &Value) -> Result<()> {
+    result["status"] = match request["status"].as_str() {
+        Some("pending") => json!("approval_required"),
+        Some("stale" | "approved" | "rejected") => json!("review_closed"),
+        _ => return Err("Unrecognized review status".into()),
+    };
+    result["request"] = request.clone();
+    Ok(())
+}
+
+/// A completed submission has no outbox row. Reopening the same snapshot can
+/// still find that receipt after another member has decided its review.
+async fn replay_pending_review(
+    db: &Connection,
+    input: &Value,
+    mut receipt: Value,
+) -> Result<Value> {
+    for key in ["accountId", "serviceOrigin", "projectId"] {
+        if receipt[key] != input[key] {
+            return Err("Share receipt belongs to another account, service, or project".into());
+        }
+    }
+    let owner = input["accountId"].as_str().ok_or("Sign in required")?;
+    let origin = input["serviceOrigin"]
+        .as_str()
+        .ok_or("Choose the Orka service")?;
+    let project = input["projectId"].as_str().ok_or("Choose a project")?;
+    let token = input["previewToken"]
+        .as_str()
+        .ok_or("Review this snapshot first")?;
+    let preview = db::get(db, &format!("share-preview:{token}"))?;
+    let change = &preview["change"];
+    let submitted = &receipt["result"]["request"];
+    if receipt["requestId"] != change["id"]
+        || submitted["id"] != change["id"]
+        || submitted["projectId"] != change["projectId"]
+        || submitted["resourceId"] != change["resource"]["resourceId"]
+        || submitted["author"]
+            .as_str()
+            .is_some_and(|author| author != owner)
+    {
+        return Err("Share receipt differs from the selected resource".into());
+    }
+    let cached = db::get(db, &format!("requests:{project}"))?;
+    let known = if cached.is_array() {
+        matching_review(&cached, change, owner)?
+    } else {
+        None
+    };
+    let rows;
+    let request = match known.filter(|r| {
+        matches!(
+            r["status"].as_str(),
+            Some("approved" | "rejected" | "stale")
+        )
+    }) {
+        Some(closed) => closed,
+        None => {
+            rows = match project_reviews(owner, origin, &input["projectId"]).await {
+                Ok(rows) => rows,
+                Err(error) if sync::terminal_error(&error) || error.starts_with("401:") => {
+                    return Err(error)
+                }
+                // The service already acknowledged this submission. Going offline
+                // preserves that receipt and never creates a second change.
+                Err(_) => return Ok(public_receipt(&receipt)),
+            };
+            matching_review(&rows, change, owner)?
+                .ok_or("Could not confirm the current review status")?
+        }
+    };
+    apply_review_outcome(&mut receipt["result"], request)?;
+    receipt["status"] = receipt["result"]["status"].clone();
+    let id = change["id"].as_str().ok_or("Missing share request")?;
+    db::set(db, &format!("selected-share:{id}"), &receipt)?;
+    Ok(public_receipt(&receipt))
+}
+
 pub async fn send(db: &Connection, owner: &str, queued: &Value) -> Result<Value> {
     let (origin, receipt) = authorization(db, queued)?
         .ok_or("Selected share authorization no longer matches this snapshot")?;
@@ -581,22 +670,10 @@ pub async fn send(db: &Connection, owner: &str, queued: &Value) -> Result<Value>
     if result["status"] == "approval_required" {
         // A replay returns the stored decision. Reviews also considers later policy
         // and resource revisions, which can make a stored pending request stale.
-        let requests = sync::api_at(
-            owner,
-            &origin,
-            "POST",
-            "/v2/governance/action",
-            Some(&json!({"action":"requests","input":{"projectId":queued["project"]}})),
-        )
-        .await?;
+        let requests = project_reviews(owner, &origin, &queued["project"]).await?;
         let request = matching_review(&requests, &queued["value"], owner)?
             .ok_or("Could not confirm the current review status")?;
-        match request["status"].as_str() {
-            Some("pending") => {}
-            Some("stale" | "approved" | "rejected") => result["status"] = json!("review_closed"),
-            _ => return Err("Unrecognized review status".into()),
-        }
-        result["request"] = request.clone();
+        apply_review_outcome(&mut result, request)?;
     }
     Ok(result)
 }
@@ -758,6 +835,14 @@ async fn command_bound(
         "preview_share" => preview(&db, &project, input),
         "share_selected" => {
             let receipt = queue(&db, &project, input)?;
+            if receipt["status"] == "approval_required" {
+                let result = replay_pending_review(&db, input, receipt).await?;
+                context(&db::open()?, input)?;
+                if let Some(binding) = binding {
+                    binding.check_current()?;
+                }
+                return Ok(result);
+            }
             if receipt["status"] != "queued" {
                 return Ok(public_receipt(&receipt));
             }
