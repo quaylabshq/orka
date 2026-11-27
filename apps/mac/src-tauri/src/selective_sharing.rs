@@ -549,11 +549,7 @@ fn apply_review_outcome(result: &mut Value, request: &Value) -> Result<()> {
 
 /// A completed submission has no outbox row. Reopening the same snapshot can
 /// still find that receipt after another member has decided its review.
-async fn replay_pending_review(
-    db: &Connection,
-    input: &Value,
-    mut receipt: Value,
-) -> Result<Value> {
+async fn replay_review(db: &Connection, input: &Value, mut receipt: Value) -> Result<Value> {
     for key in ["accountId", "serviceOrigin", "projectId"] {
         if receipt[key] != input[key] {
             return Err("Share receipt belongs to another account, service, or project".into());
@@ -587,27 +583,26 @@ async fn replay_pending_review(
         None
     };
     let rows;
-    let request = match known.filter(|r| {
-        matches!(
-            r["status"].as_str(),
-            Some("approved" | "rejected" | "stale")
-        )
-    }) {
-        Some(closed) => closed,
-        None => {
-            rows = match project_reviews(owner, origin, &input["projectId"]).await {
-                Ok(rows) => rows,
+    let request =
+        match known.filter(|r| matches!(r["status"].as_str(), Some("approved" | "rejected"))) {
+            Some(decided) => decided,
+            None => match project_reviews(owner, origin, &input["projectId"]).await {
+                Ok(live) => {
+                    rows = live;
+                    matching_review(&rows, change, owner)?
+                        .ok_or("Could not confirm the current review status")?
+                }
                 Err(error) if sync::terminal_error(&error) || error.starts_with("401:") => {
                     return Err(error)
                 }
-                // The service already acknowledged this submission. Going offline
-                // preserves that receipt and never creates a second change.
-                Err(_) => return Ok(public_receipt(&receipt)),
-            };
-            matching_review(&rows, change, owner)?
-                .ok_or("Could not confirm the current review status")?
-        }
-    };
+                // A pending review can appear stale until a reviewer decides it.
+                // Offline, preserve the latest known state without resubmitting.
+                Err(_) => match known.filter(|r| r["status"] == "stale") {
+                    Some(stale) => stale,
+                    None => return Ok(public_receipt(&receipt)),
+                },
+            },
+        };
     apply_review_outcome(&mut receipt["result"], request)?;
     receipt["status"] = receipt["result"]["status"].clone();
     let id = change["id"].as_str().ok_or("Missing share request")?;
@@ -835,8 +830,11 @@ async fn command_bound(
         "preview_share" => preview(&db, &project, input),
         "share_selected" => {
             let receipt = queue(&db, &project, input)?;
-            if receipt["status"] == "approval_required" {
-                let result = replay_pending_review(&db, input, receipt).await?;
+            if receipt["status"] == "approval_required"
+                || (receipt["status"] == "review_closed"
+                    && receipt["result"]["request"]["status"] == "stale")
+            {
+                let result = replay_review(&db, input, receipt).await?;
                 context(&db::open()?, input)?;
                 if let Some(binding) = binding {
                     binding.check_current()?;
