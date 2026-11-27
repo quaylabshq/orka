@@ -11,7 +11,10 @@ import type { Snapshot, SyncProgress } from "../../apps/mac/src/types.js";
 
 interface MenuControls {
   shareStatus: string;
+  closedReview?: "stale" | "approved" | "rejected";
   shareReason?: string;
+  conflictRefresh?: "fail" | "resolved" | "defer";
+  finishConflictRefresh?: () => void;
   deleteStatus: string;
   deleteFailures: number;
   deferPreview: boolean;
@@ -111,7 +114,13 @@ async function menuFixture(
             { path: "content.md", size: 20 },
           ];
           const preview = {
-            previewToken: `frozen-${action}-${input.resourceId}`,
+            previewToken:
+              input.resourceId === "session-pi"
+                ? crypto.randomUUID()
+                : `frozen-${action}-${input.resourceId}`,
+            ...(input.resourceId === "session-pi" && {
+              piScope: { entries: 24, offBranchEntries: 7 },
+            }),
             title: controls.previewTitle ?? `Reviewed ${input.resourceId}`,
             kind: input.resourceId.split("-")[0],
             files,
@@ -145,13 +154,16 @@ async function menuFixture(
         }
         if (action === "share") {
           controls.shareProgress = onProgress?.onmessage;
+          const receipt = {
+            status: controls.shareStatus,
+            reason: controls.shareReason,
+            ...(controls.closedReview && {
+              result: { request: { status: controls.closedReview } },
+            }),
+          };
           if (controls.deferShare)
             return new Promise((resolve, reject) => {
-              controls.finishShare = () =>
-                resolve({
-                  status: controls.shareStatus,
-                  reason: controls.shareReason,
-                });
+              controls.finishShare = () => resolve(receipt);
               controls.failShare = () =>
                 reject(
                   new Error(
@@ -159,7 +171,7 @@ async function menuFixture(
                   ),
                 );
             });
-          return { status: controls.shareStatus };
+          return receipt;
         }
         if (action === "delete") {
           if (controls.deleteFailures > 0) {
@@ -857,16 +869,21 @@ test("a changed project policy refreshes the share permission before submission"
   expect(await resourceCalls(page, "share")).toEqual([]);
 });
 
-test("the Pi share confirmation discloses abandoned branches and hidden tool records before sharing", async ({
+test("the complete Pi snapshot needs fresh consent for every frozen preview", async ({
   page,
 }, testInfo) => {
+  await page.clock.install();
   await page.setViewportSize({ width: 900, height: 640 });
   await menuFixture(page, { piSession: true });
   await collection(page, "Sessions");
   const note =
-    "This snapshot includes all saved branches, including abandoned branches and tool records not shown in the reader. Later edits and future turns stay private unless you share again.";
+    "This snapshot includes all saved branches, including abandoned branches, tool records and reasoning omitted from the reader. Later edits and future turns stay private unless you share again.";
   await page.evaluate((note) => {
-    (window as unknown as MenuWindow).resourceMenu.previewNote = note;
+    const controls = (window as unknown as MenuWindow).resourceMenu;
+    controls.previewNote = note;
+    controls.previewTitle = "Parser migration notes";
+    controls.previewFiles = [{ path: "session.jsonl", size: 18742 }];
+    controls.previewExpiresIn = 60;
   }, note);
   await resourceMenu(page, "Private Pi session", "Share with team…");
   const dialog = shareDialog(page);
@@ -874,16 +891,27 @@ test("the Pi share confirmation discloses abandoned branches and hidden tool rec
     name: "Share with team",
     exact: true,
   });
+  const consent = dialog.getByRole("checkbox", {
+    name: "Include the complete Pi session",
+  });
   await expect(statusPill(dialog)).toHaveText("Includes all branches");
-  const warning = dialog.getByText(
-    "Shares abandoned branches and hidden tool records.",
-    { exact: true },
+  await expect(dialog.getByText("24 saved entries · 18.7 KB")).toBeVisible();
+  await expect(
+    dialog.locator("dt", { hasText: "People" }).locator("+ dd"),
+  ).toHaveText("Project members with access");
+  const warning = dialog.locator(".share-dialog-scope-note");
+  await expect(warning).toContainText("7 entries outside the current branch.");
+  await expect(warning).toContainText(
+    "Includes any hidden tool records and reasoning.",
   );
   await expect(warning).toBeInViewport({ ratio: 1 });
   await expect(warning).toHaveAttribute("title", note);
-  await expect(action).toHaveAccessibleDescription(await warning.innerText());
-  const frame = await dialog.boundingBox();
-  expect(frame).toMatchObject({ width: 390, height: 438 });
+  await expect(consent).toHaveAccessibleDescription(
+    /7 entries outside the current branch.*hidden tool records and reasoning/,
+  );
+  await expect(consent).not.toBeChecked();
+  await expect(action).toBeDisabled();
+  expect(await dialog.boundingBox()).toMatchObject({ width: 390, height: 438 });
   const card = (await dialog
     .locator(".share-dialog-card")
     .last()
@@ -891,10 +919,32 @@ test("the Pi share confirmation discloses abandoned branches and hidden tool rec
   expect((await warning.boundingBox())!.y).toBeGreaterThanOrEqual(
     card.y + card.height,
   );
-  expect(await resourceCalls(page, "share")).toEqual([]);
   await dialog.screenshot({
-    path: testInfo.outputPath("pi-share-warning.png"),
+    path: testInfo.outputPath("pi-share-consent-default.png"),
   });
+  await consent.focus();
+  await consent.press("Space");
+  await expect(consent).toBeChecked();
+  await expect(action).toBeEnabled();
+  await dialog.screenshot({
+    path: testInfo.outputPath("pi-share-consent-checked.png"),
+  });
+  await page.clock.fastForward(56_000);
+  await expect
+    .poll(async () => (await resourceCalls(page, "preview-share")).length)
+    .toBe(2);
+  await expect(consent).not.toBeChecked();
+  await expect(action).toBeDisabled();
+  expect(await resourceCalls(page, "share")).toEqual([]);
+  await consent.check();
+  await action.click();
+  const [submitted] = await resourceCalls(page, "share");
+  const input = submitted?.args.input as {
+    previewToken: string;
+    acknowledgedPiPreviewToken: string;
+  };
+  expect(input.acknowledgedPiPreviewToken).toBe(input.previewToken);
+  await expect(shareDialog(page, "Queued to share")).toBeVisible();
 });
 
 test("sharing a snapshot shows what goes where and submits the exact frozen token without changing category sharing", async ({
@@ -1128,23 +1178,36 @@ for (const viewport of [
   }
 }
 
-for (const removed of [false, true]) {
-  test(`Review changes opens the submitted session against its ${removed ? "deleted" : "divergent"} shared version`, async ({
-    page,
-  }) => {
-    await menuFixture(page);
-    await collection(page, "Sessions");
-    await page.evaluate((removed) => {
+async function prepareSessionShareConflict(
+  page: Page,
+  removed = false,
+  failRefresh = false,
+) {
+  await menuFixture(page);
+  await collection(page, "Sessions");
+  await page.evaluate(
+    ({ removed, failRefresh }) => {
       const host = window as unknown as MenuWindow;
       const previous = host.__TAURI_INTERNALS__.invoke;
+      if (failRefresh) host.resourceMenu.conflictRefresh = "fail";
       let shared = false;
       host.__TAURI_INTERNALS__.invoke = async (command, args = {}) => {
         if (command === "resource_command" && args.action === "share") {
+          host.library.calls.push({ command, args });
           shared = true;
           return { status: "conflict", requestId: "selected-share" };
         }
         const result = await previous(command, args);
         if (shared && command === "snapshot") {
+          if (host.resourceMenu.conflictRefresh === "defer") {
+            host.resourceMenu.conflictRefresh = undefined;
+            await new Promise<void>((resolve) => {
+              host.resourceMenu.finishConflictRefresh = resolve;
+            });
+          }
+          if (host.resourceMenu.conflictRefresh === "fail")
+            throw new Error("Fixture snapshot read failed");
+          if (host.resourceMenu.conflictRefresh === "resolved") return result;
           const snapshot = result as Snapshot;
           const session = snapshot.resources.find(
             (item) => item.resourceId === "session-own",
@@ -1197,13 +1260,99 @@ for (const removed of [false, true]) {
         }
         return result;
       };
-    }, removed);
-    await resourceMenu(page, "My shared session", "Share with team…");
-    await shareDialog(page)
-      .getByRole("button", { name: "Share update", exact: true })
-      .click();
-    const result = shareDialog(page, "Someone changed it first");
-    await expect(statusPill(result)).toHaveText("Version conflict");
+    },
+    { removed, failRefresh },
+  );
+  await resourceMenu(page, "My shared session", "Share with team…");
+  await shareDialog(page)
+    .getByRole("button", { name: "Share update", exact: true })
+    .click();
+  const result = shareDialog(page, "Someone changed it first");
+  await expect(statusPill(result)).toHaveText("Version conflict");
+  return result;
+}
+
+for (const available of [true, false]) {
+  test(`failed conflict refresh keeps the review available when the submitted candidate is ${available ? "restored" : "resolved"}`, async ({
+    page,
+  }) => {
+    const dialog = await prepareSessionShareConflict(page, false, true);
+    const review = dialog.getByRole("button", {
+      name: "Review changes",
+      exact: true,
+    });
+    await review.click();
+    await expect(dialog.getByRole("alert")).toHaveText(
+      "Couldn’t refresh the project. Try Review changes again.",
+    );
+    await expect(review).toBeEnabled();
+    await page.evaluate((available) => {
+      (window as unknown as MenuWindow).resourceMenu.conflictRefresh = available
+        ? undefined
+        : "resolved";
+    }, available);
+    await review.click();
+    if (available) {
+      await expect(
+        page.getByLabel("Conversation", { exact: true }),
+      ).toContainText("The submitted session version");
+    } else {
+      const finished = shareDialog(page, "Conflict no longer available");
+      await expect(statusPill(finished)).toHaveText("Project refreshed");
+      await finished.getByRole("button", { name: "Done" }).click();
+    }
+    expect(await resourceCalls(page, "share")).toHaveLength(1);
+  });
+}
+
+for (const close of [false, true]) {
+  test(`a slow conflict lookup across a poll ${close ? "stays closed after dismissal" : "opens the reviewed candidate on the first click"}`, async ({
+    page,
+  }) => {
+    await page.clock.install();
+    const dialog = await prepareSessionShareConflict(page, false, true);
+    const review = dialog.getByRole("button", { name: "Review changes" });
+    // Hold precisely the read started by this click, even if a poll is due.
+    await review.evaluate((button) =>
+      button.addEventListener(
+        "click",
+        () => {
+          (window as unknown as MenuWindow).resourceMenu.conflictRefresh =
+            "defer";
+        },
+        { capture: true, once: true },
+      ),
+    );
+    await review.click();
+    await expect(statusPill(dialog)).toHaveText("Refreshing project");
+    if (close)
+      await dialog.getByRole("button", { name: "Close", exact: true }).click();
+
+    await page.clock.runFor(3100);
+    await page.evaluate(() =>
+      (window as unknown as MenuWindow).resourceMenu.finishConflictRefresh!(),
+    );
+    await page.clock.runFor(32);
+    if (close) {
+      await expect(
+        page.getByRole("region", { name: "Session details" }),
+      ).toHaveCount(0);
+      await expect(page.getByRole("table")).toBeVisible();
+    } else {
+      await expect(
+        page.getByLabel("Conversation", { exact: true }),
+      ).toContainText("The submitted session version");
+    }
+    await expect(dialog).toHaveCount(0);
+    expect(await resourceCalls(page, "share")).toHaveLength(1);
+  });
+}
+
+for (const removed of [false, true]) {
+  test(`Review changes opens the submitted session against its ${removed ? "deleted" : "divergent"} shared version`, async ({
+    page,
+  }) => {
+    const result = await prepareSessionShareConflict(page, removed);
     await result
       .getByRole("button", { name: "Review changes", exact: true })
       .click();
@@ -1263,29 +1412,68 @@ for (const removed of [false, true]) {
   });
 }
 
-test("a share sent for approval links to its request in Reviews", async ({
-  page,
-}) => {
-  await menuFixture(page);
-  await collection(page, "Memories");
-  await page.evaluate(() => {
-    (window as unknown as MenuWindow).resourceMenu.shareStatus =
-      "approval_required";
-  });
-  await resourceMenu(page, "Private memory notes", "Share with team…");
-  await shareDialog(page)
-    .getByRole("button", { name: "Share with team", exact: true })
-    .click();
-  const sent = shareDialog(page, "Sent for approval");
-  await expect(statusPill(sent)).toHaveText("Awaiting approval");
-  await sent.getByRole("button", { name: "View request", exact: true }).click();
-  await expect(sent).toHaveCount(0);
-  await expect(page.getByRole("heading", { name: "Reviews" })).toBeVisible();
-});
+for (const [review, title, pill, kind, view] of [
+  ["pending", "Sent for approval", "Awaiting approval", "info", "Open"],
+  ["approved", "Request approved", "Approved", "success", "History"],
+  ["rejected", "Request rejected", "Rejected", "error", "History"],
+  ["stale", "Request is out of date", "Needs refresh", "warning", "History"],
+] as const) {
+  for (const closeWhileSending of [false, true]) {
+    test(`a ${review} share review opens ${view} from its ${closeWhileSending ? "toast" : "dialog"}`, async ({
+      page,
+    }) => {
+      await menuFixture(page, {
+        restricted: true,
+        memoryAccess: { mode: "suggest", create: "suggest" },
+      });
+      await collection(page, "Memories");
+      await page.evaluate(
+        ({ review, closeWhileSending }) => {
+          const controls = (window as unknown as MenuWindow).resourceMenu;
+          controls.deferShare = closeWhileSending;
+          controls.shareStatus =
+            review === "pending" ? "approval_required" : "review_closed";
+          if (review !== "pending") controls.closedReview = review;
+        },
+        { review, closeWhileSending },
+      );
+      await resourceMenu(page, "Private memory notes", "Share with team…");
+      const dialog = shareDialog(page);
+      await dialog
+        .getByRole("button", { name: "Send for approval", exact: true })
+        .click();
+      const result = closeWhileSending
+        ? page.locator("[data-orka-toast]").filter({ hasText: title })
+        : shareDialog(page, title);
+      if (closeWhileSending) {
+        await expect(statusPill(dialog)).toHaveText("Sending");
+        await page.keyboard.press("Escape");
+        await expect(dialog).toHaveCount(0);
+        await page.evaluate(() =>
+          (window as unknown as MenuWindow).resourceMenu.finishShare?.(),
+        );
+        await expect(result).toHaveAttribute("data-kind", kind);
+      } else {
+        await expect(statusPill(result)).toHaveText(pill);
+        await expect(
+          result.getByRole("button", { name: "Done", exact: true }),
+        ).toBeEnabled();
+      }
+      await result
+        .getByRole("button", { name: "View request", exact: true })
+        .click();
+      await expect(
+        page
+          .getByRole("group", { name: "Reviews view" })
+          .getByRole("button", { name: view, exact: true }),
+      ).toHaveAttribute("aria-pressed", "true");
+      expect(await resourceCalls(page, "share")).toHaveLength(1);
+    });
+  }
+}
 
 for (const [outcome, title, kind, reason] of [
   ["published", "Shared with team", "success"],
-  ["approval_required", "Sent for approval", "info"],
   ["conflict", "Someone changed it first", "warning"],
   ["queued", "Queued to share", "queued"],
   ["queued", "Queued until project restore", "warning", "project_inactive"],

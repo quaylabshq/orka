@@ -28,8 +28,20 @@ secret redaction. Discovery does not modify Pi files or enable sharing.
 Deleting a shared Pi snapshot removes only the shared history entry. The Pi
 session stays readable and private on the Mac that owns it.
 
-Use the existing snapshot preview to share one Pi session. The uploader checks
-for `piSessions: 1` before transferring any files. An older service leaves the
+In the desktop Share with team dialog, review the number of saved entries and
+the number outside the current branch. Sharing the complete Pi session includes
+tool records and reasoning omitted from the reader. Check **Include the complete
+Pi session** to send that frozen snapshot to project members with access. A fresh
+preview requires a new confirmation. For a text-only handoff of the readable
+conversation, use **Copy session prompt** in the session menu.
+
+The connector's `preview_share` returns the same entry counts. With the user's
+consent to the complete tree, `share_selected` requires that preview's token in
+both `previewToken` and `acknowledgedPiPreviewToken`. This applies to new Pi
+submissions from either interface. Already queued snapshots keep their frozen
+contents. See [selected sharing](selective-sharing.md) for approval routing on upgrade.
+
+The uploader checks for `piSessions: 1` before transferring any files. An older service leaves the
 selected snapshot queued locally. Deploy the compatible API and upgrade
 recipient desktops before sharing Pi sessions in a project. A pre-Pi desktop
 can fetch the readable conversation through its connector with the resource ID,

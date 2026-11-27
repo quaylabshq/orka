@@ -68,16 +68,41 @@
   line-height: var(--body-xs-line-height);
 }
 
+.share-dialog-preview[data-pi] {
+  grid-template-rows: 1fr auto;
+  padding: 4px 8px 8px;
+}
+
+.share-dialog-preview[data-pi] .share-dialog-card--back {
+  top: 4px;
+}
+
 .modal.share-dialog .share-dialog-scope-note {
-  position: absolute;
-  right: 12px;
-  bottom: 4px;
-  left: 12px;
   margin: 0;
   color: var(--amber-text);
   font-size: var(--body-xs-font-size);
   line-height: var(--body-xs-line-height);
   text-align: center;
+}
+
+.share-dialog-scope-note > span {
+  display: block;
+}
+
+.share-dialog-pi-consent {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  margin: 0 auto 0 0;
+  color: var(--text-primary);
+  font-size: var(--body-xs-font-size);
+  line-height: var(--body-xs-line-height);
+}
+
+.share-dialog-pi-consent input {
+  flex: none;
+  margin: 0;
 }
 
 .share-dialog-facts {
