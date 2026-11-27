@@ -215,7 +215,7 @@ export function FileDiffCard({
             fallback
           ) : (
             <p className="diff-card-summary" role="status">
-              Diff preview unavailable in this macOS webview. Use Open in editor
+              Diff preview unavailable in this window. Use Open in editor
               to inspect the files.
             </p>
           )}
