@@ -976,6 +976,13 @@ async fn sharing_unchanged_bytes_after_a_synced_rejection_returns_the_closed_rev
         .unwrap();
     assert_eq!(pending["status"], "approval_required");
     assert_eq!(pending["result"]["request"]["status"], "pending");
+    review["status"] = json!("stale");
+    db::set(&f.db, &key, &json!([review])).unwrap();
+    let stale = crate::resource_commands::run_command("share".into(), second.clone(), None)
+        .await
+        .unwrap();
+    assert_eq!(stale["status"], "review_closed");
+    assert_eq!(stale["result"]["request"]["status"], "stale");
     review["status"] = json!("rejected");
     db::set(&f.db, &key, &json!([review])).unwrap();
 
