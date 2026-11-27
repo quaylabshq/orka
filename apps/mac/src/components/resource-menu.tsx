@@ -16,7 +16,6 @@ import {
   RefreshCwIcon,
   TrashIcon,
   UploadIcon,
-  XIcon,
 } from "lucide-react";
 import React, {
   createContext,
@@ -45,7 +44,6 @@ import {
 import { Modal } from "./modal.js";
 import { Button } from "./button.js";
 import { Icon } from "./icon.js";
-import { IconButton } from "./icon-button.js";
 import { MarkdownMarkIcon } from "./icons.js";
 import { SessionLauncher } from "./session-launcher.js";
 import type { ResourceComparison, ResourceView } from "./use-resource-view.js";
@@ -849,35 +847,19 @@ function SessionLaunchDialog({
   });
   return (
     <Modal
-      legacyFrame
       title={title}
+      size="compact"
       className="session-launch-dialog"
-      onClose={onClose}
+      closeLabel="Close session launcher"
+      closeDisabled={context.busy}
+      onClose={() => {
+        if (!context.busy) onClose();
+      }}
       onCloseAutoFocus={(event) =>
         restoreResourceFocus(event, resource.resourceId)
       }
-    >
-      <div className="session-launch-heading">
-        <h2>{title}</h2>
-        <IconButton
-          icon={XIcon}
-          variant="tertiary"
-          size="sm"
-          aria-label="Close session launcher"
-          onClick={onClose}
-        />
-      </div>
-      <p className="session-launch-title" title={resource.title}>
-        {resource.title}
-      </p>
-      {stale && (
-        <p className="session-launch-alert" role="alert">
-          This session or account changed. Reopen the launcher from the
-          session’s actions.
-        </p>
-      )}
-      {project && (
-        <div className="actions">
+      footer={
+        project && (
           <SessionLauncher
             resource={resource}
             project={project}
@@ -887,7 +869,17 @@ function SessionLaunchDialog({
             sessionSelection={sessionSelection}
             onError={context.onError}
           />
-        </div>
+        )
+      }
+    >
+      <p className="session-launch-title" title={resource.title}>
+        {resource.title}
+      </p>
+      {stale && (
+        <p className="session-launch-alert" role="alert">
+          This session or account changed. Reopen the launcher from the
+          session’s actions.
+        </p>
       )}
     </Modal>
   );
@@ -1034,8 +1026,9 @@ function ResourceCommandDialog({
         : undefined;
   return (
     <Modal
-      legacyFrame
       title={title}
+      size="compact"
+      closeDisabled={busy}
       onClose={() => {
         if (!busy) onClose();
       }}
@@ -1043,8 +1036,40 @@ function ResourceCommandDialog({
       onCloseAutoFocus={(event) =>
         restoreResourceFocus(event, resource.resourceId)
       }
+      footer={
+        <>
+          {error && !preview && (
+            <Button
+              size="sm"
+              className="resource-command-retry"
+              disabled={busy || loading || stale}
+              onClick={() => setAttempt((value) => value + 1)}
+            >
+              Try again
+            </Button>
+          )}
+          <Button
+            size="sm"
+            variant="tertiary"
+            disabled={busy}
+            onClick={onClose}
+          >
+            Cancel
+          </Button>
+          <Button
+            size="sm"
+            className="resource-command-confirm management-danger"
+            disabled={busy || context.busy || loading || !preview || stale}
+            onClick={() => void submit()}
+          >
+            <span className="resource-command-button-size" aria-hidden="true">
+              Confirm deletion
+            </span>
+            <span>{busy ? "Working…" : "Confirm deletion"}</span>
+          </Button>
+        </>
+      }
     >
-      <h2 title={title}>{title}</h2>
       <section className="resource-command-item" aria-label="Selected item">
         <Icon icon={FileIcon} size="sm" variant="secondary" />
         <div>
@@ -1180,31 +1205,6 @@ function ResourceCommandDialog({
         {preview?.note && (
           <p className="resource-command-note">{preview.note}</p>
         )}
-      </div>
-      <div className="actions">
-        {error && !preview && (
-          <Button
-            disabled={busy || loading || stale}
-            onClick={() => setAttempt((value) => value + 1)}
-          >
-            Try again
-          </Button>
-        )}
-        <div className="resource-command-main-actions">
-          <Button variant="tertiary" disabled={busy} onClick={onClose}>
-            Cancel
-          </Button>
-          <Button
-            className="resource-command-confirm management-danger"
-            disabled={busy || context.busy || loading || !preview || stale}
-            onClick={() => void submit()}
-          >
-            <span className="resource-command-button-size" aria-hidden="true">
-              Confirm deletion
-            </span>
-            <span>{busy ? "Working…" : "Confirm deletion"}</span>
-          </Button>
-        </div>
       </div>
     </Modal>
   );

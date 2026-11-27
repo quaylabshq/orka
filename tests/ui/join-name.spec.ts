@@ -134,14 +134,12 @@ for (const width of [1160, 900]) {
     });
     await openJoinDialog(page);
     const dialog = page.getByRole("dialog");
-    await expect(dialog.locator(".create-project-heading h2")).toHaveText(
-      "Join Acme",
-    );
+    await expect(dialog.locator(".ui-modal-header h2")).toHaveText("Join Acme");
     const close = dialog.getByRole("button", { name: "Close join project" });
     const anchors = async () => ({
       close: await close.boundingBox(),
       input: await dialog.getByLabel("Invite link or token").boundingBox(),
-      footer: await dialog.locator(".create-project-footer").boundingBox(),
+      footer: await dialog.locator(".ui-modal-footer").boundingBox(),
     });
     const before = await anchors();
     await page.evaluate(() =>
@@ -156,7 +154,7 @@ for (const width of [1160, 900]) {
     await dialog
       .getByLabel("Invite link or token")
       .fill(`orka://join/${"cd".repeat(24)}`);
-    const heading = dialog.locator(".create-project-heading h2");
+    const heading = dialog.locator(".ui-modal-header h2");
     await expect(heading).toHaveText(/^Join Super/);
     const after = await anchors();
     const modal = await dialog.boundingBox();

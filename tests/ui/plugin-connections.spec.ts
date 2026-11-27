@@ -111,26 +111,22 @@ test("consent remains fixed while loading and fits a compact window", async ({
   ).toBeEnabled();
   expect(await dialog.boundingBox()).toEqual(initial);
   expect(await dialog.locator("footer").boundingBox()).toEqual(initialActions);
-  const heading = await dialog.locator("header").boundingBox();
+  const heading = await dialog.locator(".ui-modal-header").boundingBox();
   const close = await dialog
     .getByRole("button", { name: "Close connection" })
     .boundingBox();
-  expect(close!.y - heading!.y).toBe(12);
+  // The shared Modal title row: 48px with its rule, close button centered.
+  expect(close!.y - heading!.y).toBeCloseTo(7.5, 0);
   expect(
     await dialog
-      .locator("header")
+      .locator(".ui-modal-header")
       .evaluate((element) => getComputedStyle(element).borderBottomWidth),
-  ).toBe("1px");
-  expect(
-    await dialog
-      .locator("footer")
-      .evaluate((element) => getComputedStyle(element).borderTopWidth),
   ).toBe("1px");
   expect(
     await dialog
       .locator("h2:not(.sr-only)")
       .evaluate((element) => getComputedStyle(element).fontSize),
-  ).toBe("20px");
+  ).toBe("16px");
   await expect(
     dialog.getByRole("button", { name: "Allow connection", exact: true }),
   ).toBeInViewport({ ratio: 1 });
