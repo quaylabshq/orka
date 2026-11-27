@@ -28,6 +28,8 @@ export interface ModalProps extends DialogEvents {
   footer?: React.ReactNode;
   /** Why the last step failed, shown at the start of the footer. */
   error?: string;
+  /** Give multi-line recovery instructions a separate row above the actions. */
+  fullWidthError?: boolean;
   /** False for a confirmation whose footer already has Cancel. */
   closeButton?: boolean;
   closeLabel?: string;
@@ -54,6 +56,7 @@ export function Modal({
   size = "default",
   footer,
   error,
+  fullWidthError = false,
   closeButton = true,
   closeLabel = "Close",
   closeDisabled,
@@ -100,9 +103,17 @@ export function Modal({
         {children}
       </div>
       {hasFooter && (
-        <footer className="ui-modal-footer">
+        <footer
+          className="ui-modal-footer"
+          data-full-width-error={error && fullWidthError ? true : undefined}
+        >
           {error && (
-            <p className="ui-modal-error" role="alert" title={error}>
+            <p
+              className="ui-modal-error"
+              role="alert"
+              title={error}
+              tabIndex={fullWidthError ? 0 : undefined}
+            >
               {error}
             </p>
           )}

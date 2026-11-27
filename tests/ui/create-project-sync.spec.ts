@@ -137,7 +137,7 @@ async function fixture(
     await dialog.getByRole("textbox", { name: "Project name" }).fill("Atlas");
     await dialog.getByRole("button", { name: "Add folders" }).click();
   }
-  const footer = dialog.locator(".create-project-footer");
+  const footer = dialog.locator(".ui-modal-footer");
   const restingFooter = await footer.boundingBox();
   await dialog
     .getByRole("button", { name: `${mode} project`, exact: true })

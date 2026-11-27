@@ -1,19 +1,10 @@
 @layer components {
-  .modal.toast-host-modal.plugin-authorization {
-    display: flex;
-    flex-direction: column;
-    width: min(520px, calc(100vw - 32px));
+  /* Consent keeps one height while the request loads and resolves. */
+  .modal.toast-host-modal.ui-modal.plugin-authorization {
     height: min(560px, calc(100dvh - 48px));
-    padding: 0;
-    overflow: hidden;
-    border-radius: var(--radius-overlay);
   }
-  .modal.plugin-authorization h2 {
-    margin: 0;
-    font-size: var(--heading-xs-font-size);
-    line-height: var(--heading-xs-line-height);
-    font-weight: var(--heading-xs-font-weight);
-    letter-spacing: var(--heading-xs-letter-spacing);
+  .plugin-authorization .ui-modal-body {
+    overflow: hidden;
   }
   .plugin-authorization-content {
     display: flex;
@@ -22,7 +13,6 @@
     flex: 1;
     min-height: 0;
     overflow-y: auto;
-    padding: 24px;
   }
   .plugin-authorization-content:focus-visible,
   .connector-feedback:focus-visible {

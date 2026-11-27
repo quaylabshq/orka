@@ -5,14 +5,12 @@ import {
   GlobeIcon,
   MessagesSquareIcon,
   ScrollTextIcon,
-  XIcon,
 } from "lucide-react";
 import React, { useEffect, useRef, useState } from "react";
 import { invoke } from "./product-command.js";
 import type { ProjectResource } from "../types.js";
 import { Button } from "./button.js";
 import { Icon } from "./icon.js";
-import { IconButton } from "./icon-button.js";
 import { Modal } from "./modal.js";
 import { TextField } from "./text-field.js";
 
@@ -150,25 +148,67 @@ export function ArtifactLinkDialog({
   };
   return (
     <Modal
-      legacyFrame
       title="Manage public link"
       className="artifact-link-dialog"
+      closeDisabled={busy}
+      footer={
+        <>
+          {!stale && link?.active && (
+            <Button
+              size="sm"
+              variant={url ? "tertiary" : "secondary"}
+              disabled={busy}
+              onClick={() => void changeLink("revoke-public-link")}
+            >
+              Revoke link
+            </Button>
+          )}
+          {url ? (
+            <Button size="sm" disabled={busy} onClick={onClose}>
+              Done
+            </Button>
+          ) : (
+            <>
+              {(stale || !link?.active) && (
+                <Button
+                  size="sm"
+                  variant="tertiary"
+                  disabled={busy}
+                  onClick={onClose}
+                >
+                  Cancel
+                </Button>
+              )}
+              {!stale && link && (
+                <Button
+                  size="sm"
+                  variant="primary"
+                  disabled={busy}
+                  onClick={() => void changeLink("create-public-link")}
+                >
+                  {link.active ? "Replace link" : "Create public link"}
+                </Button>
+              )}
+              {!stale && !link && error && (
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    setError("");
+                    setAttempt((value) => value + 1);
+                  }}
+                >
+                  Check link status
+                </Button>
+              )}
+            </>
+          )}
+        </>
+      }
       onClose={() => {
         if (!busy) onClose();
       }}
       onCloseAutoFocus={onCloseAutoFocus}
     >
-      <div className="artifact-link-heading">
-        <h2>Manage public link</h2>
-        <IconButton
-          icon={XIcon}
-          size="sm"
-          variant="tertiary"
-          aria-label="Close"
-          disabled={busy}
-          onClick={onClose}
-        />
-      </div>
       <section className="artifact-link-item" aria-label="Shared snapshot">
         <span className="artifact-link-item-icon">
           <Icon icon={item.icon} size="md" variant="secondary" />
@@ -229,49 +269,6 @@ export function ArtifactLinkDialog({
                 : notice ||
                   (url && !error ? "Copy this link before closing." : "")}
         </p>
-      </div>
-      <div className="artifact-link-actions">
-        {!stale && link?.active && (
-          <Button
-            variant={url ? "tertiary" : "secondary"}
-            disabled={busy}
-            onClick={() => void changeLink("revoke-public-link")}
-          >
-            Revoke link
-          </Button>
-        )}
-        {url ? (
-          <Button disabled={busy} onClick={onClose}>
-            Done
-          </Button>
-        ) : (
-          <>
-            {(stale || !link?.active) && (
-              <Button variant="tertiary" disabled={busy} onClick={onClose}>
-                Cancel
-              </Button>
-            )}
-            {!stale && link && (
-              <Button
-                variant="primary"
-                disabled={busy}
-                onClick={() => void changeLink("create-public-link")}
-              >
-                {link.active ? "Replace link" : "Create public link"}
-              </Button>
-            )}
-            {!stale && !link && error && (
-              <Button
-                onClick={() => {
-                  setError("");
-                  setAttempt((value) => value + 1);
-                }}
-              >
-                Check link status
-              </Button>
-            )}
-          </>
-        )}
       </div>
     </Modal>
   );

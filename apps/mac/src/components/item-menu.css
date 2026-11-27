@@ -77,30 +77,14 @@
   margin-right: auto;
 }
 
-.modal.toast-host-modal.artifact-link-dialog {
-  display: grid;
+.artifact-link-dialog .ui-modal-body {
   gap: 16px;
-  padding: 24px;
-  border-radius: var(--radius-overlay);
 }
 
-.artifact-link-heading,
 .artifact-link-item {
   display: flex;
   align-items: center;
   gap: 12px;
-}
-
-.artifact-link-heading {
-  justify-content: space-between;
-}
-
-.artifact-link-dialog .artifact-link-heading h2 {
-  margin: 0;
-  font-size: var(--heading-xs-font-size);
-  font-weight: var(--heading-xs-font-weight);
-  line-height: var(--heading-xs-line-height);
-  letter-spacing: var(--heading-xs-letter-spacing);
 }
 
 .artifact-link-item {
@@ -166,8 +150,7 @@
   line-height: var(--label-xs-line-height);
 }
 
-.artifact-link-address,
-.artifact-link-actions {
+.artifact-link-address {
   display: flex;
   gap: 8px;
 }
@@ -182,12 +165,6 @@
 
 .artifact-link-address button {
   flex-shrink: 0;
-}
-
-.artifact-link-actions {
-  justify-content: flex-end;
-  border-top: 1px solid var(--border-default);
-  padding-top: 12px;
 }
 
 .artifact-link-dialog p[role="alert"] {

@@ -1353,26 +1353,11 @@
   .modal.session-launch-dialog .session-launch-alert {
     color: var(--red-text);
   }
-  .modal.create-project-modal {
-    @apply w-[520px] overflow-hidden border-0 p-6;
-    border-radius: var(--radius-overlay);
-    background: var(--surface-secondary);
-  }
   .create-project-form {
     @apply flex flex-col;
-    max-height: calc(90vh - 48px);
-  }
-  .create-project-fields {
-    @apply -m-1 min-h-0 overflow-y-auto p-1;
   }
   .create-project-fields .ui-field__support p {
     @apply m-0;
-  }
-  .create-project-heading {
-    @apply mb-4 flex shrink-0 items-center justify-between gap-4;
-  }
-  .create-project-heading h2 {
-    @apply m-0 min-w-0 truncate text-heading-xs;
   }
   .source-folders-heading {
     @apply mb-2 mt-3 flex items-center justify-between gap-3;
@@ -1398,14 +1383,11 @@
   .change-source-folder {
     @apply w-full justify-start rounded-none;
   }
-  .create-project-footer .create-project-status {
+  .modal.ui-modal .create-project-status {
     @apply m-0 min-w-0 flex-1 text-body-xs text-secondary;
   }
   .setup-error.create-project-connection-error {
     @apply mt-2 max-h-24 shrink-0 overflow-y-auto;
-  }
-  .create-project-footer {
-    @apply mt-4 flex shrink-0 items-center justify-end gap-4;
   }
   .project-sharing {
     @apply mt-4 min-w-0 border-0 p-0;
@@ -1468,9 +1450,6 @@
   }
   .project-sharing .project-sharing-summary {
     @apply mb-0 mt-2;
-  }
-  .create-project-footer .ui-button--primary {
-    border-radius: var(--radius-control);
   }
   .create-project-submit {
     min-inline-size: 10rem;
