@@ -1346,39 +1346,18 @@
   .modal .actions {
     @apply justify-end;
   }
-  .session-launch-heading {
-    @apply mb-2 flex items-center justify-between gap-3;
-  }
-  .modal.session-launch-dialog .session-launch-heading h2 {
-    @apply m-0 text-heading-xs;
-  }
-  .modal.session-launch-dialog .session-launch-title {
-    @apply mb-6 line-clamp-2 text-body-sm;
-    overflow-wrap: anywhere;
+  .modal.ui-modal.session-launch-dialog .session-launch-title {
+    @apply line-clamp-2;
+    color: var(--text-primary);
   }
   .modal.session-launch-dialog .session-launch-alert {
     color: var(--red-text);
   }
-  .modal.create-project-modal {
-    @apply w-[520px] overflow-hidden border-0 p-6;
-    border-radius: var(--radius-overlay);
-    background: var(--surface-secondary);
-  }
   .create-project-form {
     @apply flex flex-col;
-    max-height: calc(90vh - 48px);
-  }
-  .create-project-fields {
-    @apply -m-1 min-h-0 overflow-y-auto p-1;
   }
   .create-project-fields .ui-field__support p {
     @apply m-0;
-  }
-  .create-project-heading {
-    @apply mb-4 flex shrink-0 items-center justify-between gap-4;
-  }
-  .create-project-heading h2 {
-    @apply m-0 min-w-0 truncate text-heading-xs;
   }
   .source-folders-heading {
     @apply mb-2 mt-3 flex items-center justify-between gap-3;
@@ -1404,14 +1383,11 @@
   .change-source-folder {
     @apply w-full justify-start rounded-none;
   }
-  .create-project-footer .create-project-status {
+  .modal.ui-modal .create-project-status {
     @apply m-0 min-w-0 flex-1 text-body-xs text-secondary;
   }
   .setup-error.create-project-connection-error {
     @apply mt-2 max-h-24 shrink-0 overflow-y-auto;
-  }
-  .create-project-footer {
-    @apply mt-4 flex shrink-0 items-center justify-end gap-4;
   }
   .project-sharing {
     @apply mt-4 min-w-0 border-0 p-0;
@@ -1474,9 +1450,6 @@
   }
   .project-sharing .project-sharing-summary {
     @apply mb-0 mt-2;
-  }
-  .create-project-footer .ui-button--primary {
-    border-radius: var(--radius-control);
   }
   .create-project-submit {
     min-inline-size: 10rem;
@@ -1615,16 +1588,6 @@
   }
 }
 
-.modal.governance-dialog {
-  display: flex;
-  flex-direction: column;
-  width: min(870px, calc(100vw - 48px));
-  max-width: 870px;
-  padding: 0;
-  overflow: hidden;
-  background: var(--surface-secondary);
-  border-radius: var(--radius-overlay);
-}
 .governance-dialog section,
 .governance-dialog form {
   display: grid;
@@ -1643,10 +1606,6 @@
   border-radius: var(--radius-control);
   padding: 8px;
 }
-.governance-dialog .review-header h2 {
-  @apply text-heading-xs;
-  margin: 0;
-}
 .governance-dialog .changes-review-body {
   display: flex;
   flex-direction: column;
@@ -1661,7 +1620,7 @@
 .governance-dialog .changes-review-body > p {
   margin: 0;
 }
-.governance-dialog .review-footer > p {
+.governance-dialog .ui-modal-footer > p {
   margin: 0;
   margin-right: auto;
 }
@@ -1699,19 +1658,15 @@
   max-height: 360px;
   overflow: auto;
 }
-.modal.changes-review-modal {
-  display: flex;
-  flex-direction: column;
-  width: min(960px, calc(100vw - 48px));
+/* The review body keeps its own padding and scrolls between header and footer. */
+.changes-review-modal .ui-modal-body {
   padding: 0;
-  overflow: hidden;
-  background: var(--surface-secondary);
 }
 .changes-review-body {
   display: grid;
   gap: 16px;
   min-height: 0;
-  padding: 24px;
+  padding: 16px 20px;
   overflow-y: auto;
 }
 .changes-review-body h3,
@@ -1725,7 +1680,10 @@
   max-height: none;
   overflow: visible;
 }
-.changes-review-modal .review-footer {
+.governance-files .diff-lines pre.content {
+  overflow-wrap: anywhere;
+}
+.changes-review-modal .ui-modal-footer {
   flex-wrap: wrap;
 }
 

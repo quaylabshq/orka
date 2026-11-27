@@ -11,7 +11,10 @@ import { useQuery } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import type { SessionConflict } from "@portable/protocol";
 import type { WorkspaceResource as Resource } from "../types.js";
-import type { Inspection } from "../types.js";
+import type { Inspection, SessionSnapshotSelection } from "../types.js";
+
+/** The comparison to select when opening a resource reader. */
+export type ResourceComparison = "changes" | { conflictId: string };
 
 export interface ResourceView {
   /** The inspected file: SKILL.md for skills, session.jsonl for sessions, otherwise the first file. */
@@ -23,6 +26,11 @@ export interface ResourceView {
   /** The conflict version being read; empty for the shared version. */
   preview: string;
   setPreview: Dispatch<SetStateAction<string>>;
+  /** The preserved side displayed during a session conflict. */
+  sessionVersion?: Resource;
+  sessionContentKey: string;
+  /** Undefined for a live reader, null for a deleted comparison side. */
+  sessionSelection?: SessionSnapshotSelection | null;
   fullTranscript: boolean;
   setFullTranscript: Dispatch<SetStateAction<boolean>>;
   /** Literal line diff against the previous revision. */
@@ -82,7 +90,35 @@ export function useResourceView(
   useEffect(() => {
     if (preview && !conflicts.some((c) => c.id === preview)) setPreview("");
   }, [conflicts, preview]);
-  const conflict = conflicts.find((item) => item.id === preview);
+  const sessionConflicts = conflicts.filter(
+    (item) =>
+      item.resourceId === id &&
+      item.candidate.projectId === resource?.projectId,
+  );
+  const conflict = sessionConflicts.find((item) => item.id === preview);
+  const sessionVersion =
+    kind === "session" && sessionConflicts.length
+      ? (conflict?.candidate ?? resource)
+      : undefined;
+  const sessionSelection = !sessionVersion
+    ? undefined
+    : sessionVersion.deleted
+      ? null
+      : {
+          conflictId: conflict?.id,
+          reviewed: {
+            projectId: sessionVersion.projectId,
+            resourceId: sessionVersion.resourceId,
+            source: sessionVersion.source,
+            files: sessionVersion.files.map(({ path, hash }) => ({
+              path,
+              hash,
+            })),
+          },
+        };
+  const sessionContentKey =
+    (sessionVersion ?? resource)?.files.map((item) => item.hash).join(":") ??
+    "";
   const enabled = Boolean(
     selection === selectionKey &&
     id &&
@@ -98,6 +134,7 @@ export function useResourceView(
       resource?.projectId,
       id,
       resource?.revision,
+      Boolean(sessionVersion),
       file,
       resource?.files.find((item) => item.path === file)?.hash,
       preview,
@@ -182,6 +219,11 @@ export function useResourceView(
     },
     preview,
     setPreview,
+    sessionVersion,
+    sessionSelection,
+    sessionContentKey: sessionVersion
+      ? `shared:${sessionContentKey}`
+      : sessionContentKey,
     fullTranscript,
     setFullTranscript,
     changes,

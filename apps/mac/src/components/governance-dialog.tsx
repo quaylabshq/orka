@@ -1,4 +1,3 @@
-import { XIcon } from "lucide-react";
 import { sourcePath } from "./project-sources.js";
 import { ENV_ENABLED } from "../lib/features.js";
 import React, {
@@ -11,10 +10,9 @@ import React, {
 } from "react";
 import { useToastNotice } from "./toasts.js";
 import type { Project, Snapshot } from "../types.js";
-import { Overlay } from "./overlay.js";
+import { Modal } from "./modal.js";
 import { handleReviewTab } from "./review-focus.js";
 import { Button } from "./button.js";
-import { IconButton } from "./icon-button.js";
 import {
   governanceCall,
   type GovernanceCatalog as Catalog,
@@ -165,8 +163,7 @@ export function GovernanceDialog({
   const previewStale = stale || (preview && previewSignature !== signature);
   const title = initialEnv ? "Replace ENV set" : "Review local update";
   return (
-    <Overlay
-      open
+    <Modal
       onClose={() => {
         if (!busy) onClose();
       }}
@@ -176,18 +173,73 @@ export function GovernanceDialog({
         if (busy) event.preventDefault();
       }}
       onKeyDownCapture={handleReviewTab}
+      size="wide"
+      closeLabel={`Close ${title.toLowerCase()}`}
+      closeDisabled={busy}
+      footer={
+        <>
+          {preview?.dirty && (
+            <p id={preservationId} className="review-footer-note">
+              Your local edits will be saved privately on this Mac before{" "}
+              {removal ? "removal" : "installation"}.
+            </p>
+          )}
+          <Button
+            size="sm"
+            variant="tertiary"
+            disabled={busy}
+            onClick={onClose}
+          >
+            Cancel
+          </Button>
+          {preview &&
+            !loading &&
+            (previewStale ? (
+              <Button
+                size="sm"
+                variant="primary"
+                disabled={busy}
+                onClick={() => void load()}
+              >
+                Review latest
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                variant="primary"
+                disabled={busy}
+                aria-busy={busy}
+                aria-describedby={preview.dirty ? preservationId : undefined}
+                onClick={() =>
+                  void (async () => {
+                    const installed = await run(async () => {
+                      await call("apply-install", {
+                        resourceId: selectedResource,
+                        token: preview.token,
+                        preserveLocal: true,
+                      });
+                      setMessage(
+                        removal
+                          ? "Reviewed version removed"
+                          : "Reviewed update installed",
+                      );
+                    });
+                    if (installed) onClose();
+                  })()
+                }
+              >
+                {removal
+                  ? preview.dirty
+                    ? "Keep edits and remove"
+                    : "Remove from this Mac"
+                  : preview.dirty
+                    ? "Keep edits and install"
+                    : "Install update"}
+              </Button>
+            ))}
+        </>
+      }
     >
-      <header className="review-header">
-        <h2>{title}</h2>
-        <IconButton
-          icon={XIcon}
-          aria-label={`Close ${title.toLowerCase()}`}
-          disabled={busy}
-          onClick={onClose}
-          variant="tertiary"
-          size="sm"
-        />
-      </header>
       <div className="changes-review-body">
         <h3>{displayText(selected?.title ?? "Shared item")}</h3>
         {error && <p role="alert">{error}</p>}
@@ -300,60 +352,6 @@ export function GovernanceDialog({
           </>
         )}
       </div>
-      <footer className="review-footer">
-        {preview?.dirty && (
-          <p id={preservationId} className="review-footer-note">
-            Your local edits will be saved privately on this Mac before{" "}
-            {removal ? "removal" : "installation"}.
-          </p>
-        )}
-        <Button variant="tertiary" disabled={busy} onClick={onClose}>
-          Cancel
-        </Button>
-        {preview &&
-          !loading &&
-          (previewStale ? (
-            <Button
-              variant="primary"
-              disabled={busy}
-              onClick={() => void load()}
-            >
-              Review latest
-            </Button>
-          ) : (
-            <Button
-              variant="primary"
-              disabled={busy}
-              aria-busy={busy}
-              aria-describedby={preview.dirty ? preservationId : undefined}
-              onClick={() =>
-                void (async () => {
-                  const installed = await run(async () => {
-                    await call("apply-install", {
-                      resourceId: selectedResource,
-                      token: preview.token,
-                      preserveLocal: true,
-                    });
-                    setMessage(
-                      removal
-                        ? "Reviewed version removed"
-                        : "Reviewed update installed",
-                    );
-                  });
-                  if (installed) onClose();
-                })()
-              }
-            >
-              {removal
-                ? preview.dirty
-                  ? "Keep edits and remove"
-                  : "Remove from this Mac"
-                : preview.dirty
-                  ? "Keep edits and install"
-                  : "Install update"}
-            </Button>
-          ))}
-      </footer>
-    </Overlay>
+    </Modal>
   );
 }

@@ -84,16 +84,8 @@
   .repository-job-feedback {
     @apply m-0 px-4 pb-4 text-body-xs text-muted;
   }
-  .repository-dialog {
-    @apply flex flex-col gap-5 overflow-y-auto p-6;
-    width: min(520px, calc(100vw - 32px));
-    max-height: calc(100vh - 48px);
-  }
-  .repository-dialog-heading {
-    @apply flex items-center justify-between gap-3;
-  }
-  .repository-dialog .repository-dialog-heading h2 {
-    @apply m-0 text-heading-xs;
+  .repository-dialog .ui-modal-body {
+    @apply gap-4;
   }
   .repository-dialog.modal p {
     @apply m-0 text-body-xs text-muted;
@@ -104,9 +96,6 @@
   }
   .repository-picker-field {
     @apply flex min-w-0 flex-col gap-2 text-label-xs;
-  }
-  .repository-dialog-footer {
-    @apply flex items-center justify-end gap-3 border-t border-line pt-4;
   }
   .repository-location {
     @apply flex flex-col gap-2;
@@ -130,6 +119,7 @@
     @apply text-heading-md tracking-widest;
   }
   .repository-local-option {
+    margin-right: auto;
     outline: 1px solid var(--border-default);
     outline-offset: -1px;
   }
@@ -351,16 +341,12 @@
   .settings-update-notes-content p {
     white-space: pre-wrap;
   }
-  .settings-updates-dialog {
-    width: min(600px, calc(100vw - 32px));
-    max-height: calc(100vh - 48px);
+  /* The standalone Modal already names this panel in its title row. */
+  .settings-updates-dialog .settings-heading h2 {
+    display: none;
   }
   .settings-updates-dialog .settings-panel {
-    @apply p-6;
-    max-height: calc(100vh - 48px);
-  }
-  .settings-updates-dialog .settings-panel > .ui-button {
-    @apply self-end;
+    @apply overflow-visible p-0;
   }
   .settings-project-name {
     @apply flex min-w-0 items-start gap-2.5;
@@ -471,33 +457,28 @@
   .settings-project-row p {
     @apply mt-1 text-body-xs;
   }
+  /* Confirmations open over the Settings window. */
   .settings-confirm {
-    @apply z-40 w-[480px];
+    @apply z-40;
   }
-  .settings-confirm h2,
+  .settings-confirm-member {
+    @apply grid gap-1;
+    overflow-wrap: anywhere;
+  }
+  .settings-confirm-member h3 {
+    @apply m-0 text-label-sm;
+  }
+  .modal .settings-confirm-member p {
+    @apply m-0 text-body-xs text-secondary;
+  }
   .modal.settings-migration h2 {
     @apply m-0 text-heading-xs;
   }
-  .settings-confirm p,
   .modal.settings-migration p {
     @apply text-body-sm text-secondary;
   }
-  .settings-confirm p {
-    overflow-wrap: anywhere;
-  }
   .settings-confirm-actions {
     @apply flex flex-wrap justify-end gap-2;
-  }
-  .modal.project-lifecycle-confirm {
-    @apply flex flex-col gap-5 border-0 p-6;
-    border-radius: var(--radius-overlay);
-    background: var(--surface-secondary);
-  }
-  .modal.project-lifecycle-confirm p {
-    @apply m-0 text-body-sm text-secondary;
-  }
-  .modal.project-lifecycle-confirm h2 {
-    @apply m-0;
   }
   .modal.project-lifecycle-confirm .ui-field__support p {
     @apply text-body-xs text-muted;
@@ -511,9 +492,6 @@
   }
   .modal.project-lifecycle-confirm .project-lifecycle-policy {
     @apply border-l border-strong pl-3 text-muted;
-  }
-  .project-lifecycle-confirm .settings-confirm-actions {
-    @apply mt-1 border-t border-line pt-5;
   }
   .project-lifecycle-danger {
     color: var(--red-text);
@@ -773,14 +751,9 @@
   .settings-panel .project-sharing-choice--switch .ui-switch-control {
     @apply order-1;
   }
-  .modal.settings-migration {
-    @apply flex max-h-[85vh] w-[850px] flex-col gap-5 overflow-y-auto;
-  }
-  .modal.settings-migration--permissions {
-    @apply overflow-hidden p-6;
-  }
-  .settings-migration--permissions > h2 {
-    @apply shrink-0;
+  /* The comparison scrolls in its own region; the title and actions stay. */
+  .settings-migration--permissions .ui-modal-body {
+    @apply overflow-hidden;
   }
   .modal.settings-migration--permissions p {
     @apply m-0 text-body-sm;
@@ -788,14 +761,8 @@
   .settings-migration-body {
     @apply flex min-h-0 flex-col gap-4 overflow-auto;
   }
-  .settings-migration-body table {
-    min-width: 640px;
-  }
-  .settings-migration-footer {
-    @apply flex shrink-0 flex-col gap-4 border-t border-line pt-4;
-  }
-  .settings-migration-footer .settings-check {
-    @apply m-0 flex-row;
+  .settings-migration-ack {
+    @apply m-0 shrink-0 flex-row;
   }
   .settings-migration-line {
     @apply block;

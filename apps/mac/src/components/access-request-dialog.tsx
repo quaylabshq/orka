@@ -1,10 +1,9 @@
-import { ArrowRightIcon, XIcon } from "lucide-react";
+import { ArrowRightIcon } from "lucide-react";
 import React, { useState } from "react";
 import type { ReviewRequest } from "@portable/protocol";
 import { ActivityIndicator } from "./activity-indicator.js";
 import { Button } from "./button.js";
-import { IconButton } from "./icon-button.js";
-import { Overlay } from "./overlay.js";
+import { Modal } from "./modal.js";
 import {
   accessNames,
   memberRule,
@@ -77,10 +76,37 @@ export function AccessRequestDialog({
       .finally(() => setDeciding(null));
   };
   return (
-    <Overlay
-      open
+    <Modal
       title={heading}
+      size="compact"
       className="settings-confirm access-request-dialog"
+      closeDisabled={deciding !== null}
+      footer={
+        canDecide && (
+          <>
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={deciding !== null}
+              aria-busy={deciding === "reject"}
+              onClick={() => decide("reject")}
+            >
+              {deciding === "reject" && <ActivityIndicator />}
+              Reject
+            </Button>
+            <Button
+              size="sm"
+              variant="primary"
+              disabled={deciding !== null}
+              aria-busy={deciding === "approve"}
+              onClick={() => decide("approve")}
+            >
+              {deciding === "approve" && <ActivityIndicator />}
+              Approve
+            </Button>
+          </>
+        )
+      }
       onClose={() => {
         if (!deciding) onClose();
       }}
@@ -89,18 +115,6 @@ export function AccessRequestDialog({
       }}
       onCloseAutoFocus={onCloseAutoFocus}
     >
-      <div className="access-request-header">
-        <h2>{heading}</h2>
-        <IconButton
-          icon={XIcon}
-          size="sm"
-          variant="tertiary"
-          aria-label="Close"
-          title="Close"
-          disabled={deciding !== null}
-          onClick={onClose}
-        />
-      </div>
       <p>
         {accessSentence({
           name: author,
@@ -134,28 +148,6 @@ export function AccessRequestDialog({
           {decisionError}
         </p>
       )}
-      {canDecide && (
-        <div className="settings-confirm-actions">
-          <Button
-            variant="secondary"
-            disabled={deciding !== null}
-            aria-busy={deciding === "reject"}
-            onClick={() => decide("reject")}
-          >
-            {deciding === "reject" && <ActivityIndicator />}
-            Reject
-          </Button>
-          <Button
-            variant="primary"
-            disabled={deciding !== null}
-            aria-busy={deciding === "approve"}
-            onClick={() => decide("approve")}
-          >
-            {deciding === "approve" && <ActivityIndicator />}
-            Approve
-          </Button>
-        </div>
-      )}
-    </Overlay>
+    </Modal>
   );
 }

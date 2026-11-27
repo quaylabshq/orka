@@ -13,11 +13,15 @@ import {
   SquareTerminalIcon,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
-import type { Project, ProjectResource } from "../types.js";
+import type {
+  Project,
+  ProjectResource,
+  SessionSnapshotSelection,
+} from "../types.js";
 import { Button } from "./button.js";
 import { Icon } from "./icon.js";
 import { IconButton } from "./icon-button.js";
-import { Overlay } from "./overlay.js";
+import { Modal } from "./modal.js";
 import { Textarea } from "./textarea.js";
 import { CopyLinkButton } from "./copy-link-button.js";
 import { ActionPopover } from "./resource-actions.js";
@@ -64,6 +68,7 @@ export function SessionLauncher({
   scope,
   busy,
   actions,
+  sessionSelection,
   onError,
 }: {
   resource: ProjectResource;
@@ -71,6 +76,7 @@ export function SessionLauncher({
   scope: string;
   busy: boolean;
   actions: ResourceActionHandlers;
+  sessionSelection?: SessionSnapshotSelection | null;
   onError: (message: string) => void;
 }) {
   const tool = sessionTool(resource.source);
@@ -363,29 +369,33 @@ export function SessionLauncher({
           {!current?.error && (
             <div role="separator" className="session-launcher-separator" />
           )}
-          <CopyLinkButton
-            value={key}
-            label="Copy session prompt"
-            usageEvent="session_prompt_copied"
-            errorTitle="Couldn’t copy session prompt"
-            loadValue={actions.sessionPrompt}
-            icon={CopyIcon}
-            variant="tertiary"
-            role="menuitem"
-            disabled={busy}
-            onError={(message) =>
-              setCopyFailure(message ? { key, message } : null)
-            }
-          />
-          <Button
-            variant="tertiary"
-            size="sm"
-            role="menuitem"
-            disabled={busy}
-            onClick={() => void actions.exportZip()}
-          >
-            <Icon icon={DownloadIcon} /> Download session (.zip)…
-          </Button>
+          {sessionSelection !== null && (
+            <CopyLinkButton
+              value={JSON.stringify([key, sessionSelection])}
+              label="Copy session prompt"
+              usageEvent="session_prompt_copied"
+              errorTitle="Couldn’t copy session prompt"
+              loadValue={actions.sessionPrompt}
+              icon={CopyIcon}
+              variant="tertiary"
+              role="menuitem"
+              disabled={busy}
+              onError={(message) =>
+                setCopyFailure(message ? { key, message } : null)
+              }
+            />
+          )}
+          {sessionSelection !== null && (
+            <Button
+              variant="tertiary"
+              size="sm"
+              role="menuitem"
+              disabled={busy}
+              onClick={() => void actions.exportZip(sessionSelection)}
+            >
+              <Icon icon={DownloadIcon} /> Download session (.zip)…
+            </Button>
+          )}
         </div>
         {copyFailure?.key === key && (
           <p
@@ -414,13 +424,25 @@ export function SessionLauncher({
         )}
       </ActionPopover>
       {actions.manualCommand && (
-        <Overlay
-          open
+        <Modal
           title={`Continue in ${actions.manualDestination}`}
+          size="wide"
+          closeLabel="Close resume command"
           onClose={actions.dismissManualCommand}
           dismissOnBackdrop
+          footer={
+            <>
+              <Button onClick={actions.dismissManualCommand}>Close</Button>
+              <CopyLinkButton
+                label="Copy command"
+                usageEvent="session_command_copied"
+                errorTitle="Couldn’t copy command"
+                value={actions.manualCommand}
+                onError={onError}
+              />
+            </>
+          }
         >
-          <h2>Continue in {actions.manualDestination}</h2>
           <p>
             {actions.manualDestination} hasn’t confirmed startup. If the session
             isn’t already open, copy this command and run it there to continue.
@@ -433,17 +455,7 @@ export function SessionLauncher({
             value={actions.manualCommand}
             rows={5}
           />
-          <div className="actions">
-            <Button onClick={actions.dismissManualCommand}>Close</Button>
-            <CopyLinkButton
-              label="Copy command"
-              usageEvent="session_command_copied"
-              errorTitle="Couldn’t copy command"
-              value={actions.manualCommand}
-              onError={onError}
-            />
-          </div>
-        </Overlay>
+        </Modal>
       )}
     </div>
   );

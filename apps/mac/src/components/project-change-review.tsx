@@ -1,11 +1,9 @@
-import { XIcon } from "lucide-react";
 import React from "react";
 import type { Resource } from "@portable/protocol";
 import type { LocalDraft } from "../types.js";
 import { Button } from "./button.js";
 import { FileReview } from "./file-review.js";
-import { IconButton } from "./icon-button.js";
-import { Overlay } from "./overlay.js";
+import { Modal } from "./modal.js";
 import { displayText } from "./resource-presentation.js";
 import { handleReviewTab } from "./review-focus.js";
 import type { FileManifestEntry } from "./diff-model.js";
@@ -45,8 +43,7 @@ export function ProjectChangeReview({
       ? "Shared version"
       : "Not shared";
   return (
-    <Overlay
-      open
+    <Modal
       title="Review changes"
       className="changes-review-modal"
       onClose={() => {
@@ -56,27 +53,45 @@ export function ProjectChangeReview({
         if (busy) event.preventDefault();
       }}
       onKeyDownCapture={handleReviewTab}
+      size="wide"
+      closeLabel="Close review changes"
+      closeDisabled={busy}
+      footer={
+        <>
+          {["stale", "rejected"].includes(draft.status) && (
+            <Button size="sm" disabled={busy} onClick={() => void onRefresh()}>
+              Review latest and retry
+            </Button>
+          )}
+          <Button
+            size="sm"
+            variant="tertiary"
+            disabled={busy}
+            onClick={onClose}
+          >
+            Cancel
+          </Button>
+          <Button
+            size="sm"
+            variant="primary"
+            disabled={
+              busy || draft.status !== "local" || detail.sourceUnavailable
+            }
+            aria-busy={busy}
+            onClick={() => void onSubmit()}
+          >
+            {detail.canPublish ? "Publish update" : "Send for approval"}
+          </Button>
+        </>
+      }
     >
-      <header className="review-header">
-        <div className="review-heading">
-          <h2>Review changes</h2>
-          <div className="review-versions" aria-label="Compared versions">
-            <span className="version-pill">{sharedVersion}</span>
-            <span aria-hidden="true">to</span>
-            <span className="sr-only">compared with</span>
-            <span className="version-pill">This Mac</span>
-          </div>
-        </div>
-        <IconButton
-          icon={XIcon}
-          size="sm"
-          variant="tertiary"
-          aria-label="Close review changes"
-          disabled={busy}
-          onClick={onClose}
-        />
-      </header>
       <div className="changes-review-body">
+        <div className="review-versions" aria-label="Compared versions">
+          <span className="version-pill">{sharedVersion}</span>
+          <span aria-hidden="true">to</span>
+          <span className="sr-only">compared with</span>
+          <span className="version-pill">This Mac</span>
+        </div>
         <h3>{displayText(resource.title)}</h3>
         <p>
           Scope: {resource.memory?.scope || "Project"} · Provider:{" "}
@@ -118,26 +133,6 @@ export function ProjectChangeReview({
           </section>
         )}
       </div>
-      <footer className="review-footer">
-        {["stale", "rejected"].includes(draft.status) && (
-          <Button disabled={busy} onClick={() => void onRefresh()}>
-            Review latest and retry
-          </Button>
-        )}
-        <Button variant="tertiary" disabled={busy} onClick={onClose}>
-          Cancel
-        </Button>
-        <Button
-          variant="primary"
-          disabled={
-            busy || draft.status !== "local" || detail.sourceUnavailable
-          }
-          aria-busy={busy}
-          onClick={() => void onSubmit()}
-        >
-          {detail.canPublish ? "Publish update" : "Send for approval"}
-        </Button>
-      </footer>
-    </Overlay>
+    </Modal>
   );
 }

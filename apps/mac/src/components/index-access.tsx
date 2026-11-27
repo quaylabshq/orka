@@ -1,9 +1,8 @@
-import { InfoIcon, XIcon } from "lucide-react";
+import { InfoIcon } from "lucide-react";
 import React, { useRef, useState } from "react";
 import * as Popover from "@radix-ui/react-popover";
-import { IconButton } from "./icon-button.js";
 import type { IconGlyph } from "./icons.js";
-import { Overlay } from "./overlay.js";
+import { Modal } from "./modal.js";
 
 /** One warning leads to the folder and permission actions for this project. */
 export function IndexAccessDialog({
@@ -33,10 +32,11 @@ export function IndexAccessDialog({
         <InfoIcon size={12} aria-hidden="true" />
       </button>
       {open && (
-        <Overlay
-          open
+        <Modal
           title="Project access"
           className="index-access-dialog"
+          closeLabel="Close project access"
+          closeDisabled={busy}
           onClose={() => {
             if (!busy) setOpen(false);
           }}
@@ -45,19 +45,8 @@ export function IndexAccessDialog({
             trigger.current?.focus();
           }}
         >
-          <div className="index-access-dialog-header">
-            <h2>Project access</h2>
-            <IconButton
-              icon={XIcon}
-              aria-label="Close project access"
-              variant="tertiary"
-              size="sm"
-              disabled={busy}
-              onClick={() => setOpen(false)}
-            />
-          </div>
           {children}
-        </Overlay>
+        </Modal>
       )}
     </>
   );

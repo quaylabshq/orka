@@ -4,7 +4,7 @@ import { save } from "@tauri-apps/plugin-dialog";
 import { DownloadIcon, FolderIcon, PauseIcon } from "lucide-react";
 import type { Project } from "../types.js";
 import { Button } from "./button.js";
-import { Overlay } from "./overlay.js";
+import { Modal } from "./modal.js";
 import { Icon } from "./icon.js";
 import { ActivityIndicator } from "./activity-indicator.js";
 import { projectLabel } from "./project-navigation.js";
@@ -119,15 +119,36 @@ export function InactiveProject({
         )}
       </div>
       {confirming && (
-        <Overlay
-          open
+        <Modal
           title="Remove from this Mac?"
           className="settings-confirm project-lifecycle-confirm"
           onClose={() => {
             if (!busy && !removing) setConfirming(false);
           }}
+          size="compact"
+          closeDisabled={busy || removing}
+          footer={
+            <>
+              <Button
+                size="sm"
+                disabled={busy || removing}
+                onClick={() => setConfirming(false)}
+              >
+                Keep it
+              </Button>
+              <Button
+                size="sm"
+                className="project-lifecycle-danger"
+                aria-busy={removing}
+                disabled={busy || removing}
+                onClick={() => void removeProject()}
+              >
+                {removing && <ActivityIndicator />}
+                Remove
+              </Button>
+            </>
+          }
         >
-          <h2>Remove from this Mac?</h2>
           <div className="project-lifecycle-target">
             <Icon icon={FolderIcon} variant="tertiary" />
             <span>{name}</span>
@@ -138,24 +159,7 @@ export function InactiveProject({
               {removalError}
             </p>
           )}
-          <div className="settings-confirm-actions">
-            <Button
-              disabled={busy || removing}
-              onClick={() => setConfirming(false)}
-            >
-              Keep it
-            </Button>
-            <Button
-              className="project-lifecycle-danger"
-              aria-busy={removing}
-              disabled={busy || removing}
-              onClick={() => void removeProject()}
-            >
-              {removing && <ActivityIndicator />}
-              Remove
-            </Button>
-          </div>
-        </Overlay>
+        </Modal>
       )}
     </section>
   );

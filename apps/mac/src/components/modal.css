@@ -1,0 +1,115 @@
+/* The Share dialog frame, shared by every centered dialog. */
+.modal.toast-host-modal.ui-modal {
+  display: flex;
+  max-height: calc(100vh - 48px);
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0;
+  border-radius: var(--radius-overlay);
+}
+
+.modal.ui-modal--compact {
+  width: min(340px, calc(100vw - 48px));
+}
+
+.modal.ui-modal--default {
+  width: min(390px, calc(100vw - 48px));
+}
+
+.modal.ui-modal--wide {
+  width: min(640px, calc(100vw - 48px));
+}
+
+.ui-modal-header {
+  display: flex;
+  flex: 0 0 48px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 12px 0 20px;
+  border-bottom: 1px solid var(--border-default);
+}
+
+/* Without a close button the title keeps the same inset on both sides. */
+.ui-modal-header:has(> h2:only-child) {
+  padding-right: 20px;
+}
+
+.modal.ui-modal .ui-modal-header > h2 {
+  overflow: hidden;
+  margin: 0;
+  color: var(--text-primary);
+  font-size: var(--body-md-font-size);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--body-md-line-height);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ui-modal-body {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+  padding: 16px 20px 0;
+}
+
+.ui-modal-body:not([data-has-footer]) {
+  padding-bottom: 20px;
+}
+
+/* A confirmation with only a title and actions has no body. */
+.ui-modal-body:empty {
+  display: none;
+}
+
+/* Body copy follows the body gap instead of the legacy modal margins. */
+.modal.ui-modal .ui-modal-body > p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--body-xs-font-size);
+  line-height: var(--body-xs-line-height);
+  overflow-wrap: anywhere;
+}
+
+.modal.ui-modal .ui-modal-body > p[role="alert"] {
+  color: var(--red-text);
+}
+
+.ui-modal-footer {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 16px 20px 20px;
+}
+
+/* The reason a step failed, beside the button that retries it. */
+.modal.ui-modal .ui-modal-error {
+  display: -webkit-box;
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  margin: 0;
+  max-height: 32px;
+  color: var(--red-text);
+  font-size: var(--body-xs-font-size);
+  line-height: 16px;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.ui-modal-footer[data-full-width-error] {
+  flex-wrap: wrap;
+}
+
+.modal.ui-modal .ui-modal-footer[data-full-width-error] .ui-modal-error {
+  display: block;
+  flex: 0 0 100%;
+  max-height: 20vh;
+  overflow: auto;
+  overflow-wrap: anywhere;
+}

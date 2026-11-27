@@ -194,6 +194,17 @@ export interface SessionSnapshotDownload {
   conflictId?: string | null;
   snapshotHash: string;
 }
+export type SessionSnapshotSelection =
+  | SessionSnapshotDownload
+  | {
+      conflictId?: string;
+      reviewed: Pick<
+        WorkspaceResource,
+        "projectId" | "resourceId" | "source"
+      > & {
+        files: Pick<Resource["files"][number], "path" | "hash">[];
+      };
+    };
 
 export interface SessionTranscriptOpen {
   readerId: string;
@@ -220,7 +231,7 @@ export type Inspection = {
       tooLarge: true;
       content: null;
       size: number;
-      sessionSnapshot: SessionSnapshotDownload;
+      sessionSnapshot: SessionSnapshotSelection;
     }
 );
 export interface SessionMessage {

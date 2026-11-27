@@ -2740,7 +2740,7 @@ impl<'a> SyncPass<'a> {
                         outbox.advance(db, &q["sequence"])?;
                         continue;
                     }
-                    if outbox.fail(db, &q, &error)? {
+                    if record_upload_failure(db, &q, &error)? {
                         // Archived or deleted: keep the row for a restore and let
                         // the project's job back off without an error.
                         held.insert(project.to_string());
@@ -3478,18 +3478,32 @@ impl<'p> ProjectOutbox<'p> {
         self.cursor = sequence.as_i64().unwrap_or(self.cursor);
         db::set(db, &self.cursor_key, sequence)
     }
+}
 
-    /// Records a failed send. An archived or deleted project keeps its row with
-    /// no error, so a restore sends it again; every other failure is recorded.
-    fn fail(&self, db: &rusqlite::Connection, queued: &Value, error: &str) -> Result<bool> {
-        let held = SyncError(error).holds();
-        db.execute(
-            "UPDATE outbox SET error=? WHERE id=?",
-            params![(!held).then_some(error), queued["id"].as_str()],
-        )
-        .map_err(|e| e.to_string())?;
-        Ok(held)
+/// Preserve rejected selected snapshots for recovery and invalidate their old
+/// review tokens so only a newly reviewed snapshot can be submitted again.
+pub(crate) fn record_upload_failure(
+    db: &rusqlite::Connection,
+    queued: &Value,
+    error: &str,
+) -> Result<bool> {
+    let held = project_held_error(error);
+    let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
+    tx.execute(
+        "UPDATE outbox SET error=? WHERE id=?",
+        params![(!held).then_some(error), queued["id"].as_str()],
+    )
+    .map_err(|e| e.to_string())?;
+    if !held && terminal_error(error) && queued["path"] == crate::selective_sharing::QUEUE_PATH {
+        tx.execute("DELETE FROM meta WHERE key LIKE 'share-preview:%' AND json_extract(value,'$.change.id')=?", [queued["id"].as_str()])
+            .map_err(|e| e.to_string())?;
     }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(held)
+}
+
+pub(crate) fn project_held_error(error: &str) -> bool {
+    SyncError(error).holds()
 }
 
 fn select_uploads(queued: &[Value], cursor: i64) -> Vec<&Value> {
@@ -3966,14 +3980,14 @@ mod queue_tests {
             db.execute("UPDATE outbox SET error='403: project_deleted: stale'", [])
                 .unwrap();
             let error = format!("403: {code}: Project is unavailable");
-            assert!(outbox.fail(&db, &row, &error).unwrap(), "{error}");
+            assert!(record_upload_failure(&db, &row, &error).unwrap(), "{error}");
             // Held, not failed: the row stays queued for a restore.
             assert_eq!(saved(), None);
             assert_eq!(outbox.queued(&db).unwrap().len(), 1);
         }
         // A member-only refusal keeps today's terminal behaviour.
         let error = "403: not_member: Not a member";
-        assert!(!outbox.fail(&db, &row, error).unwrap());
+        assert!(!record_upload_failure(&db, &row, error).unwrap());
         assert_eq!(saved().as_deref(), Some(error));
         assert!(outbox.queued(&db).unwrap().is_empty());
     }

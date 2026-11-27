@@ -1,10 +1,9 @@
 import { productAction } from "./desktop-usage.js";
-import { MailIcon, XIcon } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { MailIcon } from "lucide-react";
+import { useEffect, useId, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Button } from "./button.js";
-import { IconButton } from "./icon-button.js";
-import { Overlay } from "./overlay.js";
+import { Modal } from "./modal.js";
 import { TextField } from "./text-field.js";
 import { SegmentedControl } from "./segmented-control.js";
 
@@ -26,6 +25,7 @@ export function ProjectInviteDialog({
 }) {
   const [emailAvailable, setEmailAvailable] = useState<boolean | null>(null);
   const [mode, setMode] = useState<"email" | "link">("email");
+  const formId = useId();
   const [email, setEmail] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -108,16 +108,50 @@ export function ProjectInviteDialog({
   };
 
   return (
-    <Overlay
-      open
+    <Modal
       title={title}
+      size="wide"
       className="create-project-modal"
+      closeLabel={`Close ${title.toLowerCase()}`}
+      closeDisabled={busy}
+      footer={
+        <>
+          <Button
+            size="sm"
+            variant="tertiary"
+            disabled={busy}
+            onClick={onClose}
+          >
+            Done
+          </Button>
+          <Button
+            size="sm"
+            type="submit"
+            form={formId}
+            variant="primary"
+            disabled={
+              busy ||
+              emailAvailable === null ||
+              (mode === "email" && !email.trim())
+            }
+          >
+            {busy
+              ? mode === "email"
+                ? "Sending…"
+                : "Copying…"
+              : mode === "email"
+                ? "Send invite"
+                : "Copy invite link"}
+          </Button>
+        </>
+      }
       onCloseAutoFocus={onCloseAutoFocus}
       onClose={() => {
         if (!inFlight.current) onClose();
       }}
     >
       <form
+        id={formId}
         className="create-project-form"
         aria-busy={busy}
         onSubmit={(event) => {
@@ -125,17 +159,6 @@ export function ProjectInviteDialog({
           void submit();
         }}
       >
-        <div className="create-project-heading">
-          <h2>{title}</h2>
-          <IconButton
-            icon={XIcon}
-            variant="tertiary"
-            size="sm"
-            aria-label={`Close ${title.toLowerCase()}`}
-            disabled={busy}
-            onClick={onClose}
-          />
-        </div>
         <div className="create-project-fields">
           <p>Invite a teammate to {projectName}.</p>
           {emailAvailable && (
@@ -191,29 +214,7 @@ export function ProjectInviteDialog({
           {message && <p role="status">{message}</p>}
           {error && <p role="alert">{error}</p>}
         </div>
-        <div className="create-project-footer">
-          <Button variant="tertiary" disabled={busy} onClick={onClose}>
-            Done
-          </Button>
-          <Button
-            type="submit"
-            variant="primary"
-            disabled={
-              busy ||
-              emailAvailable === null ||
-              (mode === "email" && !email.trim())
-            }
-          >
-            {busy
-              ? mode === "email"
-                ? "Sending…"
-                : "Copying…"
-              : mode === "email"
-                ? "Send invite"
-                : "Copy invite link"}
-          </Button>
-        </div>
       </form>
-    </Overlay>
+    </Modal>
   );
 }

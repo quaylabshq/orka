@@ -67,6 +67,7 @@ export function ResourceDetail(props: ResourceDetailProps) {
     act,
     resource,
     user: props.user,
+    sessionSelection: view.sessionSelection,
     onNotice,
     scope: JSON.stringify([
       props.scope,

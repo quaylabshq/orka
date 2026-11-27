@@ -767,12 +767,28 @@ pub async fn session_display_title(id: String) -> Result<Option<String>> {
 
 const CONFLICT_PREVIEW_MISSING: &str = "Conflict changed; refresh before inspecting";
 
-/// The stored resource, or a conflict's incoming candidate when previewing one.
-pub(crate) fn inspection_candidate(
+/// A conflict compares two preserved versions. A normal session reader can
+/// instead follow the live conversation on this Mac.
+pub(crate) struct InspectionSource {
+    pub(crate) resource: Value,
+    pub(crate) stored: bool,
+}
+
+impl InspectionSource {
+    fn read(self, db: &rusqlite::Connection) -> Result<crate::history::SessionRead> {
+        if self.stored {
+            Ok(crate::history::SessionRead::stored(self.resource))
+        } else {
+            crate::session_forks::reading_resource(db, &self.resource)
+        }
+    }
+}
+
+pub(crate) fn inspection_source(
     db: &rusqlite::Connection,
     id: &str,
     conflict_id: Option<&str>,
-) -> Result<Value> {
+) -> Result<InspectionSource> {
     let resource = match crate::local_resources::resource(db, id) {
         Ok(resource) if resource["deleted"] == true => {
             crate::global_skills::local_skill(db, id)?.unwrap_or(resource)
@@ -781,7 +797,23 @@ pub(crate) fn inspection_candidate(
         Err(error) => crate::global_skills::local_skill(db, id)?.ok_or(error)?,
     };
     let Some(conflict_id) = conflict_id else {
-        return Ok(resource);
+        if resource["kind"] == "session" {
+            let shared = db::rows(db,
+                "SELECT r.value FROM resources r WHERE r.id=?1 AND r.project=?2 AND EXISTS (
+                    SELECT 1 FROM conflicts WHERE project=r.project AND json_extract(value,'$.resourceId')=r.id)",
+                &[&id, &resource["projectId"].as_str()],
+            )?.into_iter().next();
+            if let Some(shared) = shared {
+                return Ok(InspectionSource {
+                    resource: shared,
+                    stored: true,
+                });
+            }
+        }
+        return Ok(InspectionSource {
+            resource,
+            stored: false,
+        });
     };
     let project_id = resource["projectId"].as_str().ok_or("Missing project")?;
     let conflict = db::rows(
@@ -799,7 +831,10 @@ pub(crate) fn inspection_candidate(
     {
         return Err("Conflict belongs to another resource".into());
     }
-    Ok(candidate.clone())
+    Ok(InspectionSource {
+        resource: candidate.clone(),
+        stored: true,
+    })
 }
 
 fn inspected_resource(
@@ -807,12 +842,7 @@ fn inspected_resource(
     id: &str,
     conflict_id: Option<&str>,
 ) -> Result<crate::history::SessionRead> {
-    let resource = inspection_candidate(db, id, conflict_id)?;
-    if conflict_id.is_some() {
-        Ok(crate::history::SessionRead::stored(resource))
-    } else {
-        crate::session_forks::reading_resource(db, &resource)
-    }
+    inspection_source(db, id, conflict_id)?.read(db)
 }
 
 /// Conversation and transcript share one translation of the same verified stored
@@ -907,16 +937,17 @@ pub async fn session_messages(
     tauri::async_runtime::spawn_blocking(move || {
         let scope = db::CacheScope::current()?;
         let db = scope.open()?;
-        let resource = inspection_candidate(&db, &id, conflict_id.as_deref())?;
+        let source = inspection_source(&db, &id, conflict_id.as_deref())?;
+        let resource = &source.resource;
         if resource["deleted"] == true {
             return Ok(json!({"messages":[],"total":0,"offset":0,"removed":true}));
         }
         if resource["kind"] != "session" {
             return Err("Not a session".into());
         }
-        let cached = if conflict_id.is_none() && resource["nativeSession"] == true {
-            cached_conversation(&scope, &conversation_key(&resource, true), None)?.filter(|_| {
-                crate::local_resources::unchanged_session_manifest(&db, &resource).unwrap_or(false)
+        let cached = if !source.stored && resource["nativeSession"] == true {
+            cached_conversation(&scope, &conversation_key(resource, true), None)?.filter(|_| {
+                crate::local_resources::unchanged_session_manifest(&db, resource).unwrap_or(false)
             })
         } else {
             None
@@ -924,11 +955,7 @@ pub async fn session_messages(
         let turns = match cached {
             Some(turns) => turns,
             None => {
-                let snapshot = if conflict_id.is_some() {
-                    crate::history::SessionRead::stored(resource)
-                } else {
-                    crate::session_forks::reading_resource(&db, &resource)?
-                };
+                let snapshot = source.read(&db)?;
                 conversation_turns(&snapshot, scope, conflict_id)?
             }
         };
@@ -967,10 +994,8 @@ pub fn inspect_resource(
         let records = snapshot.records()?;
         let transcript = native::transcript(&records);
         if transcript.len() > limit {
-            let session_snapshot = SessionSnapshotDownload {
-                conflict_id,
-                snapshot_hash: session_snapshot_hash(r),
-            };
+            let session_snapshot =
+                SessionSnapshotSelection::hashed(conflict_id, session_snapshot_hash(r));
             return Ok(
                 json!({"content":null,"previous":null,"paths":null,"tooLarge":true,"size":transcript.len(),"sessionSnapshot":session_snapshot}),
             );
@@ -1118,10 +1143,19 @@ pub async fn session_launch_options(
         .map_err(|error| error.to_string())?
 }
 #[tauri::command]
-pub async fn session_handoff_prompt(id: String) -> Result<Value> {
-    tauri::async_runtime::spawn_blocking(move || crate::session_launcher::handoff_prompt(&id))
-        .await
-        .map_err(|error| error.to_string())?
+pub async fn session_handoff_prompt(
+    id: String,
+    session_snapshot: Option<SessionSnapshotSelection>,
+) -> Result<Value> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(selection) = session_snapshot else {
+            return crate::session_launcher::handoff_prompt(&id);
+        };
+        let snapshot = validated_session_snapshot(&db::open()?, &id, selection)?;
+        crate::session_launcher::snapshot_handoff_prompt(&snapshot, &snapshot.resource["revision"])
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 #[tauri::command]
 pub async fn resume_session(
@@ -1144,10 +1178,27 @@ pub async fn resume_session(
 }
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SessionSnapshotDownload {
+pub struct SessionSnapshotSelection {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) conflict_id: Option<String>,
-    pub(crate) snapshot_hash: String,
+    conflict_id: Option<String>,
+    #[serde(flatten)]
+    version: SessionSnapshotVersion,
+}
+
+impl SessionSnapshotSelection {
+    pub(crate) fn hashed(conflict_id: Option<String>, snapshot_hash: String) -> Self {
+        Self {
+            conflict_id,
+            version: SessionSnapshotVersion::Hash { snapshot_hash },
+        }
+    }
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(untagged, rename_all_fields = "camelCase")]
+enum SessionSnapshotVersion {
+    Hash { snapshot_hash: String },
+    Reviewed { reviewed: Value },
 }
 
 const SESSION_SNAPSHOT_CHANGED: &str = "session_snapshot_changed";
@@ -1172,31 +1223,49 @@ pub(crate) fn session_snapshot_hash(session: &Value) -> String {
     db::digest(snapshot.to_string().as_bytes())
 }
 
+fn validated_session_snapshot(
+    db: &rusqlite::Connection,
+    id: &str,
+    snapshot: SessionSnapshotSelection,
+) -> Result<crate::history::SessionRead> {
+    let source = inspection_source(db, id, snapshot.conflict_id.as_deref()).map_err(|error| {
+        if error == CONFLICT_PREVIEW_MISSING {
+            SESSION_SNAPSHOT_CHANGED.into()
+        } else {
+            error
+        }
+    })?;
+    let expected = match snapshot.version {
+        SessionSnapshotVersion::Hash { snapshot_hash } => snapshot_hash,
+        SessionSnapshotVersion::Reviewed { reviewed } => {
+            if !source.stored || source.resource["deleted"] == true {
+                return Err(SESSION_SNAPSHOT_CHANGED.into());
+            }
+            session_snapshot_hash(&reviewed)
+        }
+    };
+    let resource = source.read(db)?;
+    if resource.resource["kind"] != "session" {
+        return Err("Choose a session version".into());
+    }
+    if session_snapshot_hash(&resource.resource) != expected {
+        return Err(SESSION_SNAPSHOT_CHANGED.into());
+    }
+    Ok(resource)
+}
+
 #[tauri::command]
 pub fn export_bundle(
     id: String,
     path: String,
-    session_snapshot: Option<SessionSnapshotDownload>,
+    session_snapshot: Option<SessionSnapshotSelection>,
 ) -> Result<()> {
     let db = db::open()?;
     let path = PathBuf::from(path);
     let Some(snapshot) = session_snapshot else {
         return bundles::export(&db, &id, &path);
     };
-    let resource =
-        inspected_resource(&db, &id, snapshot.conflict_id.as_deref()).map_err(|error| {
-            if error == CONFLICT_PREVIEW_MISSING {
-                SESSION_SNAPSHOT_CHANGED.into()
-            } else {
-                error
-            }
-        })?;
-    if resource.resource["kind"] != "session" {
-        return Err("Choose a session version to download".into());
-    }
-    if session_snapshot_hash(&resource.resource) != snapshot.snapshot_hash {
-        return Err(SESSION_SNAPSHOT_CHANGED.into());
-    }
+    let resource = validated_session_snapshot(&db, &id, snapshot)?;
     bundles::export_snapshot(&db, &resource, &path)
 }
 /// Exports the authorized snapshot, returning true when fresh capture was
@@ -1298,7 +1367,7 @@ pub async fn retry_uploads(project_id: Option<String>) -> Result<()> {
             )
             .map_err(|e| e.to_string())?;
         }
-        db.execute("UPDATE outbox SET error=NULL WHERE ?1 IS NULL OR (project=?1 AND (error IS NULL OR error NOT GLOB '4[0-9][0-9]:*' OR substr(error,1,3) IN ('401','408','429')))", [&project_id])
+        db.execute("UPDATE outbox SET error=NULL WHERE (?1 IS NULL OR project=?1) AND ((?1 IS NULL AND path!=?2) OR error IS NULL OR error NOT GLOB '4[0-9][0-9]:*' OR substr(error,1,3) IN ('401','408','429'))", rusqlite::params![project_id, crate::selective_sharing::QUEUE_PATH])
             .map_err(|e| e.to_string())?;
         scope
     };

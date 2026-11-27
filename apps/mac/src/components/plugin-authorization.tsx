@@ -1,10 +1,9 @@
 import { useProductView } from "./desktop-usage.js";
 import { useEffect, useState } from "react";
 import { invoke } from "./product-command.js";
-import { PlugIcon, XIcon } from "lucide-react";
+import { PlugIcon } from "lucide-react";
 import { Button } from "./button.js";
-import { IconButton } from "./icon-button.js";
-import { Overlay } from "./overlay.js";
+import { Modal } from "./modal.js";
 
 export interface PluginAccount {
   id: string;
@@ -141,23 +140,43 @@ export function PluginAuthorization({
   };
   useProductView(preview ? "connector_consent_viewed" : undefined);
   return (
-    <Overlay
-      open
+    <Modal
       title="Connect to Orka"
       onClose={() => void close()}
       className="plugin-authorization"
+      closeLabel="Close connection"
+      closeDisabled={busy}
+      footer={
+        <>
+          <Button size="sm" disabled={busy} onClick={() => void close()}>
+            {approved ? "Done" : "Cancel"}
+          </Button>
+          {error && !changed && !approved && (
+            <Button
+              size="sm"
+              disabled={busy}
+              onClick={() => {
+                setError("");
+                setPreview(null);
+                setAttempt((value) => value + 1);
+              }}
+            >
+              Retry connection
+            </Button>
+          )}
+          {!approved && (
+            <Button
+              size="sm"
+              variant="primary"
+              disabled={!preview || busy || changed || Boolean(error)}
+              onClick={() => void approve()}
+            >
+              {busy ? "Connecting…" : "Allow connection"}
+            </Button>
+          )}
+        </>
+      }
     >
-      <header className="review-header plugin-authorization-heading">
-        <h2>Connect to Orka</h2>
-        <IconButton
-          icon={XIcon}
-          aria-label="Close connection"
-          variant="tertiary"
-          size="sm"
-          disabled={busy}
-          onClick={() => void close()}
-        />
-      </header>
       {!approved && error && (
         <p role="alert" className="connector-feedback" tabIndex={0}>
           {error}
@@ -253,32 +272,6 @@ export function PluginAuthorization({
           </>
         )}
       </div>
-      <footer className="review-footer plugin-authorization-actions">
-        <Button disabled={busy} onClick={() => void close()}>
-          {approved ? "Done" : "Cancel"}
-        </Button>
-        {error && !changed && !approved && (
-          <Button
-            disabled={busy}
-            onClick={() => {
-              setError("");
-              setPreview(null);
-              setAttempt((value) => value + 1);
-            }}
-          >
-            Retry connection
-          </Button>
-        )}
-        {!approved && (
-          <Button
-            variant="primary"
-            disabled={!preview || busy || changed || Boolean(error)}
-            onClick={() => void approve()}
-          >
-            {busy ? "Connecting…" : "Allow connection"}
-          </Button>
-        )}
-      </footer>
-    </Overlay>
+    </Modal>
   );
 }

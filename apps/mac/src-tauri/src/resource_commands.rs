@@ -527,6 +527,9 @@ async fn run(action: &str, input: &Value, progress: Option<&Channel<Value>>) -> 
                 .as_str()
                 .ok_or("Review this snapshot first")?;
             let preview = db::get(&db, &format!("share-preview:{token}"))?;
+            if preview.is_null() {
+                return Err("Prepare a fresh share preview before sending this item.".into());
+            }
             for key in ["accountId", "serviceOrigin", "projectId"] {
                 if preview[key] != input[key] {
                     return Err("This share preview belongs to another item or account.".into());
@@ -539,7 +542,14 @@ async fn run(action: &str, input: &Value, progress: Option<&Channel<Value>>) -> 
             }
         }
         report_progress(progress, json!({"label":"Sharing reviewed snapshot"}));
-        return crate::selective_sharing::command("share_selected", input).await;
+        let receipt = crate::selective_sharing::command("share_selected", input).await?;
+        if receipt["reason"] == "rejected" {
+            return Err(receipt["error"]
+                .as_str()
+                .unwrap_or("The service rejected this snapshot.")
+                .into());
+        }
+        return Ok(receipt);
     }
     let _lock = projects::lock()?;
     let db = db::open()?;

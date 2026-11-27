@@ -32,7 +32,7 @@ import { resourceDisplayTitle } from "../resource-presentation.js";
 import { PermissionSelect } from "../permission-select.js";
 import { ActivityIndicator } from "../activity-indicator.js";
 import { Skeleton } from "skullet/react";
-import { Overlay } from "../overlay.js";
+import { Modal } from "../modal.js";
 import {
   SettingsHeading,
   settingsScope,
@@ -726,14 +726,31 @@ export const SettingsPermissions = forwardRef<
         </details>
       )}
       {migrationOpen && migration && (
-        <Overlay
-          open
+        <Modal
           title="Review role migration"
+          size="wide"
           className="settings-migration settings-migration--permissions"
           onClose={() => setMigrationOpen(false)}
+          footer={
+            <>
+              <Button size="sm" onClick={() => setMigrationOpen(false)}>
+                Stay
+              </Button>
+              <Button
+                size="sm"
+                variant="primary"
+                disabled={!ack || phase === "saving"}
+                onClick={() => {
+                  setMigrationOpen(false);
+                  void save();
+                }}
+              >
+                Confirm migration
+              </Button>
+            </>
+          }
         >
           <DesktopUsageScreen screen="permissions_preview_viewed" />
-          <h2>Review role migration</h2>
           <div
             className="settings-migration-body"
             role="region"
@@ -844,39 +861,60 @@ export const SettingsPermissions = forwardRef<
               apply.
             </p>
           </div>
-          <div className="settings-migration-footer">
-            <label className="settings-check">
-              <input
-                type="checkbox"
-                checked={ack}
-                onChange={(event) => setAck(event.target.checked)}
-              />
-              I reviewed the access changes for every current Admin and Member.
-            </label>
-            <div className="settings-confirm-actions">
-              <Button onClick={() => setMigrationOpen(false)}>Stay</Button>
-              <Button
-                variant="primary"
-                disabled={!ack || phase === "saving"}
-                onClick={() => {
-                  setMigrationOpen(false);
-                  void save();
-                }}
-              >
-                Confirm migration
-              </Button>
-            </div>
-          </div>
-        </Overlay>
+          <label className="settings-check settings-migration-ack">
+            <input
+              type="checkbox"
+              checked={ack}
+              onChange={(event) => setAck(event.target.checked)}
+            />
+            I reviewed the access changes for every current Admin and Member.
+          </label>
+        </Modal>
       )}
       {conflict && record && (
-        <Overlay
-          open
+        <Modal
           title="Review latest permissions"
+          size="wide"
           className="settings-migration settings-migration--permissions"
           onClose={() => setConflict(null)}
+          footer={
+            <>
+              <Button size="sm" onClick={() => setConflict(null)}>
+                Stay
+              </Button>
+              <Button
+                size="sm"
+                variant="primary"
+                disabled={comparison.some(
+                  (cell) =>
+                    cell.conflict &&
+                    !conflict.choices[`${cell.role}:${cell.category}`],
+                )}
+                onClick={() => {
+                  const draft = structuredClone(conflict.latest.policies);
+                  for (const cell of comparison)
+                    if (
+                      cell.edited &&
+                      (!cell.conflict ||
+                        conflict.choices[`${cell.role}:${cell.category}`] ===
+                          "draft")
+                    )
+                      draft[cell.role][cell.category] = cell.draft;
+                  setRecord({
+                    baseline: conflict.latest.policies,
+                    draft,
+                    revision: conflict.latest.policyRevision,
+                  });
+                  setConflict(null);
+                  setPhase("idle");
+                  setError("");
+                }}
+              >
+                Use reviewed values
+              </Button>
+            </>
+          }
         >
-          <h2>Review latest permissions</h2>
           <div
             className="settings-migration-body"
             role="region"
@@ -941,41 +979,7 @@ export const SettingsPermissions = forwardRef<
               </tbody>
             </table>
           </div>
-          <div className="settings-migration-footer">
-            <div className="settings-confirm-actions">
-              <Button onClick={() => setConflict(null)}>Stay</Button>
-              <Button
-                variant="primary"
-                disabled={comparison.some(
-                  (cell) =>
-                    cell.conflict &&
-                    !conflict.choices[`${cell.role}:${cell.category}`],
-                )}
-                onClick={() => {
-                  const draft = structuredClone(conflict.latest.policies);
-                  for (const cell of comparison)
-                    if (
-                      cell.edited &&
-                      (!cell.conflict ||
-                        conflict.choices[`${cell.role}:${cell.category}`] ===
-                          "draft")
-                    )
-                      draft[cell.role][cell.category] = cell.draft;
-                  setRecord({
-                    baseline: conflict.latest.policies,
-                    draft,
-                    revision: conflict.latest.policyRevision,
-                  });
-                  setConflict(null);
-                  setPhase("idle");
-                  setError("");
-                }}
-              >
-                Use reviewed values
-              </Button>
-            </div>
-          </div>
-        </Overlay>
+        </Modal>
       )}
     </>
   );

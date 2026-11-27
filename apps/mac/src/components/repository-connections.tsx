@@ -24,7 +24,7 @@ import { SourceSyncButton } from "./source-sync-button.js";
 import { PermissionSelect } from "./permission-select.js";
 import { IconButton } from "./icon-button.js";
 import { TextField } from "./text-field.js";
-import { Overlay } from "./overlay.js";
+import { Modal } from "./modal.js";
 import {
   ItemContextMenu,
   ItemMenuButton,
@@ -195,25 +195,42 @@ export function RepositoryConnections({
       />
     ) : (
       dialog?.source && (
-        <Overlay
-          open
+        <Modal
           title="Request repository access"
+          heading="Request access"
           className="repository-dialog"
+          closeLabel="Close access request"
+          closeDisabled={busy}
           onClose={() => {
             if (!busy) close();
           }}
-        >
-          <div className="repository-dialog-heading">
-            <h2>Request access</h2>
-            <IconButton
-              icon={XIcon}
+          error={error}
+          fullWidthError
+          footer={
+            <Button
               size="sm"
-              variant="tertiary"
-              aria-label="Close access request"
-              disabled={busy}
-              onClick={close}
-            />
-          </div>
+              variant="primary"
+              disabled={busy || !reason.trim()}
+              onClick={() =>
+                void run(async () => {
+                  const sourceId = dialog.source!.id;
+                  await call("request-access", {
+                    projectId: project.id,
+                    sourceId,
+                    reason,
+                  });
+                  setRequested((values) => [...values, sourceId]);
+                  setNotice(
+                    "Access request sent. Follow it in Settings → Members.",
+                  );
+                  close();
+                })
+              }
+            >
+              {busy ? "Sending…" : "Send request"}
+            </Button>
+          }
+        >
           <p>{dialog.source.repository?.fullName}</p>
           <TextField
             label="Reason for repository access"
@@ -238,32 +255,7 @@ export function RepositoryConnections({
               Manage GitHub access
             </Button>
           </details>
-          <div className="repository-dialog-footer">
-            <span />
-            <Button
-              variant="primary"
-              disabled={busy || !reason.trim()}
-              onClick={() =>
-                void run(async () => {
-                  const sourceId = dialog.source!.id;
-                  await call("request-access", {
-                    projectId: project.id,
-                    sourceId,
-                    reason,
-                  });
-                  setRequested((values) => [...values, sourceId]);
-                  setNotice(
-                    "Access request sent. Follow it in Settings → Members.",
-                  );
-                  close();
-                })
-              }
-            >
-              {busy ? "Sending…" : "Send request"}
-            </Button>
-          </div>
-          {error && <p role="alert">{error}</p>}
-        </Overlay>
+        </Modal>
       )
     );
   const content = (
@@ -649,24 +641,15 @@ export function RepositoryConnections({
   );
   if (dialogOnly && multipleSources)
     return (
-      <Overlay
-        open
+      <Modal
         title="Connect project repositories"
+        heading="Connect repositories"
         className="repository-dialog"
+        closeLabel="Close project repository setup"
         onClose={close}
       >
-        <div className="repository-dialog-heading">
-          <h2>Connect repositories</h2>
-          <IconButton
-            icon={XIcon}
-            variant="tertiary"
-            size="sm"
-            aria-label="Close project repository setup"
-            onClick={close}
-          />
-        </div>
         {content}
-      </Overlay>
+      </Modal>
     );
   return dialogOnly ? dialogUi : content;
 }

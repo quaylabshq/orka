@@ -183,34 +183,14 @@
   line-height: 20px;
 }
 
-.modal.index-access-dialog {
-  display: flex;
-  flex-direction: column;
-  padding: 20px;
-}
-
-.index-access-dialog-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--border-default);
-}
-
-.modal .index-access-dialog-header h2 {
-  margin: 0;
-  font-size: var(--heading-settings-font-size);
-  font-weight: var(--heading-settings-font-weight);
-  line-height: var(--heading-settings-line-height);
-  letter-spacing: var(--heading-settings-letter-spacing);
+.index-access-dialog .ui-modal-body {
+  gap: 0;
 }
 
 .index-access-section {
   display: grid;
   grid-template-columns: 16px minmax(0, 1fr);
   column-gap: 8px;
-  padding-top: 12px;
 }
 
 .index-access-section > svg {
@@ -227,6 +207,7 @@
 
 .index-access-section + .index-access-section {
   margin-top: 12px;
+  padding-top: 12px;
   border-top: 1px solid var(--border-default);
 }
 

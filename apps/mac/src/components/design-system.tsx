@@ -1,6 +1,6 @@
-import { ArrowRightIcon, FolderIcon, PlusIcon, XIcon } from "lucide-react";
+import { ArrowRightIcon, FolderIcon, PlusIcon } from "lucide-react";
 import React, { useState } from "react";
-import { Overlay } from "./overlay.js";
+import { Modal, type ModalSize } from "./modal.js";
 import { Button } from "./button.js";
 import { Icon, type ControlSize } from "./icon.js";
 import { IconButton } from "./icon-button.js";
@@ -18,14 +18,16 @@ export default function DesignSystem({ onClose }: { onClose: () => void }) {
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [query, setQuery] = useState("");
+  const [sample, setSample] = useState<ModalSize | null>(null);
   const results = samples.filter((item) =>
     item.toLowerCase().includes(query.toLowerCase()),
   );
   return (
-    <Overlay
-      open
+    <Modal
       onClose={onClose}
       title="Design system"
+      size="wide"
+      closeLabel="Close design system"
       className="design-system-gallery"
       onEscapeKeyDown={(event) => {
         // Radix handles Escape in the capture phase, before the input does.
@@ -39,20 +41,11 @@ export default function DesignSystem({ onClose }: { onClose: () => void }) {
         }
       }}
     >
-      <header className="ds-header">
-        <div>
-          <h1>Design system</h1>
-          <p>Actual app components · Inter Variable · Lucide</p>
-        </div>
-        <IconButton
-          icon={XIcon}
-          variant="tertiary"
-          aria-label="Close design system"
-          onClick={onClose}
-        />
-      </header>
+      <p className="ds-summary">
+        Actual app components · Inter Variable · Lucide
+      </p>
       <nav className="ds-navigation" aria-label="Design system sections">
-        {["Foundations", "Buttons", "Inputs"].map((item) => (
+        {["Foundations", "Buttons", "Inputs", "Modals"].map((item) => (
           <Button
             key={item}
             variant="tertiary"
@@ -102,6 +95,58 @@ export default function DesignSystem({ onClose }: { onClose: () => void }) {
             <h2>Inter Variable</h2>
             <p className="ds-font-example">Create space for your next idea.</p>
             <p>Local font assets and the same typography tokens as Orka.</p>
+          </section>
+        )}
+        {section === "Modals" && (
+          <section>
+            <h2>Modal</h2>
+            <p>
+              The Share dialog frame: title row with a close button, a body that
+              scrolls, and actions at the end of the footer.
+            </p>
+            <div className="ds-button-row">
+              {(
+                [
+                  ["compact", 340],
+                  ["default", 390],
+                  ["wide", 640],
+                ] as const
+              ).map(([modalSize, width]) => (
+                <Button key={modalSize} onClick={() => setSample(modalSize)}>
+                  {modalSize} / {width}px
+                </Button>
+              ))}
+            </div>
+            {sample && (
+              <Modal
+                title="Delete shared plan"
+                size={sample}
+                onClose={() => setSample(null)}
+                footer={
+                  <>
+                    <Button
+                      size="sm"
+                      variant="tertiary"
+                      onClick={() => setSample(null)}
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      onClick={() => setSample(null)}
+                    >
+                      Confirm
+                    </Button>
+                  </>
+                }
+              >
+                <p>
+                  Everyone in the project loses this plan. Local copies follow
+                  sync and review rules.
+                </p>
+              </Modal>
+            )}
           </section>
         )}
         {section === "Buttons" && (
@@ -332,6 +377,6 @@ export default function DesignSystem({ onClose }: { onClose: () => void }) {
           </>
         )}
       </div>
-    </Overlay>
+    </Modal>
   );
 }

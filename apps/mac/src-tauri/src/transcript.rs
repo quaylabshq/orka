@@ -1,5 +1,5 @@
 //! Local, snapshot-bound ranges for the Transcript tab.
-use crate::commands::{inspection_candidate, session_snapshot_hash, SessionSnapshotDownload};
+use crate::commands::{inspection_source, session_snapshot_hash, SessionSnapshotSelection};
 use crate::db::{CacheScope, Result};
 use crate::session_translation::{self, Message};
 use serde::Serialize;
@@ -26,6 +26,7 @@ struct Reader {
     scope: CacheScope,
     id: String,
     conflict_id: Option<String>,
+    stored: bool,
     catalog_hash: Mutex<String>,
     snapshot_hash: String,
     resource: Value,
@@ -47,7 +48,7 @@ static PREPARE: Semaphore = Semaphore::const_new(1);
 #[serde(rename_all = "camelCase")]
 pub struct TranscriptOpen {
     reader_id: String,
-    session_snapshot: Option<SessionSnapshotDownload>,
+    session_snapshot: Option<SessionSnapshotSelection>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     removed: bool,
 }
@@ -75,8 +76,12 @@ impl Reader {
             return Err(SNAPSHOT_INVALIDATED.into());
         }
         let db = self.scope.open()?;
-        let candidate = inspection_candidate(&db, &self.id, self.conflict_id.as_deref())
+        let source = inspection_source(&db, &self.id, self.conflict_id.as_deref())
             .map_err(|_| SNAPSHOT_INVALIDATED)?;
+        if source.stored != self.stored {
+            return Err(SNAPSHOT_INVALIDATED.into());
+        }
+        let candidate = source.resource;
         if candidate["kind"] != "session" || candidate["deleted"] == true {
             return Err(SNAPSHOT_INVALIDATED.into());
         }
@@ -148,7 +153,8 @@ fn open_in_scope(
     open_live: impl FnOnce(&rusqlite::Connection, Value) -> Result<(Value, Result<TranscriptData>)>,
 ) -> Result<TranscriptOpen> {
     let db = scope.open()?;
-    let candidate = inspection_candidate(&db, &id, conflict_id.as_deref())?;
+    let source = inspection_source(&db, &id, conflict_id.as_deref())?;
+    let candidate = source.resource;
     if candidate["kind"] != "session" {
         return Err("Not a session".into());
     }
@@ -160,7 +166,7 @@ fn open_in_scope(
         });
     }
     let candidate_hash = session_snapshot_hash(&candidate);
-    let (resource, data) = if conflict_id.is_some() {
+    let (resource, data) = if source.stored {
         (candidate, Ok(TranscriptData::default()))
     } else {
         open_live(&db, candidate)?
@@ -170,6 +176,7 @@ fn open_in_scope(
         scope,
         id,
         conflict_id: conflict_id.clone(),
+        stored: source.stored,
         catalog_hash: Mutex::new(candidate_hash),
         snapshot_hash: snapshot_hash.clone(),
         resource,
@@ -203,10 +210,7 @@ fn open_in_scope(
     readers.push((reader_id.clone(), reader));
     Ok(TranscriptOpen {
         reader_id,
-        session_snapshot: Some(SessionSnapshotDownload {
-            conflict_id,
-            snapshot_hash,
-        }),
+        session_snapshot: Some(SessionSnapshotSelection::hashed(conflict_id, snapshot_hash)),
         removed: false,
     })
 }

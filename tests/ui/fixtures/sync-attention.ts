@@ -18,6 +18,7 @@ export async function syncAttentionFixture(
   page: Page,
   options: {
     planUploadReview?: boolean;
+    queuedPlanContent?: string;
     planUnavailable?: "deleted" | "missing";
   } = {},
 ) {
@@ -290,7 +291,9 @@ export async function syncAttentionFixture(
                   "content.md": "# Shared checklist\nShared milestone\n",
                 },
                 files: {
-                  "content.md": "# Queued checklist\nQueued milestone\n",
+                  "content.md":
+                    options.queuedPlanContent ??
+                    "# Queued checklist\nQueued milestone\n",
                 },
                 beforeManifest: [
                   { path: "content.md", hash: "shared-plan", binary: false },

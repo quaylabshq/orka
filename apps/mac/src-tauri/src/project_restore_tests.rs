@@ -54,6 +54,19 @@ fn leaving_the_deleted_or_archived_state_queues_a_local_sync() {
         // 0.3.13 left this uncoded refusal behind. A restore clears it with the
         // other 403 rows even though the one-time sweep already ran.
         set_error(&f, "refused", &id, "403: Project access denied");
+        for (key, reason) in [
+            ("selected-refused", "403: Publishing requires permission"),
+            (
+                "selected-held",
+                "403: project_archived: Restore this project",
+            ),
+        ] {
+            f.db.execute(
+                "INSERT INTO outbox VALUES(?,?,?,'{}',?)",
+                rusqlite::params![key, id, crate::selective_sharing::QUEUE_PATH, reason],
+            )
+            .unwrap();
+        }
         let mut active = json!({"id":id,"name":"test","role":"member","lifecycleRevision":2});
         for (key, value) in restore.as_object().unwrap() {
             active[key.as_str()] = value.clone();
@@ -61,6 +74,11 @@ fn leaving_the_deleted_or_archived_state_queues_a_local_sync() {
         crate::projects::merge_catalog(&f.db, &json!([active])).unwrap();
         crate::projects::active(&f.db, &id).unwrap();
         assert_eq!(error(&f, "refused"), None);
+        assert_eq!(error(&f, "selected-held"), None);
+        assert_eq!(
+            error(&f, "selected-refused").as_deref(),
+            Some("403: Publishing requires permission")
+        );
         assert_eq!(queue(&f, &id), Some((1, "restore".to_string())));
     }
 }

@@ -12,7 +12,7 @@ import { listen } from "@tauri-apps/api/event";
 import { forgetShapes } from "skullet";
 import type { Snapshot } from "../../types.js";
 import { Button } from "../button.js";
-import { Overlay } from "../overlay.js";
+import { Modal } from "../modal.js";
 import { Switch } from "../switch.js";
 import { SegmentedControl } from "../segmented-control.js";
 import { ActivityIndicator } from "../activity-indicator.js";
@@ -1032,8 +1032,7 @@ export const SettingsModal = forwardRef<
         </div>
       </section>
       {pending !== null && (
-        <Overlay
-          open
+        <Modal
           title={serviceDirty ? "Discard service setup?" : "Save your changes?"}
           className="settings-confirm"
           onCloseAutoFocus={(event) => {
@@ -1046,10 +1045,48 @@ export const SettingsModal = forwardRef<
           onClose={() => {
             if (!saving) setPending(null);
           }}
+          size="compact"
+          closeDisabled={saving}
+          footer={
+            <>
+              <Button
+                size="sm"
+                disabled={saving}
+                onClick={() => setPending(null)}
+              >
+                Stay
+              </Button>
+              <Button
+                size="sm"
+                disabled={saving}
+                onClick={() => {
+                  if (!editor.current?.pendingSave)
+                    productAction()("settings_draft_discarded");
+                  navigate(pending);
+                }}
+              >
+                {editor.current?.pendingSave
+                  ? "Leave and check later"
+                  : "Discard"}
+              </Button>
+              {!serviceDirty && (
+                <Button
+                  size="sm"
+                  variant="primary"
+                  disabled={saving}
+                  onClick={() => {
+                    const destination = pending;
+                    void save().then((saved) => {
+                      if (saved && active.current) navigate(destination);
+                    });
+                  }}
+                >
+                  {saving ? <ActivityIndicator /> : null}Save
+                </Button>
+              )}
+            </>
+          }
         >
-          <h2>
-            {serviceDirty ? "Discard service setup?" : "Save your changes?"}
-          </h2>
           {serviceDirty && <p>Your current service will stay connected.</p>}
           {editor.current?.pendingSave && (
             <p>
@@ -1058,49 +1095,42 @@ export const SettingsModal = forwardRef<
             </p>
           )}
           {error && <p role="alert">{error}</p>}
-          <div className="settings-confirm-actions">
-            <Button disabled={saving} onClick={() => setPending(null)}>
-              Stay
-            </Button>
-            <Button
-              disabled={saving}
-              onClick={() => {
-                if (!editor.current?.pendingSave)
-                  productAction()("settings_draft_discarded");
-                navigate(pending);
-              }}
-            >
-              {editor.current?.pendingSave
-                ? "Leave and check later"
-                : "Discard"}
-            </Button>
-            {!serviceDirty && (
-              <Button
-                variant="primary"
-                disabled={saving}
-                onClick={() => {
-                  const destination = pending;
-                  void save().then((saved) => {
-                    if (saved && active.current) navigate(destination);
-                  });
-                }}
-              >
-                {saving ? <ActivityIndicator /> : null}Save
-              </Button>
-            )}
-          </div>
-        </Overlay>
+        </Modal>
       )}
       {confirmation && (
-        <Overlay
-          open
+        <Modal
           title={`${confirmationLabel}?`}
           className="settings-confirm"
           onClose={() => {
             if (!busy && !folderBusy) setConfirmation(null);
           }}
+          size="compact"
+          closeDisabled={busy || folderBusy}
+          footer={
+            <>
+              <Button
+                size="sm"
+                disabled={busy || folderBusy}
+                onClick={() => setConfirmation(null)}
+              >
+                Stay
+              </Button>
+              <Button
+                size="sm"
+                variant="primary"
+                disabled={
+                  busy ||
+                  folderBusy ||
+                  (confirmation.action !== "signout" && folderChangeBlocked)
+                }
+                onClick={() => void confirm()}
+              >
+                {(saving || folderBusy) && <ActivityIndicator />}
+                {confirmationLabel}
+              </Button>
+            </>
+          }
         >
-          <h2>{confirmationLabel}?</h2>
           <p>
             {confirmation.action === "disconnect"
               ? "Disconnect this folder on this Mac? Local files and shared content are kept."
@@ -1113,27 +1143,7 @@ export const SettingsModal = forwardRef<
           {confirmation.action !== "signout"
             ? folderError && <p role="alert">{folderError}</p>
             : error && <p role="alert">{error}</p>}
-          <div className="settings-confirm-actions">
-            <Button
-              disabled={busy || folderBusy}
-              onClick={() => setConfirmation(null)}
-            >
-              Stay
-            </Button>
-            <Button
-              variant="primary"
-              disabled={
-                busy ||
-                folderBusy ||
-                (confirmation.action !== "signout" && folderChangeBlocked)
-              }
-              onClick={() => void confirm()}
-            >
-              {(saving || folderBusy) && <ActivityIndicator />}
-              {confirmationLabel}
-            </Button>
-          </div>
-        </Overlay>
+        </Modal>
       )}
     </>
   );

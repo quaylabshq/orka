@@ -279,6 +279,7 @@ fn transcript_ranges_use_the_authorized_conflict_manifest_for_reading_and_downlo
     let id = uuid::Uuid::new_v4().to_string();
     let bytes =
         native::encode(&[json!({"type":"user","message":{"role":"user","content":"Incoming 🧪"}})]);
+    let previous = open(&resource, None);
     let mut candidate = resource.clone();
     candidate["files"][0] =
         json!({"path":"session.jsonl","hash":db::blob(&bytes).unwrap(),"size":bytes.len()});
@@ -290,6 +291,13 @@ fn transcript_ranges_use_the_authorized_conflict_manifest_for_reading_and_downlo
         &json!({"id":id,"resourceId":resource["resourceId"],"candidate":candidate}),
     )
     .unwrap();
+    // Opening a conflict changes which source authorizes the default side,
+    // even when the visible catalog manifest still has exactly the same hash.
+    let previous_reader = previous["readerId"].as_str().unwrap();
+    let error =
+        tauri::async_runtime::block_on(read_transcript(previous_reader.into(), Some(0), 128, None))
+            .unwrap_err();
+    assert_eq!(error, crate::transcript::SNAPSHOT_INVALIDATED);
     let opened = open(&resource, Some(id.clone()));
     assert_eq!(opened["sessionSnapshot"]["conflictId"], id);
     let reader = opened["readerId"].as_str().unwrap();

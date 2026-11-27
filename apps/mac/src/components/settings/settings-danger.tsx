@@ -12,7 +12,7 @@ import {
 import type { Project, Snapshot } from "../../types.js";
 import { ActivityIndicator } from "../activity-indicator.js";
 import { Button } from "../button.js";
-import { Overlay } from "../overlay.js";
+import { Modal } from "../modal.js";
 import { TextField } from "../text-field.js";
 import { Icon } from "../icon.js";
 import { inactiveReason } from "../project-inactive.js";
@@ -556,16 +556,38 @@ export function SettingsDanger({
         </p>
       )}
       {dialog && (
-        <Overlay
-          open
+        <Modal
           title={title}
           className="settings-confirm project-lifecycle-confirm"
           onCloseAutoFocus={standaloneDelete?.onCloseAutoFocus}
           onClose={() => {
             if (!working) close();
           }}
+          size="compact"
+          closeDisabled={working}
+          footer={
+            <>
+              <Button size="sm" disabled={working} onClick={close}>
+                {dialog.kind === "leave" ? "Stay" : "Cancel"}
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                className="project-lifecycle-danger"
+                aria-busy={working}
+                disabled={!matches}
+                onClick={() => void submit()}
+              >
+                {working && <ActivityIndicator />}
+                {dialog.kind === "leave"
+                  ? "Leave project"
+                  : dialog.kind === "delete"
+                    ? "Delete project"
+                    : "Delete now"}
+              </Button>
+            </>
+          }
         >
-          <h2>{title}</h2>
           <div className="project-lifecycle-target">
             <Icon icon={FolderIcon} variant="tertiary" />
             <span>{dialog.project.name}</span>
@@ -609,26 +631,7 @@ export function SettingsDanger({
               {dialogError}
             </p>
           )}
-          <div className="settings-confirm-actions">
-            <Button disabled={working} onClick={close}>
-              {dialog.kind === "leave" ? "Stay" : "Cancel"}
-            </Button>
-            <Button
-              variant="secondary"
-              className="project-lifecycle-danger"
-              aria-busy={working}
-              disabled={!matches}
-              onClick={() => void submit()}
-            >
-              {working && <ActivityIndicator />}
-              {dialog.kind === "leave"
-                ? "Leave project"
-                : dialog.kind === "delete"
-                  ? "Delete project"
-                  : "Delete now"}
-            </Button>
-          </div>
-        </Overlay>
+        </Modal>
       )}
     </>
   );
