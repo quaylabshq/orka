@@ -10,6 +10,10 @@ use uuid::Uuid;
 pub const QUEUE_PATH: &str = "/local/selected-share";
 const SELECTED_SHARING_UPGRADE: &str =
     "Update the Orka service to support one-off sharing. The selected snapshot is queued on this Mac.";
+pub(crate) const LEGACY_UNGOVERNED: &str =
+    "409: This project does not use approvals. Review the snapshot again to confirm a direct share.";
+const LEGACY_CHANGED: &str =
+    "409: The shared item changed before Orka confirmed the earlier share. Check the shared version and review the snapshot again.";
 pub(crate) const PI_SERVICE_UPGRADE: &str =
     "Update the Orka service to share Pi sessions. The selected snapshot is queued on this Mac.";
 
@@ -181,10 +185,16 @@ pub(crate) fn preview_from_local_with_progress(
     Ok(preview)
 }
 
-fn payload_hash(change: &Value, require_approval: bool) -> String {
+fn payload_hash(change: &Value, require_approval: bool, check_previous: bool) -> String {
     // Bind the review-only destination as well as the frozen bytes. An older
     // daemon that only knows direct submission cannot authorize this request.
-    if require_approval {
+    if check_previous {
+        db::digest(
+            json!(["reconcile-before-review", change])
+                .to_string()
+                .as_bytes(),
+        )
+    } else if require_approval {
         db::digest(
             json!(["submit-for-approval", change])
                 .to_string()
@@ -242,13 +252,16 @@ pub(crate) fn migrate_share_destinations(db: &Connection) -> Result<()> {
             || change["id"] != row["id"]
             || receipt["projectId"] != row["project"]
             || change["projectId"] != row["project"]
-            || receipt["payloadHash"] != payload_hash(change, false)
+            || receipt["payloadHash"] != payload_hash(change, false, false)
         {
             continue;
         }
         let review = row["review"] != 0;
         receipt["requireApproval"] = json!(review);
-        receipt["payloadHash"] = json!(payload_hash(change, review));
+        if review {
+            receipt["checkPreviousSubmission"] = json!(true);
+        }
+        receipt["payloadHash"] = json!(payload_hash(change, review, review));
         db::set(
             &tx,
             &format!(
@@ -298,13 +311,19 @@ pub fn queue(db: &Connection, project: &Value, input: &Value) -> Result<Value> {
     let legacy_review = matches!(prior["status"].as_str(), Some("queued" | "superseded"))
         && prior.get("requireApproval").is_none()
         && project["governed"] != false;
-    let require_approval = was_approval_only
+    let mut require_approval = was_approval_only
         || legacy_review
         || preview["requireApproval"] == true
         || input["requireApproval"] == true;
-    let hash = payload_hash(change, require_approval);
+    let mut check_previous = legacy_review || prior["checkPreviousSubmission"] == true;
     if !prior.is_null() {
-        if prior["payloadHash"] != payload_hash(change, was_approval_only) {
+        if prior["payloadHash"]
+            != payload_hash(
+                change,
+                was_approval_only,
+                prior["checkPreviousSubmission"] == true,
+            )
+        {
             return Err("Share request no longer matches the preview".into());
         }
         if !matches!(prior["status"].as_str(), Some("queued" | "superseded")) {
@@ -326,13 +345,32 @@ pub fn queue(db: &Connection, project: &Value, input: &Value) -> Result<Value> {
                 }
                 return Ok(prior);
             }
+            // A changed base requires a new request ID derived from the refreshed base.
+            if check_previous && error.as_deref() == Some(LEGACY_CHANGED) {
+                return Err(LEGACY_CHANGED.into());
+            }
+            if check_previous
+                && error.as_deref() == Some(LEGACY_UNGOVERNED)
+                && project["governed"] == false
+            {
+                require_approval =
+                    preview["requireApproval"] == true || input["requireApproval"] == true;
+                check_previous = false;
+            } else if preview["requireApproval"] == true || input["requireApproval"] == true {
+                // The new confirmation explicitly chooses review, including across retries.
+                check_previous = false;
+            }
             // A fresh review of the same refused bytes keeps its request ID
             // and moves to the end of the queue, after prior reviewed attempts.
             tx.execute("DELETE FROM outbox WHERE id=?", [id])
                 .map_err(|e| e.to_string())?;
         }
     }
-    let receipt = json!({"requestId":id,"projectId":project["id"],"accountId":input["accountId"],"serviceOrigin":input["serviceOrigin"],"payloadHash":hash,"requireApproval":require_approval,"status":"queued","automaticSharingChanged":false,"paths":preview["paths"],"nativeId":preview["nativeId"],"localResourceId":preview["localResourceId"],"path":preview["path"],"folderIdentity":preview["folderIdentity"]});
+    let hash = payload_hash(change, require_approval, check_previous);
+    let mut receipt = json!({"requestId":id,"projectId":project["id"],"accountId":input["accountId"],"serviceOrigin":input["serviceOrigin"],"payloadHash":hash,"requireApproval":require_approval,"status":"queued","automaticSharingChanged":false,"paths":preview["paths"],"nativeId":preview["nativeId"],"localResourceId":preview["localResourceId"],"path":preview["path"],"folderIdentity":preview["folderIdentity"]});
+    if check_previous {
+        receipt["checkPreviousSubmission"] = json!(true);
+    }
     db::set(&tx, &key, &receipt)?;
     tx.execute(
         "INSERT INTO outbox VALUES(?,?,?,?,NULL)",
@@ -374,7 +412,8 @@ fn authorization(db: &Connection, queued: &Value) -> Result<Option<(String, Valu
     let Some(require_approval) = receipt["requireApproval"].as_bool() else {
         return Ok(None);
     };
-    let authorized = receipt["status"] == "queued"
+    let authorized = (receipt["checkPreviousSubmission"] != true || require_approval)
+        && receipt["status"] == "queued"
         && receipt["requestId"] == id
         && queued["value"]["id"] == id
         && receipt["accountId"] == db::get(db, "user")?
@@ -384,8 +423,103 @@ fn authorization(db: &Connection, queued: &Value) -> Result<Option<(String, Valu
             == Some(origin.trim_end_matches('/'))
         && receipt["projectId"] == queued["project"]
         && queued["value"]["projectId"] == queued["project"]
-        && receipt["payloadHash"] == payload_hash(&queued["value"], require_approval);
+        && receipt["payloadHash"]
+            == payload_hash(
+                &queued["value"],
+                require_approval,
+                receipt["checkPreviousSubmission"] == true,
+            );
     Ok(authorized.then(|| (origin.to_owned(), receipt)))
+}
+
+fn matching_review<'a>(
+    requests: &'a Value,
+    change: &Value,
+    owner: &str,
+) -> Result<Option<&'a Value>> {
+    Ok(requests
+        .as_array()
+        .ok_or("Missing project reviews")?
+        .iter()
+        .find(|r| {
+            r["id"] == change["id"]
+                && r["author"] == owner
+                && r["projectId"] == change["projectId"]
+                && r["resourceId"] == change["resource"]["resourceId"]
+        }))
+}
+
+/// The legacy service has no general lookup by mutation ID. A current project
+/// snapshot can prove a specific review still exists. A changed
+/// base alone is ambiguous, including when a publication acknowledgement was lost.
+fn legacy_base_changed(snapshot: &Value, change: &Value, owner: &str) -> Result<bool> {
+    if snapshot["governed"] == false {
+        return Err(LEGACY_UNGOVERNED.into());
+    }
+    if snapshot["governed"] != true || snapshot["reset"] != true || snapshot["hasMore"] != false {
+        return Err("Could not refresh the shared version before retrying this share".into());
+    }
+    if matching_review(&snapshot["requests"], change, owner)?.is_some() {
+        // The governance endpoint checks the frozen change hash before replay.
+        return Ok(false);
+    }
+    let events = snapshot["events"]
+        .as_array()
+        .ok_or("Missing project versions")?;
+    let current = events.iter().find(|e| {
+        let r = &e["resource"];
+        r["projectId"] == change["projectId"] && r["resourceId"] == change["resource"]["resourceId"]
+    });
+    let revision = current
+        .map_or(Some(0), |e| e["resource"]["revision"].as_u64())
+        .ok_or("Missing shared revision")?;
+    Ok(Some(revision) != change["baseRevision"].as_u64())
+}
+
+async fn recover_legacy_share(
+    owner: &str,
+    origin: &str,
+    change: &Value,
+    can_recover_session: bool,
+) -> Result<Option<Value>> {
+    let project = change["projectId"].as_str().ok_or("Missing project")?;
+    let snapshot = sync::api_at(
+        owner,
+        origin,
+        "GET",
+        &format!("/v2/sync/pull?projectId={project}&governance=1&policyRevision=-1"),
+        None,
+    )
+    .await?;
+    if legacy_base_changed(&snapshot, change, owner)? {
+        if change["resource"]["kind"] == "session" && can_recover_session {
+            // The shared version has advanced. A missing receipt is fenced by
+            // the service; a fresh review will use the new base and request ID.
+            let outcome = sync::api_at(
+                owner,
+                origin,
+                "POST",
+                "/v2/sessions/reconcile",
+                Some(&json!({"projectId":project,"deviceId":change["deviceId"],"id":change["id"]})),
+            )
+            .await?;
+            match outcome["status"].as_str() {
+                Some("accepted") => {
+                    let receipt = &outcome["receipt"];
+                    let status = if receipt["conflict"] == true {
+                        "conflict"
+                    } else {
+                        "published"
+                    };
+                    return Ok(Some(json!({"status":status,"receipt":receipt})));
+                }
+                Some("cancelled") => {}
+                _ => return Err("Invalid session reconciliation response".into()),
+            }
+        }
+        return Err(LEGACY_CHANGED.into());
+    }
+    Ok(None)
 }
 
 pub async fn send(db: &Connection, owner: &str, queued: &Value) -> Result<Value> {
@@ -404,6 +538,18 @@ pub async fn send(db: &Connection, owner: &str, queued: &Value) -> Result<Value>
         .ok_or("Missing device")?;
     let registration = crate::device_metadata::registration(device, &capabilities);
     sync::post_device_registration(owner, &origin, registration, false).await?;
+    if receipt["checkPreviousSubmission"] == true {
+        if let Some(recovered) = recover_legacy_share(
+            owner,
+            &origin,
+            &queued["value"],
+            capabilities["sessionUploadReconcile"] == 1,
+        )
+        .await?
+        {
+            return Ok(recovered);
+        }
+    }
     crate::repair::upload(
         owner,
         queued["project"].as_str().ok_or("Missing project")?,
@@ -412,25 +558,43 @@ pub async fn send(db: &Connection, owner: &str, queued: &Value) -> Result<Value>
     .await?;
     // The member may have gained publishing rights since clicking Send for approval.
     // Submit the frozen change for review even when it leaves the outbox later.
-    if receipt["requireApproval"] == true {
+    let mut result = if receipt["requireApproval"] == true {
         let request = sync::api_at(
+            owner, &origin, "POST", "/v2/governance/action",
+            Some(&json!({"action":"submit","input":{"projectId":queued["project"],"change":queued["value"]}})),
+        ).await?;
+        json!({"status":"approval_required","request":request})
+    } else {
+        sync::api_at(
+            owner,
+            &origin,
+            "POST",
+            "/v2/sharing/selected",
+            Some(&queued["value"]),
+        )
+        .await?
+    };
+    if result["status"] == "approval_required" {
+        // A replay returns the stored decision. Reviews also considers later policy
+        // and resource revisions, which can make a stored pending request stale.
+        let requests = sync::api_at(
             owner,
             &origin,
             "POST",
             "/v2/governance/action",
-            Some(&json!({"action":"submit","input":{"projectId":queued["project"],"change":queued["value"]}})),
+            Some(&json!({"action":"requests","input":{"projectId":queued["project"]}})),
         )
         .await?;
-        return Ok(json!({"status":"approval_required","request":request}));
+        let request = matching_review(&requests, &queued["value"], owner)?
+            .ok_or("Could not confirm the current review status")?;
+        match request["status"].as_str() {
+            Some("pending") => {}
+            Some("stale" | "approved" | "rejected") => result["status"] = json!("review_closed"),
+            _ => return Err("Unrecognized review status".into()),
+        }
+        result["request"] = request.clone();
     }
-    sync::api_at(
-        owner,
-        &origin,
-        "POST",
-        "/v2/sharing/selected",
-        Some(&queued["value"]),
-    )
-    .await
+    Ok(result)
 }
 
 fn refused(error: &str) -> bool {
@@ -544,7 +708,7 @@ pub fn complete(db: &Connection, queued: &Value, result: &Value) -> Result<()> {
                 }
             }
         }
-        Some("approval_required") => {
+        Some("approval_required" | "review_closed") => {
             if result["request"]["id"] != queued["id"]
                 || result["request"]["resourceId"] != queued["value"]["resource"]["resourceId"]
                 || result["request"]["projectId"] != queued["project"]
@@ -554,7 +718,9 @@ pub fn complete(db: &Connection, queued: &Value, result: &Value) -> Result<()> {
         }
         _ => return Err("Invalid selected share receipt".into()),
     }
-    supersede_refused(db, &receipt)?;
+    if result["status"] != "review_closed" || result["request"]["status"] == "approved" {
+        supersede_refused(db, &receipt)?;
+    }
     receipt["status"] = result["status"].clone();
     receipt["result"] = result.clone();
     db::set(db, &format!("selected-share:{id}"), &receipt)
@@ -640,4 +806,30 @@ fn public_receipt(receipt: &Value) -> Value {
         result["result"] = receipt["result"].clone();
     }
     result
+}
+
+#[cfg(test)]
+mod legacy_tests {
+    use super::*;
+
+    #[test]
+    fn recovery_uses_current_project_versions_and_the_senders_exact_review() {
+        let change = json!({"id":"review","projectId":"project","baseRevision":1,"resource":{"resourceId":"item"}});
+        let mut snapshot = json!({"governed":true,"reset":true,"hasMore":false,"requests":[],"events":[{"resource":{"projectId":"project","resourceId":"item","revision":1}}]});
+        assert!(!legacy_base_changed(&snapshot, &change, "sender").unwrap());
+        snapshot["events"][0]["resource"]["revision"] = json!(2);
+        assert!(legacy_base_changed(&snapshot, &change, "sender").unwrap());
+        snapshot["requests"] =
+            json!([{"id":"review","projectId":"project","resourceId":"item","author":"other"}]);
+        assert!(legacy_base_changed(&snapshot, &change, "sender").unwrap());
+        snapshot["requests"][0]["author"] = json!("sender");
+        assert!(!legacy_base_changed(&snapshot, &change, "sender").unwrap());
+        snapshot["reset"] = json!(false);
+        assert!(legacy_base_changed(&snapshot, &change, "sender").is_err());
+        snapshot["governed"] = json!(false);
+        assert_eq!(
+            legacy_base_changed(&snapshot, &change, "sender").unwrap_err(),
+            LEGACY_UNGOVERNED
+        );
+    }
 }

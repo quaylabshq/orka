@@ -602,6 +602,15 @@ fn upgrade_routes_only_intact_legacy_shares_and_keeps_the_frozen_change() {
         let upgraded = db::open().unwrap();
         let receipt = db::get(&upgraded, &key).unwrap();
         assert_eq!(receipt["requireApproval"], review);
+        if review {
+            assert_eq!(receipt["checkPreviousSubmission"], true);
+            let old_approval_digest = db::digest(
+                json!(["submit-for-approval", queued["value"]])
+                    .to_string()
+                    .as_bytes(),
+            );
+            assert_ne!(receipt["payloadHash"], old_approval_digest);
+        }
         assert_eq!(receipt["requestId"], legacy["requestId"]);
         assert_eq!(receipt["payloadHash"] == direct["payloadHash"], !review);
         assert_eq!(
@@ -634,6 +643,16 @@ fn upgrade_routes_only_intact_legacy_shares_and_keeps_the_frozen_change() {
     assert_eq!(restored["requireApproval"], true);
     assert_eq!(restored["requestId"], legacy["requestId"]);
     assert_eq!(f.outbox(), vec![queued["value"].clone()]);
+
+    // A verified ungoverned service needs a new explicit confirmation.
+    sync::record_upload_failure(&f.db, &queued, selective_sharing::LEGACY_UNGOVERNED).unwrap();
+    f.project["governed"] = json!(false);
+    assert!(selective_sharing::queue(&f.db, &f.project, &request).is_err());
+    request["previewToken"] =
+        selective_sharing::preview(&f.db, &f.project, &request).unwrap()["previewToken"].clone();
+    let confirmed = selective_sharing::queue(&f.db, &f.project, &request).unwrap();
+    assert_eq!(confirmed["requireApproval"], false);
+    assert_eq!(confirmed["payloadHash"], direct["payloadHash"]);
 }
 
 #[test]
