@@ -1,7 +1,7 @@
 import React, { useId } from "react";
 import type {
   ProjectResource as Resource,
-  SessionSnapshotDownload,
+  SessionSnapshotSelection,
 } from "../types.js";
 import { Button } from "./button.js";
 import { Icon } from "./icon.js";
@@ -38,7 +38,7 @@ export interface DetailLayoutProps {
   resource?: Resource;
   file?: string;
   /** The selected conflict version's download, or null when that side was removed. */
-  sessionDownload?: SessionSnapshotDownload | null;
+  sessionSelection?: SessionSnapshotSelection | null;
   menuActions?: ItemMenuAction[];
   title: string;
   /** Status chips above the title. */
@@ -84,7 +84,7 @@ export function DetailLayout({
   className,
   resource,
   file,
-  sessionDownload,
+  sessionSelection,
   menuActions,
   title,
   status,
@@ -233,7 +233,7 @@ export function DetailLayout({
     <ResourceItemMenu
       resource={resource}
       file={file}
-      sessionDownload={sessionDownload}
+      sessionSelection={sessionSelection}
       extraActions={menuActions ?? []}
     >
       {() => shell}

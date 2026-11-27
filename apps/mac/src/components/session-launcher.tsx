@@ -16,7 +16,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   Project,
   ProjectResource,
-  SessionSnapshotDownload,
+  SessionSnapshotSelection,
 } from "../types.js";
 import { Button } from "./button.js";
 import { Icon } from "./icon.js";
@@ -68,7 +68,7 @@ export function SessionLauncher({
   scope,
   busy,
   actions,
-  sessionDownload,
+  sessionSelection,
   onError,
 }: {
   resource: ProjectResource;
@@ -76,7 +76,7 @@ export function SessionLauncher({
   scope: string;
   busy: boolean;
   actions: ResourceActionHandlers;
-  sessionDownload?: SessionSnapshotDownload | null;
+  sessionSelection?: SessionSnapshotSelection | null;
   onError: (message: string) => void;
 }) {
   const tool = sessionTool(resource.source);
@@ -369,27 +369,29 @@ export function SessionLauncher({
           {!current?.error && (
             <div role="separator" className="session-launcher-separator" />
           )}
-          <CopyLinkButton
-            value={key}
-            label="Copy session prompt"
-            usageEvent="session_prompt_copied"
-            errorTitle="Couldn’t copy session prompt"
-            loadValue={actions.sessionPrompt}
-            icon={CopyIcon}
-            variant="tertiary"
-            role="menuitem"
-            disabled={busy}
-            onError={(message) =>
-              setCopyFailure(message ? { key, message } : null)
-            }
-          />
-          {sessionDownload !== null && (
+          {sessionSelection !== null && (
+            <CopyLinkButton
+              value={JSON.stringify([key, sessionSelection])}
+              label="Copy session prompt"
+              usageEvent="session_prompt_copied"
+              errorTitle="Couldn’t copy session prompt"
+              loadValue={actions.sessionPrompt}
+              icon={CopyIcon}
+              variant="tertiary"
+              role="menuitem"
+              disabled={busy}
+              onError={(message) =>
+                setCopyFailure(message ? { key, message } : null)
+              }
+            />
+          )}
+          {sessionSelection !== null && (
             <Button
               variant="tertiary"
               size="sm"
               role="menuitem"
               disabled={busy}
-              onClick={() => void actions.exportZip(sessionDownload)}
+              onClick={() => void actions.exportZip(sessionSelection)}
             >
               <Icon icon={DownloadIcon} /> Download session (.zip)…
             </Button>

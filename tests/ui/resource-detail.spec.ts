@@ -666,9 +666,8 @@ const calls = (page: Page, name: string) =>
     name,
   );
 
-const reviewedSessionExport = (path: string, conflictId?: string) => ({
+const reviewedSession = (conflictId?: string) => ({
   id: "session-c",
-  path,
   sessionSnapshot: {
     ...(conflictId && { conflictId }),
     reviewed: {
@@ -678,6 +677,11 @@ const reviewedSessionExport = (path: string, conflictId?: string) => ({
       files: [{ path: "session.jsonl", hash: "hash" }],
     },
   },
+});
+
+const reviewedSessionExport = (path: string, conflictId?: string) => ({
+  ...reviewedSession(conflictId),
+  path,
 });
 
 for (const [width, height, memberCatalog] of [
@@ -3055,6 +3059,86 @@ test("copy session prompt works without apps or a connected folder and confirms 
       .violations,
   ).toEqual([]);
   expect(await calls(page, "resume_session")).toEqual([]);
+});
+
+test("each conflict reader menu copies the displayed session version", async ({
+  page,
+}) => {
+  await detailFixture(page);
+  await openSession(page);
+  const copy = page.getByRole("menuitem", {
+    name: "Copy session prompt",
+    exact: true,
+  });
+  await page.getByRole("button", { name: "More resource actions" }).click();
+  await copy.click();
+  await expect
+    .poll(() => calls(page, "session_handoff_prompt"))
+    .toEqual([reviewedSession()]);
+
+  await page.getByRole("button", { name: "View incoming version" }).click();
+  await page
+    .getByRole("button", { name: "Choose how to open session" })
+    .click();
+  await copy.click();
+  await expect
+    .poll(() => calls(page, "session_handoff_prompt"))
+    .toHaveLength(2);
+  await page.keyboard.press("Escape");
+
+  await page.getByRole("button", { name: "More resource actions" }).click();
+  await page
+    .getByRole("menuitem", { name: "Continue or fork in…", exact: true })
+    .click();
+  const launcher = page.getByRole("dialog", {
+    name: "Continue or fork session",
+  });
+  await launcher
+    .getByRole("button", { name: "Choose how to open session" })
+    .click();
+  await copy.click();
+  await expect
+    .poll(() => calls(page, "session_handoff_prompt"))
+    .toEqual([
+      reviewedSession(),
+      reviewedSession("conflict-1"),
+      reviewedSession("conflict-1"),
+    ]);
+});
+
+test("changing the displayed conflict side cancels a pending clipboard write", async ({
+  page,
+}) => {
+  await detailFixture(page);
+  await openSession(page);
+  await page.evaluate(() => {
+    const w = window as any;
+    const original = w.__TAURI_INTERNALS__.invoke;
+    w.__TAURI_INTERNALS__.invoke = async (name: string, args: unknown) => {
+      const result = await original(name, args);
+      if (name === "session_handoff_prompt")
+        await new Promise<void>((resolve) => {
+          w.finishPrompt = resolve;
+        });
+      return result;
+    };
+  });
+  await page
+    .getByRole("button", { name: "Choose how to open session" })
+    .click();
+  await page
+    .getByRole("menuitem", { name: "Copy session prompt", exact: true })
+    .click();
+  await expect
+    .poll(() => calls(page, "session_handoff_prompt"))
+    .toHaveLength(1);
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "View incoming version" }).click();
+  await page.evaluate(() => (window as any).finishPrompt());
+  await expect(
+    page.getByRole("button", { name: "View incoming version" }),
+  ).toHaveAttribute("aria-pressed", "true");
+  expect(await page.evaluate(() => (window as any).copiedText)).toBeUndefined();
 });
 
 for (const failure of ["history", "clipboard"] as const) {
