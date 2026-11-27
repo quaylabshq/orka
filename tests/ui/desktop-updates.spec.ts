@@ -448,6 +448,9 @@ test("the app-menu action can check before signing in", async ({ page }) => {
   const updates = page.getByRole("dialog", { name: "Updates", exact: true });
   await expect(updates).toBeVisible();
   await expect(
+    updates.getByRole("heading", { name: "Updates", exact: true }),
+  ).toHaveCount(1);
+  await expect(
     updates.getByText("Version 0.3.0", { exact: true }),
   ).toBeVisible();
   await expect(

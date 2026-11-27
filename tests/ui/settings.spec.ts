@@ -1496,8 +1496,9 @@ for (const viewport of [
         exact: true,
       });
       const bounds = await review.boundingBox();
-      expect(bounds!.width).toBeCloseTo(850, 0);
-      expect(bounds!.height).toBeLessThanOrEqual(viewport.height * 0.85 + 1);
+      // The wide Modal frame: 640px, never taller than the window allows.
+      expect(bounds!.width).toBeCloseTo(640, 0);
+      expect(bounds!.height).toBeLessThanOrEqual(viewport.height - 48 + 1);
       await expect(action).toBeInViewport({ ratio: 1 });
       const before = await action.boundingBox();
       await body.evaluate((element) => {
@@ -1510,10 +1511,11 @@ for (const viewport of [
         top: element.scrollTop,
         width: element.clientWidth,
         scrollWidth: element.scrollWidth,
+        overflows: element.scrollHeight > element.clientHeight,
       }));
       expect(scroll.scrollWidth).toBeLessThanOrEqual(scroll.width + 1);
       if (legacy || viewport.height === 640)
-        expect(scroll.top).toBeGreaterThan(0);
+        expect(scroll.overflows ? scroll.top : 1).toBeGreaterThan(0);
       expect(
         await review.evaluate(
           (element) => element.scrollHeight - element.clientHeight,

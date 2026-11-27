@@ -115,17 +115,24 @@ const options: FileDiffOptions<undefined, undefined> = {
   },
 };
 
+const wrappedOptions: FileDiffOptions<undefined, undefined> = {
+  ...options,
+  overflow: "wrap",
+};
+
 /** The actual Pierre read-only renderer, shared by both comparison flows. */
 export function PierreDiff({
   path,
   before,
   after,
   context,
+  wrapLines,
 }: {
   path: string;
   before: string;
   after: string;
   context: number;
+  wrapLines: boolean;
 }) {
   const fileDiff = useMemo(
     () =>
@@ -136,5 +143,11 @@ export function PierreDiff({
       ),
     [path, before, after, context],
   );
-  return <FileDiff fileDiff={fileDiff} options={options} disableWorkerPool />;
+  return (
+    <FileDiff
+      fileDiff={fileDiff}
+      options={wrapLines ? wrappedOptions : options}
+      disableWorkerPool
+    />
+  );
 }

@@ -425,12 +425,24 @@ export function SessionLauncher({
       </ActionPopover>
       {actions.manualCommand && (
         <Modal
-          legacyFrame
           title={`Continue in ${actions.manualDestination}`}
+          size="wide"
+          closeLabel="Close resume command"
           onClose={actions.dismissManualCommand}
           dismissOnBackdrop
+          footer={
+            <>
+              <Button onClick={actions.dismissManualCommand}>Close</Button>
+              <CopyLinkButton
+                label="Copy command"
+                usageEvent="session_command_copied"
+                errorTitle="Couldn’t copy command"
+                value={actions.manualCommand}
+                onError={onError}
+              />
+            </>
+          }
         >
-          <h2>Continue in {actions.manualDestination}</h2>
           <p>
             {actions.manualDestination} hasn’t confirmed startup. If the session
             isn’t already open, copy this command and run it there to continue.
@@ -443,16 +455,6 @@ export function SessionLauncher({
             value={actions.manualCommand}
             rows={5}
           />
-          <div className="actions">
-            <Button onClick={actions.dismissManualCommand}>Close</Button>
-            <CopyLinkButton
-              label="Copy command"
-              usageEvent="session_command_copied"
-              errorTitle="Couldn’t copy command"
-              value={actions.manualCommand}
-              onError={onError}
-            />
-          </div>
         </Modal>
       )}
     </div>

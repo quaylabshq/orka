@@ -83,12 +83,10 @@ function Demo({ onProject }: { onProject: () => void }) {
       h(
         Modal,
         {
-          legacyFrame: true,
           title: "Toast review",
           onClose: () => setOpen(false),
           children: null,
         },
-        h("h2", null, "Toast review"),
         h(
           Button,
           {

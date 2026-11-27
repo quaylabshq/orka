@@ -340,12 +340,52 @@ export const SettingsProfile = forwardRef<
       )}
       {review && value && base && (
         <Modal
-          legacyFrame
           title="Review latest profile"
           className="settings-migration"
           onClose={() => setReview(null)}
+          size="wide"
+          footer={
+            <>
+              <Button size="sm" onClick={() => setReview(null)}>
+                Stay
+              </Button>
+              <Button
+                size="sm"
+                variant="primary"
+                disabled={profileFields.some(
+                  (field) =>
+                    fieldValue(value, field) !== fieldValue(base, field) &&
+                    fieldValue(review.latest, field) !==
+                      fieldValue(base, field) &&
+                    fieldValue(review.latest, field) !==
+                      fieldValue(value, field) &&
+                    !review.choices[field],
+                )}
+                onClick={() => {
+                  const next = { ...review.latest };
+                  for (const field of profileFields)
+                    if (
+                      fieldValue(value, field) !== fieldValue(base, field) &&
+                      review.choices[field] !== "latest"
+                    ) {
+                      if (field === "photo") {
+                        next.avatarData = value.avatarData;
+                        next.avatarUrl = value.avatarUrl;
+                        next.avatarPreview = value.avatarPreview;
+                      } else next[field] = value[field] ?? "";
+                    }
+                  setBaseline(review.latest);
+                  query.confirm(review.latest);
+                  setDraft(next);
+                  setReview(null);
+                  setError("");
+                }}
+              >
+                Use reviewed values
+              </Button>
+            </>
+          }
         >
-          <h2>Review latest profile</h2>
           <p>Your draft is kept. Unedited fields use the latest profile.</p>
           <table>
             <thead>
@@ -416,42 +456,6 @@ export const SettingsProfile = forwardRef<
               })}
             </tbody>
           </table>
-          <div className="settings-confirm-actions">
-            <Button onClick={() => setReview(null)}>Stay</Button>
-            <Button
-              variant="primary"
-              disabled={profileFields.some(
-                (field) =>
-                  fieldValue(value, field) !== fieldValue(base, field) &&
-                  fieldValue(review.latest, field) !==
-                    fieldValue(base, field) &&
-                  fieldValue(review.latest, field) !==
-                    fieldValue(value, field) &&
-                  !review.choices[field],
-              )}
-              onClick={() => {
-                const next = { ...review.latest };
-                for (const field of profileFields)
-                  if (
-                    fieldValue(value, field) !== fieldValue(base, field) &&
-                    review.choices[field] !== "latest"
-                  ) {
-                    if (field === "photo") {
-                      next.avatarData = value.avatarData;
-                      next.avatarUrl = value.avatarUrl;
-                      next.avatarPreview = value.avatarPreview;
-                    } else next[field] = value[field] ?? "";
-                  }
-                setBaseline(review.latest);
-                query.confirm(review.latest);
-                setDraft(next);
-                setReview(null);
-                setError("");
-              }}
-            >
-              Use reviewed values
-            </Button>
-          </div>
         </Modal>
       )}
       <section aria-label="Account" className="settings-account-rows">

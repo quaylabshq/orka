@@ -121,6 +121,7 @@ export interface FileDiffCardProps {
   comparisonUnavailable?: boolean;
   executableChange?: FileChange["executableChange"];
   showRemovedContent?: boolean;
+  wrapLines?: boolean;
   fallback?: React.ReactNode;
 }
 
@@ -134,6 +135,7 @@ export function FileDiffCard({
   comparisonUnavailable = false,
   executableChange,
   showRemovedContent = false,
+  wrapLines = false,
   fallback,
 }: FileDiffCardProps) {
   const kind = fileKind(path);
@@ -206,6 +208,7 @@ export function FileDiffCard({
                 before={before}
                 after={after}
                 context={context}
+                wrapLines={wrapLines}
               />
             </Suspense>
           ) : fallback ? (

@@ -2236,7 +2236,9 @@ test("Warp falls back to a copyable command without claiming the session opened"
     })
     .click();
   const dialog = page.getByRole("dialog", { name: "Continue in Warp" });
-  await expect(dialog).toBeVisible();
+  await expect(
+    dialog.getByRole("button", { name: "Close resume command" }),
+  ).toBeVisible();
   await expect(
     dialog.getByRole("textbox", { name: "Resume command" }),
   ).toHaveValue(/exact-native-id/);

@@ -1,4 +1,4 @@
-import { ArrowRightIcon, FolderIcon, PlusIcon, XIcon } from "lucide-react";
+import { ArrowRightIcon, FolderIcon, PlusIcon } from "lucide-react";
 import React, { useState } from "react";
 import { Modal, type ModalSize } from "./modal.js";
 import { Button } from "./button.js";
@@ -24,9 +24,10 @@ export default function DesignSystem({ onClose }: { onClose: () => void }) {
   );
   return (
     <Modal
-      legacyFrame
       onClose={onClose}
       title="Design system"
+      size="wide"
+      closeLabel="Close design system"
       className="design-system-gallery"
       onEscapeKeyDown={(event) => {
         // Radix handles Escape in the capture phase, before the input does.
@@ -40,18 +41,9 @@ export default function DesignSystem({ onClose }: { onClose: () => void }) {
         }
       }}
     >
-      <header className="ds-header">
-        <div>
-          <h1>Design system</h1>
-          <p>Actual app components · Inter Variable · Lucide</p>
-        </div>
-        <IconButton
-          icon={XIcon}
-          variant="tertiary"
-          aria-label="Close design system"
-          onClick={onClose}
-        />
-      </header>
+      <p className="ds-summary">
+        Actual app components · Inter Variable · Lucide
+      </p>
       <nav className="ds-navigation" aria-label="Design system sections">
         {["Foundations", "Buttons", "Inputs", "Modals"].map((item) => (
           <Button

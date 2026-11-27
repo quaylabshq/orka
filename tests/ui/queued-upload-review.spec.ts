@@ -59,6 +59,22 @@ for (const width of [1160, 900])
     });
   });
 
+test("long changed lines wrap inside the review", async ({ page }) => {
+  await syncAttentionFixture(page, {
+    planUploadReview: true,
+    queuedPlanContent:
+      "Before publishing, attach the acceptance report and send the reviewed change to the release owner.\n",
+  });
+  await page.goto("/");
+  const review = await openReview(page);
+  const code = review.locator("code[data-code]");
+  await expect(code).toContainText("release owner.");
+  const horizontalOverflow = await code.evaluate(
+    (node) => node.scrollWidth - node.clientWidth,
+  );
+  expect(horizontalOverflow).toBeLessThanOrEqual(1);
+});
+
 test("cancel preserves the failed upload and restores a usable focus target", async ({
   page,
 }) => {

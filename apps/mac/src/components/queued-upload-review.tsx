@@ -1,9 +1,7 @@
 import { useProductView } from "./desktop-usage.js";
-import { XIcon } from "lucide-react";
 import { invoke } from "./product-command.js";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "./button.js";
-import { IconButton } from "./icon-button.js";
 import { Modal } from "./modal.js";
 import { FileReview } from "./file-review.js";
 import type { FileManifestEntry } from "./diff-model.js";
@@ -108,7 +106,6 @@ export function QueuedUploadReview({
   };
   return (
     <Modal
-      legacyFrame
       title="Review queued upload"
       className="changes-review-modal"
       onClose={() => {
@@ -128,31 +125,48 @@ export function QueuedUploadReview({
           document.querySelector<HTMLElement>(".workspace-header .sync-status")
         )?.focus();
       }}
+      size="wide"
+      closeLabel="Close queued upload review"
+      closeDisabled={busy}
+      footer={
+        <>
+          {!loading && !preview && !stale && (
+            <Button
+              size="sm"
+              disabled={busy || parentBusy}
+              onClick={() => setAttempt((value) => value + 1)}
+            >
+              Review latest version
+            </Button>
+          )}
+          <Button
+            size="sm"
+            variant="tertiary"
+            disabled={busy}
+            onClick={onClose}
+          >
+            Cancel
+          </Button>
+          <Button
+            size="sm"
+            disabled={busy || parentBusy || loading || !preview || stale}
+            aria-busy={busy}
+            onClick={() => void submit()}
+          >
+            {busy ? "Queuing update…" : "Queue reviewed update"}
+          </Button>
+        </>
+      }
     >
-      <header className="review-header">
-        <div className="review-heading">
-          <h2>Review queued upload</h2>
-          <div className="review-versions" aria-label="Compared versions">
-            <span className="version-pill">
-              {preview
-                ? `Shared version ${preview.revision}`
-                : "Shared version"}
-            </span>
-            <span aria-hidden="true">to</span>
-            <span className="sr-only">compared with</span>
-            <span className="version-pill">Queued snapshot</span>
-          </div>
-        </div>
-        <IconButton
-          icon={XIcon}
-          size="sm"
-          variant="tertiary"
-          aria-label="Close queued upload review"
-          disabled={busy}
-          onClick={onClose}
-        />
-      </header>
       <div className="changes-review-body">
+        <div className="review-versions" aria-label="Compared versions">
+          <span className="version-pill">
+            {preview ? `Shared version ${preview.revision}` : "Shared version"}
+          </span>
+          <span aria-hidden="true">to</span>
+          <span className="sr-only">compared with</span>
+          <span className="version-pill">Queued snapshot</span>
+        </div>
         <h3>{preview?.title ?? title}</h3>
         {stale ? (
           <p role="alert">
@@ -179,26 +193,6 @@ export function QueuedUploadReview({
           </>
         )}
       </div>
-      <footer className="review-footer">
-        {!loading && !preview && !stale && (
-          <Button
-            disabled={busy || parentBusy}
-            onClick={() => setAttempt((value) => value + 1)}
-          >
-            Review latest version
-          </Button>
-        )}
-        <Button variant="tertiary" disabled={busy} onClick={onClose}>
-          Cancel
-        </Button>
-        <Button
-          disabled={busy || parentBusy || loading || !preview || stale}
-          aria-busy={busy}
-          onClick={() => void submit()}
-        >
-          {busy ? "Queuing update…" : "Queue reviewed update"}
-        </Button>
-      </footer>
     </Modal>
   );
 }
