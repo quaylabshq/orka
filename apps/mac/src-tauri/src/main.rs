@@ -55,6 +55,7 @@ mod sync_queue;
 mod sync_schedule;
 #[cfg(test)]
 mod tests;
+mod transcript;
 mod updates;
 mod upload_review;
 mod worktree_integration;
@@ -383,6 +384,9 @@ fn main() {
                 sources::scan_project_folders,
                 commands::disconnect_project,
                 commands::inspect_resource,
+                transcript::open_transcript,
+                transcript::read_transcript,
+                transcript::close_transcript,
                 commands::session_messages,
                 commands::session_display_title,
                 commands::open_editor,

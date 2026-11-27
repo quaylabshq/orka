@@ -131,6 +131,22 @@ async function resourceFixture(
             );
             return { messages, total, offset };
           }
+          if (name === "open_transcript")
+            return {
+              readerId:
+                "fixture-transcript-" + String(args?.conflictId ?? "current"),
+              sessionSnapshot: {
+                ...(args?.conflictId ? { conflictId: args.conflictId } : {}),
+                snapshotHash: args?.conflictId
+                  ? "incoming-snapshot"
+                  : "shared-snapshot",
+              },
+            };
+          if (name === "read_transcript") {
+            const text = "# Preview\nSome content";
+            return { offset: 0, text, nextOffset: text.length, eof: true };
+          }
+          if (name === "close_transcript") return null;
           if (name === "inspect_resource")
             return {
               content:
@@ -221,6 +237,8 @@ for (const outcome of ["success", "failure"] as const)
 test("session deep links reset memory diff mode and keep the segmented modes", async ({
   page,
 }) => {
+  // Orka supports the macOS 12.0 WebView, which predates Array.prototype.at.
+  await page.addInitScript(() => Reflect.deleteProperty(Array.prototype, "at"));
   await resourceFixture(page);
   await page.getByRole("button", { name: /^Memories/ }).click();
   await page
@@ -266,6 +284,10 @@ test("session deep links reset memory diff mode and keep the segmented modes", a
   await expect(page.locator(".session-view pre.content")).toHaveText([
     /Some content/,
   ]);
+  const transcript = page.getByRole("region", { name: "Transcript text" });
+  await transcript.focus();
+  await transcript.press("End");
+  await expect(transcript).toContainText("End of transcript");
   await modes
     .getByRole("button", { name: "Conversation", exact: true })
     .click();

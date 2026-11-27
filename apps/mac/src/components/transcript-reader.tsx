@@ -1,0 +1,1025 @@
+import { invoke } from "@tauri-apps/api/core";
+import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual";
+import {
+  ArrowDownToLineIcon,
+  ArrowUpToLineIcon,
+  CircleAlertIcon,
+  DownloadIcon,
+} from "lucide-react";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import type {
+  SessionSnapshotDownload,
+  SessionTranscriptOpen,
+  SessionTranscriptRange,
+} from "../types.js";
+import { Button } from "./button.js";
+import { Icon } from "./icon.js";
+import { ReaderState } from "./skill-state.js";
+import {
+  restoreTranscriptBlocks,
+  transcriptBlocks,
+  TRANSCRIPT_READ_BYTES,
+  type TranscriptBlock,
+} from "./transcript-range.js";
+
+const PREVIEW_TOO_LARGE = "transcript_preview_too_large";
+const EDGE_HEIGHT = 64;
+const CACHE_BYTES = 512 * 1024;
+const LOOKAHEAD_PX = 4800;
+const MAX_SELECTION_BLOCKS = 16;
+const MAX_WINDOW_BLOCKS = 512;
+const TRIM_WINDOW_BLOCKS = 64;
+const NO_BLOCKS: TranscriptBlock[] = [];
+const preparingJump = {
+  start: "Preparing the start of the transcript…",
+  end: "Preparing the end of the transcript…",
+};
+
+// After a seek, pages can produce blocks with the same start and different ends.
+function blockKey(block: TranscriptBlock) {
+  return `${block.offset}-${block.end}`;
+}
+
+interface TranscriptReaderProps {
+  id: string;
+  conflictId: string;
+  readerRef: React.RefObject<HTMLDivElement | null>;
+  busy: boolean;
+  offline: boolean;
+  onDownload: (snapshot: SessionSnapshotDownload | null) => void;
+  onReady?: () => void;
+}
+
+interface OpenTranscript extends SessionTranscriptOpen {
+  attempt: number;
+  viewKey: number;
+  changedOnRetry: boolean;
+}
+
+export function TranscriptReader(props: TranscriptReaderProps) {
+  const { id, conflictId, busy, offline, onDownload, readerRef } = props;
+  const [opened, setOpened] = useState<OpenTranscript | null>(null);
+  useLayoutEffect(() => {
+    if (readerRef.current) readerRef.current.scrollTop = 0;
+  }, [readerRef, opened?.viewKey]);
+  const [error, setError] = useState("");
+  const [attempt, setAttempt] = useState(0);
+  const openFailureRetry = useRef<HTMLButtonElement>(null);
+  useLayoutEffect(() => {
+    if (attempt && error && document.activeElement === document.body)
+      openFailureRetry.current?.focus({ preventScroll: true });
+  }, [attempt, error]);
+  const retry = (retain: boolean) => {
+    if (!retain) setOpened(null);
+    setError("");
+    setAttempt((current) => current + 1);
+  };
+  useEffect(() => {
+    let disposed = false;
+    let readerId: string | undefined;
+    const close = (readerId: string) =>
+      void invoke("close_transcript", { readerId }).catch(() => {});
+    void invoke<SessionTranscriptOpen>("open_transcript", {
+      id,
+      conflictId: conflictId || null,
+    }).then(
+      (result) => {
+        readerId = result.readerId;
+        if (disposed) {
+          if (readerId) close(readerId);
+        } else {
+          setOpened((previous) => {
+            const snapshot = result.sessionSnapshot;
+            // A new native handle can address the same immutable transcript.
+            const sameSnapshot =
+              snapshot?.snapshotHash &&
+              snapshot.snapshotHash ===
+                previous?.sessionSnapshot?.snapshotHash &&
+              (snapshot.conflictId ?? null) ===
+                (previous.sessionSnapshot.conflictId ?? null);
+            return {
+              ...result,
+              attempt,
+              viewKey: sameSnapshot ? previous.viewKey : attempt,
+              changedOnRetry: sameSnapshot
+                ? previous.changedOnRetry
+                : Boolean(
+                    previous?.sessionSnapshot?.snapshotHash &&
+                    snapshot?.snapshotHash,
+                  ),
+            };
+          });
+        }
+      },
+      (reason: unknown) => {
+        if (!disposed) {
+          // A failed open cannot confirm continued access to the retained text.
+          setOpened(null);
+          setError(String(reason));
+        }
+      },
+    );
+    return () => {
+      disposed = true;
+      if (readerId) close(readerId);
+    };
+  }, [id, conflictId, attempt]);
+
+  const download = opened?.removed ? null : (
+    <Button
+      size="sm"
+      variant="secondary"
+      disabled={busy || (!!conflictId && !opened?.sessionSnapshot)}
+      className="transcript-download"
+      onClick={() => onDownload(opened?.sessionSnapshot ?? null)}
+    >
+      <Icon icon={DownloadIcon} size="xs" />
+      {conflictId ? "Download incoming version" : "Download session"}
+    </Button>
+  );
+  if (error === PREVIEW_TOO_LARGE)
+    return (
+      <ReaderState
+        illustration="preview-unavailable"
+        title="Transcript exceeds the preview limit"
+        message="Download this version to read the full transcript."
+        action={download}
+      />
+    );
+  if (!opened)
+    return (
+      <section aria-label="Transcript text" className="transcript-reader">
+        <div className="transcript-actions">{download}</div>
+        {error ? (
+          <TranscriptError
+            offline={offline}
+            retry={() => retry(false)}
+            buttonRef={openFailureRetry}
+          />
+        ) : (
+          <TranscriptLoading />
+        )}
+      </section>
+    );
+  if (opened.removed)
+    return (
+      <ReaderState
+        illustration="preview-unavailable"
+        title="Removed in this version"
+        message="This version removes the session from shared history."
+      />
+    );
+  return (
+    <TranscriptText
+      key={opened.viewKey}
+      reader={opened}
+      reopening={attempt !== opened.attempt}
+      readerRef={props.readerRef}
+      offline={offline}
+      download={download}
+      onPreviewLimit={() => setError(PREVIEW_TOO_LARGE)}
+      reopen={retry}
+      onReady={props.onReady}
+    />
+  );
+}
+
+function TranscriptLines() {
+  return (
+    <div className="transcript-skeleton loading-fade" aria-hidden="true">
+      <span className="transcript-skeleton-line" />
+      <span className="transcript-skeleton-line" />
+      <span className="transcript-skeleton-line" />
+    </div>
+  );
+}
+
+function TranscriptLoading() {
+  return (
+    <div
+      className="transcript-initial"
+      role="status"
+      aria-label="Loading transcript…"
+    >
+      <span className="sr-only">Loading transcript…</span>
+      <TranscriptLines />
+      <TranscriptLines />
+    </div>
+  );
+}
+
+function RangeError({ retry }: { retry: () => void }) {
+  return (
+    <div className="transcript-range-error" role="alert">
+      <Icon icon={CircleAlertIcon} size="sm" />
+      <span>Couldn’t load more of the transcript.</span>
+      <Button size="sm" variant="secondary" onClick={retry}>
+        Retry
+      </Button>
+    </div>
+  );
+}
+
+function TranscriptEdge({
+  side,
+  pending,
+  failed,
+  retry,
+}: {
+  side: "before" | "after";
+  pending: boolean;
+  failed: boolean;
+  retry: () => void;
+}) {
+  return (
+    <div
+      className="transcript-edge"
+      style={{ minHeight: EDGE_HEIGHT }}
+      data-transcript-edge={side}
+      aria-busy={pending}
+    >
+      {pending && <TranscriptLines />}
+      {failed && <RangeError retry={retry} />}
+    </div>
+  );
+}
+
+function TranscriptError({
+  offline,
+  retry,
+  buttonRef,
+}: {
+  offline: boolean;
+  retry: () => void;
+  buttonRef?: React.Ref<HTMLButtonElement>;
+}) {
+  return (
+    <ReaderState
+      tone={offline ? "status" : "alert"}
+      illustration={
+        offline ? "file-unavailable-offline" : "preview-unavailable"
+      }
+      title={
+        offline
+          ? "Transcript unavailable offline"
+          : "Couldn’t load the transcript"
+      }
+      message={offline ? "Reconnect and sync to load it." : undefined}
+      action={
+        <Button ref={buttonRef} size="sm" variant="tertiary" onClick={retry}>
+          Retry
+        </Button>
+      }
+    />
+  );
+}
+
+type Read =
+  | { kind: "initial" | "after" | "before" | "start"; offset: number }
+  | { kind: "end"; offset: null }
+  | { kind: "restore"; offset: number; blocks: TranscriptBlock[] };
+
+interface TranscriptIndex {
+  blocks: TranscriptBlock[];
+  start: number;
+  end: number;
+  eof: boolean;
+}
+
+interface Anchor {
+  key: string;
+  within: number;
+}
+
+function TranscriptText({
+  reader,
+  reopening,
+  readerRef,
+  offline,
+  download,
+  reopen,
+  onPreviewLimit,
+  onReady,
+}: {
+  reader: OpenTranscript;
+  reopening: boolean;
+  readerRef: React.RefObject<HTMLDivElement | null>;
+  offline: boolean;
+  download: React.ReactNode;
+  reopen: (retain: boolean) => void;
+  onPreviewLimit: () => void;
+  onReady?: () => void;
+}) {
+  const region = useRef<HTMLElement>(null);
+  const previousReader = useRef(reader);
+  const header = useRef<HTMLDivElement>(null);
+  const list = useRef<HTMLDivElement>(null);
+  const cache = useRef(new Map<number, { text: string; bytes: number }>());
+  const cachedBytes = useRef(0);
+  const active = useRef<Read | null>(null);
+  const readerClosed = useRef(false);
+  const fetchedAtHeader = useRef(false);
+  const queuedJump = useRef<Read | null>(null);
+  const latestJump = useRef<"end" | "start" | null>(null);
+  const generation = useRef(0);
+  const anchor = useRef<Anchor | null>(null);
+  const appendedAt = useRef<number | null>(null);
+  const finalEdgeBlock = useRef<TranscriptBlock | undefined>(undefined);
+  const previousListMargin = useRef<number | null>(null);
+  const loaded = useRef<TranscriptIndex | null>(null);
+  const position = useRef<"start" | "end" | null>(null);
+  const [index, setIndex] = useState<TranscriptIndex | null>(null);
+  const [pending, setPending] = useState<Read | null>(null);
+  const [failed, setFailed] = useState<Read | "invalidated" | null>(null);
+  const [announcement, setAnnouncement] = useState("");
+  const [selected, setSelected] = useState<number[]>([]);
+  const [visible, setVisible] = useState(() => !document.hidden);
+  const [geometry, setGeometry] = useState({ margin: 0, width: 680 });
+  const [version, redraw] = useState(0);
+  const blocks = index?.blocks ?? NO_BLOCKS;
+  const previousFirstBlock = useRef(blocks[0]);
+  const firstBlockChanged = previousFirstBlock.current !== blocks[0];
+  useLayoutEffect(() => {
+    previousFirstBlock.current = blocks[0];
+  }, [blocks]);
+  const ready = index !== null;
+  const transcriptTop = geometry.margin - (header.current?.offsetHeight ?? 0);
+  const readingText = (readerRef.current?.scrollTop ?? 0) >= transcriptTop;
+  const virtualizer = useVirtualizer({
+    count: blocks.length,
+    getScrollElement: () => readerRef.current,
+    getItemKey: (i) => blockKey(blocks[i]),
+    estimateSize: (i) => {
+      const { characters, lineCount } = blocks[i];
+      return Math.max(
+        finalEdgeBlock.current === blocks[i] ? EDGE_HEIGHT : 0,
+        24 *
+          Math.max(
+            lineCount,
+            Math.ceil(characters / Math.max(1, geometry.width / 8)),
+          ),
+      );
+    },
+    scrollMargin: geometry.margin,
+    // Preserve the reading position when a prepend or trim moves the first block.
+    // Anchoring to the end on append would follow a newly measured last block.
+    anchorTo: readingText && firstBlockChanged ? "end" : "start",
+    followOnAppend: false,
+    overscan: 2,
+    useAnimationFrameWithResizeObserver: true,
+    rangeExtractor: (range) =>
+      [
+        ...new Set([
+          ...defaultRangeExtractor(range),
+          ...selected
+            .map((offset) =>
+              blocks.findIndex((block) => block.offset === offset),
+            )
+            .filter((i) => i >= 0),
+        ]),
+      ].sort((a, b) => a - b),
+  });
+  const items = virtualizer.getVirtualItems();
+  const startIndex = virtualizer.range?.startIndex ?? 0;
+  const endIndex = virtualizer.range?.endIndex ?? 0;
+  const first = Math.max(0, startIndex - 2);
+  const last = Math.min(blocks.length - 1, endIndex + 2);
+
+  const apply = (request: Read, range: SessionTranscriptRange) => {
+    const incoming =
+      request.kind === "restore"
+        ? restoreTranscriptBlocks(range, request.blocks)
+        : transcriptBlocks(range);
+    if (request.kind === "end" || request.kind === "start") {
+      cache.current.clear();
+      cachedBytes.current = 0;
+      position.current = request.kind;
+      setSelected([]);
+    }
+    for (const { block, text } of incoming) {
+      if (!cache.current.has(block.offset))
+        cachedBytes.current += block.end - block.offset;
+      cache.current.delete(block.offset);
+      cache.current.set(block.offset, {
+        text,
+        bytes: block.end - block.offset,
+      });
+    }
+    if (request.kind === "restore") {
+      redraw((value) => value + 1);
+      return;
+    }
+    if (request.kind === "before" && range.offset === 0) {
+      const scroller = readerRef.current;
+      if (
+        scroller &&
+        header.current &&
+        header.current.getBoundingClientRect().top <=
+          scroller.getBoundingClientRect().top
+      )
+        previousListMargin.current = virtualizer.options.scrollMargin;
+    }
+    const nextBlocks = incoming.map(({ block }) => block);
+    const current = loaded.current;
+    let next: TranscriptIndex = {
+      blocks: nextBlocks,
+      start: range.offset,
+      end: range.nextOffset,
+      eof: range.eof,
+    };
+    if (current && (request.kind === "before" || request.kind === "after")) {
+      const backwards = request.kind === "before";
+      const combined = backwards
+        ? [...nextBlocks, ...current.blocks]
+        : [...current.blocks, ...nextBlocks];
+      next = {
+        blocks: combined,
+        start: backwards ? range.offset : current.start,
+        end: backwards ? current.end : range.nextOffset,
+        eof: backwards ? current.eof : range.eof,
+      };
+
+      // Keep the scroll extent within a browser-safe height on dense logs.
+      // The discarded edge can be read again when the user reverses direction.
+      const view = virtualizer.range;
+      if (combined.length > MAX_WINDOW_BLOCKS && view) {
+        const excess = combined.length - MAX_WINDOW_BLOCKS + TRIM_WINDOW_BLOCKS;
+        const available = backwards
+          ? current.blocks.length - view.endIndex - 3
+          : view.startIndex - 2;
+        const trim = Math.max(0, Math.min(excess, available));
+        if (trim > 0) {
+          const retained = backwards
+            ? combined.slice(0, -trim)
+            : combined.slice(trim);
+          const discarded = backwards
+            ? combined.slice(-trim)
+            : combined.slice(0, trim);
+          for (const block of discarded)
+            virtualizer.itemSizeCache.delete(blockKey(block));
+          next = {
+            blocks: retained,
+            start: retained[0].offset,
+            end: retained[retained.length - 1].end,
+            eof: !backwards && range.eof,
+          };
+        }
+      }
+    }
+    if (request.kind === "after") {
+      if (current?.blocks[0] === next.blocks[0])
+        appendedAt.current = readerRef.current?.scrollTop ?? null;
+      if (range.eof && nextBlocks.length === 1) {
+        // A one-line ending replaces the loading row without shrinking the viewport.
+        finalEdgeBlock.current = nextBlocks[0];
+      }
+    }
+    loaded.current = next;
+    setIndex(next);
+  };
+
+  const read = (request: Read) => {
+    if (
+      readerClosed.current ||
+      (request.kind === "before" && loaded.current?.start !== request.offset) ||
+      (request.kind === "after" && loaded.current?.end !== request.offset)
+    )
+      return;
+    const ticket = generation.current;
+    active.current = request;
+    setPending(request);
+    setFailed(null);
+    if (request.kind === "end" || request.kind === "start")
+      setAnnouncement(preparingJump[request.kind]);
+    const restored =
+      request.kind === "restore"
+        ? request.blocks[request.blocks.length - 1]
+        : null;
+    void invoke<SessionTranscriptRange>("read_transcript", {
+      readerId: reader.readerId,
+      offset: request.offset,
+      maxBytes: restored
+        ? Math.max(4, restored.end - (request.offset ?? 0))
+        : TRANSCRIPT_READ_BYTES,
+      before: request.kind === "before",
+    })
+      .then((range) => {
+        if (ticket !== generation.current) return;
+        if (
+          queuedJump.current ||
+          ((request.kind === "start" || request.kind === "end") &&
+            latestJump.current !== request.kind)
+        )
+          return;
+        if (
+          range.offset < 0 ||
+          range.nextOffset < range.offset ||
+          (request.kind === "before" &&
+            (range.nextOffset !== request.offset ||
+              range.offset >= request.offset)) ||
+          (request.kind === "after" &&
+            range.nextOffset === request.offset &&
+            !range.eof) ||
+          (request.kind !== "end" &&
+            request.kind !== "before" &&
+            range.offset !== request.offset) ||
+          (restored && range.nextOffset < restored.end)
+        )
+          throw new Error("Transcript range changed.");
+        apply(request, range);
+      })
+      .catch((reason: unknown) => {
+        if (ticket !== generation.current) return;
+        // A native read error closes this handle. A queued jump or an effect
+        // from an earlier render must not reuse it before Retry reopens it.
+        readerClosed.current = true;
+        queuedJump.current = null;
+        if (reason === PREVIEW_TOO_LARGE) {
+          onPreviewLimit();
+          return;
+        }
+        const invalidated = reason === "transcript_snapshot_invalidated";
+        if (invalidated) {
+          cache.current.clear();
+          cachedBytes.current = 0;
+          loaded.current = null;
+          setIndex(null);
+          setSelected([]);
+        }
+        setFailed(invalidated ? "invalidated" : request);
+        setAnnouncement("");
+      })
+      .finally(() => {
+        if (ticket !== generation.current) return;
+        active.current = null;
+        setPending(null);
+        const next = queuedJump.current;
+        queuedJump.current = null;
+        if (next) read(next);
+      });
+  };
+
+  useLayoutEffect(() => {
+    if (reader.attempt && document.activeElement === document.body)
+      region.current?.focus({ preventScroll: true });
+  }, [reader]);
+
+  useLayoutEffect(() => {
+    if (previousReader.current === reader) return;
+    previousReader.current = reader;
+    generation.current++;
+    readerClosed.current = false;
+    if (failed && failed !== "invalidated") {
+      if (failed.kind === "start" || failed.kind === "end")
+        latestJump.current = failed.kind;
+      read(failed);
+    }
+  });
+
+  // Closing the native reader cancels preparation. Disregard any late IPC reply.
+  useEffect(
+    () => () => {
+      generation.current++;
+      active.current = null;
+      queuedJump.current = null;
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (ready) onReady?.();
+  }, [ready, onReady]);
+
+  useEffect(() => {
+    const syncVisibility = () => setVisible(!document.hidden);
+    document.addEventListener("visibilitychange", syncVisibility);
+    return () =>
+      document.removeEventListener("visibilitychange", syncVisibility);
+  }, []);
+
+  useEffect(() => {
+    const scroller = readerRef.current;
+    const element = list.current;
+    if (!scroller || !element) return;
+    let width = 0;
+    const measure = () => {
+      const rect = element.getBoundingClientRect();
+      const margin = Math.round(
+        rect.top - scroller.getBoundingClientRect().top + scroller.scrollTop,
+      );
+      const previous = previousListMargin.current;
+      if (previous !== null && margin !== previous) {
+        // The virtualizer anchors the added records, but the final prepend
+        // also removes the reserved loading space above the list.
+        scroller.scrollTop += margin - previous;
+        previousListMargin.current = null;
+      }
+      const nextWidth = Math.round(rect.width);
+      if (width && width !== nextWidth) {
+        const top = scroller.scrollTop;
+        const visible = virtualizer.getVirtualItemForOffset(top);
+        if (visible && top >= margin - (header.current?.offsetHeight ?? 0))
+          anchor.current = {
+            key: String(visible.key),
+            within: top - visible.start,
+          };
+        virtualizer.measure();
+      }
+      width = nextWidth;
+      setGeometry((old) =>
+        old.width === width && old.margin === margin ? old : { width, margin },
+      );
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    observer.observe(scroller);
+    if (header.current) observer.observe(header.current);
+    for (const child of Array.from(scroller.children))
+      if (!child.contains(element)) observer.observe(child);
+    return () => observer.disconnect();
+  }, [readerRef, virtualizer]);
+
+  useLayoutEffect(() => {
+    if (position.current && blocks.length) {
+      const end = position.current === "end";
+      position.current = null;
+      region.current?.focus({ preventScroll: true });
+      virtualizer.scrollToIndex(end ? blocks.length - 1 : 0, {
+        align: end ? "end" : "start",
+      });
+      setAnnouncement(end ? "End of transcript" : "Start of transcript");
+    } else if (appendedAt.current !== null) {
+      // Measuring an append can release an old scroll adjustment clamped at the
+      // previous bottom. Preserve the position the reader actually reached.
+      const top = appendedAt.current;
+      appendedAt.current = null;
+      if (readerRef.current && readerRef.current.scrollTop !== top)
+        virtualizer.scrollToOffset(top);
+    } else if (anchor.current) {
+      const saved = anchor.current;
+      anchor.current = null;
+      const i = blocks.findIndex((block) => blockKey(block) === saved.key);
+      if (i < 0) return;
+      const at = virtualizer.getOffsetForIndex(i, "start");
+      if (at) virtualizer.scrollToOffset(at[0] + saved.within);
+    }
+  }, [blocks, geometry, readerRef, virtualizer]);
+
+  useEffect(() => {
+    const elementAt = (node: Node | null) =>
+      node instanceof Element ? node : node?.parentElement;
+    const onSelectionChange = () => {
+      const cursor = window.getSelection();
+      const start = elementAt(cursor?.anchorNode ?? null)?.closest<HTMLElement>(
+        ".transcript-block",
+      );
+      const end = elementAt(cursor?.focusNode ?? null)?.closest<HTMLElement>(
+        ".transcript-block",
+      );
+      if (
+        !cursor ||
+        cursor.isCollapsed ||
+        !start ||
+        !end ||
+        !list.current?.contains(start) ||
+        !list.current.contains(end)
+      ) {
+        setSelected((old) => (old.length ? [] : old));
+        return;
+      }
+      const a = Number(start.dataset.index);
+      const b = Number(end.dataset.index);
+      const next = Array.from(
+        list.current?.querySelectorAll<HTMLElement>(
+          ".transcript-block[data-offset]",
+        ) ?? [],
+      )
+        .filter(
+          (el) =>
+            Number(el.dataset.index) >= Math.min(a, b) &&
+            Number(el.dataset.index) <= Math.max(a, b),
+        )
+        .map((el) => Number(el.dataset.offset))
+        .slice(0, MAX_SELECTION_BLOCKS);
+      setSelected((old) =>
+        old.length === next.length &&
+        old.every((offset, i) => offset === next[i])
+          ? old
+          : next,
+      );
+    };
+    const onCopy = (event: ClipboardEvent) => {
+      const selection = window.getSelection();
+      const content = list.current;
+      if (!content || !selection?.rangeCount || selection.isCollapsed) return;
+      const range = selection.getRangeAt(0);
+      if (!range.intersectsNode(content)) return;
+
+      const endpointIndex = (node: Node) => {
+        const block =
+          elementAt(node)?.closest<HTMLElement>(".transcript-block");
+        return block && content.contains(block)
+          ? Number(block.dataset.index)
+          : NaN;
+      };
+      const from = endpointIndex(range.startContainer);
+      const to = endpointIndex(range.endContainer);
+      const rendered = Array.from(
+        content.querySelectorAll(".transcript-block > pre"),
+      );
+      if (!rendered.some((pre) => range.intersectsNode(pre))) return;
+      const resident = new Set(
+        rendered.map((pre) => Number(pre.parentElement?.dataset.index)),
+      );
+      event.preventDefault();
+      if (
+        !Number.isInteger(from) ||
+        !Number.isInteger(to) ||
+        to < from ||
+        to - from >= MAX_SELECTION_BLOCKS ||
+        Array.from({ length: to - from + 1 }, (_, i) => from + i).some(
+          (i) => !resident.has(i),
+        )
+      ) {
+        setAnnouncement("Select a shorter range or download the session.");
+        return;
+      }
+
+      // DOM Range concatenates text nodes without adding block separators.
+      event.clipboardData?.setData("text/plain", range.toString());
+      setAnnouncement("");
+    };
+    document.addEventListener("selectionchange", onSelectionChange);
+    document.addEventListener("copy", onCopy);
+    return () => {
+      document.removeEventListener("selectionchange", onSelectionChange);
+      document.removeEventListener("copy", onCopy);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!index) return;
+    const keep = new Set([
+      ...blocks.slice(first, last + 1).map(({ offset }) => offset),
+      ...selected,
+    ]);
+    // Revisit stale positions without evicting the text currently being read.
+    for (const offset of keep) {
+      const entry = cache.current.get(offset);
+      if (!entry) continue;
+      cache.current.delete(offset);
+      cache.current.set(offset, entry);
+    }
+    for (const [offset, entry] of cache.current) {
+      if (cachedBytes.current <= CACHE_BYTES) break;
+      if (keep.has(offset)) continue;
+      cache.current.delete(offset);
+      cachedBytes.current -= entry.bytes;
+    }
+  }, [blocks, first, index, last, selected, version]);
+
+  useEffect(() => {
+    if (readingText) fetchedAtHeader.current = false;
+    if (active.current || failed || (!visible && ready)) return;
+    if (!index) {
+      read({ kind: "initial", offset: 0 });
+      return;
+    }
+    // Load visible gaps first, then reuse the same batch path for overscan.
+    let missing = -1;
+    for (let i = first; i <= last; i++) {
+      if (cache.current.has(blocks[i].offset)) continue;
+      if (missing < 0) missing = i;
+      if (i >= startIndex && i <= endIndex) {
+        missing = i;
+        break;
+      }
+    }
+    if (missing >= 0) {
+      const offset = blocks[missing].offset;
+      const restore: TranscriptBlock[] = [];
+      for (let i = missing; i <= last; i++) {
+        const block = blocks[i];
+        if (
+          cache.current.has(block.offset) ||
+          block.end - offset > TRANSCRIPT_READ_BYTES
+        )
+          break;
+        restore.push(block);
+      }
+      read({ kind: "restore", offset, blocks: restore });
+      return;
+    }
+    const scroller = readerRef.current;
+    const top = (virtualizer.scrollOffset ?? 0) - geometry.margin;
+    const bottom = top + (scroller?.clientHeight ?? 0);
+    const extent = virtualizer.getTotalSize();
+    if (
+      index.start > 0 &&
+      top < LOOKAHEAD_PX &&
+      virtualizer.scrollDirection === "backward" &&
+      (readingText || !fetchedAtHeader.current)
+    ) {
+      // A fast drag to the header exposes one earlier page without draining the
+      // entire history while the controls above the transcript remain visible.
+      fetchedAtHeader.current = !readingText;
+      read({ kind: "before", offset: index.start });
+    } else if (
+      !index.eof &&
+      (extent - bottom < LOOKAHEAD_PX || endIndex >= blocks.length - 3)
+    ) {
+      read({ kind: "after", offset: index.end });
+    }
+  });
+
+  const jump = (kind: "end" | "start") => {
+    if (
+      readerClosed.current ||
+      (index && !blocks.length) ||
+      pending?.kind === kind ||
+      queuedJump.current?.kind === kind
+    )
+      return;
+    latestJump.current = kind;
+    const end = kind === "end";
+    const target = blocks[end ? blocks.length - 1 : 0];
+    if (
+      target &&
+      (end ? index?.eof : index?.start === 0) &&
+      cache.current.has(target.offset)
+    ) {
+      queuedJump.current = null;
+      setPending(null);
+      region.current?.focus({ preventScroll: true });
+      if (end) virtualizer.scrollToIndex(blocks.length - 1, { align: "end" });
+      else readerRef.current?.scrollTo({ top: 0 });
+      setAnnouncement(end ? "End of transcript" : "Start of transcript");
+      return;
+    }
+    const request: Read =
+      kind === "end" ? { kind, offset: null } : { kind, offset: 0 };
+    if (active.current) {
+      queuedJump.current = request;
+      setPending(request);
+      setAnnouncement(preparingJump[kind]);
+    } else read(request);
+  };
+
+  const rangeMessages: Partial<Record<Read["kind"], string>> = {
+    before: "Loading earlier transcript text…",
+    after: "Loading more of the transcript…",
+    restore: "Loading transcript text…",
+  };
+  const retry = () => {
+    region.current?.focus({ preventScroll: true });
+    if (
+      failed &&
+      failed !== "invalidated" &&
+      (failed.kind === "start" || failed.kind === "end")
+    )
+      setAnnouncement(preparingJump[failed.kind]);
+    reopen(failed !== "invalidated");
+  };
+  const retryRead = failed && failed !== "invalidated" ? failed : null;
+  const loadingRead = reopening ? retryRead : pending;
+  const failedRead = reopening ? null : retryRead;
+  const floatingError =
+    index && failedRead && !["before", "after"].includes(failedRead.kind);
+  const showAnnouncement =
+    announcement.startsWith("Preparing") || announcement.startsWith("Select");
+
+  // Retry obtains a fresh native handle before resuming this snapshot.
+  return (
+    <section
+      ref={region}
+      className="transcript-reader"
+      aria-label="Transcript text"
+      tabIndex={0}
+      onKeyDown={(event) => {
+        if (
+          event.shiftKey ||
+          event.altKey ||
+          event.ctrlKey ||
+          event.metaKey ||
+          event.target !== event.currentTarget
+        )
+          return;
+        if (event.key === "End" || event.key === "Home") {
+          event.preventDefault();
+          jump(event.key === "End" ? "end" : "start");
+        }
+      }}
+    >
+      <div ref={header}>
+        <div className="transcript-actions">
+          {(["start", "end"] as const).map((direction) => (
+            <Button
+              key={direction}
+              size="sm"
+              variant="tertiary"
+              aria-label={`Jump to ${direction}`}
+              onClick={() => jump(direction)}
+              disabled={
+                !!failed ||
+                pending?.kind === direction ||
+                (!!index && !blocks.length)
+              }
+            >
+              <Icon
+                icon={
+                  direction === "start"
+                    ? ArrowUpToLineIcon
+                    : ArrowDownToLineIcon
+                }
+                size="xs"
+              />
+              {direction === "start" ? "Start" : "End"}
+            </Button>
+          ))}
+          {failed !== "invalidated" && download}
+        </div>
+        {reader.changedOnRetry && (
+          <p className="content-message" role="status">
+            This transcript changed. Showing the new version from the start.
+          </p>
+        )}
+        {index && index.start > 0 && (
+          <TranscriptEdge
+            side="before"
+            pending={loadingRead?.kind === "before"}
+            failed={failedRead?.kind === "before"}
+            retry={retry}
+          />
+        )}
+      </div>
+      <div className="transcript-notice">
+        {floatingError && <RangeError retry={retry} />}
+        <span
+          className={showAnnouncement ? "transcript-jump-status" : "sr-only"}
+          role="status"
+        >
+          {(!showAnnouncement &&
+            loadingRead &&
+            rangeMessages[loadingRead.kind]) ||
+            announcement}
+        </span>
+      </div>
+      {!index &&
+        (failed && !reopening ? (
+          <TranscriptError offline={offline} retry={retry} />
+        ) : (
+          <TranscriptLoading />
+        ))}
+      {index && !blocks.length && (
+        <p className="content-message">This transcript is empty.</p>
+      )}
+      <div
+        ref={list}
+        className="transcript-blocks"
+        aria-busy={!ready && !failed}
+        style={{ height: virtualizer.getTotalSize() }}
+      >
+        {items.map((item) => {
+          const block = blocks[item.index];
+          if (!block) return null;
+          const text = cache.current.get(block.offset)?.text;
+          return (
+            <div
+              className="transcript-block"
+              key={item.key}
+              ref={virtualizer.measureElement}
+              data-index={item.index}
+              data-offset={block.offset}
+              style={{
+                minHeight:
+                  block === finalEdgeBlock.current ? EDGE_HEIGHT : undefined,
+                transform: `translateY(${item.start - geometry.margin}px)`,
+              }}
+            >
+              {text === undefined ? (
+                <div
+                  className="transcript-block-placeholder"
+                  aria-hidden="true"
+                  style={{ height: item.size }}
+                >
+                  {(!failed || reopening) && <TranscriptLines />}
+                </div>
+              ) : (
+                <pre className="content">{text}</pre>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {index && !index.eof && (
+        <TranscriptEdge
+          side="after"
+          pending={loadingRead?.kind === "after"}
+          failed={failedRead?.kind === "after"}
+          retry={retry}
+        />
+      )}
+    </section>
+  );
+}

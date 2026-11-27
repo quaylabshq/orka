@@ -82,8 +82,12 @@ pub struct Message {
 
 /// Readable conversation turns with setup context and tool records omitted.
 pub fn conversation_messages(records: &[Value]) -> Vec<Message> {
+    readable_turns(crate::session_translation::messages(records))
+}
+
+pub(crate) fn readable_turns(messages: Vec<crate::session_translation::Message>) -> Vec<Message> {
     let mut out = Vec::new();
-    for message in crate::session_translation::messages(records) {
+    for message in messages {
         let role = message.role;
         if !matches!(role, "user" | "assistant") || message.hidden {
             continue;

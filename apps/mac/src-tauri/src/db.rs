@@ -75,10 +75,15 @@ pub fn profile(id: &str) -> Result<()> {
     Uuid::parse_str(id).map_err(|e| e.to_string())?;
     let r = root()?;
     fs::create_dir_all(&r).map_err(|e| e.to_string())?;
-    if fs::read_to_string(r.join("account")).ok().as_deref() != Some(id) {
+    let changed = fs::read_to_string(r.join("account")).ok().as_deref() != Some(id);
+    if changed {
         crate::plugin_connection::invalidate("The Orka account changed. Reconnect the plugin.")?;
     }
-    atomic(&r.join("account"), id.as_bytes())
+    atomic(&r.join("account"), id.as_bytes())?;
+    if changed {
+        crate::transcript::close_all();
+    }
+    Ok(())
 }
 pub fn guest() -> Result<()> {
     crate::plugin_connection::invalidate(
@@ -88,6 +93,7 @@ pub fn guest() -> Result<()> {
     if p.exists() {
         fs::remove_file(p).map_err(|e| e.to_string())?;
     }
+    crate::transcript::close_all();
     Ok(())
 }
 #[derive(PartialEq, Eq)]
@@ -111,6 +117,24 @@ impl CacheScope {
             account,
             origin,
         })
+    }
+
+    pub(crate) fn open_blob(&self, hash: &str) -> Result<fs::File> {
+        use std::os::unix::fs::OpenOptionsExt;
+        let path = checked_blob_path(&blob_dir(&self.root, &self.origin), hash)?;
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)
+            .map_err(|error| error.to_string())?;
+        if !file
+            .metadata()
+            .map_err(|error| error.to_string())?
+            .is_file()
+        {
+            return Err("Blob is not a regular file".into());
+        }
+        Ok(file)
     }
 
     pub(crate) fn record_usage(&self, name: &'static str) {
@@ -253,12 +277,17 @@ pub fn set(db: &Connection, key: &str, value: &Value) -> Result<()> {
     if key == "config" || key == "background" {
         let r = root()?;
         fs::create_dir_all(&r).map_err(|e| e.to_string())?;
-        if key == "config" && global_setting(key)?["apiUrl"] != value["apiUrl"] {
+        let service_changed = key == "config" && global_setting(key)?["apiUrl"] != value["apiUrl"];
+        if service_changed {
             crate::plugin_connection::invalidate(
                 "The Orka service changed. Reconnect the plugin.",
             )?;
         }
-        return atomic(&r.join(format!("{key}.json")), value.to_string().as_bytes());
+        atomic(&r.join(format!("{key}.json")), value.to_string().as_bytes())?;
+        if service_changed {
+            crate::transcript::close_all();
+        }
+        return Ok(());
     }
     let encoded = value.to_string();
     let existing = db

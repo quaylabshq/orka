@@ -315,7 +315,13 @@ export async function detailGalleryFixture(
               );
               return { messages: all, total: all.length, offset: 0 };
             }
-            if (name === "inspect_resource") {
+            if (name === "read_transcript") {
+              const text =
+                '{"type":"user","text":"Move the session page onto the same layout."}\n{"type":"assistant","text":"I moved the reader onto the shared shell."}\n';
+              return { offset: 0, text, nextOffset: text.length, eof: true };
+            }
+            if (name === "close_transcript") return null;
+            if (name === "inspect_resource" || name === "open_transcript") {
               if (options.inspect === "hold")
                 await new Promise<void>((resolve) => {
                   (window as any).finishInspect = resolve;
@@ -323,6 +329,16 @@ export async function detailGalleryFixture(
               if (options.inspect === "error") throw new Error("Read failed");
               if (options.inspect === "missing")
                 throw new Error("File not found");
+              if (name === "open_transcript")
+                return {
+                  readerId:
+                    "fixture-transcript-" +
+                    String(args.conflictId ?? "current"),
+                  sessionSnapshot: {
+                    ...(args.conflictId ? { conflictId: args.conflictId } : {}),
+                    snapshotHash: "fixture-transcript-snapshot",
+                  },
+                };
               const file = String(args.file);
               const text = session
                 ? '{"type":"user","text":"Move the session page onto the same layout."}\n{"type":"assistant","text":"I moved the reader onto the shared shell."}\n'

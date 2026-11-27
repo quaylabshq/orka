@@ -395,6 +395,9 @@ pub(crate) struct CachedSession {
     pub(crate) cwd: PathBuf,
     pub(crate) title: String,
     pub(crate) files: Vec<Value>,
+    /// Digest of the exact pre-redaction leaf used to establish a single-file manifest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) raw_hash: Option<String>,
     pub(crate) logical: String,
     pub(crate) native_parent: Option<String>,
     pub(crate) plans_checked: bool,

@@ -2,22 +2,19 @@ import React from "react";
 import { DownloadIcon } from "lucide-react";
 import type { SessionConflict } from "@portable/protocol";
 import type { Project, ProjectResource as Resource } from "../types.js";
-import { Button } from "./button.js";
 import { IconButton } from "./icon-button.js";
-import { ReaderState } from "./skill-state.js";
 import { ConflictPanel } from "./conflict-panel.js";
 import { CopyLinkButton } from "./copy-link-button.js";
 import {
   ResourceMenuButton,
-  fileSize,
   resourceViewMenuActions,
 } from "./resource-menu.js";
 import { useDetailLayout } from "./detail-layout.js";
 import { detailFacts, detailMeta, sharingStatus } from "./detail-facts.js";
-import { ResourceContent } from "./resource-content.js";
 import { SegmentedControl } from "./segmented-control.js";
 import { SessionLauncher } from "./session-launcher.js";
 import { SessionView } from "./session-view.js";
+import { TranscriptReader } from "./transcript-reader.js";
 import { useMemberLabel } from "./member-names.js";
 import { SkillActionTooltip } from "./skill-action-tooltip.js";
 import { useToasts } from "./toasts.js";
@@ -66,6 +63,7 @@ export function SessionDetail({
   const shared = !resource.local && resource.revision > 0;
   const menuActions = resourceViewMenuActions(view, true);
   const { sessionSelection } = view;
+  const version = view.sessionVersion ?? resource;
   const notes = [
     resource.local && "This session is on this Mac and hasn’t been shared.",
     resource.localChanges &&
@@ -82,68 +80,39 @@ export function SessionDetail({
         resource.local || resource.localChanges || resource.fork,
       )}
       conflictId={view.preview}
-      source={(view.sessionVersion ?? resource).source}
+      source={version.source}
       mode={view.fullTranscript ? "transcript" : "conversation"}
       raw={view.rawMarkdown}
-      transcript={
-        <ResourceContent
-          inspection={view.inspection}
-          error={view.inspectionError}
-          onRetry={view.retryInspection}
-          changes={false}
-          markdown={false}
-          tooLarge={({ size, sessionSnapshot }) => (
-            <ReaderState
-              illustration="preview-unavailable"
-              title="Transcript too large to show here"
-              message={`This transcript is ${fileSize(size)}. Download the ${sessionSnapshot.conflictId ? "incoming version" : "session"} to read the full transcript.`}
-              action={
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  disabled={busy || sessionSelection === null}
-                  onClick={() =>
-                    void actions.exportZip(sessionSnapshot, () =>
-                      notify({
-                        kind: "error",
-                        title:
-                          "Session changed. Reopen the transcript to download.",
-                      }),
-                    )
-                  }
-                >
-                  {sessionSnapshot.conflictId
-                    ? "Download incoming version"
-                    : "Download session"}
-                </Button>
-              }
-            />
-          )}
-          errorState={
-            <ReaderState
-              tone={offline ? "status" : "alert"}
-              illustration={
-                offline ? "file-unavailable-offline" : "preview-unavailable"
-              }
-              title={
-                offline
-                  ? "Transcript unavailable offline"
-                  : "Couldn’t load the transcript"
-              }
-              message={offline ? "Reconnect and sync to load it." : undefined}
-              action={
-                <Button
-                  size="sm"
-                  variant="tertiary"
-                  onClick={view.retryInspection}
-                >
-                  Retry
-                </Button>
-              }
-            />
+      transcript={(readerRef) => (
+        <TranscriptReader
+          key={JSON.stringify([
+            scope,
+            deviceId,
+            project.id,
+            resource.resourceId,
+            version.revision,
+            version.source,
+            version.files.map(({ path, hash }) => [path, hash]),
+            view.preview,
+          ])}
+          readerRef={readerRef}
+          id={resource.resourceId}
+          conflictId={view.preview}
+          busy={busy || sessionSelection === null}
+          offline={offline}
+          onReady={view.onTranscriptReady}
+          onDownload={(snapshot) =>
+            void actions.exportZip(
+              snapshot ?? sessionSelection ?? undefined,
+              () =>
+                notify({
+                  kind: "error",
+                  title: "Session changed. Reopen the transcript to download.",
+                }),
+            )
           }
         />
-      }
+      )}
       offline={offline}
       shell={{
         layout,
@@ -213,7 +182,7 @@ export function SessionDetail({
                 />
               </SkillActionTooltip>
             )}
-            {sessionSelection !== null && (
+            {!view.fullTranscript && sessionSelection !== null && (
               <SkillActionTooltip label="Download session">
                 <IconButton
                   icon={DownloadIcon}

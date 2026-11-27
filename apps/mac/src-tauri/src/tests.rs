@@ -24,6 +24,8 @@ mod context_sharing_tests;
 mod session_storage_bench;
 #[path = "sync_request_tests.rs"]
 mod sync_request_tests;
+#[path = "transcript_tests.rs"]
+mod transcript_tests;
 #[path = "worktree_tests.rs"]
 mod worktree_tests;
 mod doctor_tests {
@@ -2274,6 +2276,29 @@ fn session_conflict_inspection_shows_both_preserved_versions() {
             .unwrap();
         transcript
     };
+    for (selection, expected, inspection) in [
+        (None, "shared version", &over),
+        (Some(conflict.clone()), "incoming version ", &oversized),
+    ] {
+        let opened = tauri::async_runtime::block_on(crate::transcript::open_transcript(
+            id.clone(),
+            selection,
+        ))
+        .unwrap();
+        let opened = serde_json::to_value(opened).unwrap();
+        assert_eq!(opened["sessionSnapshot"], inspection["sessionSnapshot"]);
+        let reader = opened["readerId"].as_str().unwrap();
+        let first = tauri::async_runtime::block_on(crate::transcript::read_transcript(
+            reader.to_owned(),
+            Some(0),
+            256,
+            None,
+        ))
+        .unwrap();
+        let first = serde_json::to_value(first).unwrap();
+        assert!(first["text"].as_str().unwrap().contains(expected));
+        crate::transcript::close_transcript(reader.to_owned()).unwrap();
+    }
     let transcript = download_transcript(&oversized, "incoming.zip");
     assert!(transcript.starts_with("## user\n\nincoming version "));
     assert_eq!(

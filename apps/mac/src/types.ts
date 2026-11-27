@@ -190,17 +190,34 @@ export interface LocalDraft {
   dismissalReason?: string;
   archivedAt?: string;
 }
-export type SessionSnapshotSelection = { conflictId?: string } & (
-  | { snapshotHash: string }
+export interface SessionSnapshotDownload {
+  conflictId?: string | null;
+  snapshotHash: string;
+}
+export type SessionSnapshotSelection =
+  | SessionSnapshotDownload
   | {
+      conflictId?: string;
       reviewed: Pick<
         WorkspaceResource,
         "projectId" | "resourceId" | "source"
       > & {
         files: Pick<Resource["files"][number], "path" | "hash">[];
       };
-    }
-);
+    };
+
+export interface SessionTranscriptOpen {
+  readerId: string;
+  sessionSnapshot: SessionSnapshotDownload | null;
+  removed?: boolean;
+}
+
+export interface SessionTranscriptRange {
+  offset: number;
+  text: string;
+  nextOffset: number;
+  eof: boolean;
+}
 
 export type Inspection = {
   conversation?: string | null;

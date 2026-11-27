@@ -1,7 +1,7 @@
 use super::*;
 use crate::{commands, local_resources};
 
-fn prepare(f: &mut Fixture) {
+pub(super) fn prepare(f: &mut Fixture) {
     f.project["sharing"] =
         json!({"memory":false,"skill":false,"plan":false,"session":false,"env":false});
     db::upsert(

@@ -3361,6 +3361,7 @@ dependencies = [
  "ignore",
  "keyring",
  "libc",
+ "memchr",
  "notify",
  "objc2",
  "objc2-app-kit",
