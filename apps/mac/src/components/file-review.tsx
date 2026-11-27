@@ -23,6 +23,7 @@ export function FileReview({
         <FileDiffCard
           key={change.path}
           {...change}
+          wrapLines
           showRemovedContent
           fallback={
             <ResourceContent

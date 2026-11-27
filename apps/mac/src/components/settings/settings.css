@@ -351,6 +351,10 @@
   .settings-update-notes-content p {
     white-space: pre-wrap;
   }
+  /* The standalone Modal already names this panel in its title row. */
+  .settings-updates-dialog .settings-heading h2 {
+    display: none;
+  }
   .settings-updates-dialog .settings-panel {
     @apply overflow-visible p-0;
   }

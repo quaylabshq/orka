@@ -1707,6 +1707,9 @@
   max-height: none;
   overflow: visible;
 }
+.governance-files .diff-lines pre.content {
+  overflow-wrap: anywhere;
+}
 .changes-review-modal .ui-modal-footer {
   flex-wrap: wrap;
 }

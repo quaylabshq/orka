@@ -425,7 +425,7 @@ export function SessionLauncher({
         <Modal
           title={`Continue in ${actions.manualDestination}`}
           size="wide"
-          closeButton={false}
+          closeLabel="Close resume command"
           onClose={actions.dismissManualCommand}
           dismissOnBackdrop
           footer={
