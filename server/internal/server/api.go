@@ -476,10 +476,12 @@ func (a *API) handle(w http.ResponseWriter, r *http.Request) (any, bool, error) 
 			return s.pull(q, user, project, cursor, policy, r.URL.Query().Get("governance") == "1")
 		})
 		if err == nil {
-			_, err = s.read(r.Context(), func(q *Queries) any {
+			if _, updateErr := s.transaction(r.Context(), func(q *Queries) any {
 				q.Exec("update orka.projects set last_sync_at=now() where id=$1", project)
 				return nil
-			})
+			}); updateErr != nil {
+				log.Print("project_last_sync_update_failed")
+			}
 		}
 		return result, false, err
 	case path == "/v2/presence" && method == http.MethodPost:
