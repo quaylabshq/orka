@@ -4,7 +4,7 @@ import { invoke } from "./product-command.js";
 import { save } from "@tauri-apps/plugin-dialog";
 import { useDesktopFeature } from "./desktop-usage.js";
 import type {
-  SessionSnapshotDownload,
+  SessionSnapshotSelection,
   WorkspaceResource as Resource,
 } from "../types.js";
 
@@ -51,12 +51,14 @@ export function useResourceActions({
   user,
   onNotice,
   scope,
+  sessionSelection,
 }: {
   act: Run;
   resource: Resource;
   user: string | null;
   onNotice: (message: string) => void;
   scope: string;
+  sessionSelection?: SessionSnapshotSelection | null;
 }) {
   const { resourceId: id, source, owner, title, kind } = resource;
   const startFeature = useDesktopFeature();
@@ -65,6 +67,7 @@ export function useResourceActions({
     id,
     resource.revision,
     resource.hash,
+    sessionSelection === undefined ? "live" : sessionSelection,
   ]);
   const activeKey = useRef<string | null>(commandKey);
   activeKey.current = commandKey;
@@ -101,13 +104,25 @@ export function useResourceActions({
           retryable: true,
         }),
       sessionPrompt: async () => {
+        if (sessionSelection === null)
+          throw new Error("This session version was removed.");
         const result = await invoke<{ text: string; revision: number }>(
           "session_handoff_prompt",
-          { id },
-        );
+          {
+            id,
+            ...(sessionSelection && { sessionSnapshot: sessionSelection }),
+          },
+        ).catch((error: unknown) => {
+          if (error === "session_snapshot_changed")
+            throw new Error(
+              "The session changed. Open it again before copying its prompt.",
+              { cause: error },
+            );
+          throw error;
+        });
         if (
           activeKey.current !== commandKey ||
-          result.revision !== resource.revision
+          (!sessionSelection && result.revision !== resource.revision)
         )
           throw new Error(
             "The session changed. Open it again before copying its prompt.",
@@ -178,7 +193,7 @@ export function useResourceActions({
         });
       },
       exportZip: (
-        sessionSnapshot?: SessionSnapshotDownload,
+        sessionSnapshot?: SessionSnapshotSelection,
         onSnapshotChanged?: () => void,
       ) =>
         act(
@@ -257,6 +272,7 @@ export function useResourceActions({
       launchError,
       manualResume,
       resource.revision,
+      sessionSelection,
       startFeature,
     ],
   );

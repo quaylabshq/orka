@@ -2283,6 +2283,21 @@ fn session_conflict_inspection_shows_both_preserved_versions() {
 
     let reviewed_shared = json!({"sessionSnapshot":{"reviewed":r}});
     let reviewed_incoming = json!({"sessionSnapshot":{"reviewed":candidate,"conflictId":conflict}});
+    let prompt = |inspection: &Value| {
+        let selection = serde_json::from_value(inspection["sessionSnapshot"].clone()).unwrap();
+        tauri::async_runtime::block_on(crate::commands::session_handoff_prompt(
+            id.clone(),
+            selection,
+        ))
+        .map(|result| result["text"].as_str().unwrap().to_owned())
+    };
+    assert!(prompt(&Value::Null).unwrap().contains("later private turn"));
+    let shared_prompt = prompt(&reviewed_shared).unwrap();
+    assert!(shared_prompt.contains("shared version"));
+    assert!(!shared_prompt.contains("later private turn"));
+    let incoming_prompt = prompt(&reviewed_incoming).unwrap();
+    assert!(incoming_prompt.contains("incoming version"));
+    assert!(!incoming_prompt.contains("later private turn"));
     assert_eq!(
         download_transcript(&reviewed_shared, "reviewed-shared.zip"),
         shared_transcript
@@ -2295,6 +2310,10 @@ fn session_conflict_inspection_shows_both_preserved_versions() {
     let mut tombstone = r.clone();
     tombstone["deleted"] = json!(true);
     db::upsert(&f.db, "resources", &id, project_id, &tombstone).unwrap();
+    assert_eq!(
+        prompt(&reviewed_shared).unwrap_err(),
+        "session_snapshot_changed"
+    );
     assert_eq!(
         download(&id, &reviewed_shared, &blocked).unwrap_err(),
         "session_snapshot_changed"
@@ -2343,6 +2362,7 @@ fn session_conflict_inspection_shows_both_preserved_versions() {
         .unwrap();
     assert_eq!(conversation(None), "later private turn");
     for reviewed in [&reviewed_shared, &reviewed_incoming] {
+        assert_eq!(prompt(reviewed).unwrap_err(), "session_snapshot_changed");
         assert_eq!(
             download(&id, reviewed, &blocked).unwrap_err(),
             "session_snapshot_changed"
