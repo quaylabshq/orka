@@ -366,7 +366,6 @@ fn parse(
 }
 
 fn stamp(metadata: &fs::Metadata) -> Result<FileStamp> {
-    use std::os::unix::fs::MetadataExt;
     if !metadata.is_file() || metadata.file_type().is_symlink() {
         return Err("History is not a regular file".into());
     }
@@ -378,9 +377,9 @@ fn stamp(metadata: &fs::Metadata) -> Result<FileStamp> {
             .duration_since(UNIX_EPOCH)
             .map_err(|e| e.to_string())?
             .as_nanos(),
-        changed: (metadata.ctime(), metadata.ctime_nsec()),
-        device: metadata.dev(),
-        inode: metadata.ino(),
+        changed: crate::compat::meta_ctime(metadata),
+        device: crate::compat::meta_dev(metadata),
+        inode: crate::compat::meta_ino(metadata),
     })
 }
 
@@ -465,10 +464,14 @@ fn update(
 }
 
 fn read_cached(db: &Connection, path: &Path, source: &str, homes: &Homes) -> Result<CachedFile> {
-    use std::os::unix::fs::OpenOptionsExt;
-    let mut file = fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let mut file = options
         .open(path)
         .map_err(|e| e.to_string())?;
     let before = stamp(&file.metadata().map_err(|e| e.to_string())?)?;

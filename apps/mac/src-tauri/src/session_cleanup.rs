@@ -7,17 +7,19 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    ffi::CString,
     fs::{self, File, Metadata, OpenOptions},
     io::{self, BufRead, BufReader, Read},
-    os::{
-        fd::{AsRawFd, FromRawFd},
-        unix::{
-            ffi::OsStrExt,
-            fs::{MetadataExt, OpenOptionsExt},
-        },
-    },
     path::{Path, PathBuf},
+};
+#[cfg(unix)]
+use std::ffi::CString;
+#[cfg(unix)]
+use std::os::{
+    fd::{AsRawFd, FromRawFd},
+    unix::{
+        ffi::OsStrExt,
+        fs::{MetadataExt, OpenOptionsExt},
+    },
 };
 use uuid::Uuid;
 
@@ -120,13 +122,14 @@ fn open_lock(root: &Path, name: &str) -> Result<File> {
     if !plain_directory(root)? {
         return Err("invalid_profile_directory");
     }
-    let file = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+    let mut options = OpenOptions::new();
+    options.create(true).truncate(false).read(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let file = options
         .open(root.join(name))
         .map_err(|_| "lock_unavailable")?;
     if !owned_file(&file.metadata().map_err(|_| "lock_unavailable")?) {
@@ -265,9 +268,14 @@ fn legacy_scope_digest(root: &Path) -> Result<Option<String>> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(_) => return Err("ambiguous_legacy_service"),
     };
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let file = options
         .open(path)
         .map_err(|_| "ambiguous_legacy_service")?;
     let origin: String = serde_json::from_reader(file.take(info.len() + 1))
@@ -301,7 +309,10 @@ fn account_databases(root: &Path, guest: bool, databases: &mut Vec<PathBuf>) -> 
 
 fn plain_directory(path: &Path) -> Result<bool> {
     match fs::symlink_metadata(path) {
+        #[cfg(unix)]
         Ok(info) if info.is_dir() && info.uid() == unsafe { libc::geteuid() } => Ok(true),
+        #[cfg(not(unix))]
+        Ok(info) if info.is_dir() => Ok(true),
         Ok(_) => Err("unsafe_directory"),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
         Err(_) => Err("unreadable_directory"),
@@ -319,7 +330,14 @@ fn entries(path: &Path) -> Result<Vec<PathBuf>> {
 }
 
 fn owned_file(info: &Metadata) -> bool {
-    info.is_file() && info.nlink() == 1 && info.uid() == unsafe { libc::geteuid() }
+    #[cfg(unix)]
+    {
+        info.is_file() && info.nlink() == 1 && info.uid() == unsafe { libc::geteuid() }
+    }
+    #[cfg(not(unix))]
+    {
+        info.is_file()
+    }
 }
 
 fn sidecars(database: &Path) -> Result<bool> {
@@ -542,6 +560,7 @@ fn inspect_store(
     report
 }
 
+#[cfg(unix)]
 fn open_store(root: &Path, path: &Path) -> Option<File> {
     let flags = libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
     let mut directory = OpenOptions::new()
@@ -568,6 +587,19 @@ fn open_store(root: &Path, path: &Path) -> Option<File> {
     Some(directory)
 }
 
+#[cfg(not(unix))]
+fn open_store(root: &Path, path: &Path) -> Option<File> {
+    if !path.starts_with(root) {
+        return None;
+    }
+    let file = File::open(path).ok()?;
+    if !file.metadata().ok()?.is_dir() {
+        return None;
+    }
+    Some(file)
+}
+
+#[cfg(unix)]
 fn candidate(directory: &File, path: &Path, hash: &str, apply: bool) -> Result<u64> {
     let name = CString::new(hash).map_err(|_| "unexpected_blob_name")?;
     // Resolve the leaf relative to the already-open store so a path replacement
@@ -597,6 +629,25 @@ fn candidate(directory: &File, path: &Path, hash: &str, apply: bool) -> Result<u
         return Err("unlink_failed");
     }
     Ok(info.blocks() * 512)
+}
+
+#[cfg(not(unix))]
+fn candidate(_directory: &File, path: &Path, hash: &str, apply: bool) -> Result<u64> {
+    let file = File::open(path).map_err(|_| "unsafe_or_unreadable_blob")?;
+    let info = file.metadata().map_err(|_| "unsafe_or_unreadable_blob")?;
+    if !owned_file(&info) || info.len() == 0 || info.len() > history::MAX_FILE {
+        return Err("unsafe_or_unsupported_blob");
+    }
+    let before =
+        crate::scan_cache::FileStamp::from_metadata(&info).ok_or("unsafe_or_unreadable_blob")?;
+    verify_transcript(&file, hash)?;
+    if crate::scan_cache::FileStamp::of(path).as_ref() != Some(&before) {
+        return Err("file_changed");
+    }
+    if apply {
+        fs::remove_file(path).map_err(|_| "unlink_failed")?;
+    }
+    Ok(info.len())
 }
 
 fn verify_transcript(file: &File, expected: &str) -> Result<()> {

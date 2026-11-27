@@ -11,10 +11,11 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     io::{self, Read},
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
+#[cfg(unix)]
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 
 mod watch;
 
@@ -253,12 +254,19 @@ fn read_file(path: &Path) -> io::Result<Option<File>> {
             format!("link:{}", fs::read_link(path)?.display()),
         )
     } else if metadata.is_file() && metadata.len() <= MAX_FILE {
-        let file = fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-            .open(path)?;
+        let mut options = fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+        }
+        let file = options.open(path)?;
         let opened = file.metadata()?;
-        if !opened.is_file() || (opened.dev(), opened.ino()) != (metadata.dev(), metadata.ino()) {
+        if !opened.is_file()
+            || (crate::compat::meta_dev(&opened), crate::compat::meta_ino(&opened))
+                != (crate::compat::meta_dev(&metadata), crate::compat::meta_ino(&metadata))
+        {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "Integration file changed while opening",
@@ -283,9 +291,9 @@ fn read_file(path: &Path) -> io::Result<Option<File>> {
     Ok(Some(File {
         bytes,
         hash,
-        device: metadata.dev(),
-        inode: metadata.ino(),
-        mode: metadata.mode(),
+        device: crate::compat::meta_dev(&metadata),
+        inode: crate::compat::meta_ino(&metadata),
+        mode: crate::compat::meta_mode(&metadata),
     }))
 }
 
@@ -844,10 +852,10 @@ fn reconcile_with(
                 match checkout {
                     Ok(metadata)
                         if metadata.is_dir()
-                            && (entry.device == 0 || metadata.dev() == entry.device) => {}
+                            && (entry.device == 0 || crate::compat::meta_dev(&metadata) == entry.device) => {}
                     Err(error) if error.kind() == io::ErrorKind::NotFound => {
                         let parent = entry.checkout.parent().ok_or("Missing worktree parent")?;
-                        if fs::metadata(parent).is_ok_and(|m| m.is_dir() && m.dev() == entry.device)
+                        if fs::metadata(parent).is_ok_and(|m| m.is_dir() && crate::compat::meta_dev(&m) == entry.device)
                         {
                             return retire(db, entry);
                         }
@@ -890,9 +898,9 @@ fn reconcile_with(
                 checkout: next.checkout.to_path_buf(),
                 admin: key.0,
                 relative: next.relative.clone(),
-                device: fs::metadata(next.checkout)
-                    .map_err(|e| e.to_string())?
-                    .dev(),
+                device: crate::compat::meta_dev(
+                    &fs::metadata(next.checkout).map_err(|e| e.to_string())?,
+                ),
                 inode: 0,
                 fingerprint: String::new(),
                 source_root: next.root.to_path_buf(),

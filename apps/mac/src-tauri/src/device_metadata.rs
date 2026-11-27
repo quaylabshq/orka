@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_imports)]
 use crate::db::{self, Result};
 use rusqlite::Connection;
 use serde_json::{json, Value};

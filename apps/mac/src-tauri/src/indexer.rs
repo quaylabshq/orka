@@ -17,13 +17,12 @@ use uuid::Uuid;
 use walkdir::WalkDir;
 pub const SKILL_MIRROR_REVIEW: &str = "Skill copies differ between .agents/skills and .claude/skills. Review and align them to resume this skill's sync; both local copies are preserved.";
 pub fn folder_identity(path: &Path) -> Result<String> {
-    use std::os::unix::fs::MetadataExt;
     let meta = fs::metadata(path).map_err(|e| e.to_string())?;
     #[cfg(target_os = "macos")]
     if let Some(volume) = volume_identity(path) {
         return Ok(format!("volume:{volume}:{}", meta.ino()));
     }
-    Ok(format!("{}:{}", meta.dev(), meta.ino()))
+    Ok(format!("{}:{}", crate::compat::meta_dev(&meta), crate::compat::meta_ino(&meta)))
 }
 
 #[cfg(target_os = "macos")]
@@ -43,9 +42,8 @@ pub fn folder_identity_matches(path: &Path, expected: &str) -> Result<bool> {
     if expected.starts_with("volume:") {
         return Ok(folder_identity(path)? == expected);
     }
-    use std::os::unix::fs::MetadataExt;
     let meta = fs::metadata(path).map_err(|e| e.to_string())?;
-    Ok(format!("{}:{}", meta.dev(), meta.ino()) == expected)
+    Ok(format!("{}:{}", crate::compat::meta_dev(&meta), crate::compat::meta_ino(&meta)) == expected)
 }
 #[cfg(test)]
 pub fn claude_memory(root: &Path) -> Result<PathBuf> {

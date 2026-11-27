@@ -400,7 +400,7 @@ mod tests {
     #[test]
     fn canonical_signature_matches_typescript_fixture() {
         let fixture: Value = serde_json::from_str(include_str!(
-            "../../../../../node_modules/@portable/protocol/fixtures/env-signature.json"
+            "../../../../../server/packages/protocol/fixtures/env-signature.json"
         ))
         .unwrap();
         assert_eq!(

@@ -130,6 +130,7 @@ fn hook_installation_replaces_non_array_event_values_as_before() {
 }
 
 #[test]
+#[cfg(unix)]
 fn configured_hooks_do_not_bypass_installer_directory_safety() {
     let f = HookFixture::new();
     let outside = HookFixture::new();

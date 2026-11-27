@@ -6,7 +6,6 @@ use serde_json::{json, Value};
 use std::{
     collections::HashMap,
     fs,
-    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
 };
 use uuid::Uuid;
@@ -236,20 +235,17 @@ pub(crate) fn prepare_lock(path: &Path) -> Result<PathBuf> {
     let lock = lock_file(path)?;
     let directory = lock.parent().ok_or("Missing lock directory")?;
     packages::safe_directory(&db::root()?, directory)?;
-    fs::set_permissions(directory, fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
+    crate::compat::set_permissions_owner_rwx(directory)?;
     Ok(lock)
 }
 
 pub(crate) fn launch_in_use(path: &Path) -> bool {
-    use std::os::fd::AsRawFd;
+    use fs2::FileExt;
     let Ok(lock) = lock_file(path) else {
         return true;
     };
     match fs::File::open(lock) {
-        Ok(file) => {
-            // The terminal's lockf process holds this same lock until Pi exits.
-            unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) != 0 }
-        }
+        Ok(file) => file.try_lock_exclusive().is_err(),
         Err(error) => error.kind() != std::io::ErrorKind::NotFound,
     }
 }
@@ -267,8 +263,7 @@ pub(crate) fn fork(db: &rusqlite::Connection, project: &Value, resource: &Value)
     header.insert("timestamp".into(), json!(db::now()));
     let directory = copy_directory()?;
     packages::safe_directory(&db::root()?, &directory)?;
-    fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))
-        .map_err(|e| e.to_string())?;
+    crate::compat::set_permissions_owner_rwx(&directory)?;
     let path = directory.join(format!("{id}.jsonl"));
     db::atomic(&path, &native::encode(&records))?;
     // The stored snapshot, like every other cached session, is redacted.

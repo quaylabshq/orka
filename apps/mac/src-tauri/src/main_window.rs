@@ -1,4 +1,5 @@
 /// Orka's URL scheme. Sign-in callbacks and join links share it.
+#[allow(dead_code)]
 const SCHEME: &str = "orka";
 
 /// Routes sign-in callbacks independently of any webview. Returns whether to

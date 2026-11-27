@@ -16,16 +16,16 @@ const STATE_FILE: &str = "plugin-connection.json";
 const SCOPES: [&str; 3] = ["orka.read", "orka.write", "orka.manage"];
 
 fn state_lock() -> Result<fs::File> {
-    use std::os::unix::fs::OpenOptionsExt;
     let root = db::root()?;
     fs::create_dir_all(&root).map_err(|e| e.to_string())?;
-    let file = fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
+    let mut opts = fs::OpenOptions::new();
+    opts.create(true).truncate(false).read(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    let file = opts
         .open(root.join("plugin-connection.lock"))
         .map_err(|e| e.to_string())?;
     file.lock_exclusive().map_err(|e| e.to_string())?;

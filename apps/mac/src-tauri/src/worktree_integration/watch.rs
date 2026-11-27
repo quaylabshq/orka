@@ -2,11 +2,12 @@ use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Duration,
 };
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
 use tokio::{sync::Notify, time::Instant};
 
 const DEBOUNCE: Duration = Duration::from_millis(150);
@@ -77,7 +78,10 @@ impl Watches {
             .into_iter()
             .filter_map(|common| {
                 let meta = fs::metadata(common).ok()?;
-                meta.is_dir().then_some((common, (meta.dev(), meta.ino())))
+                meta.is_dir().then_some((
+                    common,
+                    (crate::compat::meta_dev(&meta), crate::compat::meta_ino(&meta)),
+                ))
             })
             .collect();
         self.subscriptions

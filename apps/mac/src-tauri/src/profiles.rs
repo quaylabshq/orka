@@ -63,13 +63,12 @@ pub fn root(name: &str) -> Result<PathBuf> {
 }
 
 fn prepare(name: &str) -> Result<PathBuf> {
-    use std::os::unix::fs::PermissionsExt;
     let path = root(name)?;
     if fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
         return Err("Profile directory cannot be a symlink".into());
     }
     fs::create_dir_all(&path).map_err(|e| e.to_string())?;
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
+    crate::compat::set_permissions_owner_rwx(&path)?;
     Ok(path)
 }
 

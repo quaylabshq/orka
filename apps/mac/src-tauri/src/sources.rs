@@ -425,13 +425,14 @@ fn is_mount_root(path: &Path) -> bool {
 
 #[cfg(not(target_os = "macos"))]
 fn is_mount_root(path: &Path) -> bool {
-    use std::os::unix::fs::MetadataExt;
-
     let Some(parent) = path.parent() else {
         return true;
     };
     fs::metadata(path)
-        .and_then(|metadata| Ok(metadata.dev() != fs::metadata(parent)?.dev()))
+        .and_then(|metadata| {
+            let parent_meta = fs::metadata(parent)?;
+            Ok(crate::compat::meta_dev(&metadata) != crate::compat::meta_dev(&parent_meta))
+        })
         .unwrap_or(false)
 }
 

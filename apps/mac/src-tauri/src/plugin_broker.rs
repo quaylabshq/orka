@@ -9,13 +9,6 @@ use serde_json::{json, Value};
 use std::{
     fs,
     io::{Read, Write},
-    os::{
-        fd::AsRawFd,
-        unix::{
-            fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
-            net::{UnixListener, UnixStream},
-        },
-    },
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -23,6 +16,16 @@ use std::{
     },
     time::Duration,
 };
+#[cfg(unix)]
+use std::os::{
+    fd::AsRawFd,
+    unix::{
+        fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
+        net::{UnixListener, UnixStream},
+    },
+};
+#[cfg(not(unix))]
+use std::net::{TcpListener as UnixListener, TcpStream as UnixStream};
 
 const REQUEST_LIMIT: usize = 2_000_000;
 const RESPONSE_LIMIT: usize = 16_000_000;
@@ -32,27 +35,38 @@ pub(crate) const UNAVAILABLE: &str = "Orka desktop is unavailable. Open Orka and
 // The short directory is derived from the entire profile path and private to this UID.
 pub(crate) fn directory() -> Result<PathBuf> {
     let profile = db::root()?;
-    Ok(PathBuf::from("/tmp").join(format!(
+    #[cfg(unix)]
+    return Ok(PathBuf::from("/tmp").join(format!(
         "orka-connector-{}-{}",
         unsafe { libc::geteuid() },
         &db::digest(profile.to_string_lossy().as_bytes())[..24]
-    )))
+    )));
+    #[cfg(not(unix))]
+    return Ok(std::env::temp_dir().join(format!(
+        "orka-connector-{}",
+        &db::digest(profile.to_string_lossy().as_bytes())[..24]
+    )));
 }
 fn secure_directory(create: bool) -> Result<PathBuf> {
     let path = directory()?;
     if create {
-        match fs::DirBuilder::new().mode(0o700).create(&path) {
+        match fs::create_dir_all(&path) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(e) => return Err(e.to_string()),
         }
     }
     let meta = fs::symlink_metadata(&path).map_err(|_| UNAVAILABLE)?;
+    #[cfg(unix)]
     if !meta.is_dir()
         || meta.file_type().is_symlink()
         || meta.uid() != unsafe { libc::geteuid() }
         || meta.mode() & 0o777 != 0o700
     {
+        return Err("Unsafe Orka connector directory".into());
+    }
+    #[cfg(not(unix))]
+    if !meta.is_dir() {
         return Err("Unsafe Orka connector directory".into());
     }
     Ok(path)
@@ -84,8 +98,13 @@ pub(crate) fn verify_peer(stream: &UnixStream) -> Result<()> {
         }
         credentials.uid
     };
+    #[cfg(unix)]
     if uid != unsafe { libc::geteuid() } {
         return Err("Connector peer belongs to another user".into());
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = stream;
     }
     Ok(())
 }
@@ -132,24 +151,35 @@ impl Drop for Broker {
 }
 pub(crate) fn start() -> Result<Broker> {
     let dir = secure_directory(true)?;
-    let lock = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
+    let mut lock_opts = fs::OpenOptions::new();
+    lock_opts.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        lock_opts.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    let lock = lock_opts
         .open(dir.join("owner.lock"))
         .map_err(|e| e.to_string())?;
     lock.try_lock_exclusive()
         .map_err(|_| "The Orka desktop connector is already running")?;
     let path = dir.join("broker.sock");
     if path.exists() {
-        fs::remove_file(&path).map_err(|e| e.to_string())?;
+        let _ = fs::remove_file(&path);
     }
+    #[cfg(unix)]
     let listener =
         UnixListener::bind(&path).map_err(|e| format!("Cannot start desktop connector: {e}"))?;
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    crate::compat::set_permissions_owner_rw(&path)?;
+    #[cfg(not(unix))]
+    let listener = {
+        let l = UnixListener::bind("127.0.0.1:0")
+            .map_err(|e| format!("Cannot start desktop connector: {e}"))?;
+        let port = l.local_addr().map_err(|e| e.to_string())?.port();
+        fs::write(dir.join("broker.port"), port.to_string()).map_err(|e| e.to_string())?;
+        l
+    };
     listener.set_nonblocking(true).map_err(|e| e.to_string())?;
     let stop = Arc::new(AtomicBool::new(false));
     let stopping = stop.clone();
@@ -255,16 +285,25 @@ async fn dispatch(request: &Value, peer: &Peer) -> Result<Value> {
 }
 pub(crate) fn exchange(request: &Value) -> Result<Value> {
     let dir = secure_directory(false)?;
-    let path = dir.join("broker.sock");
-    let meta = fs::symlink_metadata(&path).map_err(|_| UNAVAILABLE)?;
-    use std::os::unix::fs::FileTypeExt;
-    if !meta.file_type().is_socket()
-        || meta.uid() != unsafe { libc::geteuid() }
-        || meta.mode() & 0o777 != 0o600
-    {
-        return Err("Unsafe Orka connector socket".into());
-    }
-    let mut stream = UnixStream::connect(path).map_err(|_| UNAVAILABLE)?;
+    #[cfg(unix)]
+    let mut stream = {
+        let path = dir.join("broker.sock");
+        let meta = fs::symlink_metadata(&path).map_err(|_| UNAVAILABLE)?;
+        use std::os::unix::fs::FileTypeExt;
+        if !meta.file_type().is_socket()
+            || meta.uid() != unsafe { libc::geteuid() }
+            || meta.mode() & 0o777 != 0o600
+        {
+            return Err("Unsafe Orka connector socket".into());
+        }
+        UnixStream::connect(path).map_err(|_| UNAVAILABLE)?
+    };
+    #[cfg(not(unix))]
+    let mut stream = {
+        let port_str = fs::read_to_string(dir.join("broker.port")).map_err(|_| UNAVAILABLE)?;
+        let port: u16 = port_str.trim().parse().map_err(|_| UNAVAILABLE)?;
+        UnixStream::connect(format!("127.0.0.1:{port}")).map_err(|_| UNAVAILABLE)?
+    };
     verify_peer(&stream)?;
     stream
         .set_read_timeout(Some(Duration::from_secs(90)))

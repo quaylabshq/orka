@@ -208,8 +208,7 @@ pub fn profile_path(id: &str, origin: &str) -> Result<PathBuf> {
 }
 pub fn open_at(root: &Path) -> Result<Connection> {
     fs::create_dir_all(root).map_err(|e| e.to_string())?;
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(root, fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
+    crate::compat::set_permissions_owner_rwx(root)?;
     let db = Connection::open(root.join("sync.sqlite")).map_err(|e| e.to_string())?;
     db.busy_timeout(std::time::Duration::from_secs(5))
         .map_err(|e| e.to_string())?;

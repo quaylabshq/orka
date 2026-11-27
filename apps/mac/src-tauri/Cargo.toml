@@ -19,7 +19,7 @@ memchr = "2"
 rusqlite = { version = "0.41.1", features = ["bundled"] }
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 tokio = { version = "1", features = ["full"] }
-keyring = { version = "3", features = ["apple-native"] }
+keyring = { version = "3" }
 uuid = { version = "1", features = ["v4", "v5"] }
 sha2 = "0.11"
 dirs = "7"
@@ -39,11 +39,19 @@ ignore = "0.4"
 notify = "8.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+tauri = { version = "2", features = ["macos-private-api"] }
+keyring = { version = "3", features = ["apple-native"] }
 core-foundation = "0.10"
 security-framework = { version = "3.7", default-features = false }
 objc2 = "0.6.4"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSAppearance", "NSScreen", "NSWindow", "NSView", "NSResponder", "NSButton", "NSControl", "NSWorkspace", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSGraphicsContext", "objc2-core-graphics"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSString", "NSURL", "NSData", "NSDictionary", "NSGeometry", "NSError"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", features = ["linux-native"] }
 
 [dev-dependencies]
 toml = "0.8"
