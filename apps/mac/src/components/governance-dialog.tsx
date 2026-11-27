@@ -11,7 +11,7 @@ import React, {
 } from "react";
 import { useToastNotice } from "./toasts.js";
 import type { Project, Snapshot } from "../types.js";
-import { Overlay } from "./overlay.js";
+import { Modal } from "./modal.js";
 import { handleReviewTab } from "./review-focus.js";
 import { Button } from "./button.js";
 import { IconButton } from "./icon-button.js";
@@ -165,8 +165,8 @@ export function GovernanceDialog({
   const previewStale = stale || (preview && previewSignature !== signature);
   const title = initialEnv ? "Replace ENV set" : "Review local update";
   return (
-    <Overlay
-      open
+    <Modal
+      legacyFrame
       onClose={() => {
         if (!busy) onClose();
       }}
@@ -354,6 +354,6 @@ export function GovernanceDialog({
             </Button>
           ))}
       </footer>
-    </Overlay>
+    </Modal>
   );
 }

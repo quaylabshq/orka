@@ -4,7 +4,7 @@ import { save } from "@tauri-apps/plugin-dialog";
 import { DownloadIcon, FolderIcon, PauseIcon } from "lucide-react";
 import type { Project } from "../types.js";
 import { Button } from "./button.js";
-import { Overlay } from "./overlay.js";
+import { Modal } from "./modal.js";
 import { Icon } from "./icon.js";
 import { ActivityIndicator } from "./activity-indicator.js";
 import { projectLabel } from "./project-navigation.js";
@@ -119,8 +119,8 @@ export function InactiveProject({
         )}
       </div>
       {confirming && (
-        <Overlay
-          open
+        <Modal
+          legacyFrame
           title="Remove from this Mac?"
           className="settings-confirm project-lifecycle-confirm"
           onClose={() => {
@@ -155,7 +155,7 @@ export function InactiveProject({
               Remove
             </Button>
           </div>
-        </Overlay>
+        </Modal>
       )}
     </section>
   );

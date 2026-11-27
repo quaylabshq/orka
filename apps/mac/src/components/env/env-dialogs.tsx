@@ -8,7 +8,7 @@ import { ApprovalCodeDialog } from "./code-dialog.js";
 import { ImportEnvDialog } from "./import-dialog.js";
 import { Button } from "../button.js";
 import { IconButton } from "../icon-button.js";
-import { Overlay } from "../overlay.js";
+import { Modal } from "../modal.js";
 import type { EnvController } from "./use-environments.js";
 import type { ReactNode } from "react";
 function EnvDialog({
@@ -23,7 +23,7 @@ function EnvDialog({
   className?: string;
 }) {
   return (
-    <Overlay open title={title} onClose={onClose} className="env-dialog">
+    <Modal legacyFrame title={title} onClose={onClose} className="env-dialog">
       <header className="env-dialog-heading">
         <h2>{title}</h2>
         <IconButton
@@ -35,7 +35,7 @@ function EnvDialog({
         />
       </header>
       {children}
-    </Overlay>
+    </Modal>
   );
 }
 export function EnvDialogs({ c }: { c: EnvController }) {

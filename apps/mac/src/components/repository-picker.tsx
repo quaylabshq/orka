@@ -11,7 +11,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import type { GitHubRepository } from "@portable/protocol";
 import type { Project } from "../types.js";
 import type { RepositoryController } from "./use-repositories.js";
-import { Overlay } from "./overlay.js";
+import { Modal } from "./modal.js";
 import { Button } from "./button.js";
 import { Icon } from "./icon.js";
 import { IconButton } from "./icon-button.js";
@@ -297,8 +297,8 @@ export function RepositoryPicker({
     else onClose();
   };
   return (
-    <Overlay
-      open
+    <Modal
+      legacyFrame
       title="Connect repository"
       className="repository-dialog"
       onClose={close}
@@ -674,6 +674,6 @@ export function RepositoryPicker({
       {(error || loadError || matchingError) && (
         <p role="alert">{error || loadError || matchingError}</p>
       )}
-    </Overlay>
+    </Modal>
   );
 }

@@ -32,7 +32,7 @@ import { resourceDisplayTitle } from "../resource-presentation.js";
 import { PermissionSelect } from "../permission-select.js";
 import { ActivityIndicator } from "../activity-indicator.js";
 import { Skeleton } from "skullet/react";
-import { Overlay } from "../overlay.js";
+import { Modal } from "../modal.js";
 import {
   SettingsHeading,
   settingsScope,
@@ -726,8 +726,8 @@ export const SettingsPermissions = forwardRef<
         </details>
       )}
       {migrationOpen && migration && (
-        <Overlay
-          open
+        <Modal
+          legacyFrame
           title="Review role migration"
           className="settings-migration settings-migration--permissions"
           onClose={() => setMigrationOpen(false)}
@@ -867,11 +867,11 @@ export const SettingsPermissions = forwardRef<
               </Button>
             </div>
           </div>
-        </Overlay>
+        </Modal>
       )}
       {conflict && record && (
-        <Overlay
-          open
+        <Modal
+          legacyFrame
           title="Review latest permissions"
           className="settings-migration settings-migration--permissions"
           onClose={() => setConflict(null)}
@@ -975,7 +975,7 @@ export const SettingsPermissions = forwardRef<
               </Button>
             </div>
           </div>
-        </Overlay>
+        </Modal>
       )}
     </>
   );

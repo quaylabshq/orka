@@ -4,7 +4,7 @@ import { invoke } from "./product-command.js";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "./button.js";
 import { IconButton } from "./icon-button.js";
-import { Overlay } from "./overlay.js";
+import { Modal } from "./modal.js";
 import { FileReview } from "./file-review.js";
 import type { FileManifestEntry } from "./diff-model.js";
 import { handleReviewTab } from "./review-focus.js";
@@ -107,8 +107,8 @@ export function QueuedUploadReview({
     }
   };
   return (
-    <Overlay
-      open
+    <Modal
+      legacyFrame
       title="Review queued upload"
       className="changes-review-modal"
       onClose={() => {
@@ -199,6 +199,6 @@ export function QueuedUploadReview({
           {busy ? "Queuing update…" : "Queue reviewed update"}
         </Button>
       </footer>
-    </Overlay>
+    </Modal>
   );
 }

@@ -63,3 +63,33 @@ test("the checked-in component preview shows the current variants and states", a
     table.locator(".ui-button--primary.preview-state-pressed").first(),
   ).toHaveCSS("filter", /brightness\(0\.\d+\)/);
 });
+
+test("the Modal sample opens at each of the three widths with one title row", async ({
+  page,
+}, testInfo) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("/?design-system");
+  const gallery = page.getByRole("dialog", { name: "Design system" });
+  await gallery.getByRole("button", { name: "Modals", exact: true }).click();
+  for (const [size, width] of [
+    ["compact", 340],
+    ["default", 390],
+    ["wide", 640],
+  ] as const) {
+    await gallery
+      .getByRole("button", { name: `${size} / ${width}px`, exact: true })
+      .click();
+    const sample = page.getByRole("dialog", { name: "Delete shared plan" });
+    await expect(sample).toBeVisible();
+    expect((await sample.boundingBox())!.width).toBeCloseTo(width, 0);
+    await expect(sample.locator("h2")).toHaveCount(1);
+    await expect(sample.getByRole("button", { name: "Close" })).toBeVisible();
+    await page.screenshot({
+      path: testInfo.outputPath(`modal-${size}.png`),
+      animations: "disabled",
+    });
+    await page.keyboard.press("Escape");
+    await expect(sample).toHaveCount(0);
+    await expect(gallery).toBeVisible();
+  }
+});

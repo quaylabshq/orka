@@ -13,7 +13,7 @@ import type { ProjectResource } from "../types.js";
 import { Button } from "./button.js";
 import { Icon } from "./icon.js";
 import { IconButton } from "./icon-button.js";
-import { Overlay } from "./overlay.js";
+import { Modal } from "./modal.js";
 import { TextField } from "./text-field.js";
 
 type LinkStatus = { active: boolean; linkVersion: string | null; url?: string };
@@ -149,8 +149,8 @@ export function ArtifactLinkDialog({
     }
   };
   return (
-    <Overlay
-      open
+    <Modal
+      legacyFrame
       title="Manage public link"
       className="artifact-link-dialog"
       onClose={() => {
@@ -273,6 +273,6 @@ export function ArtifactLinkDialog({
           </>
         )}
       </div>
-    </Overlay>
+    </Modal>
   );
 }

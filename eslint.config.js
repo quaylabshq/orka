@@ -48,6 +48,28 @@ export default defineConfig(
     },
   },
   {
+    files: ["apps/mac/src/**/*.{ts,tsx}"],
+    // Onboarding is a full-screen sequence rather than a dialog.
+    ignores: [
+      "apps/mac/src/components/modal.tsx",
+      "apps/mac/src/components/onboarding/**",
+    ],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: [
+            {
+              name: "@radix-ui/react-dialog",
+              message:
+                "Use Modal or Drawer from components/modal.js so every dialog shares one frame.",
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
     files: ["tests/ui/**/*.ts", "tests/e2e/**/*.ts"],
     languageOptions: { globals: globals.browser },
     // Browser fixtures emulate the native bridge, including deliberately malformed responses.

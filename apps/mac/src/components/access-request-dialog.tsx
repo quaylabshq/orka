@@ -4,7 +4,7 @@ import type { ReviewRequest } from "@portable/protocol";
 import { ActivityIndicator } from "./activity-indicator.js";
 import { Button } from "./button.js";
 import { IconButton } from "./icon-button.js";
-import { Overlay } from "./overlay.js";
+import { Modal } from "./modal.js";
 import {
   accessNames,
   memberRule,
@@ -77,8 +77,8 @@ export function AccessRequestDialog({
       .finally(() => setDeciding(null));
   };
   return (
-    <Overlay
-      open
+    <Modal
+      legacyFrame
       title={heading}
       className="settings-confirm access-request-dialog"
       onClose={() => {
@@ -156,6 +156,6 @@ export function AccessRequestDialog({
           </Button>
         </div>
       )}
-    </Overlay>
+    </Modal>
   );
 }

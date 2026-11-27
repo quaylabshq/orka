@@ -42,7 +42,7 @@ import {
   ItemMenuButton,
   type ItemMenuAction,
 } from "./item-menu.js";
-import { Overlay } from "./overlay.js";
+import { Modal } from "./modal.js";
 import { Button } from "./button.js";
 import { Icon } from "./icon.js";
 import { IconButton } from "./icon-button.js";
@@ -848,8 +848,8 @@ function SessionLaunchDialog({
     sessionSelection,
   });
   return (
-    <Overlay
-      open
+    <Modal
+      legacyFrame
       title={title}
       className="session-launch-dialog"
       onClose={onClose}
@@ -889,7 +889,7 @@ function SessionLaunchDialog({
           />
         </div>
       )}
-    </Overlay>
+    </Modal>
   );
 }
 
@@ -1033,8 +1033,8 @@ function ResourceCommandDialog({
         ? `${progress.completed} checked`
         : undefined;
   return (
-    <Overlay
-      open
+    <Modal
+      legacyFrame
       title={title}
       onClose={() => {
         if (!busy) onClose();
@@ -1206,6 +1206,6 @@ function ResourceCommandDialog({
           </Button>
         </div>
       </div>
-    </Overlay>
+    </Modal>
   );
 }

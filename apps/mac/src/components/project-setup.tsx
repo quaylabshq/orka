@@ -12,7 +12,7 @@ import { Button } from "./button.js";
 import { EmptyState } from "./empty-state.js";
 import { Icon } from "./icon.js";
 import React, { useLayoutEffect, useRef } from "react";
-import { Overlay } from "./overlay.js";
+import { Modal } from "./modal.js";
 import { ProjectSharingChoices } from "./project-sharing.js";
 import { SegmentedControl } from "./segmented-control.js";
 import type { ProjectSharing } from "../types.js";
@@ -99,8 +99,8 @@ export function ProjectSetupDialog({
   // While waiting, closing the dialog cancels the pending request instead.
   const dismiss = waiting ? onCancelWait : busy ? undefined : onClose;
   return (
-    <Overlay
-      open
+    <Modal
+      legacyFrame
       onClose={() => dismiss?.()}
       title={title}
       className="create-project-modal"
@@ -284,7 +284,7 @@ export function ProjectSetupDialog({
           </Button>
         </div>
       </form>
-    </Overlay>
+    </Modal>
   );
 }
 

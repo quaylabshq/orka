@@ -1,39 +1,6 @@
 /* One fixed frame for every share state; only text inside it changes. */
-.modal.toast-host-modal.share-dialog {
-  display: flex;
-  width: min(390px, calc(100vw - 48px));
+.modal.toast-host-modal.ui-modal.share-dialog {
   height: min(438px, calc(100vh - 48px));
-  flex-direction: column;
-  overflow: hidden;
-  padding: 0;
-  border-radius: var(--radius-overlay);
-}
-
-.share-dialog-header {
-  display: flex;
-  flex: 0 0 48px;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 0 12px 0 20px;
-  border-bottom: 1px solid var(--border-default);
-}
-
-.modal.share-dialog h2 {
-  overflow: hidden;
-  margin: 0;
-  font-size: var(--body-md-font-size);
-  font-weight: var(--font-weight-medium);
-  line-height: var(--body-md-line-height);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.share-dialog-body {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 16px 20px 0;
 }
 
 .share-dialog-preview {
@@ -251,29 +218,4 @@
   to {
     background-position: 0 0;
   }
-}
-
-.share-dialog-footer {
-  display: flex;
-  flex-shrink: 0;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 12px;
-  margin-top: auto;
-  padding: 16px 20px 20px;
-}
-
-/* The reason a step failed, beside the button that retries it. */
-.modal.share-dialog .share-dialog-error {
-  display: -webkit-box;
-  min-width: 0;
-  flex: 1;
-  overflow: hidden;
-  margin: 0;
-  max-height: 32px;
-  color: var(--red-text);
-  font-size: var(--body-xs-font-size);
-  line-height: 16px;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
 }

@@ -1062,7 +1062,7 @@ for (const viewport of [
           [
             el,
             ...[
-              ".share-dialog-header",
+              ".ui-modal-header",
               ".share-dialog-preview",
               ".share-dialog-facts",
               ".share-dialog-action",
