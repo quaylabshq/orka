@@ -69,7 +69,7 @@ Keep operation IDs when retrying uncertain writes. Reread stale revisions before
 
 ## Selected sharing and handoffs
 
-Only an explicit request authorizes publishing one selected frozen snapshot. Use `list_local_resources`, identify the actual item, `preview_share`, then `share_selected`. Recency alone does not identify the current conversation. Sharing once does not authorize future turns or enable automatic category sharing. Complete skills include their supporting files; arbitrary paths and ENV files cannot be shared.
+Only an explicit request authorizes publishing one selected frozen snapshot. Use `list_local_resources`, identify the actual item, `preview_share`, then `share_selected`. Pi sharing requires explicit consent to the complete saved tree, including abandoned branches and tool records or reasoning omitted from the reader. Recency alone does not identify the current conversation. Sharing once does not authorize future turns or enable automatic category sharing. Complete skills include their supporting files; arbitrary paths and ENV files cannot be shared.
 
 `prepare_claude_handoff` returns selected shared excerpts, source revisions and URLs plus supplied current-chat context as Markdown and a starter prompt. It does not transfer unseen history, credentials, local changes or executable agent state, and does not publish a resource.
 

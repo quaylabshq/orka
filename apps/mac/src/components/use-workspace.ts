@@ -47,6 +47,7 @@ export function useWorkspace() {
   const [busy, setBusy] = useState(false);
   const active = useRef(true);
   const generation = useRef(0);
+  const pendingSnapshot = useRef(0);
   const locked = useRef(false);
   const scope = JSON.stringify([
     state.profile,
@@ -62,8 +63,9 @@ export function useWorkspace() {
     setActionNotice(null);
   }, [scope]);
 
-  const refresh = useCallback(async () => {
+  const refreshSnapshot = useCallback(async () => {
     const current = ++generation.current;
+    pendingSnapshot.current = current;
     try {
       const next = await invoke<Snapshot>("snapshot");
       if (!active.current || current !== generation.current) return;
@@ -76,13 +78,20 @@ export function useWorkspace() {
           ? selected
           : (next.projects[0]?.id ?? ""),
       );
+      return next;
     } catch (error) {
       if (active.current && current === generation.current) {
         setRefreshError(String(error));
         throw error;
       }
+    } finally {
+      if (pendingSnapshot.current === current) pendingSnapshot.current = 0;
     }
   }, []);
+
+  const refresh = useCallback(async () => {
+    await refreshSnapshot();
+  }, [refreshSnapshot]);
 
   const run = useCallback(
     async (
@@ -150,7 +159,9 @@ export function useWorkspace() {
     let timer: number | undefined;
     const poll = async () => {
       try {
-        if (!locked.current) await refresh();
+        // A poll can wait for the next tick. An explicit post-action read
+        // must still start immediately and supersede an older snapshot.
+        if (!locked.current && !pendingSnapshot.current) await refresh();
       } catch (error) {
         if (!stopped) setRefreshError(String(error));
       } finally {
@@ -254,5 +265,6 @@ export function useWorkspace() {
     act,
     run,
     refresh,
+    refreshSnapshot,
   };
 }

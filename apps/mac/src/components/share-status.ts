@@ -1,5 +1,6 @@
-import type { AccessMode } from "@portable/protocol";
+import type { AccessMode, ReviewRequest } from "@portable/protocol";
 import type { ProjectResource, SyncProgress } from "../types.js";
+import { requestStatus } from "./review-presentation.js";
 
 /** Where the share flow is. Exactly one phase holds at a time. */
 export type SharePhase =
@@ -8,10 +9,18 @@ export type SharePhase =
   | { step: "ready" }
   | { step: "sending"; progress: SyncProgress | null }
   | { step: "share-failed"; error: string }
-  | { step: "approval" }
-  | { step: "conflict"; requestId: string }
+  | { step: "approval"; review: ReviewRequest["status"] }
+  | { step: "conflict"; requestId: string; checking?: boolean; error?: string }
+  | { step: "conflict-unavailable" }
   | { step: "held" }
   | { step: "queued"; unsupported: boolean };
+
+export const shareReviewOutcomes = {
+  pending: { title: "Sent for approval", kind: "info", icon: "clock" },
+  approved: { title: "Request approved", kind: "success", icon: "shield" },
+  rejected: { title: "Request rejected", kind: "error", icon: "warning" },
+  stale: { title: "Request is out of date", kind: "warning", icon: "refresh" },
+} as const;
 
 export type ShareTone = "neutral" | "info" | "warning" | "success" | "danger";
 export type ShareIcon =
@@ -88,19 +97,41 @@ export function shareStatus(facts: ShareFacts): ShareStatus {
   const { phase } = facts;
   const label = shareLabel(facts);
   switch (phase.step) {
-    case "approval":
+    case "approval": {
+      const { title, icon } = shareReviewOutcomes[phase.review];
+      const review = requestStatus(phase.review);
       return {
         ...status(
-          "Sent for approval",
-          "Awaiting approval",
-          "neutral",
-          "clock",
+          title,
+          review.label,
+          phase.review === "pending" ? "neutral" : review.tone,
+          icon,
           "close",
           "Done",
         ),
         secondary: { action: "requests", label: "View request" },
       };
+    }
+    case "conflict-unavailable":
+      return status(
+        "Conflict no longer available",
+        "Project refreshed",
+        "neutral",
+        "refresh",
+        "close",
+        "Done",
+      );
     case "conflict":
+      if (phase.checking)
+        return status(
+          "Someone changed it first",
+          "Refreshing project",
+          "info",
+          "loader",
+          "none",
+          "Refreshing…",
+          true,
+        );
       return status(
         "Someone changed it first",
         "Version conflict",

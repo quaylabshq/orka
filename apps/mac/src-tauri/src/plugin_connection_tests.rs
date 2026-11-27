@@ -504,6 +504,120 @@ fn sign_in_connector_fixture(f: &Fixture) {
     .unwrap();
 }
 
+#[tokio::test]
+async fn connector_pi_shares_require_consent_for_the_frozen_preview_from_either_interface() {
+    let mut f = Fixture::new();
+    let origin = "http://127.0.0.1:1";
+    crate::env::test_support::install_memory_keychain();
+    db::set(&f.db, "config", &json!({"apiUrl":origin})).unwrap();
+    sign_in_connector_fixture(&f);
+    f.db = db::open().unwrap();
+    db::upsert(
+        &f.db,
+        "projects",
+        f.project["id"].as_str().unwrap(),
+        "",
+        &f.project,
+    )
+    .unwrap();
+    let session = Uuid::new_v4().to_string();
+    let secret = "c".repeat(64);
+    let identity = ProcessIdentity::read(std::process::id()).unwrap().0;
+    let peer = Peer {
+        helper: identity.clone(),
+        assistant: identity,
+    };
+    let request = plugin_connection::initialize_session(
+        &session,
+        &secret,
+        "Codex",
+        &peer,
+        Some(AssistantApp::Codex),
+    )
+    .unwrap();
+    plugin_connection::plugin_authorization(
+        "approve".into(),
+        json!({
+            "requestId":request["requestId"],"scopes":["orka.read","orka.write"]
+        }),
+    )
+    .await
+    .unwrap();
+
+    let pi = Uuid::new_v4().to_string();
+    let directory = crate::pi_sessions::directory().unwrap();
+    fs::create_dir_all(&directory).unwrap();
+    fs::write(directory.join(format!("{pi}.jsonl")), native::encode(&[
+        json!({"type":"session","version":3,"id":pi,"cwd":f.root}),
+        json!({"type":"message","id":"a","parentId":null,"message":{"role":"user","content":"Compare"}}),
+        json!({"type":"message","id":"b","parentId":"a","message":{"role":"toolResult","content":"Saved tool result"}}),
+        json!({"type":"message","id":"c","parentId":"a","message":{"role":"assistant","content":"Current branch"}}),
+    ])).unwrap();
+    let project = &f.project["id"];
+    let listed = crate::plugin_mcp::call_session(
+        &session,
+        &secret,
+        "list_local_resources",
+        &json!({"projectId":project,"kind":"session","nativeId":pi}),
+    )
+    .await
+    .unwrap();
+    let item = &listed["structuredContent"]["items"][0];
+    assert_eq!(item["provider"], "pi");
+    let arguments = json!({"projectId":project, "kind":"session", "resourceId":item["resourceId"]});
+    let preview = crate::plugin_mcp::call_session(&session, &secret, "preview_share", &arguments)
+        .await
+        .unwrap();
+    let preview = &preview["structuredContent"];
+    assert_eq!(
+        preview["piScope"],
+        json!({"entries":3,"offBranchEntries":1})
+    );
+    let mut desktop_input = arguments;
+    desktop_input["accountId"] = db::get(&f.db, "user").unwrap();
+    desktop_input["serviceOrigin"] = json!(origin);
+    let desktop =
+        crate::resource_commands::run_command("preview-share".into(), desktop_input, None)
+            .await
+            .unwrap();
+    for args in [
+        json!({"projectId":project, "previewToken":desktop["previewToken"]}),
+        json!({"projectId":project, "previewToken":preview["previewToken"]}),
+        json!({"projectId":project, "previewToken":preview["previewToken"], "acknowledgedPiPreviewToken":desktop["previewToken"]}),
+    ] {
+        let error = crate::plugin_mcp::call_session(&session, &secret, "share_selected", &args)
+            .await
+            .unwrap_err();
+        assert!(
+            error.contains("Confirm sharing the complete Pi session"),
+            "{error}"
+        );
+    }
+    assert!(f.outbox().is_empty());
+    let args = json!({"projectId":project,"previewToken":preview["previewToken"],"acknowledgedPiPreviewToken":preview["previewToken"]});
+    let submit = || crate::plugin_mcp::call_session(&session, &secret, "share_selected", &args);
+    let receipt = submit().await.unwrap();
+    assert_eq!(receipt["structuredContent"]["status"], "queued");
+    assert_eq!(submit().await.unwrap(), receipt);
+    let outbox = f.outbox();
+    assert_eq!(outbox.len(), 1);
+    let change = &outbox[0];
+    assert_eq!(
+        crate::history::resource_records(&change["resource"]).unwrap()[2]["id"],
+        "b"
+    );
+    // Delivery of an existing queue entry retains its authorization after preview cleanup.
+    f.db.execute("DELETE FROM meta WHERE key GLOB 'share-preview:*'", [])
+        .unwrap();
+    let queued = json!({"id":change["id"],"project":project,"path":crate::selective_sharing::QUEUE_PATH,"value":change});
+    assert_eq!(
+        crate::selective_sharing::authorized_origin(&f.db, &queued)
+            .unwrap()
+            .as_deref(),
+        Some(origin)
+    );
+}
+
 #[test]
 fn verified_connector_access_survives_new_processes_but_not_revocation_or_workspace_changes() {
     use std::process::Command;
