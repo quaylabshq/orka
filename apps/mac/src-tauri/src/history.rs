@@ -10,8 +10,6 @@ use std::{
     io::{self, BufRead, BufReader, Read},
     path::{Path, PathBuf},
 };
-#[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt;
 use uuid::Uuid;
 use walkdir::WalkDir;
 

@@ -13,8 +13,6 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
 };
-#[cfg(unix)]
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use zeroize::Zeroizing;
 
 pub fn read_text(path: &Path) -> Result<Zeroizing<String>> {

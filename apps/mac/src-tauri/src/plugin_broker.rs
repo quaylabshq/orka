@@ -20,7 +20,7 @@ use std::{
 use std::os::{
     fd::AsRawFd,
     unix::{
-        fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
+        fs::MetadataExt,
         net::{UnixListener, UnixStream},
     },
 };
@@ -55,6 +55,8 @@ fn secure_directory(create: bool) -> Result<PathBuf> {
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(e) => return Err(e.to_string()),
         }
+        #[cfg(unix)]
+        crate::compat::set_permissions_owner_rwx(&path)?;
     }
     let meta = fs::symlink_metadata(&path).map_err(|_| UNAVAILABLE)?;
     #[cfg(unix)]

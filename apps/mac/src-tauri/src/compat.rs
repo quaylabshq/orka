@@ -1,5 +1,5 @@
 use std::{
-    fs::Metadata,
+    fs::{self, Metadata},
     path::Path,
 };
 use crate::db::Result;

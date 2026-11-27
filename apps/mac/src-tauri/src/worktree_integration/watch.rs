@@ -6,8 +6,6 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
-#[cfg(unix)]
-use std::os::unix::fs::MetadataExt;
 use tokio::{sync::Notify, time::Instant};
 
 const DEBOUNCE: Duration = Duration::from_millis(150);

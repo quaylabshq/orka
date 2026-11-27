@@ -11,8 +11,6 @@ use std::{
     process::{Command, Output, Stdio},
     time::{Duration, Instant},
 };
-#[cfg(unix)]
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use uuid::Uuid;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]

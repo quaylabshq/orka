@@ -7,7 +7,6 @@ export default defineConfig({
   resolve: {
     alias: {
       "@portable/protocol": path.resolve(__dirname, "../../server/packages/protocol/src/index.ts"),
-      "diff": path.resolve(__dirname, "node_modules/diff"),
     },
   },
 });
