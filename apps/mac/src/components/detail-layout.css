@@ -1105,7 +1105,6 @@
 .transcript-edge {
   display: grid;
   align-content: center;
-  min-height: 64px;
 }
 .transcript-range-error {
   display: flex;

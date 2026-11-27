@@ -185,6 +185,105 @@ test("keeps the same record in view through a delayed reopen and repeated forwar
     });
 });
 
+for (const [width, oneLine] of [
+  [900, false],
+  [1160, false],
+  [900, true],
+] as const)
+  test(`preserves the visible phrase after a ${oneLine ? "one-line" : "wrapped"} ending at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: width === 900 ? 640 : 800 });
+    const pageBytes = 16 * 1024;
+    const phrase = "This paragraph was in view before Retry.";
+    const tail = `\n${phrase}\nThe following range completes this transcript.\n`;
+    const sentence =
+      "Please keep earlier paragraphs in view when the next portion loads.\n";
+    const pages =
+      sentence.repeat(600).slice(0, 2 * pageBytes - tail.length) + tail;
+    const ending = oneLine
+      ? "Can you summarize?"
+      : [
+          "## user",
+          "Can you summarize the two layouts before we finish?",
+          "## assistant",
+          "The wide window shows the source details beside the transcript. The compact window places those details above it. Both layouts use the same reading order.",
+          "## user",
+          "That gives us a clear way to check the rest of the session.",
+        ].join("\n\n");
+    const replay = gate();
+    const { scroller, region, reads } = await session(page, {
+      read: async (req) => {
+        if (req.offset === pages.length) {
+          if (req.readerId === "handle-1") throw "Final range interrupted";
+          await replay.pending;
+        }
+        return pageFor(req, pages + ending);
+      },
+    });
+    await expect(region).toContainText("Please keep earlier paragraphs");
+    const scrollToEdge = () =>
+      scroller.evaluate((el) => {
+        el.scrollTop = el.scrollHeight;
+      });
+    await scrollToEdge();
+    await expect(
+      region.locator(`[data-offset="${pageBytes}"] pre`),
+    ).toBeAttached();
+    await scrollToEdge();
+    const retry = region.getByRole("button", { name: "Retry", exact: true });
+    await expect(retry).toBeVisible();
+    await scrollToEdge();
+    await expect(retry).toBeInViewport({ ratio: 1 });
+    const phraseVisible = await region.evaluate((el, phrase) => {
+      const target = Array.from(el.querySelectorAll("pre")).find((pre) =>
+        pre.textContent?.includes(phrase),
+      )!;
+      const range = document.createRange();
+      const text = target.firstChild!;
+      const start = text.textContent!.indexOf(phrase);
+      range.setStart(text, start);
+      range.setEnd(text, start + phrase.length);
+      const y = range.getBoundingClientRect().y;
+      const sample = { drift: 0, active: true };
+      (window as any).retryPhrase = sample;
+      const frame = () => {
+        sample.drift = Math.max(
+          sample.drift,
+          Math.abs(range.getBoundingClientRect().y - y),
+        );
+        if (sample.active) requestAnimationFrame(frame);
+      };
+      frame();
+      const viewport = el.closest(".detail-reader")!.getBoundingClientRect();
+      return (
+        y >= viewport.top &&
+        range.getBoundingClientRect().bottom <= viewport.bottom
+      );
+    }, phrase);
+    expect(phraseVisible).toBe(true);
+    await retry.click();
+    await expect
+      .poll(() => reads[reads.length - 1])
+      .toMatchObject({
+        offset: pages.length,
+        readerId: "handle-2",
+      });
+    replay.release();
+    await expect(region).toContainText("Can you summarize");
+    const drift = await page.evaluate(async () => {
+      // ResizeObserver is deferred to an animation frame by the virtualizer.
+      for (let i = 0; i < 5; i++)
+        await new Promise<void>((resolve) =>
+          requestAnimationFrame(() => resolve()),
+        );
+      const sample = (window as any).retryPhrase;
+      sample.active = false;
+      return sample.drift;
+    });
+    expect(drift).toBeLessThanOrEqual(1);
+  });
+
 for (const direction of ["before", "start", "end"] as const)
   test(`replays the failed ${direction} request on a replacement handle`, async ({
     page,
@@ -264,6 +363,11 @@ for (const identity of ["changed", "unknown"] as const)
       .poll(() => reads.find((r) => r.readerId === "handle-2")?.offset)
       .toBe(0);
     await expect(region.locator(".transcript-block pre")).toHaveCount(0);
+    const changeNotice = region.getByText(
+      "This transcript changed. Showing the new version from the start.",
+    );
+    if (identity === "changed") await expect(changeNotice).toBeInViewport();
+    else await expect(changeNotice).toHaveCount(0);
     firstNew.release();
     await expect(region).toContainText("New snapshot text");
     await expect.poll(() => scroller.evaluate((el) => el.scrollTop)).toBe(0);

@@ -23,6 +23,7 @@ import {
 } from "./transcript-range.js";
 
 const PREVIEW_TOO_LARGE = "transcript_preview_too_large";
+const EDGE_HEIGHT = 64;
 const CACHE_BYTES = 512 * 1024;
 const LOOKAHEAD_PX = 4800;
 const MAX_SELECTION_BLOCKS = 16;
@@ -52,6 +53,7 @@ interface TranscriptReaderProps {
 interface OpenTranscript extends SessionTranscriptOpen {
   attempt: number;
   viewKey: number;
+  changedOnRetry: boolean;
 }
 
 export function TranscriptReader(props: TranscriptReaderProps) {
@@ -99,6 +101,12 @@ export function TranscriptReader(props: TranscriptReaderProps) {
               ...result,
               attempt,
               viewKey: sameSnapshot ? previous.viewKey : attempt,
+              changedOnRetry: sameSnapshot
+                ? previous.changedOnRetry
+                : Boolean(
+                    previous?.sessionSnapshot?.snapshotHash &&
+                    snapshot?.snapshotHash,
+                  ),
             };
           });
         }
@@ -226,6 +234,7 @@ function TranscriptEdge({
   return (
     <div
       className="transcript-edge"
+      style={{ minHeight: EDGE_HEIGHT }}
       data-transcript-edge={side}
       aria-busy={pending}
     >
@@ -314,6 +323,8 @@ function TranscriptText({
   const latestJump = useRef<"end" | "start" | null>(null);
   const generation = useRef(0);
   const anchor = useRef<Anchor | null>(null);
+  const appendedAt = useRef<number | null>(null);
+  const finalEdgeBlock = useRef<TranscriptBlock | undefined>(undefined);
   const previousListMargin = useRef<number | null>(null);
   const loaded = useRef<TranscriptIndex | null>(null);
   const position = useRef<"start" | "end" | null>(null);
@@ -326,6 +337,11 @@ function TranscriptText({
   const [geometry, setGeometry] = useState({ margin: 0, width: 680 });
   const [version, redraw] = useState(0);
   const blocks = index?.blocks ?? NO_BLOCKS;
+  const previousFirstBlock = useRef(blocks[0]);
+  const firstBlockChanged = previousFirstBlock.current !== blocks[0];
+  useLayoutEffect(() => {
+    previousFirstBlock.current = blocks[0];
+  }, [blocks]);
   const ready = index !== null;
   const transcriptTop = geometry.margin - (header.current?.offsetHeight ?? 0);
   const readingText = (readerRef.current?.scrollTop ?? 0) >= transcriptTop;
@@ -335,19 +351,20 @@ function TranscriptText({
     getItemKey: (i) => blockKey(blocks[i]),
     estimateSize: (i) => {
       const { characters, lineCount } = blocks[i];
-      return (
+      return Math.max(
+        finalEdgeBlock.current === blocks[i] ? EDGE_HEIGHT : 0,
         24 *
-        Math.max(
-          lineCount,
-          Math.ceil(characters / Math.max(1, geometry.width / 8)),
-        )
+          Math.max(
+            lineCount,
+            Math.ceil(characters / Math.max(1, geometry.width / 8)),
+          ),
       );
     },
     scrollMargin: geometry.margin,
-    // Keep a visible title or conflict action stationary when earlier text arrives.
-    anchorTo: readingText ? "end" : "start",
+    // Preserve the reading position when a prepend or trim moves the first block.
+    // Anchoring to the end on append would follow a newly measured last block.
+    anchorTo: readingText && firstBlockChanged ? "end" : "start",
     followOnAppend: false,
-    scrollEndThreshold: 1,
     overscan: 2,
     useAnimationFrameWithResizeObserver: true,
     rangeExtractor: (range) =>
@@ -447,6 +464,14 @@ function TranscriptText({
             eof: !backwards && range.eof,
           };
         }
+      }
+    }
+    if (request.kind === "after") {
+      if (current?.blocks[0] === next.blocks[0])
+        appendedAt.current = readerRef.current?.scrollTop ?? null;
+      if (range.eof && nextBlocks.length === 1) {
+        // A one-line ending replaces the loading row without shrinking the viewport.
+        finalEdgeBlock.current = nextBlocks[0];
       }
     }
     loaded.current = next;
@@ -624,6 +649,13 @@ function TranscriptText({
         align: end ? "end" : "start",
       });
       setAnnouncement(end ? "End of transcript" : "Start of transcript");
+    } else if (appendedAt.current !== null) {
+      // Measuring an append can release an old scroll adjustment clamped at the
+      // previous bottom. Preserve the position the reader actually reached.
+      const top = appendedAt.current;
+      appendedAt.current = null;
+      if (readerRef.current && readerRef.current.scrollTop !== top)
+        virtualizer.scrollToOffset(top);
     } else if (anchor.current) {
       const saved = anchor.current;
       anchor.current = null;
@@ -632,7 +664,7 @@ function TranscriptText({
       const at = virtualizer.getOffsetForIndex(i, "start");
       if (at) virtualizer.scrollToOffset(at[0] + saved.within);
     }
-  }, [blocks, geometry, virtualizer]);
+  }, [blocks, geometry, readerRef, virtualizer]);
 
   useEffect(() => {
     const elementAt = (node: Node | null) =>
@@ -907,6 +939,11 @@ function TranscriptText({
           ))}
           {failed !== "invalidated" && download}
         </div>
+        {reader.changedOnRetry && (
+          <p className="content-message" role="status">
+            This transcript changed. Showing the new version from the start.
+          </p>
+        )}
         {index && index.start > 0 && (
           <TranscriptEdge
             side="before"
@@ -955,6 +992,8 @@ function TranscriptText({
               data-index={item.index}
               data-offset={block.offset}
               style={{
+                minHeight:
+                  block === finalEdgeBlock.current ? EDGE_HEIGHT : undefined,
                 transform: `translateY(${item.start - geometry.margin}px)`,
               }}
             >
