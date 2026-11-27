@@ -185,12 +185,12 @@ pub(crate) fn preview_from_local_with_progress(
     Ok(preview)
 }
 
-fn payload_hash(change: &Value, require_approval: bool, check_previous: bool) -> String {
+fn payload_hash(change: &Value, require_approval: bool, legacy_review: Option<&str>) -> String {
     // Bind the review-only destination as well as the frozen bytes. An older
     // daemon that only knows direct submission cannot authorize this request.
-    if check_previous {
+    if let Some(confirmation) = legacy_review {
         db::digest(
-            json!(["reconcile-before-review", change])
+            json!(["reconcile-before-review", confirmation, change])
                 .to_string()
                 .as_bytes(),
         )
@@ -252,16 +252,20 @@ pub(crate) fn migrate_share_destinations(db: &Connection) -> Result<()> {
             || change["id"] != row["id"]
             || receipt["projectId"] != row["project"]
             || change["projectId"] != row["project"]
-            || receipt["payloadHash"] != payload_hash(change, false, false)
+            || receipt["payloadHash"] != payload_hash(change, false, None)
         {
             continue;
         }
         let review = row["review"] != 0;
         receipt["requireApproval"] = json!(review);
         if review {
-            receipt["checkPreviousSubmission"] = json!(true);
+            receipt["legacyReview"] = json!("inferred");
         }
-        receipt["payloadHash"] = json!(payload_hash(change, review, review));
+        receipt["payloadHash"] = json!(payload_hash(
+            change,
+            review,
+            receipt["legacyReview"].as_str()
+        ));
         db::set(
             &tx,
             &format!(
@@ -315,14 +319,12 @@ pub fn queue(db: &Connection, project: &Value, input: &Value) -> Result<Value> {
         || legacy_review
         || preview["requireApproval"] == true
         || input["requireApproval"] == true;
-    let mut check_previous = legacy_review || prior["checkPreviousSubmission"] == true;
+    let mut legacy_consent = prior["legacyReview"]
+        .as_str()
+        .or(legacy_review.then_some("inferred"));
     if !prior.is_null() {
         if prior["payloadHash"]
-            != payload_hash(
-                change,
-                was_approval_only,
-                prior["checkPreviousSubmission"] == true,
-            )
+            != payload_hash(change, was_approval_only, prior["legacyReview"].as_str())
         {
             return Err("Share request no longer matches the preview".into());
         }
@@ -346,19 +348,21 @@ pub fn queue(db: &Connection, project: &Value, input: &Value) -> Result<Value> {
                 return Ok(prior);
             }
             // A changed base requires a new request ID derived from the refreshed base.
-            if check_previous && error.as_deref() == Some(LEGACY_CHANGED) {
+            if legacy_consent.is_some() && error.as_deref() == Some(LEGACY_CHANGED) {
                 return Err(LEGACY_CHANGED.into());
             }
-            if check_previous
+            if legacy_consent == Some("inferred")
                 && error.as_deref() == Some(LEGACY_UNGOVERNED)
                 && project["governed"] == false
             {
                 require_approval =
                     preview["requireApproval"] == true || input["requireApproval"] == true;
-                check_previous = false;
-            } else if preview["requireApproval"] == true || input["requireApproval"] == true {
+                legacy_consent = None;
+            } else if legacy_consent.is_some()
+                && (preview["requireApproval"] == true || input["requireApproval"] == true)
+            {
                 // The new confirmation explicitly chooses review, including across retries.
-                check_previous = false;
+                legacy_consent = Some("confirmed");
             }
             // A fresh review of the same refused bytes keeps its request ID
             // and moves to the end of the queue, after prior reviewed attempts.
@@ -366,10 +370,10 @@ pub fn queue(db: &Connection, project: &Value, input: &Value) -> Result<Value> {
                 .map_err(|e| e.to_string())?;
         }
     }
-    let hash = payload_hash(change, require_approval, check_previous);
+    let hash = payload_hash(change, require_approval, legacy_consent);
     let mut receipt = json!({"requestId":id,"projectId":project["id"],"accountId":input["accountId"],"serviceOrigin":input["serviceOrigin"],"payloadHash":hash,"requireApproval":require_approval,"status":"queued","automaticSharingChanged":false,"paths":preview["paths"],"nativeId":preview["nativeId"],"localResourceId":preview["localResourceId"],"path":preview["path"],"folderIdentity":preview["folderIdentity"]});
-    if check_previous {
-        receipt["checkPreviousSubmission"] = json!(true);
+    if let Some(consent) = legacy_consent {
+        receipt["legacyReview"] = json!(consent);
     }
     db::set(&tx, &key, &receipt)?;
     tx.execute(
@@ -412,7 +416,7 @@ fn authorization(db: &Connection, queued: &Value) -> Result<Option<(String, Valu
     let Some(require_approval) = receipt["requireApproval"].as_bool() else {
         return Ok(None);
     };
-    let authorized = (receipt["checkPreviousSubmission"] != true || require_approval)
+    let authorized = (receipt["legacyReview"].is_null() || require_approval)
         && receipt["status"] == "queued"
         && receipt["requestId"] == id
         && queued["value"]["id"] == id
@@ -427,7 +431,7 @@ fn authorization(db: &Connection, queued: &Value) -> Result<Option<(String, Valu
             == payload_hash(
                 &queued["value"],
                 require_approval,
-                receipt["checkPreviousSubmission"] == true,
+                receipt["legacyReview"].as_str(),
             );
     Ok(authorized.then(|| (origin.to_owned(), receipt)))
 }
@@ -538,7 +542,7 @@ pub async fn send(db: &Connection, owner: &str, queued: &Value) -> Result<Value>
         .ok_or("Missing device")?;
     let registration = crate::device_metadata::registration(device, &capabilities);
     sync::post_device_registration(owner, &origin, registration, false).await?;
-    if receipt["checkPreviousSubmission"] == true {
+    if receipt["legacyReview"].is_string() {
         if let Some(recovered) = recover_legacy_share(
             owner,
             &origin,

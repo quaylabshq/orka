@@ -603,7 +603,7 @@ fn upgrade_routes_only_intact_legacy_shares_and_keeps_the_frozen_change() {
         let receipt = db::get(&upgraded, &key).unwrap();
         assert_eq!(receipt["requireApproval"], review);
         if review {
-            assert_eq!(receipt["checkPreviousSubmission"], true);
+            assert_eq!(receipt["legacyReview"], "inferred");
             let old_approval_digest = db::digest(
                 json!(["submit-for-approval", queued["value"]])
                     .to_string()
@@ -653,6 +653,23 @@ fn upgrade_routes_only_intact_legacy_shares_and_keeps_the_frozen_change() {
     let confirmed = selective_sharing::queue(&f.db, &f.project, &request).unwrap();
     assert_eq!(confirmed["requireApproval"], false);
     assert_eq!(confirmed["payloadHash"], direct["payloadHash"]);
+
+    // An access refusal cannot prove whether the older service committed the share.
+    db::set(&f.db, &key, &restored).unwrap();
+    sync::record_upload_failure(&f.db, &queued, "403: Temporarily denied").unwrap();
+    request["previewToken"] =
+        selective_sharing::preview(&f.db, &f.project, &request).unwrap()["previewToken"].clone();
+    request["requireApproval"] = json!(true);
+    let strict = selective_sharing::queue(&f.db, &f.project, &request).unwrap();
+    assert_eq!(strict["legacyReview"], "confirmed");
+    assert_ne!(strict["payloadHash"], restored["payloadHash"]);
+    sync::record_upload_failure(&f.db, &queued, selective_sharing::LEGACY_UNGOVERNED).unwrap();
+    request["previewToken"] =
+        selective_sharing::preview(&f.db, &f.project, &request).unwrap()["previewToken"].clone();
+    request["requireApproval"] = json!(false);
+    let retry = selective_sharing::queue(&f.db, &f.project, &request).unwrap();
+    assert_eq!(retry["requireApproval"], true);
+    assert_eq!(retry["legacyReview"], "confirmed");
 }
 
 #[test]

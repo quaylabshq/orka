@@ -19,7 +19,11 @@ import {
 } from "lucide-react";
 import React, { useEffect, useRef, useState } from "react";
 import { Channel } from "@tauri-apps/api/core";
-import { policyClass, type AccessMode } from "@portable/protocol";
+import {
+  policyClass,
+  type AccessMode,
+  type ReviewRequest,
+} from "@portable/protocol";
 import type { ProjectResource, Snapshot, SyncProgress } from "../types.js";
 import { ActivityIndicator } from "./activity-indicator.js";
 import { Button } from "./button.js";
@@ -31,11 +35,13 @@ import { Overlay } from "./overlay.js";
 import { invoke } from "./product-command.js";
 import { useToasts, type ToastInput } from "./toasts.js";
 import {
+  shareReviewOutcomes,
   shareStatus,
   type ShareAction,
   type ShareIcon,
   type SharePhase,
 } from "./share-status.js";
+import type { ReviewsView } from "./reviews-page.js";
 import "./share-dialog.css";
 
 /** One glyph per shareable kind, shared with Reviews. */
@@ -90,7 +96,7 @@ export interface ShareDialogContext {
   isCurrent: (resource: ProjectResource) => boolean;
   onRefresh: () => Promise<Snapshot | undefined>;
   onOpen: (resource: ProjectResource, target: { conflictId: string }) => void;
-  onOpenRequests: (projectId: string) => void;
+  onOpenRequests: (projectId: string, view: ReviewsView) => void;
 }
 
 export function fileSize(bytes: number) {
@@ -107,10 +113,22 @@ export function fileSize(bytes: number) {
 
 const shareNotices = {
   published: { title: "Shared with team", kind: "success" },
-  approval_required: { title: "Sent for approval", kind: "info" },
   conflict: { title: "Someone changed it first", kind: "warning" },
   queued: { title: "Queued to share", kind: "queued" },
 } satisfies Record<string, ToastInput>;
+
+type ShareReceipt = {
+  requestId: string;
+  reason?: string;
+} & (
+  | { status: keyof typeof shareNotices | "approval_required" }
+  | {
+      status: "review_closed";
+      result: {
+        request: { status: Exclude<ReviewRequest["status"], "pending"> };
+      };
+    }
+);
 
 /**
  * Shares one reviewed snapshot of a local item. The frame never changes size;
@@ -225,6 +243,12 @@ export function ShareDialog({
   const piConfirmed =
     preview !== null && acknowledgedPiToken === preview.previewToken;
 
+  const openRequest = (review: ReviewRequest["status"]) =>
+    context.onOpenRequests(
+      projectId,
+      review === "pending" ? "open" : "history",
+    );
+
   const submit = async () => {
     if (!preview || stale || (piSession && !piConfirmed)) return;
     const record = productAction();
@@ -235,11 +259,7 @@ export function ShareDialog({
       if (open.current) setPhase({ step: "sending", progress });
     });
     try {
-      const result = await invoke<{
-        status: keyof typeof shareNotices;
-        requestId: string;
-        reason?: string;
-      }>("resource_command", {
+      const result = await invoke<ShareReceipt>("resource_command", {
         action: "share",
         input: {
           accountId,
@@ -257,6 +277,28 @@ export function ShareDialog({
       if (result.status === "conflict") record("share_failed");
       // The share already landed; a failed refresh must not report it failed.
       await context.onRefresh().catch(() => {});
+      if (
+        result.status === "approval_required" ||
+        result.status === "review_closed"
+      ) {
+        const review =
+          result.status === "review_closed"
+            ? result.result.request.status
+            : "pending";
+        if (open.current) setPhase({ step: "approval", review });
+        else {
+          const { title, kind } = shareReviewOutcomes[review];
+          notify({
+            title,
+            kind,
+            action: {
+              label: "View request",
+              onClick: () => openRequest(review),
+            },
+          });
+        }
+        return;
+      }
       if (!open.current) {
         if (result.reason === "project_inactive")
           notify({ title: "Queued until project restore", kind: "warning" });
@@ -268,9 +310,7 @@ export function ShareDialog({
       if (result.status === "published") {
         notify(shareNotices.published);
         onClose();
-      } else if (result.status === "approval_required")
-        setPhase({ step: "approval" });
-      else if (result.status === "conflict")
+      } else if (result.status === "conflict")
         setPhase({ step: "conflict", requestId: result.requestId });
       else if (result.reason === "project_inactive") setPhase({ step: "held" });
       else
@@ -336,9 +376,9 @@ export function ShareDialog({
     // that may have expired or no longer matches the item.
     else if (action === "retry") setAttempt((value) => value + 1);
     else if (action === "share") void submit();
-    else if (action === "requests") {
+    else if (action === "requests" && phase.step === "approval") {
       onClose();
-      context.onOpenRequests(projectId);
+      openRequest(phase.review);
     } else if (action === "compare" && phase.step === "conflict") {
       void reviewConflict(phase.requestId);
     }

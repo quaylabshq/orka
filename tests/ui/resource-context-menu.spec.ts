@@ -11,6 +11,7 @@ import type { Snapshot, SyncProgress } from "../../apps/mac/src/types.js";
 
 interface MenuControls {
   shareStatus: string;
+  closedReview?: "stale" | "approved" | "rejected";
   shareReason?: string;
   conflictRefresh?: "fail" | "resolved" | "defer";
   finishConflictRefresh?: () => void;
@@ -153,13 +154,16 @@ async function menuFixture(
         }
         if (action === "share") {
           controls.shareProgress = onProgress?.onmessage;
+          const receipt = {
+            status: controls.shareStatus,
+            reason: controls.shareReason,
+            ...(controls.closedReview && {
+              result: { request: { status: controls.closedReview } },
+            }),
+          };
           if (controls.deferShare)
             return new Promise((resolve, reject) => {
-              controls.finishShare = () =>
-                resolve({
-                  status: controls.shareStatus,
-                  reason: controls.shareReason,
-                });
+              controls.finishShare = () => resolve(receipt);
               controls.failShare = () =>
                 reject(
                   new Error(
@@ -167,7 +171,7 @@ async function menuFixture(
                   ),
                 );
             });
-          return { status: controls.shareStatus };
+          return receipt;
         }
         if (action === "delete") {
           if (controls.deleteFailures > 0) {
@@ -1408,29 +1412,68 @@ for (const removed of [false, true]) {
   });
 }
 
-test("a share sent for approval links to its request in Reviews", async ({
-  page,
-}) => {
-  await menuFixture(page);
-  await collection(page, "Memories");
-  await page.evaluate(() => {
-    (window as unknown as MenuWindow).resourceMenu.shareStatus =
-      "approval_required";
-  });
-  await resourceMenu(page, "Private memory notes", "Share with team…");
-  await shareDialog(page)
-    .getByRole("button", { name: "Share with team", exact: true })
-    .click();
-  const sent = shareDialog(page, "Sent for approval");
-  await expect(statusPill(sent)).toHaveText("Awaiting approval");
-  await sent.getByRole("button", { name: "View request", exact: true }).click();
-  await expect(sent).toHaveCount(0);
-  await expect(page.getByRole("heading", { name: "Reviews" })).toBeVisible();
-});
+for (const [review, title, pill, kind, view] of [
+  ["pending", "Sent for approval", "Awaiting approval", "info", "Open"],
+  ["approved", "Request approved", "Approved", "success", "History"],
+  ["rejected", "Request rejected", "Rejected", "error", "History"],
+  ["stale", "Request is out of date", "Needs refresh", "warning", "History"],
+] as const) {
+  for (const closeWhileSending of [false, true]) {
+    test(`a ${review} share review opens ${view} from its ${closeWhileSending ? "toast" : "dialog"}`, async ({
+      page,
+    }) => {
+      await menuFixture(page, {
+        restricted: true,
+        memoryAccess: { mode: "suggest", create: "suggest" },
+      });
+      await collection(page, "Memories");
+      await page.evaluate(
+        ({ review, closeWhileSending }) => {
+          const controls = (window as unknown as MenuWindow).resourceMenu;
+          controls.deferShare = closeWhileSending;
+          controls.shareStatus =
+            review === "pending" ? "approval_required" : "review_closed";
+          if (review !== "pending") controls.closedReview = review;
+        },
+        { review, closeWhileSending },
+      );
+      await resourceMenu(page, "Private memory notes", "Share with team…");
+      const dialog = shareDialog(page);
+      await dialog
+        .getByRole("button", { name: "Send for approval", exact: true })
+        .click();
+      const result = closeWhileSending
+        ? page.locator("[data-orka-toast]").filter({ hasText: title })
+        : shareDialog(page, title);
+      if (closeWhileSending) {
+        await expect(statusPill(dialog)).toHaveText("Sending");
+        await page.keyboard.press("Escape");
+        await expect(dialog).toHaveCount(0);
+        await page.evaluate(() =>
+          (window as unknown as MenuWindow).resourceMenu.finishShare?.(),
+        );
+        await expect(result).toHaveAttribute("data-kind", kind);
+      } else {
+        await expect(statusPill(result)).toHaveText(pill);
+        await expect(
+          result.getByRole("button", { name: "Done", exact: true }),
+        ).toBeEnabled();
+      }
+      await result
+        .getByRole("button", { name: "View request", exact: true })
+        .click();
+      await expect(
+        page
+          .getByRole("group", { name: "Reviews view" })
+          .getByRole("button", { name: view, exact: true }),
+      ).toHaveAttribute("aria-pressed", "true");
+      expect(await resourceCalls(page, "share")).toHaveLength(1);
+    });
+  }
+}
 
 for (const [outcome, title, kind, reason] of [
   ["published", "Shared with team", "success"],
-  ["approval_required", "Sent for approval", "info"],
   ["conflict", "Someone changed it first", "warning"],
   ["queued", "Queued to share", "queued"],
   ["queued", "Queued until project restore", "warning", "project_inactive"],
