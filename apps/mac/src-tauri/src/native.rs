@@ -132,6 +132,75 @@ pub fn session_sources(db: &rusqlite::Connection, project: &str, session: &str) 
     }
     Ok(json!(sources))
 }
+/// Local-only record of memories delivered to a non-governed session. It only
+/// preselects Browser Handoff memories; sync, sharing and governance never read it.
+const HANDOFF_MEMORIES_INDEX: &str = "handoffSessionMemoriesIndex";
+pub(crate) const HANDOFF_MEMORIES_LIMIT: usize = 500;
+
+pub(crate) fn handoff_memories_key(project: &str, session: &str) -> String {
+    format!("handoffSessionMemories:{project}:{session}")
+}
+
+fn record_handoff_memories(
+    db: &rusqlite::Connection,
+    project: &str,
+    session: &str,
+    delivered: &[Value],
+) -> Result<()> {
+    let key = handoff_memories_key(project, session);
+    let mut known = db::get(db, &key)?.as_array().cloned().unwrap_or_default();
+    let before = known.len();
+    for source in delivered.iter().filter(|source| source.is_string()) {
+        if !known.contains(source) {
+            known.push(source.clone());
+        }
+    }
+    let mut index = db::get(db, HANDOFF_MEMORIES_INDEX)?
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let indexed = json!(key);
+    if known.len() == before && index.last() == Some(&indexed) {
+        return Ok(());
+    }
+    db::set(db, &key, &json!(known))?;
+    index.retain(|entry| entry != &indexed);
+    index.push(indexed);
+    // Keep the most recently updated sessions; this state is a convenience only.
+    let excess = index.len().saturating_sub(HANDOFF_MEMORIES_LIMIT);
+    for stale in index.drain(..excess) {
+        if let Some(stale) = stale.as_str() {
+            db.execute("DELETE FROM meta WHERE key=?", [stale])
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    db::set(db, HANDOFF_MEMORIES_INDEX, &json!(index))
+}
+
+/// Memories a session received: governed provenance plus the local-only
+/// non-governed record, deduplicated in delivery order.
+pub(crate) fn handoff_session_memories(
+    db: &rusqlite::Connection,
+    project: &str,
+    session: &str,
+) -> Result<Vec<String>> {
+    let governed = session_sources(db, project, session)?;
+    let local = db::get(db, &handoff_memories_key(project, session))?;
+    let mut memories = Vec::new();
+    for id in governed
+        .as_array()
+        .into_iter()
+        .chain(local.as_array())
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        if !memories.iter().any(|known| known == id) {
+            memories.push(id.to_owned());
+        }
+    }
+    Ok(memories)
+}
+
 pub fn record_handoff(
     db: &rusqlite::Connection,
     project: &Value,
@@ -1250,6 +1319,8 @@ fn deliver_hook_context(
                     )
                     .map_err(|e| e.to_string())?;
             }
+        } else if id != "unknown" && !sources.is_empty() {
+            record_handoff_memories(&transaction, project_id, id, &sources)?;
         }
         if id != "unknown" {
             db::set(&transaction, &delivery_key, &fingerprints)?;

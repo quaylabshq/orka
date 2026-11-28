@@ -88,25 +88,32 @@ pub fn conversation_messages(records: &[Value]) -> Vec<Message> {
 pub(crate) fn readable_turns(messages: Vec<crate::session_translation::Message>) -> Vec<Message> {
     let mut out = Vec::new();
     for message in messages {
-        let role = message.role;
-        if !matches!(role, "user" | "assistant") || message.hidden {
-            continue;
-        }
-        let text = message.text;
-        let text = if role == "user" {
-            clean_request(&text)
-        } else {
-            Some(text)
-        };
-        if let Some(text) = text.filter(|text| !text.trim().is_empty()) {
+        if let Some((role, text)) = readable(message) {
             out.push(Message {
                 index: out.len(),
-                role: if role == "user" { "user" } else { "assistant" },
-                text: text.trim().to_owned(),
+                role,
+                text,
             });
         }
     }
     out
+}
+
+/// One readable user or assistant turn, with setup context removed.
+pub(crate) fn readable(
+    message: crate::session_translation::Message,
+) -> Option<(&'static str, String)> {
+    let role = message.role;
+    if !matches!(role, "user" | "assistant") || message.hidden {
+        return None;
+    }
+    let text = if role == "user" {
+        clean_request(&message.text)
+    } else {
+        Some(message.text)
+    };
+    text.filter(|text| !text.trim().is_empty())
+        .map(|text| (role, text.trim().to_owned()))
 }
 
 /// A readable conversation view; the original transcript remains available separately.

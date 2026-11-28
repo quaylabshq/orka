@@ -98,6 +98,47 @@ pub(crate) async fn api_at(
     send_api_request(request, body).await
 }
 
+/// The outcome of a request whose exact body bytes and error codes the caller owns.
+pub(crate) enum Sent {
+    /// The request never left this Mac.
+    Unsent(String),
+    /// The request may have reached the service, but no response was read.
+    Unconfirmed,
+    /// The service answered; an unreadable body is `Value::Null`.
+    Response(u16, Value),
+}
+
+pub(crate) async fn send_json_bytes_at(
+    owner: &str,
+    origin: &str,
+    method: &str,
+    path: &str,
+    body: Vec<u8>,
+) -> Sent {
+    let request = match request_at(owner, origin, method, path).await {
+        Ok(request) => request,
+        Err(error) => return Sent::Unsent(error),
+    };
+    let response = match request
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(body)
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        // A refused connection cannot have delivered the body.
+        Err(error) if error.is_connect() => {
+            return Sent::Unsent("Cloud unavailable; local work stays queued".into())
+        }
+        Err(_) => return Sent::Unconfirmed,
+    };
+    let status = response.status().as_u16();
+    match response.bytes().await {
+        Ok(bytes) => Sent::Response(status, serde_json::from_slice(&bytes).unwrap_or_default()),
+        Err(_) => Sent::Unconfirmed,
+    }
+}
+
 async fn send_api_request(
     mut request: reqwest::RequestBuilder,
     body: Option<&Value>,

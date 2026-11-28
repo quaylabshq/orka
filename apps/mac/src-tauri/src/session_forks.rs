@@ -387,7 +387,13 @@ pub(crate) fn reading_resource(
         .as_array()
         .and_then(|paths| paths.last())
         .and_then(Value::as_str);
-    let Some(path) = path.filter(|path| std::path::Path::new(path).is_file()) else {
+    let tool = resource["source"].as_str().ok_or("Missing tool")?;
+    // Read through the resolved path, and only while it stays in the tool's
+    // native home: a replaced parent directory must not redirect the read.
+    let Some(path) = path
+        .filter(|path| std::path::Path::new(path).is_file())
+        .and_then(|path| contained_native_path(tool, std::path::Path::new(path)))
+    else {
         // Explicit recovery forks can still use cached history.
         return Ok(SessionRead::stored(resource.clone()));
     };
@@ -398,12 +404,49 @@ pub(crate) fn reading_resource(
         .as_ref()
         .and_then(|s| s["path"].as_str())
         .map(std::path::Path::new);
-    let content = crate::history::session_content(
-        resource["source"].as_str().ok_or("Missing tool")?,
-        std::path::Path::new(path),
-        root,
-    )?;
+    let Ok(content) = crate::history::session_content(tool, &path, root) else {
+        return Ok(SessionRead::stored(resource.clone()));
+    };
+    // A path inside the home can still be replaced by another session's
+    // transcript; read live only when it is still this fork.
+    let expected = binding["nativeId"].as_str().filter(|id| !id.is_empty());
+    if expected.is_some_and(|id| live_identity(tool, &content).as_deref() != Some(id)) {
+        return Ok(SessionRead::stored(resource.clone()));
+    }
     Ok(SessionRead::live(resource.clone(), content))
+}
+
+/// The native session ID of a live read's own transcript, not its ancestors'.
+fn live_identity(tool: &str, content: &crate::history::SessionContent) -> Option<String> {
+    let file = content
+        .manifest()
+        .into_iter()
+        .find(|file| file["path"] == "session.jsonl")?;
+    let bytes = content.read(file["hash"].as_str()?).ok()?;
+    let records = crate::native::complete_records(&bytes).ok()?;
+    crate::history::session_identity(tool, &records)
+        .ok()
+        .map(str::to_owned)
+}
+
+/// The canonical form of a fork's native file when it resolves inside the
+/// tool's own native session home.
+fn contained_native_path(tool: &str, path: &std::path::Path) -> Option<std::path::PathBuf> {
+    let homes = match tool {
+        "codex" => vec![crate::native::codex_home().ok()?],
+        "claude" => vec![crate::native::claude_home().ok()?],
+        "pi" => vec![
+            crate::pi_sessions::directory().ok()?,
+            crate::pi_sessions::copy_directory().ok()?,
+        ],
+        _ => return None,
+    };
+    let path = path.canonicalize().ok()?;
+    homes
+        .iter()
+        .filter_map(|home| home.canonicalize().ok())
+        .any(|home| path.starts_with(home))
+        .then_some(path)
 }
 
 pub fn handoff(

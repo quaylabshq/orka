@@ -231,20 +231,48 @@ pub fn messages(records: &[Value]) -> Vec<Message> {
             .filter_map(|record| message(record).map(|(message, _)| message))
             .collect();
     }
+    indexed_messages(records)
+        .into_iter()
+        .map(|(_, message)| message)
+        .collect()
+}
+
+/// Deduplicated Claude or Codex messages with the index of the record each
+/// came from, so callers can interleave other records chronologically.
+pub(crate) fn indexed_messages(records: &[Value]) -> Vec<(usize, Message)> {
     let mut turn = 0;
-    let candidates = records
-        .iter()
-        .filter_map(|record| {
-            if starts_turn(record) {
-                turn += 1;
-            }
-            message(record).map(|(message, tier)| (message, tier, turn))
-        })
-        .collect::<Vec<_>>();
+    let mut candidates: Vec<(Message, usize, usize, usize)> = Vec::new();
+    for (index, record) in records.iter().enumerate() {
+        let found = message(record);
+        // A legacy user event can follow the response it mirrors, even past
+        // reasoning or tool records; it only starts a turn when it does not
+        // repeat this turn's latest visible message.
+        let mirrors_last = record["payload"]["type"] == "user_message"
+            && found.as_ref().is_some_and(|(event, _)| {
+                candidates
+                    .iter()
+                    .rev()
+                    .take_while(|(_, _, at, _)| *at == turn)
+                    .find(|(candidate, ..)| {
+                        !candidate.hidden
+                            && matches!(candidate.role, "user" | "assistant")
+                            && !candidate.text.is_empty()
+                    })
+                    .is_some_and(|(last, tier, ..)| {
+                        *tier < 2 && last.role == "user" && last.text == event.text
+                    })
+            });
+        if starts_turn(record) && !mirrors_last {
+            turn += 1;
+        }
+        if let Some((message, tier)) = found {
+            candidates.push((message, tier, turn, index));
+        }
+    }
     // Rollouts often contain the same message as a response, completed item,
     // and legacy event. Prefer responses while retaining repeated user turns.
     let mut counts = HashMap::<(usize, &str, &str), [usize; 3]>::new();
-    for (message, tier, turn) in &candidates {
+    for (message, tier, turn, _) in &candidates {
         if !message.text.is_empty() {
             counts
                 .entry((*turn, message.role, &message.text))
@@ -254,7 +282,7 @@ pub fn messages(records: &[Value]) -> Vec<Message> {
     let mut seen = HashMap::<(usize, &str, &str), [usize; 3]>::new();
     candidates
         .iter()
-        .filter_map(|(message, tier, turn)| {
+        .filter_map(|(message, tier, turn, index)| {
             if *tier > 0 {
                 let key = (*turn, message.role, message.text.as_str());
                 let occurrence = &mut seen.entry(key).or_default()[*tier];
@@ -266,7 +294,7 @@ pub fn messages(records: &[Value]) -> Vec<Message> {
                     return None;
                 }
             }
-            Some(message.clone())
+            Some((*index, message.clone()))
         })
         .collect()
 }
@@ -418,6 +446,78 @@ mod tests {
         let result = messages(&records);
         assert_eq!(result.len(), 6);
         assert_eq!(result.iter().filter(|m| m.role == "user").count(), 3);
+    }
+
+    #[test]
+    fn legacy_user_events_deduplicate_in_either_order() {
+        let response = |text: &str| json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":text}]}});
+        let legacy = |text: &str| json!({"type":"event_msg","payload":{"type":"user_message","message":text}});
+        let answer = json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Checked"}]}});
+        let started = json!({"type":"event_msg","payload":{"type":"task_started"}});
+        let meta = json!({"type":"session_meta","payload":{"id":Uuid::new_v4()}});
+        for (order, records) in [
+            (
+                "event first",
+                vec![
+                    meta.clone(),
+                    started.clone(),
+                    legacy("Check"),
+                    response("Check"),
+                    answer.clone(),
+                ],
+            ),
+            (
+                "response first",
+                vec![
+                    meta.clone(),
+                    started.clone(),
+                    response("Check"),
+                    legacy("Check"),
+                    answer.clone(),
+                ],
+            ),
+            // Older rollouts have no task_started marker at all.
+            (
+                "no task marker",
+                vec![
+                    meta.clone(),
+                    response("Check"),
+                    legacy("Check"),
+                    answer.clone(),
+                    response("Again"),
+                    legacy("Again"),
+                    answer.clone(),
+                ],
+            ),
+        ] {
+            let users: Vec<_> = indexed_messages(&records)
+                .into_iter()
+                .filter(|(_, m)| m.role == "user")
+                .map(|(index, m)| (records[index]["type"].clone(), m.text))
+                .collect();
+            let expected = if order == "no task marker" {
+                vec![
+                    (json!("response_item"), "Check".to_owned()),
+                    (json!("response_item"), "Again".to_owned()),
+                ]
+            } else {
+                vec![(json!("response_item"), "Check".to_owned())]
+            };
+            assert_eq!(users, expected, "{order}");
+        }
+        // An event-only repeat of the same prompt is still its own turn.
+        let repeated = vec![
+            legacy("Again"),
+            json!({"type":"event_msg","payload":{"type":"agent_message","message":"Done"}}),
+            legacy("Again"),
+        ];
+        assert_eq!(
+            messages(&repeated)
+                .iter()
+                .filter(|m| m.role == "user")
+                .count(),
+            2
+        );
     }
 
     #[test]
