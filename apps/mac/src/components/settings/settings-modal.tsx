@@ -27,6 +27,7 @@ import {
 import { SettingsGeneral, SettingsFolder } from "./settings-sections.js";
 import { SettingsDanger } from "./settings-danger.js";
 import { SettingsDeviceScreen } from "./settings-devices.js";
+import { SettingsHandoffs } from "./settings-handoffs.js";
 import { SettingsProfile } from "./settings-profile.js";
 import { SettingsMembers } from "./settings-members.js";
 import { SettingsPermissions } from "./settings-permissions.js";
@@ -135,7 +136,8 @@ export const SettingsModal = forwardRef<
   } | null>(() =>
     initialSection === "folder" ||
     initialSection === "sharing" ||
-    initialSection === "projects"
+    initialSection === "projects" ||
+    initialSection === "handoffs"
       ? { section: initialSection }
       : null,
   );
@@ -620,7 +622,13 @@ export const SettingsModal = forwardRef<
     <>
       <section className="settings-workspace" aria-label="Settings">
         <DesktopUsageScreen screen="settings_viewed" />
-        <DesktopUsageScreen screen={`settings_section_viewed:${section}`} />
+        <DesktopUsageScreen
+          screen={
+            section === "handoffs"
+              ? undefined
+              : `settings_section_viewed:${section}`
+          }
+        />
         <SettingsNavigation
           projects={state.projects}
           projectId={projectId}
@@ -954,6 +962,7 @@ export const SettingsModal = forwardRef<
                 {section === "devices" && (
                   <SettingsDeviceScreen state={state} />
                 )}
+                {section === "handoffs" && <SettingsHandoffs state={state} />}
                 {section === "account" && (
                   <SettingsProfile
                     ref={editor}

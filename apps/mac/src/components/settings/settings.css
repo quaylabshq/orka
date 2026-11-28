@@ -216,7 +216,8 @@
     flex-shrink: 0;
   }
   .settings-panel[data-section="account"],
-  .settings-panel[data-section="devices"] {
+  .settings-panel[data-section="devices"],
+  .settings-panel[data-section="handoffs"] {
     --settings-heading-gap: 36px;
   }
   .settings-panel[data-section="permissions"] {
@@ -623,6 +624,52 @@
     height: 20px;
     padding-top: 0;
     padding-bottom: 0;
+  }
+  .settings-handoffs {
+    @apply flex min-w-0 flex-col gap-7;
+  }
+  .settings-handoff-row {
+    @apply flex min-h-[72px] min-w-0 items-center justify-between gap-4 px-4 py-3.5;
+  }
+  .settings-handoff-row + .settings-handoff-row {
+    @apply border-t border-line;
+  }
+  .settings-handoff-summary {
+    @apply min-w-0 flex-1 space-y-1;
+  }
+  .settings-handoff-row p {
+    @apply text-body-caption text-muted;
+    font-variant-numeric: tabular-nums;
+  }
+  .settings-handoff-badge {
+    @apply inline-flex shrink-0 items-center rounded-md border border-line bg-raised px-2 text-label-badge text-secondary;
+    height: 20px;
+  }
+  .settings-handoff-status:empty {
+    display: none;
+  }
+  .settings-handoff-skeleton-title {
+    display: block;
+    width: 42%;
+    height: 14px;
+    border-radius: var(--radius-detail);
+    background: var(--border-default);
+  }
+  .settings-handoff-skeleton-meta {
+    display: block;
+    width: 64%;
+    height: 12px;
+    margin-top: 6px;
+    border-radius: var(--radius-detail);
+    background: var(--border-default);
+  }
+  .settings-handoff-skeleton-action {
+    display: block;
+    flex-shrink: 0;
+    width: 64px;
+    height: 28px;
+    border-radius: var(--radius-control);
+    background: var(--border-default);
   }
   .settings-member-row {
     @apply relative flex min-h-[72px] items-center gap-3 px-4 py-3.5;

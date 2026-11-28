@@ -999,6 +999,7 @@ function WorkspaceApp({
         setProject(projectId);
         openManagement("requests", view, projectId);
       }}
+      onOpenHandoffs={() => openSettings("handoffs")}
       onRefresh={async () => {
         const next = await workspace.refreshSnapshot();
         localCatalog.refresh();

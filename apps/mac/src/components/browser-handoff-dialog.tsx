@@ -188,6 +188,7 @@ export function BrowserHandoffDialog({
   serviceOrigin,
   linkOrigin,
   stale,
+  onOpenHandoffs,
   onClose,
   onCloseAutoFocus,
 }: {
@@ -196,6 +197,7 @@ export function BrowserHandoffDialog({
   serviceOrigin?: string;
   linkOrigin: string | null;
   stale: boolean;
+  onOpenHandoffs?: () => void;
   onClose: () => void;
   onCloseAutoFocus?: (event: Event) => void;
 }) {
@@ -236,6 +238,7 @@ export function BrowserHandoffDialog({
   } | null>(null);
   const copyButtonRef = useRef<HTMLButtonElement>(null);
   const secretAlertRef = useRef<HTMLDivElement>(null);
+  const openingHandoffsRef = useRef(false);
   const toolsSwitchId = useId();
   const toolsHintId = useId();
 
@@ -429,9 +432,24 @@ export function BrowserHandoffDialog({
   const expiresLabel = formatHandoffDate(receipt?.expiresAt);
 
   const footer = showReceipt ? (
-    <Button size="sm" onClick={onClose}>
-      Done
-    </Button>
+    <>
+      {onOpenHandoffs && (
+        <Button
+          size="sm"
+          variant="tertiary"
+          onClick={() => {
+            openingHandoffsRef.current = true;
+            onClose();
+            onOpenHandoffs();
+          }}
+        >
+          Manage links
+        </Button>
+      )}
+      <Button size="sm" onClick={onClose}>
+        Done
+      </Button>
+    </>
   ) : showStale ? (
     <Button
       size="sm"
@@ -500,7 +518,14 @@ export function BrowserHandoffDialog({
       onEscapeKeyDown={(event) => {
         if (submitting) event.preventDefault();
       }}
-      onCloseAutoFocus={onCloseAutoFocus}
+      onCloseAutoFocus={(event) => {
+        if (openingHandoffsRef.current) {
+          openingHandoffsRef.current = false;
+          event.preventDefault();
+          return;
+        }
+        onCloseAutoFocus?.(event);
+      }}
     >
       <section className="browser-handoff-session" aria-label="Session summary">
         <span className="browser-handoff-session-icon" aria-hidden="true">
