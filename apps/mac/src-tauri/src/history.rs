@@ -8,7 +8,6 @@ use std::{
     collections::{BTreeSet, HashMap},
     fs,
     io::{self, BufRead, BufReader, Read},
-    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
 };
 use uuid::Uuid;
@@ -235,9 +234,14 @@ pub(crate) fn session_file(path: &Path) -> Result<fs::File> {
     if !info.is_file() || info.file_type().is_symlink() {
         return Err("History must be a regular file".into());
     }
-    let file = fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let file = options
         .open(path)
         .map_err(native_read_error)?;
     if !file.metadata().map_err(native_read_error)?.is_file() {

@@ -10,16 +10,20 @@ use serde_json::{json, Value};
 use std::{
     fs,
     io::{Read, Write},
-    os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     process::Command,
 };
 use zeroize::Zeroizing;
 
 pub fn read_text(path: &Path) -> Result<Zeroizing<String>> {
-    let file = fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let file = options
         .open(path)
         .map_err(|_| "Cannot read ENV file")?;
     if !file
@@ -169,11 +173,14 @@ pub fn exclude(root: &Path, relative: &str) -> Result<()> {
         }
         escaped.push(c);
     }
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
+    let mut options = fs::OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    let mut file = options
         .open(path)
         .map_err(|_| "Cannot update the local Git exclude file")?;
     file.write_all(format!("\n# Orka local ENV file\n{escaped}\n").as_bytes())
@@ -214,12 +221,14 @@ pub fn apply(root: &Path, relative: &str, expected: &str, entries: &[Entry]) -> 
     use fs2::FileExt;
     let lock_root = db::root()?;
     fs::create_dir_all(&lock_root).map_err(|_| "Cannot lock ENV destination")?;
-    let lock = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
+    let mut options = fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let lock = options
         .open(lock_root.join("env-apply.lock"))
         .map_err(|_| "Cannot lock ENV destination")?;
     lock.lock_exclusive()
@@ -248,12 +257,10 @@ pub fn apply(root: &Path, relative: &str, expected: &str, entries: &[Entry]) -> 
     );
     let metadata =
         fs::symlink_metadata(&staging).map_err(|_| "Cannot inspect ENV staging directory")?;
+    let parent_meta = fs::metadata(parent).map_err(|_| "Cannot inspect ENV destination")?;
     if !metadata.is_dir()
         || metadata.file_type().is_symlink()
-        || metadata.dev()
-            != fs::metadata(parent)
-                .map_err(|_| "Cannot inspect ENV destination")?
-                .dev()
+        || crate::compat::meta_dev(&metadata) != crate::compat::meta_dev(&parent_meta)
     {
         return Err(
             "Git and the ENV destination must be on the same filesystem for a safe atomic write"
@@ -264,10 +271,14 @@ pub fn apply(root: &Path, relative: &str, expected: &str, entries: &[Entry]) -> 
         .prefix("orka-env-")
         .tempfile_in(&staging)
         .map_err(|_| "Cannot prepare ENV file")?;
-    staged
-        .as_file()
-        .set_permissions(fs::Permissions::from_mode(0o600))
-        .map_err(|_| "Cannot protect ENV file")?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        staged
+            .as_file()
+            .set_permissions(fs::Permissions::from_mode(0o600))
+            .map_err(|_| "Cannot protect ENV file")?;
+    }
     staged
         .write_all(merged.as_bytes())
         .map_err(|_| "Cannot write ENV file")?;

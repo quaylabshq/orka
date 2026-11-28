@@ -4,9 +4,10 @@ use fs2::FileExt;
 use serde_json::{json, Value};
 use std::{
     fs::{self, File},
-    os::unix::fs::symlink,
     path::{Path, PathBuf},
 };
+#[cfg(unix)]
+use std::os::unix::fs::symlink;
 use uuid::Uuid;
 
 fn transcript(tool: &str, text: &str) -> Vec<u8> {
@@ -158,6 +159,7 @@ fn cleanup_preserves_every_durable_reference_across_legacy_and_service_accounts(
 }
 
 #[test]
+#[cfg(unix)]
 fn cleanup_skips_live_profiles_unsafe_files_and_ambiguous_databases() {
     let state = tempfile::tempdir().unwrap();
     let root = state.path();

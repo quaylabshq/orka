@@ -296,15 +296,26 @@ pub(crate) fn publish(
     mode: u32,
     replacing: bool,
 ) -> Result<()> {
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-    let mut tmp = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(mode)
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(mode);
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = mode;
+    }
+    let mut tmp = options
         .open(scratch)
         .map_err(|e| e.to_string())?;
     let result = (|| -> io::Result<()> {
-        tmp.set_permissions(fs::Permissions::from_mode(mode))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            tmp.set_permissions(fs::Permissions::from_mode(mode))?;
+        }
         tmp.write_all(bytes)?;
         tmp.sync_all()?;
         if replacing {

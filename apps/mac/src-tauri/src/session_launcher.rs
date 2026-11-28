@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     fs,
-    os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
     time::{Duration, Instant},
@@ -180,6 +179,7 @@ impl Destination {
     }
 }
 
+#[cfg(unix)]
 pub(crate) fn output(command: &mut Command, timeout: Duration) -> Result<Output> {
     use std::{
         io::{ErrorKind, Read},
@@ -248,6 +248,49 @@ pub(crate) fn output(command: &mut Command, timeout: Duration) -> Result<Output>
         let _ = child.wait();
     }
     result
+}
+
+#[cfg(not(unix))]
+pub(crate) fn output(command: &mut Command, timeout: Duration) -> Result<Output> {
+    use std::io::Read;
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    let mut stdout = child.stdout.take().ok_or("Missing command output")?;
+    let mut stderr = child.stderr.take().ok_or("Missing command errors")?;
+    let (tx_out, rx_out) = std::sync::mpsc::channel();
+    let (tx_err, rx_err) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = stdout.read_to_end(&mut bytes);
+        let _ = tx_out.send(bytes);
+    });
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = stderr.read_to_end(&mut bytes);
+        let _ = tx_err.send(bytes);
+    });
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Ok(Some(status)) = child.try_wait() {
+            let stdout = rx_out.recv_timeout(Duration::from_millis(100)).unwrap_or_default();
+            let stderr = rx_err.recv_timeout(Duration::from_millis(100)).unwrap_or_default();
+            return Ok(Output {
+                status,
+                stdout,
+                stderr,
+            });
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("Command execution timed out".into());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 fn app_installed(destination: Destination, tool: Tool) -> bool {
@@ -384,14 +427,18 @@ fn revalidate(db: &Connection, scope: &Value, original: &Session) -> Result<()> 
 
 fn cli(tool: Tool, desktop: bool) -> Result<PathBuf> {
     let binary = native::binary(tool.name())?;
-    if fs::metadata(&binary)
-        .map_err(|e| e.to_string())?
-        .permissions()
-        .mode()
-        & 0o111
-        == 0
+    #[cfg(unix)]
     {
-        return Err(format!("The {} CLI is not executable", tool.name()));
+        use std::os::unix::fs::PermissionsExt;
+        if fs::metadata(&binary)
+            .map_err(|e| e.to_string())?
+            .permissions()
+            .mode()
+            & 0o111
+            == 0
+        {
+            return Err(format!("The {} CLI is not executable", tool.name()));
+        }
     }
     if desktop && tool == Tool::Claude {
         claude_desktop_capability(&binary)?;
@@ -823,10 +870,18 @@ fn terminal_command(
 
 fn private_file(path: &Path, content: &[u8], mode: u32) -> Result<()> {
     use std::io::Write;
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(mode)
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(mode);
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = mode;
+    }
+    let mut file = options
         .open(path)
         .map_err(|e| e.to_string())?;
     if let Err(error) = file.write_all(content) {
@@ -977,8 +1032,7 @@ fn launch_terminal(
 ) -> Result<Option<String>> {
     let directory = db::root()?.join("session-launchers");
     packages::safe_directory(&db::root()?, &directory)?;
-    fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))
-        .map_err(|e| e.to_string())?;
+    crate::compat::set_permissions_owner_rwx(&directory)?;
     let nonce = Uuid::new_v4();
     let script = directory.join(format!("{nonce}.command"));
     let (home_key, native_home) = tool.home()?;
@@ -1166,7 +1220,7 @@ pub(crate) fn launch_with(
                 "cli"
             }
         ));
-        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))
+        crate::compat::set_permissions_owner_rwx(&directory)
             .map_err(|e| e.to_string())?;
         if path.exists() {
             if fs::symlink_metadata(&path)

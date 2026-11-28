@@ -2339,6 +2339,7 @@ mod tests {
         }
     }
     #[test]
+    #[cfg(unix)]
     fn folder_search_stops_at_three_levels_and_ignores_symlinks() {
         let temp = tempfile::tempdir().unwrap();
         let home = fs::canonicalize(temp.path()).unwrap();

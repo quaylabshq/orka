@@ -75,6 +75,7 @@ fn a_folder_codex_skips_reports_why() {
 }
 
 #[test]
+#[cfg(unix)]
 fn a_symlink_to_a_nested_source_does_not_hide_its_real_parent() {
     let tmp = tempfile::tempdir().unwrap();
     let repo = tmp.path().join("repo").join("nested");

@@ -6,6 +6,7 @@ mod claude_import;
 mod codex_import;
 mod codex_skills;
 mod codex_trust;
+pub(crate) mod compat;
 mod commands;
 mod context_sharing;
 mod db;
@@ -53,9 +54,13 @@ mod sources;
 mod sync;
 mod sync_queue;
 mod sync_schedule;
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests;
 mod transcript;
+#[cfg(all(test, not(unix)))]
+pub(crate) mod tests {
+    pub(crate) static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+}
 mod updates;
 mod upload_review;
 mod worktree_integration;
@@ -234,7 +239,7 @@ fn main() {
             "session-launch-options"=>session_launcher::options(input["id"].as_str().unwrap_or("")).and_then(|options|serde_json::to_value(options).map_err(|e|e.to_string())),
             "session-handoff-prompt"=>session_launcher::handoff_prompt(input["id"].as_str().unwrap_or("")),
             "resume-session"=>session_launcher::Tool::parse(input["tool"].as_str().unwrap_or("")).and_then(|tool| {
-                let destination=serde_json::from_value(input.get("destination").cloned().unwrap_or(json!("desktop"))).map_err(|e|e.to_string())?;
+                let destination: session_launcher::Destination = serde_json::from_value(input.get("destination").cloned().unwrap_or(json!("desktop"))).map_err(|e|e.to_string())?;
                 if input["fork"] == true { session_launcher::launch(input["id"].as_str().unwrap_or(""),tool,destination,true) }
                 else { session_launcher::resume(input["id"].as_str().unwrap_or(""),tool,destination) }
             }),

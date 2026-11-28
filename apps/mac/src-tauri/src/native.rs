@@ -59,9 +59,16 @@ pub fn binary(tool: &str) -> Result<PathBuf> {
     candidates
         .into_iter()
         .find(|p| {
-            use std::os::unix::fs::PermissionsExt;
-            fs::metadata(p)
-                .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::metadata(p)
+                    .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+            }
+            #[cfg(not(unix))]
+            {
+                fs::metadata(p).is_ok_and(|meta| meta.is_file())
+            }
         })
         .ok_or(format!("Install {tool} to enable native sessions"))
 }

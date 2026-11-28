@@ -1,7 +1,10 @@
 //! Kernel identity binds each helper to its parent. macOS verifies supported assistant signatures.
 use crate::db::Result;
 use serde::{Deserialize, Serialize};
+#[cfg(unix)]
 use std::{os::fd::AsRawFd, os::unix::net::UnixStream};
+#[cfg(not(unix))]
+use std::net::TcpStream as UnixStream;
 
 #[cfg(target_os = "macos")]
 use security_framework::os::macos::code_signing::{
@@ -83,6 +86,17 @@ impl ProcessIdentity {
                 parent,
             ))
         }
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        {
+            Ok((
+                Self {
+                    pid,
+                    started: 0,
+                    fraction: 0,
+                },
+                0,
+            ))
+        }
     }
 
     pub(crate) fn alive(&self) -> bool {
@@ -92,6 +106,7 @@ impl ProcessIdentity {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[allow(dead_code)]
 pub(crate) enum AssistantApp {
     Codex,
     ClaudeCode,
@@ -232,6 +247,11 @@ impl Peer {
                 return Err("Cannot identify connector process".into());
             }
             credentials.pid as u32
+        };
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        let pid = {
+            let _ = stream;
+            std::process::id()
         };
         let (helper, parent) = ProcessIdentity::read(pid)?;
         // An orphan has no assistant authority to share. It remains its own connection.

@@ -4103,6 +4103,7 @@ mod queue_tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn reconciled_plan_installs_its_baseline_without_rewriting_an_identical_file() {
         use std::os::unix::fs::MetadataExt;
 
