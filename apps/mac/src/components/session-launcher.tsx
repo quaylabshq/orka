@@ -10,6 +10,7 @@ import {
   ChevronDownIcon,
   DownloadIcon,
   CopyIcon,
+  Share2Icon,
   SquareTerminalIcon,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
@@ -69,6 +70,7 @@ export function SessionLauncher({
   busy,
   actions,
   sessionSelection,
+  onShareHandoff,
   onError,
 }: {
   resource: ProjectResource;
@@ -77,6 +79,7 @@ export function SessionLauncher({
   busy: boolean;
   actions: ResourceActionHandlers;
   sessionSelection?: SessionSnapshotSelection | null;
+  onShareHandoff?: (returnFocus?: () => HTMLElement | null) => void;
   onError: (message: string) => void;
 }) {
   const tool = sessionTool(resource.source);
@@ -105,6 +108,7 @@ export function SessionLauncher({
     destination: SessionDestination;
   } | null>(null);
   const menu = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const hints = useId();
   const current = state?.key === key ? state : null;
   const options = current?.options ?? [];
@@ -269,6 +273,7 @@ export function SessionLauncher({
         }}
         trigger={
           <IconButton
+            ref={triggerRef}
             icon={ChevronDownIcon}
             size="sm"
             variant="primary"
@@ -394,6 +399,17 @@ export function SessionLauncher({
               onClick={() => void actions.exportZip(sessionSelection)}
             >
               <Icon icon={DownloadIcon} /> Download session (.zip)…
+            </Button>
+          )}
+          {onShareHandoff && (
+            <Button
+              variant="tertiary"
+              size="sm"
+              role="menuitem"
+              disabled={busy}
+              onClick={() => onShareHandoff(() => triggerRef.current)}
+            >
+              <Icon icon={Share2Icon} /> Share handoff link…
             </Button>
           )}
         </div>

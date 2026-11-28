@@ -1,0 +1,408 @@
+.modal.toast-host-modal.ui-modal.browser-handoff-dialog {
+  width: min(460px, calc(100vw - 48px));
+  height: min(560px, calc(100vh - 48px));
+}
+
+.browser-handoff-dialog .ui-modal-body {
+  gap: 12px;
+  overflow: hidden;
+}
+
+.modal.browser-handoff-dialog p {
+  margin: 0;
+  font-size: var(--body-xs-font-size);
+  line-height: var(--body-xs-line-height);
+  overflow-wrap: anywhere;
+}
+
+.browser-handoff-session {
+  display: flex;
+  flex-shrink: 0;
+  min-width: 0;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: var(--radius-control);
+  background: var(--surface-tertiary);
+}
+
+.browser-handoff-session-icon {
+  display: grid;
+  flex: 0 0 32px;
+  height: 32px;
+  place-items: center;
+  border-radius: var(--radius-detail);
+  background: var(--surface-secondary);
+}
+
+.browser-handoff-session-meta {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.modal.browser-handoff-dialog .browser-handoff-session-title {
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: var(--label-sm-font-size);
+  font-weight: var(--label-sm-font-weight);
+  line-height: var(--label-sm-line-height);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browser-handoff-session-facts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: var(--body-xs-font-size);
+  line-height: var(--body-xs-line-height);
+  font-variant-numeric: tabular-nums;
+}
+
+.browser-handoff-badge {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  height: 18px;
+  padding: 0 6px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-detail);
+  background: var(--surface-secondary);
+  color: var(--text-secondary);
+  font-size: var(--label-badge-font-size);
+  font-weight: var(--label-badge-font-weight);
+  line-height: var(--label-badge-line-height);
+}
+
+.browser-handoff-loading {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.browser-handoff-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.browser-handoff-skeleton > span {
+  display: block;
+  height: 36px;
+  border-radius: var(--radius-control);
+  background: var(--surface-tertiary);
+}
+
+.browser-handoff-skeleton > span:last-child {
+  width: 72%;
+  height: 24px;
+}
+
+.browser-handoff-form {
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.browser-handoff-form-scroll {
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 12px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 2px;
+  margin: -2px;
+}
+
+.browser-handoff-memories {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.browser-handoff-memories-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 10px;
+}
+
+.browser-handoff-section-label {
+  color: var(--text-secondary);
+  font-size: var(--label-xs-font-size);
+  font-weight: var(--label-xs-font-weight);
+  line-height: var(--label-xs-line-height);
+}
+
+.browser-handoff-memories-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.browser-handoff-memories-count {
+  margin-right: 4px;
+  color: var(--text-tertiary);
+  font-size: var(--body-xs-font-size);
+  line-height: var(--body-xs-line-height);
+  font-variant-numeric: tabular-nums;
+}
+
+.browser-handoff-bulk-action.ui-button--sm {
+  --control-height: 24px;
+  --control-padding-y: 2px;
+  --control-padding-x: 8px;
+  color: var(--text-secondary);
+}
+
+.browser-handoff-empty {
+  padding: 12px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-control);
+  background: var(--surface-secondary);
+  color: var(--text-tertiary);
+}
+
+.browser-handoff-memory-list {
+  max-height: 112px;
+  overflow-y: auto;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-control);
+  background: var(--surface-secondary);
+}
+
+.browser-handoff-memory-row {
+  display: flex;
+  flex-direction: row;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  padding: 9px 12px;
+  cursor: pointer;
+}
+
+.browser-handoff-memory-row + .browser-handoff-memory-row {
+  border-top: 1px solid var(--border-default);
+}
+
+.browser-handoff-memory-row:hover:not([data-disabled]) {
+  background: var(--state-hover);
+}
+
+.browser-handoff-memory-row[data-disabled] {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.browser-handoff-memory-row > input[type="checkbox"] {
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--action-solid);
+  cursor: inherit;
+}
+
+.browser-handoff-memory-row > input[type="checkbox"]:focus-visible {
+  outline: 1px solid var(--border-focus);
+  outline-offset: 2px;
+}
+
+.browser-handoff-memory-title {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: var(--body-xs-font-size);
+  line-height: var(--body-xs-line-height);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browser-handoff-memory-meta {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.browser-handoff-size {
+  color: var(--text-tertiary);
+  font-size: var(--body-2xs-font-size);
+  line-height: var(--body-2xs-line-height);
+  font-variant-numeric: tabular-nums;
+}
+
+.browser-handoff-redactions {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: var(--radius-detail);
+  background: var(--amber-surface);
+  color: var(--amber-text);
+  font-size: var(--label-badge-font-size);
+  font-weight: var(--label-badge-font-weight);
+  line-height: var(--label-badge-line-height);
+  font-variant-numeric: tabular-nums;
+}
+
+.browser-handoff-tools {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-control);
+  background: var(--surface-secondary);
+}
+
+.browser-handoff-tools-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.browser-handoff-tools-copy > label {
+  display: block;
+  margin: 0;
+  color: var(--text-primary);
+  font-size: var(--label-xs-font-size);
+  font-weight: var(--label-xs-font-weight);
+  line-height: var(--label-xs-line-height);
+  cursor: pointer;
+}
+
+.browser-handoff-tools-copy > p {
+  color: var(--text-tertiary);
+}
+
+.browser-handoff-disclosure {
+  display: flex;
+  flex-shrink: 0;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: var(--radius-control);
+  background: var(--surface-tertiary);
+  color: var(--text-secondary);
+}
+
+.browser-handoff-disclosure > .ui-icon {
+  margin-top: 1px;
+}
+
+.modal.ui-modal.browser-handoff-dialog p.browser-handoff-alert {
+  color: var(--red-text);
+}
+
+.browser-handoff-alert--secret {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--red-surface);
+  border-radius: var(--radius-control);
+  background: var(--red-surface);
+  color: var(--red-text);
+}
+
+.browser-handoff-alert--secret > .ui-icon {
+  margin-top: 2px;
+  color: var(--red-text);
+}
+
+.browser-handoff-alert--secret > div {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.browser-handoff-alert--secret strong {
+  font-size: var(--label-xs-font-size);
+  font-weight: var(--label-xs-font-weight);
+  line-height: var(--label-xs-line-height);
+}
+
+.modal.ui-modal.browser-handoff-dialog .browser-handoff-alert--secret p {
+  color: var(--text-primary);
+}
+
+.browser-handoff-receipt {
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+}
+
+.browser-handoff-address {
+  display: flex;
+  align-items: end;
+  gap: 8px;
+}
+
+.browser-handoff-address .ui-field__control {
+  box-shadow: inset 0 0 0 1px var(--border-default);
+}
+
+.browser-handoff-address > button {
+  flex-shrink: 0;
+}
+
+.browser-handoff-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 16px;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-control);
+  background: var(--surface-secondary);
+}
+
+.browser-handoff-summary > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.browser-handoff-summary dt {
+  color: var(--text-tertiary);
+  font-size: var(--body-2xs-font-size);
+  line-height: var(--body-2xs-line-height);
+}
+
+.browser-handoff-summary dd {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: var(--body-xs-font-size);
+  line-height: var(--body-xs-line-height);
+  font-variant-numeric: tabular-nums;
+}
+
+.browser-handoff-status {
+  color: var(--text-secondary);
+}

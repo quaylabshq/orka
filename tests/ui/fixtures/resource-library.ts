@@ -42,6 +42,7 @@ export async function resourceLibraryFixture(
     nativeForkAfterRefresh?: boolean;
     deferredTitleId?: string;
     publicLinks?: boolean;
+    browserHandoffs?: boolean;
     piSession?: boolean;
     localSkill?: boolean;
   } = {},
@@ -290,9 +291,13 @@ export async function resourceLibraryFixture(
               deviceId: "mac",
               background: true,
             };
-          if (command === "auth_capabilities" && options.publicLinks)
+          if (
+            command === "auth_capabilities" &&
+            (options.publicLinks || options.browserHandoffs)
+          )
             return {
-              artifactLibrary: 1,
+              ...(options.publicLinks && { artifactLibrary: 1 }),
+              ...(options.browserHandoffs && { browserHandoffs: 1 }),
               auth: { browserOrigin: "https://dashboard.example" },
             };
           if (command === "sync_progress")

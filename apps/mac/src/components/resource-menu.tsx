@@ -14,6 +14,7 @@ import {
   GitForkIcon,
   LinkIcon,
   RefreshCwIcon,
+  Share2Icon,
   TrashIcon,
   UploadIcon,
 } from "lucide-react";
@@ -52,6 +53,7 @@ import { skillReviewState } from "./skill-review-state.js";
 import { useResourceActions, type Run } from "./use-resource-actions.js";
 import { QueuedUploadReview } from "./queued-upload-review.js";
 import { ArtifactLinkDialog } from "./artifact-link-dialog.js";
+import { BrowserHandoffDialog } from "./browser-handoff-dialog.js";
 import { useWorkspaceScope } from "./workspace-cache.js";
 import {
   fileSize,
@@ -62,12 +64,18 @@ import {
 export { fileSize };
 
 type ResourceRequest =
-  "share" | "delete" | "launch" | "retry-upload" | "public-link";
+  | "share"
+  | "delete"
+  | "launch"
+  | "retry-upload"
+  | "public-link"
+  | "browser-handoff";
 
 interface ResourceMenuContextValue {
   scope: string;
   state: Snapshot;
   busy: boolean;
+  browserHandoffOrigin: string | null;
   sharedArtifact: (resource: ProjectResource) => ProjectResource | undefined;
   act: Run;
   onOpen: (resource: ProjectResource, compare?: ResourceComparison) => void;
@@ -83,6 +91,7 @@ interface ResourceMenuContextValue {
     options?: {
       uploadId?: string;
       sessionSelection?: SessionSnapshotSelection | null;
+      returnFocus?: () => HTMLElement | null;
     },
   ) => void;
   reviewUpload: (uploadId: string) => void;
@@ -149,7 +158,11 @@ export function ResourceMenuProvider({
   ...props
 }: Omit<
   ResourceMenuContextValue,
-  "isCurrent" | "request" | "reviewUpload" | "sharedArtifact"
+  | "isCurrent"
+  | "request"
+  | "reviewUpload"
+  | "sharedArtifact"
+  | "browserHandoffOrigin"
 > & {
   resources: ProjectResource[];
   children: React.ReactNode;
@@ -169,38 +182,51 @@ export function ResourceMenuProvider({
   const service = props.state.config?.apiUrl;
   const cloud = props.state.config?.mode !== "self-hosted";
   const online = props.state.sync?.online;
-  const [linkCapability, setLinkCapability] = useState<{
+  const [capabilities, setCapabilities] = useState<{
     account: string;
     service: string;
-    origin: string;
+    publicLinkOrigin: string | null;
+    browserHandoffOrigin: string | null;
   } | null>(null);
   useEffect(() => {
-    if (!account || !service || !cloud) return;
+    if (!account || !service) {
+      setCapabilities(null);
+      return;
+    }
     let active = true;
     void invoke<{
       artifactLibrary?: number;
+      browserHandoffs?: number;
       auth?: { browserOrigin?: string };
     }>("auth_capabilities", { apiUrl: service })
       .then((instance) => {
         if (!active) return;
-        const origin = instance?.auth?.browserOrigin;
-        setLinkCapability(
-          instance?.artifactLibrary === 1 && typeof origin === "string"
-            ? { account, service, origin }
-            : null,
-        );
+        const origin =
+          typeof instance?.auth?.browserOrigin === "string"
+            ? instance.auth.browserOrigin
+            : null;
+        setCapabilities({
+          account,
+          service,
+          publicLinkOrigin:
+            cloud && instance?.artifactLibrary === 1 ? origin : null,
+          browserHandoffOrigin: instance?.browserHandoffs === 1 ? origin : null,
+        });
       })
       .catch(() => {});
     return () => {
       active = false;
     };
   }, [account, service, cloud, online]);
-  const publicLinkOrigin =
-    cloud &&
-    linkCapability?.account === account &&
-    linkCapability?.service === service
-      ? linkCapability.origin
+  const currentCapabilities =
+    capabilities?.account === account && capabilities?.service === service
+      ? capabilities
       : null;
+  const publicLinkOrigin = cloud
+    ? (currentCapabilities?.publicLinkOrigin ?? null)
+    : null;
+  const browserHandoffOrigin =
+    currentCapabilities?.browserHandoffOrigin ?? null;
   const sharedArtifacts = useMemo(
     () =>
       new Map(
@@ -231,6 +257,7 @@ export function ResourceMenuProvider({
         kind: Exclude<ResourceRequest, "retry-upload">;
         resource: ProjectResource;
         sessionSelection?: SessionSnapshotSelection | null;
+        returnFocus?: () => HTMLElement | null;
         scope: string;
       }
     | null
@@ -248,12 +275,27 @@ export function ResourceMenuProvider({
     currentResources.current.some(
       (item) => !item.deleted && identity(item) === identity(resource),
     );
+  const hasSession = (resource: ProjectResource) =>
+    active.current &&
+    scope.current === props.scope &&
+    currentResources.current.some(
+      (item) =>
+        !item.deleted &&
+        item.projectId === resource.projectId &&
+        item.resourceId === resource.resourceId,
+    );
   const context: ResourceMenuContextValue = {
     ...props,
+    browserHandoffOrigin,
     isCurrent,
     sharedArtifact,
     request: (kind, resource, options) => {
-      if (!isCurrent(resource)) return;
+      if (
+        kind === "browser-handoff"
+          ? !hasSession(resource)
+          : !isCurrent(resource)
+      )
+        return;
       const upload = props.state.outbox.find(
         (entry) =>
           entry.reviewable &&
@@ -273,6 +315,7 @@ export function ResourceMenuProvider({
           resource,
           scope: props.scope,
           sessionSelection: options?.sessionSelection,
+          returnFocus: options?.returnFocus,
         });
     },
     reviewUpload: (uploadId) => {
@@ -335,6 +378,23 @@ export function ResourceMenuProvider({
               restoreResourceFocus(event, request.resource.resourceId)
             }
           />
+        ) : request.kind === "browser-handoff" ? (
+          <BrowserHandoffDialog
+            key={`${props.scope}:browser-handoff:${request.resource.projectId}/${request.resource.resourceId}`}
+            resource={request.resource}
+            accountId={account}
+            serviceOrigin={service}
+            linkOrigin={browserHandoffOrigin}
+            stale={!hasSession(request.resource)}
+            onClose={() => setRequest(null)}
+            onCloseAutoFocus={(event) =>
+              restoreHandoffFocus(
+                event,
+                request.resource.resourceId,
+                request.returnFocus,
+              )
+            }
+          />
         ) : request.kind === "share" ? (
           <ShareDialog
             key={`${props.scope}:share:${identity(request.resource)}`}
@@ -359,6 +419,25 @@ export function ResourceMenuProvider({
 
 export function useQueuedUploadReview() {
   return useContext(ResourceMenuContext)?.reviewUpload;
+}
+
+export function useBrowserHandoff() {
+  const context = useContext(ResourceMenuContext);
+  const available = Boolean(context?.browserHandoffOrigin);
+  return {
+    available,
+    open: (
+      resource: ProjectResource,
+      returnFocus?: () => HTMLElement | null,
+    ) => {
+      if (
+        context?.browserHandoffOrigin &&
+        resource.kind === "session" &&
+        !resource.deleted
+      )
+        context.request("browser-handoff", resource, { returnFocus });
+    },
+  };
 }
 
 /**
@@ -424,6 +503,7 @@ export function resourceViewMenuActions(
 /** Actions not listed here open, copy or locate the item. */
 const actionGroups: Record<string, string> = {
   share: "share",
+  "browser-handoff": "share",
   "public-link": "share",
   "review-incoming": "review",
   "review-outgoing": "review",
@@ -437,12 +517,14 @@ function ResourceMenuTarget({
   file,
   sessionSelection,
   extraActions = [],
+  returnFocus,
   children,
 }: {
   resource: ProjectResource;
   file?: string;
   sessionSelection?: SessionSnapshotSelection | null;
   extraActions?: ItemMenuAction[];
+  returnFocus?: () => HTMLElement | null;
   children: (actions: ItemMenuAction[]) => React.ReactNode;
 }) {
   const context = useContext(ResourceMenuContext)!;
@@ -687,6 +769,19 @@ function ResourceMenuTarget({
       disabled: context.busy,
       onSelect: () => void actions.exportZip(sessionSelection ?? undefined),
     });
+  if (
+    resource.kind === "session" &&
+    !resource.deleted &&
+    context.browserHandoffOrigin
+  )
+    secondary.unshift({
+      id: "browser-handoff",
+      icon: Share2Icon,
+      label: "Share handoff link…",
+      disabled: context.busy,
+      onSelect: () =>
+        context.request("browser-handoff", resource, { returnFocus }),
+    });
   const configureAction = (item: ItemMenuAction): ItemMenuAction => ({
     ...item,
     group: actionGroups[item.id] ?? "item",
@@ -695,6 +790,7 @@ function ResourceMenuTarget({
       "compare",
       "launch",
       "share",
+      "browser-handoff",
       "public-link",
       "delete",
       "review-incoming",
@@ -793,6 +889,7 @@ export function ResourceMenuButton({
   label?: string;
 }) {
   const context = useContext(ResourceMenuContext);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   if (!context) return null;
   return (
     <ResourceMenuTarget
@@ -800,25 +897,42 @@ export function ResourceMenuButton({
       file={file}
       sessionSelection={sessionSelection}
       extraActions={extraActions}
+      returnFocus={() => triggerRef.current}
     >
       {(actions) => (
         <ItemMenuButton
           actions={actions}
           label={label}
           disabled={context.busy}
+          triggerRef={triggerRef}
         />
       )}
     </ResourceMenuTarget>
   );
 }
 
+function restoreHandoffFocus(
+  event: Event,
+  resourceId: string,
+  returnFocus?: () => HTMLElement | null,
+) {
+  const opener = returnFocus?.();
+  if (opener && opener.isConnected && !opener.hasAttribute("disabled")) {
+    event.preventDefault();
+    opener.focus();
+    return;
+  }
+  restoreResourceFocus(event, resourceId);
+}
+
 function restoreResourceFocus(event: Event, resourceId: string) {
+  if (typeof globalThis.CSS?.escape !== "function") return;
+  const target = document.querySelector<HTMLElement>(
+    `button[data-resource-id="${globalThis.CSS.escape(resourceId)}"]`,
+  );
+  if (!target) return;
   event.preventDefault();
-  document
-    .querySelector<HTMLElement>(
-      `button[data-resource-id="${CSS.escape(resourceId)}"]`,
-    )
-    ?.focus();
+  target.focus();
 }
 
 function SessionLaunchDialog({
